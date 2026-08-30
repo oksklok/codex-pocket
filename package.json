@@ -1,0 +1,12 @@
+{
+  "name": "codex-pocket-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "probe": "node --experimental-strip-types probe.ts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}
