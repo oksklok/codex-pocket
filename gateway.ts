@@ -1,0 +1,971 @@
+#!/usr/bin/env node
+
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { createReadStream, readFileSync, statSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { extname, join } from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+type JsonObject = Record<string, any>;
+type PendingRpc = {
+  resolve: (value: any) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+};
+type Wire = {
+  send(message: JsonObject): void;
+  close(): void;
+};
+type Options = {
+  port: number;
+  ws?: string;
+  thread?: string;
+};
+type PocketMessage = {
+  id: string;
+  turnId?: string;
+  role: "user" | "assistant";
+  text: string;
+  createdAt: number;
+  complete: boolean;
+};
+type PocketActivity = {
+  id: string;
+  kind: string;
+  label: string;
+  status: "running" | "completed" | "failed";
+  detail?: string;
+};
+type PocketRequest = {
+  id: string;
+  kind: "permission" | "input";
+  label: string;
+};
+type PocketState = {
+  connected: boolean;
+  connectionError: string | null;
+  machine: string;
+  platform: string;
+  userAgent: string;
+  thread: null | {
+    id: string;
+    name: string;
+    cwd: string;
+    source: string;
+  };
+  model: string;
+  reasoningEffort: string;
+  threadStatus: string;
+  phase: "connecting" | "working" | "waiting_input" | "waiting_permission" | "done" | "failed";
+  turn: null | {
+    id: string;
+    status: string;
+    startedAt: number | null;
+    completedAt: number | null;
+    error: string | null;
+  };
+  plan: Array<{ step: string; status: string }>;
+  activities: PocketActivity[];
+  pending: PocketRequest[];
+  liveMessages: PocketMessage[];
+  metrics: {
+    rawBytes: number;
+    rawMessages: number;
+    browserBytes: number;
+    browserMessages: number;
+    startedAt: number;
+  };
+};
+
+const MAX_TEXT = 12_000;
+const MAX_LIVE_MESSAGES = 16;
+const MAX_ACTIVITIES = 10;
+const ASSISTANT_FLUSH_MS = 120;
+const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
+
+function usage(): never {
+  console.log(`Usage: node --experimental-strip-types gateway.ts [options]
+
+Options:
+  --port N       Browser port on 127.0.0.1 (default: 4173)
+  --ws URL       Connect to an explicit app-server WebSocket
+  --thread ID    Select a specific loaded thread
+  --help         Show this help
+
+Environment:
+  CODEX_BIN      Codex executable to spawn (default: codex)
+`);
+  process.exit(0);
+}
+
+function parseArgs(args: string[]): Options {
+  const options: Options = { port: 4173 };
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    const next = () => {
+      const value = args[++index];
+      if (value === undefined) throw new Error(`${flag} requires a value`);
+      return value;
+    };
+    if (flag === "--help" || flag === "-h") usage();
+    else if (flag === "--ws") options.ws = next();
+    else if (flag === "--thread") options.thread = next();
+    else if (flag === "--port") {
+      const port = Number(next());
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("--port expects a valid port");
+      options.port = port;
+    } else throw new Error(`unknown option: ${flag}`);
+  }
+  return options;
+}
+
+function compact(value: unknown, limit = 240): string {
+  const text = String(value ?? "")
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+function boundedText(value: unknown, limit = MAX_TEXT): string {
+  const text = String(value ?? "").replace(/\r\n/g, "\n").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n\n[message truncated by Codex Pocket]`;
+}
+
+function statusText(status: any): string {
+  if (typeof status === "string") return status;
+  if (!status || typeof status !== "object") return "unknown";
+  const flags = Array.isArray(status.activeFlags) && status.activeFlags.length > 0
+    ? `:${status.activeFlags.join(",")}`
+    : "";
+  return `${status.type ?? "unknown"}${flags}`;
+}
+
+function readText(value: any): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(readText).filter(Boolean).join("\n");
+  if (!value || typeof value !== "object") return "";
+  if (typeof value.text === "string") return value.text;
+  if (typeof value.inputText === "string") return value.inputText;
+  if (typeof value.outputText === "string") return value.outputText;
+  if (value.content !== undefined) return readText(value.content);
+  if (value.message !== undefined) return readText(value.message);
+  return "";
+}
+
+function numberTime(value: unknown, fallback = Date.now()): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value < 10_000_000_000 ? value * 1000 : value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function clientFrame(opcode: number, payload: Buffer): Buffer {
+  const mask = randomBytes(4);
+  const length = payload.length;
+  const headerLength = length < 126 ? 2 : length <= 0xffff ? 4 : 10;
+  const frame = Buffer.alloc(headerLength + 4 + length);
+  frame[0] = 0x80 | opcode;
+  if (length < 126) {
+    frame[1] = 0x80 | length;
+  } else if (length <= 0xffff) {
+    frame[1] = 0x80 | 126;
+    frame.writeUInt16BE(length, 2);
+  } else {
+    frame[1] = 0x80 | 127;
+    frame.writeBigUInt64BE(BigInt(length), 2);
+  }
+  const maskOffset = headerLength;
+  mask.copy(frame, maskOffset);
+  for (let index = 0; index < length; index += 1) {
+    frame[maskOffset + 4 + index] = payload[index] ^ mask[index % 4];
+  }
+  return frame;
+}
+
+function connectProxy(
+  onPayload: (payload: Buffer) => void,
+  onClose: (error?: Error) => void,
+): Promise<Wire> {
+  return new Promise((resolve, reject) => {
+    const codexBin = process.env.CODEX_BIN || "codex";
+    const child: ChildProcessWithoutNullStreams = spawn(codexBin, ["app-server", "proxy"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const websocketKey = randomBytes(16).toString("base64");
+    const expectedAccept = createHash("sha1")
+      .update(`${websocketKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    let buffer = Buffer.alloc(0);
+    let upgraded = false;
+    let settled = false;
+    let closing = false;
+    let fragmentedOpcode: number | null = null;
+    let fragments: Buffer[] = [];
+
+    const sendFrame = (opcode: number, payload: Buffer) => child.stdin.write(clientFrame(opcode, payload));
+    const parseFrames = () => {
+      for (;;) {
+        if (buffer.length < 2) return;
+        const first = buffer[0];
+        const second = buffer[1];
+        const final = (first & 0x80) !== 0;
+        const opcode = first & 0x0f;
+        const masked = (second & 0x80) !== 0;
+        let length = second & 0x7f;
+        let offset = 2;
+        if (length === 126) {
+          if (buffer.length < 4) return;
+          length = buffer.readUInt16BE(2);
+          offset = 4;
+        } else if (length === 127) {
+          if (buffer.length < 10) return;
+          const longLength = buffer.readBigUInt64BE(2);
+          if (longLength > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("WebSocket frame is too large");
+          length = Number(longLength);
+          offset = 10;
+        }
+        const maskLength = masked ? 4 : 0;
+        if (buffer.length < offset + maskLength + length) return;
+        const mask = masked ? buffer.subarray(offset, offset + 4) : null;
+        offset += maskLength;
+        const payload = Buffer.from(buffer.subarray(offset, offset + length));
+        buffer = buffer.subarray(offset + length);
+        if (mask) {
+          for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
+        }
+        if (opcode === 0x8) {
+          closing = true;
+          child.stdin.end();
+          return;
+        }
+        if (opcode === 0x9) {
+          sendFrame(0x0a, payload);
+          continue;
+        }
+        if (opcode === 0x0a) continue;
+        if (opcode === 0x1 && final) onPayload(payload);
+        else if (opcode === 0x1) {
+          fragmentedOpcode = opcode;
+          fragments = [payload];
+        } else if (opcode === 0x0 && fragmentedOpcode !== null) {
+          fragments.push(payload);
+          if (final) {
+            if (fragmentedOpcode === 0x1) onPayload(Buffer.concat(fragments));
+            fragmentedOpcode = null;
+            fragments = [];
+          }
+        }
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (!upgraded) {
+        const headerEnd = buffer.indexOf("\r\n\r\n");
+        if (headerEnd < 0) return;
+        const header = buffer.subarray(0, headerEnd).toString("utf8");
+        buffer = buffer.subarray(headerEnd + 4);
+        const accept = /^sec-websocket-accept:\s*(.+)$/im.exec(header)?.[1]?.trim();
+        if (!/^HTTP\/1\.1 101\b/m.test(header) || accept !== expectedAccept) {
+          const error = new Error(`app-server proxy WebSocket upgrade failed: ${compact(header, 300)}`);
+          reject(error);
+          child.kill("SIGTERM");
+          return;
+        }
+        upgraded = true;
+        settled = true;
+        resolve({
+          send(message) {
+            sendFrame(0x1, Buffer.from(JSON.stringify(message), "utf8"));
+          },
+          close() {
+            closing = true;
+            sendFrame(0x8, Buffer.alloc(0));
+            child.stdin.end();
+            child.kill("SIGTERM");
+          },
+        });
+      }
+      parseFrames();
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      const text = compact(chunk, 400);
+      if (text) console.error(`app-server proxy: ${text}`);
+    });
+    child.once("error", (error) => {
+      if (!settled) reject(error);
+      else if (!closing) onClose(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code})`));
+      else if (!closing) onClose(new Error(`app-server proxy closed (${signal ?? code})`));
+    });
+    child.once("spawn", () => {
+      child.stdin.write(
+        `GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${websocketKey}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+      );
+    });
+  });
+}
+
+function connectWebSocket(
+  url: string,
+  onPayload: (payload: Buffer) => void,
+  onClose: (error?: Error) => void,
+): Promise<Wire> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url);
+    let opened = false;
+    socket.addEventListener("open", () => {
+      opened = true;
+      resolve({
+        send(message) {
+          socket.send(JSON.stringify(message));
+        },
+        close() {
+          socket.close();
+        },
+      });
+    });
+    socket.addEventListener("message", (event) => {
+      const data = typeof event.data === "string" ? Buffer.from(event.data) : Buffer.from(event.data as ArrayBuffer);
+      onPayload(data);
+    });
+    socket.addEventListener("error", () => {
+      const error = new Error(`WebSocket connection failed: ${url}`);
+      if (!opened) reject(error);
+      else onClose(error);
+    });
+    socket.addEventListener("close", () => {
+      if (opened) onClose();
+    });
+  });
+}
+
+class RpcClient {
+  private wire!: Wire;
+  private nextId = 1;
+  private pending = new Map<number, PendingRpc>();
+  onNotification: (message: JsonObject) => void = () => {};
+  onServerRequest: (message: JsonObject) => void = () => {};
+  onRawPayload: (bytes: number) => void = () => {};
+  onClose: (error?: Error) => void = () => {};
+
+  async connect(ws?: string): Promise<void> {
+    const onPayload = (payload: Buffer) => {
+      this.onRawPayload(payload.length);
+      try {
+        this.receive(JSON.parse(payload.toString("utf8")));
+      } catch (error) {
+        console.error(`invalid JSON from app-server: ${compact((error as Error).message)}`);
+      }
+    };
+    this.wire = ws
+      ? await connectWebSocket(ws, onPayload, (error) => this.onClose(error))
+      : await connectProxy(onPayload, (error) => this.onClose(error));
+  }
+
+  request(method: string, params: JsonObject = {}): Promise<any> {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} timed out`));
+      }, 20_000);
+      this.pending.set(id, { resolve, reject, timer });
+      this.wire.send({ method, id, params });
+    });
+  }
+
+  notify(method: string, params: JsonObject = {}): void {
+    this.wire.send({ method, params });
+  }
+
+  close(): void {
+    this.wire?.close();
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("app-server connection closed"));
+      this.pending.delete(id);
+    }
+  }
+
+  private receive(message: JsonObject): void {
+    if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
+      const id = Number(message.id);
+      const pending = this.pending.get(id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pending.delete(id);
+      if (message.error) pending.reject(new Error(`${message.error.message ?? "request failed"} (${message.error.code ?? "no code"})`));
+      else pending.resolve(message.result);
+      return;
+    }
+    if (message.id !== undefined && message.method) this.onServerRequest(message);
+    else if (message.method) this.onNotification(message);
+  }
+}
+
+function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
+  if (!item || (item.type !== "userMessage" && item.type !== "agentMessage")) return null;
+  const text = boundedText(readText(item));
+  if (!text) return null;
+  return {
+    id: String(item.id ?? `${item.type}-${randomBytes(6).toString("hex")}`),
+    turnId,
+    role: item.type === "userMessage" ? "user" : "assistant",
+    text,
+    createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime),
+    complete,
+  };
+}
+
+function activityFromItem(item: any, phase: "start" | "done"): PocketActivity | null {
+  if (!item || typeof item !== "object") return null;
+  const id = String(item.id ?? `${item.type}-${randomBytes(4).toString("hex")}`);
+  const doneStatus = item.status === "failed" || item.status === "declined" ? "failed" : "completed";
+  const status = phase === "start" ? "running" : doneStatus;
+  if (item.type === "commandExecution") {
+    const outputBytes = Buffer.byteLength(String(item.aggregatedOutput ?? ""));
+    const detail = phase === "done"
+      ? `exit ${item.exitCode ?? "–"} · ${outputBytes.toLocaleString()} output bytes suppressed`
+      : undefined;
+    return { id, kind: "command", label: compact(item.command, 260), status, detail };
+  }
+  if (item.type === "mcpToolCall") {
+    return { id, kind: "tool", label: compact(`${item.server ?? "tool"}/${item.tool ?? "unknown"}`), status };
+  }
+  if (item.type === "dynamicToolCall") {
+    return { id, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`), status };
+  }
+  if (item.type === "collabAgentToolCall") {
+    return { id, kind: "collaboration", label: compact(item.tool ?? "collaboration"), status };
+  }
+  if (item.type === "webSearch") {
+    return { id, kind: "search", label: compact(item.query, 260), status };
+  }
+  if (item.type === "fileChange") {
+    const paths = Array.isArray(item.changes) ? item.changes.length : 0;
+    return { id, kind: "files", label: `${paths} changed path${paths === 1 ? "" : "s"} (diff suppressed)`, status };
+  }
+  return null;
+}
+
+function normalizeHistoryTurn(turn: any): JsonObject {
+  const completedAt = turn?.completedAt ? numberTime(turn.completedAt, 0) : null;
+  const createdAt = numberTime(turn?.createdAt ?? turn?.created_at, completedAt ?? 0);
+  const messages = Array.isArray(turn?.items)
+    ? turn.items.map((item: any) => messageFromItem(item, String(turn.id), true, createdAt)).filter(Boolean)
+    : [];
+  return {
+    id: String(turn?.id ?? ""),
+    status: String(turn?.status ?? "unknown"),
+    createdAt,
+    completedAt,
+    error: compact(turn?.error?.message ?? turn?.error, 400) || null,
+    messages,
+  };
+}
+
+class PocketGateway {
+  readonly state: PocketState;
+  private rpc: RpcClient | null = null;
+  private subscribers = new Set<ServerResponse>();
+  private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
+  private options: Options;
+  private shuttingDown = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
+  constructor(options: Options) {
+    this.options = options;
+    this.state = {
+      connected: false,
+      connectionError: null,
+      machine: "local",
+      platform: "unknown",
+      userAgent: "unknown",
+      thread: null,
+      model: "Not exposed",
+      reasoningEffort: "Not exposed",
+      threadStatus: "connecting",
+      phase: "connecting",
+      turn: null,
+      plan: [],
+      activities: [],
+      pending: [],
+      liveMessages: [],
+      metrics: {
+        rawBytes: 0,
+        rawMessages: 0,
+        browserBytes: 0,
+        browserMessages: 0,
+        startedAt: Date.now(),
+      },
+    };
+  }
+
+  async start(): Promise<void> {
+    await this.connect();
+  }
+
+  stop(): void {
+    this.shuttingDown = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    for (const pending of this.assistantFlushes.values()) clearTimeout(pending.timer);
+    this.assistantFlushes.clear();
+    this.rpc?.close();
+    for (const response of this.subscribers) response.end();
+    this.subscribers.clear();
+  }
+
+  addSubscriber(response: ServerResponse): void {
+    this.subscribers.add(response);
+    this.writeSse(response, "snapshot", this.snapshot());
+    response.on("close", () => this.subscribers.delete(response));
+  }
+
+  snapshot(): PocketState {
+    return JSON.parse(JSON.stringify(this.state));
+  }
+
+  async history(cursor: string | null, limit: number): Promise<JsonObject> {
+    if (!this.rpc || !this.state.thread) throw new Error("gateway is not attached to a thread");
+    const page = await this.rpc.request("thread/turns/list", {
+      threadId: this.state.thread.id,
+      cursor,
+      limit,
+      sortDirection: "desc",
+      itemsView: "summary",
+    });
+    const turns = Array.isArray(page?.data) ? page.data.map(normalizeHistoryTurn).reverse() : [];
+    return { turns, nextCursor: page?.nextCursor ?? null };
+  }
+
+  countBrowserPayload(payload: Buffer | string): void {
+    this.state.metrics.browserBytes += Buffer.byteLength(payload);
+    this.state.metrics.browserMessages += 1;
+  }
+
+  broadcastMetrics(): void {
+    this.broadcast("metrics", this.state.metrics);
+  }
+
+  private async connect(): Promise<void> {
+    if (this.rpc) {
+      this.rpc.onClose = () => {};
+      this.rpc.close();
+      this.rpc = null;
+    }
+    this.state.connected = false;
+    this.state.connectionError = null;
+    this.state.phase = "connecting";
+    this.broadcast("status", this.statusPayload());
+    const rpc = new RpcClient();
+    this.rpc = rpc;
+    rpc.onRawPayload = (bytes) => {
+      this.state.metrics.rawBytes += bytes;
+      this.state.metrics.rawMessages += 1;
+    };
+    rpc.onNotification = (message) => this.handleNotification(message);
+    rpc.onServerRequest = (message) => this.handleServerRequest(message);
+    rpc.onClose = (error) => {
+      if (this.rpc === rpc) this.handleClose(error);
+    };
+    try {
+      await rpc.connect(this.options.ws);
+      const initialized = await rpc.request("initialize", {
+        clientInfo: { name: "codex_pocket_gateway", title: "Codex Pocket Gateway", version: "0.1.0" },
+        capabilities: { experimentalApi: true, requestAttestation: false },
+      });
+      rpc.notify("initialized");
+      this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
+      this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
+      this.state.machine = initialized?.platformOs || initialized?.platformFamily || "local";
+      const listed = await rpc.request("thread/list", {
+        limit: 50,
+        sortKey: "recency_at",
+        sortDirection: "desc",
+      });
+      const loaded = await rpc.request("thread/loaded/list", { limit: 100 });
+      const threads = Array.isArray(listed?.data) ? listed.data : [];
+      const loadedIds: string[] = Array.isArray(loaded?.data) ? loaded.data.map(String) : [];
+      const loadedSet = new Set(loadedIds);
+      const active = threads.find((thread: any) => loadedSet.has(String(thread.id)) && thread.status?.type === "active");
+      const newestLoaded = threads.find((thread: any) => loadedSet.has(String(thread.id)));
+      const targetId = this.options.thread ?? active?.id ?? newestLoaded?.id ?? loadedIds[0];
+      if (!targetId) throw new Error("no loaded Codex thread is available");
+      const resumed = await rpc.request("thread/resume", { threadId: String(targetId), excludeTurns: true });
+      const thread = resumed?.thread ?? threads.find((candidate: any) => candidate.id === targetId) ?? {};
+      this.state.thread = {
+        id: String(thread.id ?? targetId),
+        name: compact(thread.name ?? thread.preview, 180) || "Untitled task",
+        cwd: String(thread.cwd ?? ""),
+        source: String(thread.source ?? "unknown"),
+      };
+      this.state.threadStatus = statusText(thread.status);
+      this.updateModel(thread);
+      this.state.connected = true;
+      this.state.connectionError = null;
+      this.state.phase = this.computePhase();
+      this.broadcast("snapshot", this.snapshot());
+      console.log(`attached to ${this.state.thread.id} (${this.state.thread.name})`);
+    } catch (error) {
+      rpc.onClose = () => {};
+      rpc.close();
+      if (this.rpc === rpc) this.rpc = null;
+      this.state.connectionError = error instanceof Error ? error.message : String(error);
+      this.state.phase = "failed";
+      this.broadcast("status", this.statusPayload());
+      console.error(`gateway attach failed: ${this.state.connectionError}`);
+      this.scheduleReconnect();
+    }
+  }
+
+  private handleClose(error?: Error): void {
+    if (this.shuttingDown) return;
+    this.rpc = null;
+    this.state.connected = false;
+    this.state.connectionError = error?.message ?? "app-server connection closed";
+    this.state.phase = "failed";
+    this.broadcast("status", this.statusPayload());
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.shuttingDown || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch((error) => console.error(error));
+    }, 2_000);
+  }
+
+  private handleServerRequest(message: JsonObject): void {
+    const method = String(message.method ?? "");
+    const params = message.params ?? {};
+    let request: PocketRequest | null = null;
+    if (method.includes("requestApproval")) {
+      request = {
+        id: String(message.id),
+        kind: "permission",
+        label: compact(params.reason ?? params.command ?? "Permission requested", 240),
+      };
+    } else if (method.includes("requestUserInput") || method.includes("requestInput")) {
+      const questionCount = Array.isArray(params.questions) ? params.questions.length : 1;
+      request = { id: String(message.id), kind: "input", label: `${questionCount} input request${questionCount === 1 ? "" : "s"}` };
+    }
+    if (!request) return;
+    this.state.pending = [...this.state.pending.filter((candidate) => candidate.id !== request!.id), request];
+    this.state.phase = this.computePhase();
+    this.broadcast("request", { pending: this.state.pending, phase: this.state.phase });
+  }
+
+  private handleNotification(message: JsonObject): void {
+    const method = String(message.method ?? "");
+    const params = message.params ?? {};
+    if (this.state.thread && params.threadId && String(params.threadId) !== this.state.thread.id) return;
+    switch (method) {
+      case "thread/status/changed":
+        this.state.threadStatus = statusText(params.status);
+        this.state.phase = this.computePhase();
+        this.broadcast("status", this.statusPayload());
+        break;
+      case "thread/name/updated":
+        if (this.state.thread && params.name) {
+          this.state.thread.name = compact(params.name, 180);
+          this.broadcast("thread", this.state.thread);
+        }
+        break;
+      case "turn/started":
+        this.updateModel(params.turn);
+        this.state.turn = {
+          id: String(params.turn?.id ?? params.turnId ?? ""),
+          status: String(params.turn?.status ?? "inProgress"),
+          startedAt: numberTime(params.turn?.createdAt ?? params.turn?.startedAt),
+          completedAt: null,
+          error: null,
+        };
+        this.state.plan = [];
+        this.state.activities = [];
+        this.state.pending = [];
+        this.state.phase = "working";
+        this.broadcast("turn", { turn: this.state.turn, phase: this.state.phase });
+        break;
+      case "turn/completed": {
+        const turn = params.turn ?? {};
+        this.updateModel(turn);
+        const status = String(turn.status ?? "completed");
+        const error = compact(turn.error?.message ?? turn.error, 400) || null;
+        this.state.turn = {
+          id: String(turn.id ?? params.turnId ?? this.state.turn?.id ?? ""),
+          status,
+          startedAt: this.state.turn?.startedAt ?? null,
+          completedAt: Date.now(),
+          error,
+        };
+        this.state.pending = [];
+        this.state.phase = error || status === "failed" ? "failed" : "done";
+        this.flushAllAssistantDeltas();
+        this.broadcast("turn", { turn: this.state.turn, phase: this.state.phase });
+        break;
+      }
+      case "turn/plan/updated":
+        this.state.plan = Array.isArray(params.plan)
+          ? params.plan.slice(0, 30).map((entry: any) => ({ step: compact(entry.step, 300), status: String(entry.status ?? "pending") }))
+          : [];
+        this.broadcast("plan", this.state.plan);
+        break;
+      case "item/agentMessage/delta":
+        this.queueAssistantDelta(String(params.itemId), String(params.turnId ?? this.state.turn?.id ?? ""), String(params.delta ?? ""));
+        break;
+      case "item/started":
+      case "item/completed":
+        this.handleItem(params.item, params.turnId, method === "item/started" ? "start" : "done");
+        break;
+      case "serverRequest/resolved":
+        this.state.pending = this.state.pending.filter((request) => request.id !== String(params.requestId));
+        this.state.phase = this.computePhase();
+        this.broadcast("request", { pending: this.state.pending, phase: this.state.phase });
+        break;
+      case "error":
+        this.state.connectionError = compact(params.error?.message ?? params.message ?? params, 400);
+        this.state.phase = "failed";
+        this.broadcast("status", this.statusPayload());
+        break;
+      default:
+        break;
+    }
+  }
+
+  private handleItem(item: any, turnId: unknown, phase: "start" | "done"): void {
+    const itemTurnId = String(turnId ?? this.state.turn?.id ?? "");
+    if (item?.type === "agentMessage" && phase === "done") {
+      this.flushAssistantDelta(String(item.id));
+      const existing = this.state.liveMessages.find((message) => message.id === String(item.id));
+      const message = messageFromItem(item, itemTurnId, true) ?? existing;
+      if (message) {
+        message.complete = true;
+        this.upsertLiveMessage(message);
+        this.broadcast("message", message);
+      }
+      return;
+    }
+    if (item?.type === "userMessage") {
+      const message = messageFromItem(item, itemTurnId, phase === "done");
+      if (message) {
+        this.upsertLiveMessage(message);
+        this.broadcast("message", message);
+      }
+      return;
+    }
+    const activity = activityFromItem(item, phase);
+    if (!activity) return;
+    const index = this.state.activities.findIndex((candidate) => candidate.id === activity.id);
+    if (index >= 0) this.state.activities[index] = activity;
+    else this.state.activities.push(activity);
+    this.state.activities = this.state.activities.slice(-MAX_ACTIVITIES);
+    this.broadcast("activity", activity);
+  }
+
+  private queueAssistantDelta(itemId: string, turnId: string, delta: string): void {
+    if (!delta) return;
+    let message = this.state.liveMessages.find((candidate) => candidate.id === itemId);
+    if (!message) {
+      message = { id: itemId, turnId, role: "assistant", text: "", createdAt: Date.now(), complete: false };
+      this.upsertLiveMessage(message);
+    }
+    message.text = boundedText(`${message.text}${delta}`);
+    const queued = this.assistantFlushes.get(itemId);
+    if (queued) {
+      queued.delta += delta;
+      return;
+    }
+    const timer = setTimeout(() => this.flushAssistantDelta(itemId), ASSISTANT_FLUSH_MS);
+    this.assistantFlushes.set(itemId, { delta, timer });
+  }
+
+  private flushAssistantDelta(itemId: string): void {
+    const queued = this.assistantFlushes.get(itemId);
+    if (!queued) return;
+    clearTimeout(queued.timer);
+    this.assistantFlushes.delete(itemId);
+    this.broadcast("assistant_delta", { id: itemId, delta: boundedText(queued.delta, 4_000) });
+  }
+
+  private flushAllAssistantDeltas(): void {
+    for (const itemId of [...this.assistantFlushes.keys()]) this.flushAssistantDelta(itemId);
+  }
+
+  private upsertLiveMessage(message: PocketMessage): void {
+    const index = this.state.liveMessages.findIndex((candidate) => candidate.id === message.id);
+    if (index >= 0) this.state.liveMessages[index] = message;
+    else this.state.liveMessages.push(message);
+    this.state.liveMessages = this.state.liveMessages.slice(-MAX_LIVE_MESSAGES);
+  }
+
+  private updateModel(value: any): void {
+    if (!value || typeof value !== "object") return;
+    const model = value.model ?? value.modelId ?? value.config?.model;
+    const effort = value.reasoningEffort ?? value.reasoning_effort ?? value.config?.reasoningEffort;
+    if (model) this.state.model = String(model);
+    if (effort) this.state.reasoningEffort = String(effort);
+  }
+
+  private computePhase(): PocketState["phase"] {
+    if (this.state.connectionError && !this.state.connected) return "failed";
+    if (this.state.pending.some((request) => request.kind === "permission")) return "waiting_permission";
+    if (this.state.pending.some((request) => request.kind === "input")) return "waiting_input";
+    if (this.state.turn?.error || this.state.turn?.status === "failed") return "failed";
+    if (this.state.turn?.status === "inProgress" || this.state.threadStatus.startsWith("active")) return "working";
+    return this.state.connected ? "done" : "connecting";
+  }
+
+  private statusPayload(): JsonObject {
+    return {
+      connected: this.state.connected,
+      connectionError: this.state.connectionError,
+      threadStatus: this.state.threadStatus,
+      phase: this.state.phase,
+    };
+  }
+
+  private broadcast(event: string, data: unknown): void {
+    for (const response of this.subscribers) this.writeSse(response, event, data);
+  }
+
+  private writeSse(response: ServerResponse, event: string, data: unknown): void {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    response.write(payload);
+    this.countBrowserPayload(payload);
+  }
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+};
+
+function securityHeaders(): Record<string, string> {
+  return {
+    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+  };
+}
+
+function sendJson(response: ServerResponse, statusCode: number, value: unknown, gateway: PocketGateway): void {
+  const payload = Buffer.from(JSON.stringify(value));
+  gateway.countBrowserPayload(payload);
+  response.writeHead(statusCode, {
+    ...securityHeaders(),
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Length": payload.length,
+  });
+  response.end(payload);
+}
+
+function staticPath(pathname: string): string | null {
+  if (pathname === "/") return join(PUBLIC_DIR, "index.html");
+  if (pathname === "/app.js") return join(PUBLIC_DIR, "app.js");
+  if (pathname === "/styles.css") return join(PUBLIC_DIR, "styles.css");
+  return null;
+}
+
+async function handleRequest(request: IncomingMessage, response: ServerResponse, gateway: PocketGateway): Promise<void> {
+  const method = request.method ?? "GET";
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (method !== "GET" && method !== "HEAD") {
+    sendJson(response, 405, { error: "read-only gateway" }, gateway);
+    return;
+  }
+  if (url.pathname === "/healthz") {
+    sendJson(response, gateway.state.connected ? 200 : 503, { ok: gateway.state.connected }, gateway);
+    return;
+  }
+  if (url.pathname === "/api/state") {
+    sendJson(response, 200, gateway.snapshot(), gateway);
+    return;
+  }
+  if (url.pathname === "/api/history") {
+    const cursor = url.searchParams.get("cursor");
+    const rawLimit = Number(url.searchParams.get("limit") ?? 6);
+    const limit = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 20) : 6;
+    try {
+      sendJson(response, 200, await gateway.history(cursor, limit), gateway);
+    } catch (error) {
+      sendJson(response, 503, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (url.pathname === "/events") {
+    response.writeHead(200, {
+      ...securityHeaders(),
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    response.write("retry: 1000\n\n");
+    gateway.countBrowserPayload("retry: 1000\n\n");
+    gateway.addSubscriber(response);
+    return;
+  }
+  const filePath = staticPath(url.pathname);
+  if (!filePath) {
+    sendJson(response, 404, { error: "not found" }, gateway);
+    return;
+  }
+  try {
+    const stat = statSync(filePath);
+    response.writeHead(200, {
+      ...securityHeaders(),
+      "Content-Type": CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream",
+      "Cache-Control": "no-cache",
+      "Content-Length": stat.size,
+    });
+    if (method === "HEAD") response.end();
+    else createReadStream(filePath).pipe(response);
+  } catch {
+    sendJson(response, 404, { error: "not found" }, gateway);
+  }
+}
+
+async function main(): Promise<void> {
+  const options = parseArgs(process.argv.slice(2));
+  for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
+  const gateway = new PocketGateway(options);
+  const server = createServer((request, response) => {
+    handleRequest(request, response, gateway).catch((error) => {
+      if (!response.headersSent) sendJson(response, 500, { error: compact(error, 400) }, gateway);
+      else response.end();
+    });
+  });
+  server.listen(options.port, "127.0.0.1", () => {
+    console.log(`Codex Pocket: http://127.0.0.1:${options.port}`);
+  });
+  const metricsTimer = setInterval(() => gateway.broadcastMetrics(), 5_000);
+  const shutdown = () => {
+    clearInterval(metricsTimer);
+    gateway.stop();
+    server.close(() => process.exit(0));
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+  await gateway.start();
+}
+
+main().catch((error) => {
+  console.error(`gateway failed: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+});

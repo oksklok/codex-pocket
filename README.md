@@ -1,62 +1,78 @@
-# codex-pocket protocol spike
+# Codex Pocket
 
-This repository currently contains only a disposable Node/TypeScript probe for the official Codex app-server protocol. It deliberately has no web UI, framework, database, authentication layer, or deployment code.
+Codex Pocket v0.1 is a tiny read-only browser view for one live Codex app-server thread.
 
-The probe:
+```text
+Codex app-server
+        ↓
+localhost Node gateway
+        ↓ filtered SSE + paginated history
+responsive browser UI
+```
 
-- initializes the JSON-RPC protocol;
-- lists stored and currently loaded threads;
-- resumes a thread with `excludeTurns: true`;
-- pages recent turns with summarized items;
-- prints compact live lifecycle, message, command/tool, plan, approval/input, and completion events;
-- receives and counts high-volume reasoning, command-output, raw-response, and diff notifications but suppresses their content in console output;
-- counts all raw inbound app-server payload bytes before local filtering; and
-- can optionally start, steer, or interrupt a turn for controlled testing.
-
-It speaks the documented WebSocket transport through the supported `codex app-server proxy` command, which forwards bytes to the managed daemon's local Unix control socket. No Codex database, rollout/session file, terminal output, or screen content is read.
+The browser never receives the raw app-server stream. The gateway keeps a small in-memory state, coalesces assistant text deltas, and forwards only compact thread, turn, message, plan, command/tool, request, and completion updates. Reasoning streams, raw response events, command output, diffs, and file contents stay local and are suppressed.
 
 ## Requirements
 
 - Codex CLI with `app-server proxy` support
-- Node.js 22.6 or newer (Node 24 was used for this spike)
+- Node.js 22.6 or newer
+- a thread loaded in the managed app-server, normally by a TUI connected with `codex --remote unix://`
 
 No npm packages are required.
 
 ## Run
 
-List threads without attaching:
+Start or connect a normal Codex TUI to the managed shared runtime:
+
+```sh
+codex --remote unix://
+```
+
+In this repository, start the gateway:
+
+```sh
+npm start
+```
+
+Then open [http://127.0.0.1:4173](http://127.0.0.1:4173).
+
+The gateway always binds to `127.0.0.1`. Optional arguments:
+
+```sh
+npm start -- --thread THREAD_ID
+npm start -- --port 4180
+npm start -- --ws ws://127.0.0.1:4500
+```
+
+On macOS with only the Codex Desktop bundled Node runtime available:
+
+```sh
+/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node \
+  --experimental-strip-types gateway.ts
+```
+
+## Browser view
+
+- connection, machine/platform, project, task, model, and reasoning effort when exposed;
+- Working, Waiting for input, Waiting for permission, Done, and Failed states;
+- elapsed current-turn time;
+- live coalesced assistant messages and user messages when exposed;
+- current plan and compact command/tool lifecycle summaries;
+- paginated older conversation history; and
+- raw app-server bytes versus filtered dynamic bytes emitted to browser clients.
+
+The bandwidth counters exclude the static HTML, CSS, and JavaScript assets. They count app-server JSON payload bytes received locally and filtered SSE/API payload bytes sent to browser clients.
+
+## Read-only boundary
+
+Codex Pocket v0.1 cannot send messages, approve requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, authentication, LAN listener, PWA layer, or deployment configuration.
+
+## Protocol probe
+
+The disposable protocol probe remains available:
 
 ```sh
 npm run probe -- --list-only
 ```
 
-Attach to the newest active/loaded thread, fetch one compact history page, and monitor for 30 seconds:
-
-```sh
-npm run probe -- --monitor-seconds 30
-```
-
-Select a thread explicitly:
-
-```sh
-npm run probe -- --thread THREAD_ID --history-pages 2 --history-limit 5
-```
-
-For a separately started loopback listener, bypass the managed-daemon proxy:
-
-```sh
-codex app-server --listen ws://127.0.0.1:4500
-npm run probe -- --ws ws://127.0.0.1:4500
-```
-
-Safe control options are `--start-turn TEXT`, `--steer TEXT`, and `--interrupt`. The probe never answers or auto-approves permission requests.
-
-On this machine, Node is bundled with the Codex Desktop app but is not on the shell `PATH`. The equivalent direct command used during the spike was:
-
-```sh
-/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node --experimental-strip-types probe.ts --list-only
-```
-
-Protocol reference: [Codex App Server](https://developers.openai.com/codex/app-server).
-
-Verified local results are recorded in [`SPIKE_REPORT.md`](./SPIKE_REPORT.md).
+The completed macOS connectivity results are in [`SPIKE_REPORT.md`](./SPIKE_REPORT.md). The gateway reuses its supported WebSocket-over-`codex app-server proxy` transport and the paginated `thread/turns/list` API.

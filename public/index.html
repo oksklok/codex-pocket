@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Codex Pocket</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Read-only live view</p>
+          <h1>Codex Pocket</h1>
+        </div>
+        <div class="connection" id="connection" aria-live="polite">
+          <span class="connection-dot"></span>
+          <span id="connection-label">Connecting</span>
+        </div>
+      </header>
+
+      <section class="status-card" aria-labelledby="phase-label">
+        <div>
+          <p class="section-label" id="phase-label">Current state</p>
+          <div class="phase-row">
+            <span class="phase-pill" id="phase-pill">Connecting</span>
+            <span class="elapsed" id="elapsed">—</span>
+          </div>
+          <p class="status-detail" id="status-detail">Waiting for the local gateway.</p>
+        </div>
+        <dl class="metadata">
+          <div>
+            <dt>Machine</dt>
+            <dd id="machine">—</dd>
+          </div>
+          <div>
+            <dt>Project</dt>
+            <dd id="project">—</dd>
+          </div>
+          <div>
+            <dt>Task</dt>
+            <dd id="thread">—</dd>
+          </div>
+          <div>
+            <dt>Model</dt>
+            <dd id="model">—</dd>
+          </div>
+        </dl>
+      </section>
+
+      <div class="workspace">
+        <section class="panel conversation-panel" aria-labelledby="conversation-title">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">Live transcript</p>
+              <h2 id="conversation-title">Recent conversation</h2>
+            </div>
+            <button class="secondary-button" id="load-older" type="button" disabled>Load older</button>
+          </div>
+          <div class="conversation" id="conversation" aria-live="polite">
+            <p class="empty-state">Loading recent messages…</p>
+          </div>
+        </section>
+
+        <aside class="sidebar">
+          <section class="panel" aria-labelledby="plan-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="section-label">Progress</p>
+                <h2 id="plan-title">Current plan</h2>
+              </div>
+              <span class="count-badge" id="plan-count">0/0</span>
+            </div>
+            <ol class="plan-list" id="plan-list">
+              <li class="empty-state">No plan is active.</li>
+            </ol>
+          </section>
+
+          <section class="panel" aria-labelledby="activity-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="section-label">Commands &amp; tools</p>
+                <h2 id="activity-title">Current activity</h2>
+              </div>
+            </div>
+            <ul class="activity-list" id="activity-list">
+              <li class="empty-state">No command or tool activity.</li>
+            </ul>
+          </section>
+
+          <section class="panel bandwidth-panel" aria-labelledby="bandwidth-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <p class="section-label">Filtering</p>
+                <h2 id="bandwidth-title">Bandwidth</h2>
+              </div>
+            </div>
+            <div class="bandwidth-grid">
+              <div>
+                <span>Raw app-server</span>
+                <strong id="raw-bytes">0 B</strong>
+                <small id="raw-messages">0 messages</small>
+              </div>
+              <div>
+                <span>Filtered browser</span>
+                <strong id="browser-bytes">0 B</strong>
+                <small id="browser-messages">0 messages</small>
+              </div>
+            </div>
+            <div class="ratio-row">
+              <span>Reduction</span>
+              <strong id="reduction">—</strong>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
