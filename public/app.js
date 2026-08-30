@@ -196,7 +196,24 @@ function mergeState(next) {
   renderConversation();
 }
 
+function applySnapshot(next) {
+  const previousThreadId = state?.thread?.id;
+  const nextThreadId = next?.thread?.id;
+  const threadChanged = Boolean(previousThreadId && nextThreadId && previousThreadId !== nextThreadId);
+  if (threadChanged) {
+    historyMessages.clear();
+    liveMessages.clear();
+    nextCursor = null;
+    shouldFollowConversation = true;
+    elements.loadOlder.hidden = true;
+    elements.loadOlder.disabled = true;
+  }
+  mergeState(next);
+  if (threadChanged) loadHistory();
+}
+
 async function loadHistory(cursor = null) {
+  const requestedThreadId = state?.thread?.id;
   elements.loadOlder.disabled = true;
   elements.loadOlder.textContent = cursor ? "Loading…" : "Load older";
   try {
@@ -206,6 +223,7 @@ async function loadHistory(cursor = null) {
     const response = await fetch(url);
     const page = await response.json();
     if (!response.ok) throw new Error(page.error || "History unavailable");
+    if (!requestedThreadId || requestedThreadId !== state?.thread?.id || page.threadId !== requestedThreadId) return;
     for (const turn of page.turns || []) {
       for (const message of turn.messages || []) historyMessages.set(message.id, message);
     }
@@ -215,6 +233,7 @@ async function loadHistory(cursor = null) {
     elements.loadOlder.textContent = "Load older";
     renderConversation();
   } catch (error) {
+    if (requestedThreadId !== state?.thread?.id) return;
     elements.loadOlder.hidden = false;
     elements.loadOlder.disabled = false;
     elements.loadOlder.textContent = "Retry history";
@@ -231,7 +250,7 @@ function connectEvents() {
   source = new EventSource("/events");
   source.addEventListener("open", () => setConnection(true));
   source.addEventListener("error", () => setConnection(false, true));
-  source.addEventListener("snapshot", (event) => mergeState(parseEvent(event)));
+  source.addEventListener("snapshot", (event) => applySnapshot(parseEvent(event)));
   source.addEventListener("status", (event) => mergeState(parseEvent(event)));
   source.addEventListener("thread", (event) => mergeState({ thread: parseEvent(event) }));
   source.addEventListener("turn", (event) => {

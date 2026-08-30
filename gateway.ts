@@ -130,6 +130,17 @@ function compact(value: unknown, limit = 240): string {
   return `${text.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+function safeSummary(value: unknown, limit = 240): string {
+  let text = Array.isArray(value) ? value.map(String).join(" ") : String(value ?? "");
+  const secretName = String.raw`(?:[a-z0-9]+[_-])*(?:api[_-]?key|token|password|passwd|secret(?:[_-]?(?:key|access[_-]?key))?|client[_-]?secret|access[_-]?token|auth[_-]?token)`;
+  const valuePattern = String.raw`(?:"[^"]*"|'[^']*'|[^\s;|&'"]+)`;
+  text = text.replace(new RegExp(String.raw`\b(${secretName}\s*=\s*)${valuePattern}`, "gi"), "$1[REDACTED]");
+  text = text.replace(new RegExp(String.raw`(^|\s)(--${secretName}(?:\s*=\s*|\s+))${valuePattern}`, "gi"), "$1$2[REDACTED]");
+  text = text.replace(/\b(authorization\s*:\s*(?:bearer|basic)\s+)(?:"[^"]*"|'[^']*'|[^\s;|&'"]+)/gi, "$1[REDACTED]");
+  text = text.replace(/([?&](?:api[_-]?key|apikey|key|token|access[_-]?token|auth|password|secret|signature|sig|x-(?:amz|goog)-signature)=)[^&#\s'"]+/gi, "$1[REDACTED]");
+  return compact(text, limit);
+}
+
 function boundedText(value: unknown, limit = MAX_TEXT): string {
   const text = String(value ?? "").replace(/\r\n/g, "\n").trim();
   if (text.length <= limit) return text;
@@ -438,7 +449,7 @@ function activityFromItem(item: any, phase: "start" | "done"): PocketActivity | 
     const detail = phase === "done"
       ? `exit ${item.exitCode ?? "–"} · ${outputBytes.toLocaleString()} output bytes suppressed`
       : undefined;
-    return { id, kind: "command", label: compact(item.command, 260), status, detail };
+    return { id, kind: "command", label: safeSummary(item.command, 260), status, detail };
   }
   if (item.type === "mcpToolCall") {
     return { id, kind: "tool", label: compact(`${item.server ?? "tool"}/${item.tool ?? "unknown"}`), status };
@@ -480,6 +491,8 @@ class PocketGateway {
   private rpc: RpcClient | null = null;
   private subscribers = new Set<ServerResponse>();
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
+  private metricsDirty = false;
+  private metricsTimer: NodeJS.Timeout | null = null;
   private options: Options;
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -521,6 +534,8 @@ class PocketGateway {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     for (const pending of this.assistantFlushes.values()) clearTimeout(pending.timer);
     this.assistantFlushes.clear();
+    if (this.metricsTimer) clearTimeout(this.metricsTimer);
+    this.metricsTimer = null;
     this.rpc?.close();
     for (const response of this.subscribers) response.end();
     this.subscribers.clear();
@@ -538,24 +553,33 @@ class PocketGateway {
 
   async history(cursor: string | null, limit: number): Promise<JsonObject> {
     if (!this.rpc || !this.state.thread) throw new Error("gateway is not attached to a thread");
+    const threadId = this.state.thread.id;
     const page = await this.rpc.request("thread/turns/list", {
-      threadId: this.state.thread.id,
+      threadId,
       cursor,
       limit,
       sortDirection: "desc",
       itemsView: "summary",
     });
     const turns = Array.isArray(page?.data) ? page.data.map(normalizeHistoryTurn).reverse() : [];
-    return { turns, nextCursor: page?.nextCursor ?? null };
+    return { threadId, turns, nextCursor: page?.nextCursor ?? null };
   }
 
-  countBrowserPayload(payload: Buffer | string): void {
+  countBrowserPayload(payload: Buffer | string, markDirty = true): void {
     this.state.metrics.browserBytes += Buffer.byteLength(payload);
     this.state.metrics.browserMessages += 1;
+    if (markDirty) this.markMetricsDirty();
   }
 
-  broadcastMetrics(): void {
-    this.broadcast("metrics", this.state.metrics);
+  private markMetricsDirty(): void {
+    this.metricsDirty = true;
+    if (this.shuttingDown || this.metricsTimer) return;
+    this.metricsTimer = setTimeout(() => {
+      this.metricsTimer = null;
+      if (!this.metricsDirty) return;
+      this.metricsDirty = false;
+      for (const response of this.subscribers) this.writeSse(response, "metrics", this.state.metrics, false);
+    }, 250);
   }
 
   private async connect(): Promise<void> {
@@ -573,6 +597,7 @@ class PocketGateway {
     rpc.onRawPayload = (bytes) => {
       this.state.metrics.rawBytes += bytes;
       this.state.metrics.rawMessages += 1;
+      this.markMetricsDirty();
     };
     rpc.onNotification = (message) => this.handleNotification(message);
     rpc.onServerRequest = (message) => this.handleServerRequest(message);
@@ -604,8 +629,10 @@ class PocketGateway {
       if (!targetId) throw new Error("no loaded Codex thread is available");
       const resumed = await rpc.request("thread/resume", { threadId: String(targetId), excludeTurns: true });
       const thread = resumed?.thread ?? threads.find((candidate: any) => candidate.id === targetId) ?? {};
+      const nextThreadId = String(thread.id ?? targetId);
+      if (this.state.thread && this.state.thread.id !== nextThreadId) this.resetThreadState();
       this.state.thread = {
-        id: String(thread.id ?? targetId),
+        id: nextThreadId,
         name: compact(thread.name ?? thread.preview, 180) || "Untitled task",
         cwd: String(thread.cwd ?? ""),
         source: String(thread.source ?? "unknown"),
@@ -655,7 +682,7 @@ class PocketGateway {
       request = {
         id: String(message.id),
         kind: "permission",
-        label: compact(params.reason ?? params.command ?? "Permission requested", 240),
+        label: safeSummary(params.reason ?? params.command ?? "Permission requested", 240),
       };
     } else if (method.includes("requestUserInput") || method.includes("requestInput")) {
       const questionCount = Array.isArray(params.questions) ? params.questions.length : 1;
@@ -803,6 +830,18 @@ class PocketGateway {
     for (const itemId of [...this.assistantFlushes.keys()]) this.flushAssistantDelta(itemId);
   }
 
+  private resetThreadState(): void {
+    for (const queued of this.assistantFlushes.values()) clearTimeout(queued.timer);
+    this.assistantFlushes.clear();
+    this.state.turn = null;
+    this.state.plan = [];
+    this.state.activities = [];
+    this.state.pending = [];
+    this.state.liveMessages = [];
+    this.state.model = "Not exposed";
+    this.state.reasoningEffort = "Not exposed";
+  }
+
   private upsertLiveMessage(message: PocketMessage): void {
     const index = this.state.liveMessages.findIndex((candidate) => candidate.id === message.id);
     if (index >= 0) this.state.liveMessages[index] = message;
@@ -840,10 +879,10 @@ class PocketGateway {
     for (const response of this.subscribers) this.writeSse(response, event, data);
   }
 
-  private writeSse(response: ServerResponse, event: string, data: unknown): void {
+  private writeSse(response: ServerResponse, event: string, data: unknown, markMetricsDirty = true): void {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     response.write(payload);
-    this.countBrowserPayload(payload);
+    this.countBrowserPayload(payload, markMetricsDirty);
   }
 }
 
@@ -954,9 +993,7 @@ async function main(): Promise<void> {
   server.listen(options.port, "127.0.0.1", () => {
     console.log(`Codex Pocket: http://127.0.0.1:${options.port}`);
   });
-  const metricsTimer = setInterval(() => gateway.broadcastMetrics(), 5_000);
   const shutdown = () => {
-    clearInterval(metricsTimer);
     gateway.stop();
     server.close(() => process.exit(0));
   };
