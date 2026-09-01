@@ -16,8 +16,10 @@ const elements = {
   threadSelect: document.querySelector("#thread-select"),
   threadCount: document.querySelector("#thread-count"),
   model: document.querySelector("#model"),
+  accessProfile: document.querySelector("#access-profile"),
   modelSelect: document.querySelector("#model-select"),
   effortSelect: document.querySelector("#effort-select"),
+  accessSelect: document.querySelector("#access-select"),
   nextTurnLabel: document.querySelector("#next-turn-label"),
   historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
@@ -83,6 +85,8 @@ let switchingThread = false;
 let switchingMachine = false;
 let submittingMessage = false;
 let updatingModel = false;
+let updatingAccess = false;
+let resolvingApproval = false;
 let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
@@ -144,7 +148,7 @@ function renderMachineSelector() {
     option.selected = machine.id === selectedId;
     elements.machineSelect.append(option);
   }
-  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel;
+  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval;
 }
 
 async function refreshMachines() {
@@ -182,7 +186,7 @@ function renderThreadSelector() {
     option.selected = thread.id === selectedId;
     elements.threadSelect.append(option);
   }
-  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || !state?.connected;
+  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || !state?.connected;
   elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
@@ -251,10 +255,52 @@ function renderModelControls() {
     option.textContent = state?.reasoningEffort || "Effort unavailable";
     elements.effortSelect.append(option);
   }
-  const enabled = Boolean(state?.connected && state?.thread && models.length) && !switchingThread && !updatingModel;
+  const enabled = Boolean(state?.connected && state?.thread && models.length)
+    && !switchingThread
+    && !updatingModel
+    && !updatingAccess
+    && !resolvingApproval;
   elements.modelSelect.disabled = !enabled;
   elements.effortSelect.disabled = !enabled || !efforts.length;
   elements.nextTurnLabel.hidden = state?.turn?.status !== "inProgress";
+}
+
+function renderAccessControl() {
+  const access = state?.access;
+  const modes = [
+    { value: "ask", label: "Ask for approval" },
+    { value: "auto", label: "Approve for me" },
+    { value: "full", label: "Full access" },
+  ];
+  elements.accessSelect.replaceChildren();
+  for (const mode of modes) {
+    const choice = access?.choices?.[mode.value];
+    const option = document.createElement("option");
+    option.value = mode.value;
+    option.textContent = choice?.available === false ? `${mode.label} · unavailable` : mode.label;
+    option.disabled = choice?.available !== true;
+    option.title = choice?.reason || (mode.value === "full" ? "Unrestricted access to files and network" : mode.label);
+    option.selected = access?.mode === mode.value;
+    elements.accessSelect.append(option);
+  }
+  if (access?.mode === "custom" || access?.mode === "unavailable") {
+    const option = document.createElement("option");
+    option.value = access.mode;
+    option.textContent = access.mode === "custom" ? "Custom access" : "Access unavailable";
+    option.selected = true;
+    option.disabled = true;
+    elements.accessSelect.prepend(option);
+  }
+  elements.accessSelect.disabled = !state?.connected
+    || !state?.thread
+    || switchingMachine
+    || switchingThread
+    || updatingAccess
+    || resolvingApproval;
+  elements.accessSelect.classList.toggle("full-access", access?.mode === "full");
+  elements.accessSelect.title = access?.mode === "full"
+    ? "Unrestricted access to files and network"
+    : access?.description || access?.profileId || "Task access";
 }
 
 function renderPlan() {
@@ -304,28 +350,93 @@ function renderQueue() {
   }
 }
 
+function renderAttention() {
+  const pending = state?.pending?.[0];
+  elements.attentionBanner.replaceChildren();
+  elements.attentionBanner.hidden = !pending;
+  if (!pending) return;
+  if (pending.kind !== "permission") {
+    const text = document.createElement("span");
+    text.textContent = `Input needed: ${pending.label}`;
+    elements.attentionBanner.append(text);
+    return;
+  }
+  const heading = document.createElement("div");
+  heading.className = "approval-heading";
+  const title = document.createElement("strong");
+  title.textContent = "Approval needed";
+  const count = document.createElement("span");
+  const total = state.pending.filter((request) => request.kind === "permission").length;
+  count.textContent = total > 1 ? `1 of ${total}` : "";
+  heading.append(title, count);
+  const label = document.createElement("div");
+  label.className = "approval-label";
+  label.textContent = pending.label;
+  elements.attentionBanner.append(heading, label);
+  if (pending.reason) {
+    const reason = document.createElement("div");
+    reason.className = "approval-detail";
+    reason.textContent = pending.reason;
+    elements.attentionBanner.append(reason);
+  }
+  if (pending.scope) {
+    const scope = document.createElement("div");
+    scope.className = "approval-scope";
+    scope.textContent = pending.scope;
+    elements.attentionBanner.append(scope);
+  }
+  if (!pending.supported) {
+    const unsupported = document.createElement("div");
+    unsupported.className = "approval-detail";
+    unsupported.textContent = "Handle this request in the local Codex client.";
+    elements.attentionBanner.append(unsupported);
+    return;
+  }
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+  const deny = document.createElement("button");
+  deny.type = "button";
+  deny.className = "approval-deny";
+  deny.textContent = "Deny";
+  deny.disabled = resolvingApproval || pending.resolving;
+  deny.addEventListener("click", () => resolveApproval(pending.id, "deny"));
+  const approve = document.createElement("button");
+  approve.type = "button";
+  approve.className = "approval-approve";
+  approve.textContent = pending.resolving ? "Sending…" : "Approve";
+  approve.disabled = resolvingApproval || pending.resolving;
+  approve.addEventListener("click", () => resolveApproval(pending.id, "approve"));
+  actions.append(deny, approve);
+  elements.attentionBanner.append(actions);
+}
+
 function renderComposer() {
   const capability = state?.message;
-  const allowed = Boolean(capability?.allowed) && !switchingMachine && !switchingThread && !submittingMessage;
+  const allowed = Boolean(capability?.allowed)
+    && !switchingMachine
+    && !switchingThread
+    && !submittingMessage
+    && !updatingAccess
+    && !resolvingApproval;
   const active = capability?.mode === "steer";
   elements.messageText.disabled = !allowed;
   elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
   elements.sendMessage.textContent = active ? "Steer now" : "Send";
   elements.queueMessage.hidden = !active;
   elements.queueMessage.disabled = !allowed || !elements.messageText.value.trim();
-  const pending = state?.pending?.[0];
-  elements.attentionBanner.hidden = !pending;
-  elements.attentionBanner.textContent = pending
-    ? `${pending.kind === "permission" ? "Permission needed" : "Input needed"}: ${pending.label}`
-    : "";
   const status = submittingMessage
     ? "Sending…"
+    : resolvingApproval
+      ? "Sending approval response…"
+      : updatingAccess
+        ? "Updating access…"
     : composerError
       || composerNotice
       || (switchingMachine ? "Switching machines…" : switchingThread ? "Switching tasks…" : capability?.reason)
       || (active ? "Send immediately, or keep one message for the next turn." : "Start a new turn.");
   elements.composerStatus.textContent = status;
   elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
+  renderAttention();
   renderQueue();
 }
 
@@ -359,6 +470,9 @@ function renderState() {
   elements.thread.title = state.thread?.id || "";
   const effort = state.reasoningEffort && state.reasoningEffort !== "Not exposed" ? ` · ${state.reasoningEffort}` : "";
   elements.model.textContent = `${state.model || "Not exposed"}${effort}`;
+  elements.accessProfile.textContent = state.access?.profileId
+    ? `${state.access.profileId} · ${state.access.reviewer || "unknown reviewer"}`
+    : "—";
   const pending = state.pending?.[0];
   elements.statusDetail.textContent = state.connectionError
     || pending?.label
@@ -368,6 +482,7 @@ function renderState() {
   renderMachineSelector();
   renderThreadSelector();
   renderModelControls();
+  renderAccessControl();
   renderPlan();
   renderActivities();
   renderComposer();
@@ -531,6 +646,7 @@ async function selectMachine(machineId) {
     model: "Not exposed",
     reasoningEffort: "Not exposed",
     models: [],
+    access: null,
   };
   renderState();
   renderConversation({ forceBottom: true });
@@ -585,6 +701,7 @@ async function selectThread(threadId) {
     queuedMessage: null,
     model: "Not exposed",
     reasoningEffort: "Not exposed",
+    access: null,
   };
   renderState();
   renderConversation({ forceBottom: true });
@@ -682,6 +799,57 @@ async function updateThreadSettings(model, effort) {
     composerError = error.message;
   } finally {
     updatingModel = false;
+    renderState();
+  }
+}
+
+async function updateAccess(mode) {
+  if (updatingAccess || switchingMachine || switchingThread || !state?.thread) return;
+  updatingAccess = true;
+  composerError = "";
+  composerNotice = "Updating access…";
+  renderState();
+  try {
+    const response = await apiFetch("/api/thread/access", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, mode }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.updated) throw new Error(result.error || "Could not update access");
+    composerNotice = result.appliesTo === "next_turn" ? "Access saved for the next turn." : "Access updated.";
+    mergeState({ access: result.access });
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    updatingAccess = false;
+    renderState();
+  }
+}
+
+async function resolveApproval(requestId, decision) {
+  if (resolvingApproval || switchingMachine || switchingThread || !requestId) return;
+  resolvingApproval = true;
+  composerError = "";
+  composerNotice = decision === "approve" ? "Approving…" : "Denying…";
+  const pending = (state?.pending || []).map((request) => request.id === requestId ? { ...request, resolving: true } : request);
+  mergeState({ pending });
+  try {
+    const response = await apiFetch("/api/approval", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ machineId: state?.machineId, requestId, decision }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the approval response");
+    composerNotice = decision === "approve" ? "Approval sent." : "Denial sent.";
+  } catch (error) {
+    composerError = error.message;
+    try {
+      const response = await apiFetch("/api/state");
+      if (response.ok) applySnapshot(await response.json(), false);
+    } catch {
+      // SSE/reconnect will restore the authoritative pending state.
+    }
+  } finally {
+    resolvingApproval = false;
     renderState();
   }
 }
@@ -895,6 +1063,7 @@ elements.modelSelect.addEventListener("change", () => {
   if (model && effort) updateThreadSettings(model.model, effort);
 });
 elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
+elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 elements.conversation.addEventListener("scroll", () => {
   shouldFollowConversation = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 80;
   if (!shouldFollowConversation && elements.conversation.scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);

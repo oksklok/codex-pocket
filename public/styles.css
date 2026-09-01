@@ -88,8 +88,12 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .phase-pill.failed { background: rgba(255,139,139,.13); color: var(--danger); }
 .elapsed { color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
 .runtime-controls { position: relative; gap: 6px; min-width: 0; }
-.runtime-controls select:first-of-type { width: 145px; }
-.runtime-controls select:last-of-type { width: 105px; }
+.runtime-controls #model-select { width: 138px; }
+.runtime-controls #effort-select { width: 96px; }
+.runtime-controls #access-select { width: 130px; }
+.runtime-controls #access-select.full-access {
+  border-color: rgba(255,139,139,.48); background: rgba(255,139,139,.12); color: var(--danger); font-weight: 750;
+}
 .next-turn-label {
   position: absolute; right: 5px; top: -7px; padding: 1px 5px; border-radius: 5px;
   background: var(--warning); color: #251d0c; font-size: .52rem; font-weight: 850; text-transform: uppercase;
@@ -140,7 +144,16 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .form-status { grid-column: 1 / -1; min-height: 1em; margin: 0; color: var(--subtle); font-size: .64rem; line-height: 1.25; }
 .form-status.error-text, .error-text { color: var(--danger); }
 .attention-banner, .queue-banner { width: min(100%, 780px); margin: 0 auto 7px; padding: 7px 9px; border-radius: 8px; font-size: .7rem; }
-.attention-banner { border: 1px solid rgba(240,195,106,.25); background: rgba(240,195,106,.1); color: var(--warning); }
+.attention-banner { display: grid; gap: 5px; border: 1px solid rgba(240,195,106,.25); background: rgba(240,195,106,.1); color: var(--warning); }
+.approval-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.approval-heading span { color: var(--muted); font-size: .62rem; }
+.approval-label { color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
+.approval-detail, .approval-scope { color: var(--muted); font-size: .65rem; line-height: 1.35; overflow-wrap: anywhere; }
+.approval-scope { color: var(--warning); }
+.approval-actions { display: flex; justify-content: flex-end; gap: 7px; padding-top: 2px; }
+.approval-actions button { min-height: 32px; padding: 5px 11px; border-radius: 7px; cursor: pointer; font-size: .68rem; font-weight: 750; }
+.approval-deny { border: 1px solid var(--line); background: var(--surface-strong); color: var(--muted); }
+.approval-approve { border: 1px solid rgba(69,200,138,.4); background: rgba(69,200,138,.17); color: var(--accent); }
 .queue-banner { justify-content: space-between; gap: 10px; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
 .queue-banner div { min-width: 0; display: flex; gap: 8px; }
 .queue-banner span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -202,8 +215,9 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   .runtime-controls { grid-column: 2; grid-row: 2; }
   .topbar-actions { grid-column: 3; grid-row: 2; }
   .connection span:last-child { display: none; }
-  .runtime-controls select:first-of-type { width: 118px; }
-  .runtime-controls select:last-of-type { width: 86px; }
+  .runtime-controls #model-select { width: 112px; }
+  .runtime-controls #effort-select { width: 80px; }
+  .runtime-controls #access-select { width: 116px; }
   .topbar-actions .secondary-button { padding: 5px 8px; }
   .workspace { display: block; position: relative; }
   .chat-panel { height: 100%; }
@@ -220,14 +234,23 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   .composer-zone { padding-inline: 9px; }
 }
 
+@media (max-width: 620px) {
+  .topbar { grid-template-columns: minmax(0,1fr) auto; min-height: 126px; }
+  .selection-controls { grid-column: 1 / 3; }
+  .phase-row { grid-column: 1; grid-row: 2; }
+  .topbar-actions { grid-column: 2; grid-row: 2; }
+  .runtime-controls { grid-column: 1 / 3; grid-row: 3; width: 100%; }
+  .runtime-controls #model-select, .runtime-controls #effort-select, .runtime-controls #access-select { width: auto; min-width: 0; }
+  .runtime-controls #model-select { flex: 1.2; }
+  .runtime-controls #effort-select { flex: .72; }
+  .runtime-controls #access-select { flex: 1; }
+}
+
 @media (max-width: 520px) {
-  .topbar { min-height: 93px; }
   .phase-pill { max-width: 126px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .elapsed { display: none; }
   .runtime-controls { gap: 4px; }
   .runtime-controls select { min-height: 33px; font-size: .69rem; }
-  .runtime-controls select:first-of-type { width: 102px; }
-  .runtime-controls select:last-of-type { width: 76px; }
   .topbar-actions { gap: 4px; }
   .connection { display: none; }
   .transcript-head { padding-inline: 10px; }
@@ -239,6 +262,8 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   .composer button { min-height: 34px; min-width: 72px; padding: 5px 7px; font-size: .7rem; }
   .composer textarea { min-height: 56px; }
   .queue-banner div { display: grid; gap: 2px; }
+  .attention-banner { padding: 8px; }
+  .approval-actions button { flex: 1; }
   .settings-screen { padding: 0; place-items: stretch; }
   .settings-card { width: 100%; max-height: 100dvh; border: 0; border-radius: 0; padding-bottom: max(18px, env(safe-area-inset-bottom)); }
 }

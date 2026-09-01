@@ -73,6 +73,38 @@ type PocketRequest = {
   id: string;
   kind: "permission" | "input";
   label: string;
+  reason?: string;
+  scope?: string;
+  supported: boolean;
+  resolving?: boolean;
+};
+type PermissionProfileSummary = {
+  id: string;
+  description: string | null;
+  allowed: boolean;
+};
+type PocketAccessChoice = {
+  available: boolean;
+  reason: string | null;
+};
+type PocketAccess = {
+  mode: "ask" | "auto" | "full" | "custom" | "unavailable";
+  profileId: string | null;
+  reviewer: string | null;
+  approvalPolicy: string;
+  description: string | null;
+  choices: {
+    ask: PocketAccessChoice;
+    auto: PocketAccessChoice;
+    full: PocketAccessChoice;
+  };
+};
+type PendingServerRequest = {
+  rawId: string | number;
+  threadId: string;
+  method: string;
+  params: JsonObject;
+  supported: boolean;
 };
 type LoadedThreadSummary = {
   id: string;
@@ -113,6 +145,7 @@ type PocketState = {
   model: string;
   reasoningEffort: string;
   models: PocketModel[];
+  access: PocketAccess;
   queuedMessage: QueuedMessage | null;
   threadStatus: string;
   phase: "connecting" | "working" | "waiting_input" | "waiting_permission" | "done" | "failed";
@@ -141,6 +174,7 @@ const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_LIVE_MESSAGES = 16;
 const MAX_ACTIVITIES = 10;
 const ASSISTANT_FLUSH_MS = 120;
+const ACCESS_SETTINGS_TIMEOUT_MS = 2_000;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_FAILURE_WINDOW_MS = 60_000;
 const LOGIN_BLOCK_MS = 8_000;
@@ -484,6 +518,41 @@ function safeSummary(value: unknown, limit = 240): string {
   return compact(text, limit);
 }
 
+function approvalPolicyText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "granular" in value) return "granular";
+  return "unknown";
+}
+
+function permissionScopeSummary(value: any): string {
+  if (!value || typeof value !== "object") return "Additional access";
+  const scopes: string[] = [];
+  if (value.network?.enabled === true) scopes.push("Network access");
+  const fileSystem = value.fileSystem;
+  if (fileSystem && typeof fileSystem === "object") {
+    const reads = Array.isArray(fileSystem.read) ? fileSystem.read.length : 0;
+    const writes = Array.isArray(fileSystem.write) ? fileSystem.write.length : 0;
+    const entries = Array.isArray(fileSystem.entries) ? fileSystem.entries : [];
+    const entryReads = entries.filter((entry: any) => entry?.access === "read").length;
+    const entryWrites = entries.filter((entry: any) => entry?.access === "write").length;
+    if (reads + entryReads > 0) scopes.push(`Read access to ${reads + entryReads} path${reads + entryReads === 1 ? "" : "s"}`);
+    if (writes + entryWrites > 0) scopes.push(`Write access to ${writes + entryWrites} path${writes + entryWrites === 1 ? "" : "s"}`);
+  }
+  return scopes.join(" · ") || "Additional access";
+}
+
+function emptyAccess(): PocketAccess {
+  const unavailable = { available: false, reason: "Access settings are unavailable" };
+  return {
+    mode: "unavailable",
+    profileId: null,
+    reviewer: null,
+    approvalPolicy: "unknown",
+    description: null,
+    choices: { ask: { ...unavailable }, auto: { ...unavailable }, full: { ...unavailable } },
+  };
+}
+
 function boundedText(value: unknown, limit = MAX_TEXT): string {
   const text = String(value ?? "").replace(/\r\n/g, "\n").trim();
   if (text.length <= limit) return text;
@@ -761,6 +830,10 @@ class RpcClient {
     this.wire.send({ method, params });
   }
 
+  respond(id: string | number, result: JsonObject): void {
+    this.wire.send({ id, result });
+  }
+
   close(): void {
     this.wire?.close();
     for (const [id, pending] of this.pending) {
@@ -860,6 +933,11 @@ class MachineRuntime {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private selectionQueue: Promise<void> = Promise.resolve();
   private startingQueuedMessage = false;
+  private permissionProfiles: PermissionProfileSummary[] = [];
+  private allowedReviewers: string[] | null = null;
+  private pendingServerRequests = new Map<string, PendingServerRequest>();
+  private settingsRevision = 0;
+  private settingsWaiters = new Set<() => void>();
 
   constructor(options: Options, definition: MachineDefinition) {
     this.options = options;
@@ -876,6 +954,7 @@ class MachineRuntime {
       model: "Not exposed",
       reasoningEffort: "Not exposed",
       models: [],
+      access: emptyAccess(),
       queuedMessage: null,
       threadStatus: "connecting",
       phase: "connecting",
@@ -925,7 +1004,11 @@ class MachineRuntime {
   }
 
   diagnostics(): JsonObject {
-    return JSON.parse(JSON.stringify(this.state.metrics));
+    return JSON.parse(JSON.stringify({
+      ...this.state.metrics,
+      access: this.state.access,
+      permissionProfiles: this.permissionProfiles,
+    }));
   }
 
   async history(cursor: string | null, limit: number): Promise<JsonObject> {
@@ -994,6 +1077,24 @@ class MachineRuntime {
     return operation;
   }
 
+  updateAccess(mode: unknown): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(
+      () => this.updateAccessNow(mode),
+      () => this.updateAccessNow(mode),
+    );
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
+  resolveApproval(requestId: unknown, decision: unknown): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(
+      () => this.resolveApprovalNow(requestId, decision),
+      () => this.resolveApprovalNow(requestId, decision),
+    );
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
   countBrowserPayload(payload: Buffer | string): void {
     this.state.metrics.browserBytes += Buffer.byteLength(payload);
     this.state.metrics.browserMessages += 1;
@@ -1009,6 +1110,8 @@ class MachineRuntime {
     this.canAcceptDirectInput = false;
     this.state.connectionError = null;
     this.state.phase = "connecting";
+    this.permissionProfiles = [];
+    this.allowedReviewers = null;
     this.broadcast("status", this.statusPayload());
     const rpc = new RpcClient();
     this.rpc = rpc;
@@ -1030,7 +1133,7 @@ class MachineRuntime {
       rpc.notify("initialized");
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
-      await this.loadModels();
+      await Promise.all([this.loadModels(), this.loadAccessConstraints()]);
       const loadedThreads = await this.refreshLoadedThreads();
       const active = loadedThreads.find((thread) => thread.status.startsWith("active"));
       const preferred = this.options.thread && loadedThreads.some((thread) => thread.id === this.options.thread)
@@ -1147,6 +1250,37 @@ class MachineRuntime {
     this.state.models = models;
   }
 
+  private async loadAccessConstraints(): Promise<void> {
+    if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    try {
+      const response = await this.rpc.request("configRequirements/read", {});
+      const allowed = response?.requirements?.allowedApprovalsReviewers;
+      this.allowedReviewers = Array.isArray(allowed) ? allowed.map(String) : null;
+    } catch {
+      this.allowedReviewers = null;
+    }
+  }
+
+  private async loadPermissionProfiles(cwd: string): Promise<PermissionProfileSummary[]> {
+    if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const profiles: PermissionProfileSummary[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await this.rpc.request("permissionProfile/list", { cwd, cursor, limit: 100 });
+      for (const value of Array.isArray(page?.data) ? page.data : []) {
+        if (!value?.id) continue;
+        profiles.push({
+          id: String(value.id),
+          description: safeSummary(value.description, 240) || null,
+          allowed: value.allowed === true,
+        });
+      }
+      cursor = page?.nextCursor ? String(page.nextCursor) : null;
+    } while (cursor);
+    this.permissionProfiles = profiles;
+    return profiles;
+  }
+
   private async selectThreadNow(threadId: string): Promise<JsonObject> {
     const requestedId = String(threadId ?? "").trim();
     if (!requestedId) throw new Error("threadId is required");
@@ -1179,6 +1313,158 @@ class MachineRuntime {
     };
     this.broadcast("settings", payload);
     return { updated: true, ...payload };
+  }
+
+  private updateAccessFromCodex(value: any): void {
+    const active = value?.activePermissionProfile ?? null;
+    const profileId = active?.id ? String(active.id) : null;
+    const profileExtends = active?.extends ? String(active.extends) : null;
+    const reviewer = value?.approvalsReviewer ? String(value.approvalsReviewer) : null;
+    const fullProfile = this.permissionProfiles.find((profile) => profile.id === ":danger-full-access")
+      ?? this.permissionProfiles.find((profile) => profile.id === ":full-access");
+    const workspaceProfile = this.permissionProfiles.find((profile) => profile.id === ":workspace");
+    const sandbox = value?.sandboxPolicy ?? value?.sandbox;
+    const isFull = profileId === fullProfile?.id
+      || profileExtends === fullProfile?.id
+      || sandbox?.type === "dangerFullAccess";
+    const currentRestricted = Boolean(profileId) && !isFull;
+    const reviewerAllowed = (candidate: string) => !this.allowedReviewers || this.allowedReviewers.includes(candidate);
+    const restrictedAvailable = currentRestricted || workspaceProfile?.allowed === true;
+    const restrictedReason = restrictedAvailable ? null : "The normal workspace profile is unavailable on this machine or project";
+    const askAvailable = restrictedAvailable && reviewerAllowed("user");
+    const autoAvailable = restrictedAvailable && reviewerAllowed("auto_review");
+    const profile = this.permissionProfiles.find((candidate) => candidate.id === profileId);
+    this.state.access = {
+      mode: isFull ? "full" : reviewer === "auto_review" ? "auto" : reviewer === "user" ? "ask" : "custom",
+      profileId,
+      reviewer,
+      approvalPolicy: approvalPolicyText(value?.approvalPolicy),
+      description: profile?.description ?? null,
+      choices: {
+        ask: {
+          available: askAvailable,
+          reason: askAvailable ? null : restrictedReason ?? "Manual approval review is constrained on this machine",
+        },
+        auto: {
+          available: autoAvailable,
+          reason: autoAvailable ? null : restrictedReason ?? "Automatic approval review is constrained on this machine",
+        },
+        full: {
+          available: fullProfile?.allowed === true,
+          reason: fullProfile?.allowed === true
+            ? null
+            : fullProfile ? "Full access is constrained on this machine or project" : "Full access is not available from this app-server",
+        },
+      },
+    };
+  }
+
+  private waitForSettingsUpdate(revision: number): Promise<boolean> {
+    if (this.settingsRevision !== revision) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (updated: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.settingsWaiters.delete(onUpdate);
+        resolve(updated);
+      };
+      const onUpdate = () => finish(true);
+      const timer = setTimeout(() => finish(false), ACCESS_SETTINGS_TIMEOUT_MS);
+      this.settingsWaiters.add(onUpdate);
+      if (this.settingsRevision !== revision) finish(true);
+    });
+  }
+
+  private async updateAccessNow(value: unknown): Promise<JsonObject> {
+    if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const mode = String(value ?? "");
+    if (mode !== "ask" && mode !== "auto" && mode !== "full") throw new Error("unknown access mode");
+    const choice = this.state.access.choices[mode];
+    if (!choice.available) throw new Error(choice.reason ?? "That access mode is unavailable");
+    const threadId = this.state.thread.id;
+    const params: JsonObject = { threadId };
+    if (mode === "full") {
+      const fullProfile = this.permissionProfiles.find((profile) => profile.id === ":danger-full-access" && profile.allowed)
+        ?? this.permissionProfiles.find((profile) => profile.id === ":full-access" && profile.allowed);
+      if (!fullProfile) throw new Error("Full access is unavailable on this machine or project");
+      params.permissions = fullProfile.id;
+      params.approvalPolicy = "never";
+    } else {
+      params.approvalsReviewer = mode === "auto" ? "auto_review" : "user";
+      params.approvalPolicy = "on-request";
+      if (this.state.access.mode === "full") {
+        const workspaceProfile = this.permissionProfiles.find((profile) => profile.id === ":workspace" && profile.allowed);
+        if (!workspaceProfile) throw new Error("The normal workspace profile is unavailable on this machine or project");
+        params.permissions = workspaceProfile.id;
+      }
+    }
+    const revision = this.settingsRevision;
+    await this.rpc.request("thread/settings/update", params);
+    const confirmed = await this.waitForSettingsUpdate(revision);
+    if (!confirmed) {
+      if (this.state.thread?.id !== threadId || !this.rpc) throw new Error("selected task changed while access was updating");
+      const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
+      this.updateAccessFromCodex(resumed);
+      this.broadcast("settings", {
+        model: this.state.model,
+        reasoningEffort: this.state.reasoningEffort,
+        access: this.state.access,
+        appliesTo: this.state.turn?.status === "inProgress" ? "next_turn" : "current",
+      });
+    }
+    return {
+      updated: true,
+      access: this.state.access,
+      appliesTo: this.state.turn?.status === "inProgress" ? "next_turn" : "current",
+    };
+  }
+
+  private approvalResponse(pending: PendingServerRequest, decision: "approve" | "deny"): JsonObject | null {
+    switch (pending.method) {
+      case "item/commandExecution/requestApproval": {
+        const mapped = decision === "approve" ? "accept" : "decline";
+        return { decision: mapped };
+      }
+      case "item/fileChange/requestApproval":
+        return { decision: decision === "approve" ? "accept" : "decline" };
+      case "item/permissions/requestApproval": {
+        if (decision === "deny") return { permissions: {}, scope: "turn" };
+        const requested = pending.params.permissions;
+        if (!requested || typeof requested !== "object") return null;
+        const permissions: JsonObject = {};
+        if (requested.network && typeof requested.network === "object") permissions.network = requested.network;
+        if (requested.fileSystem && typeof requested.fileSystem === "object") permissions.fileSystem = requested.fileSystem;
+        return { permissions, scope: "turn" };
+      }
+      case "execCommandApproval":
+      case "applyPatchApproval":
+        return {
+          decision: decision === "approve"
+            ? "approved"
+            : { denied: { rejection: "Denied in Codex Pocket" } },
+        };
+      default:
+        return null;
+    }
+  }
+
+  private async resolveApprovalNow(requestIdValue: unknown, decisionValue: unknown): Promise<JsonObject> {
+    if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const requestId = String(requestIdValue ?? "");
+    const decision = String(decisionValue ?? "");
+    if (!requestId || (decision !== "approve" && decision !== "deny")) throw new Error("invalid approval response");
+    const pending = this.pendingServerRequests.get(requestId);
+    const visible = this.state.pending.find((request) => request.id === requestId);
+    if (!pending || !visible || pending.threadId !== this.state.thread.id) throw new Error("This approval request is no longer pending");
+    if (visible.resolving) throw new Error("This approval response is already being sent");
+    const result = this.approvalResponse(pending, decision);
+    if (!pending.supported || !result) throw new Error("This request must be handled in the local Codex client");
+    visible.resolving = true;
+    this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
+    this.rpc.respond(pending.rawId, result);
+    return { accepted: true, requestId, decision };
   }
 
   private async sendMessageNow(value: unknown, requestedAction: unknown): Promise<JsonObject> {
@@ -1266,6 +1552,14 @@ class MachineRuntime {
     this.canAcceptDirectInput = thread.canAcceptDirectInput === true;
     this.state.threadStatus = statusText(thread.status ?? summary.status);
     this.updateModel(resumed);
+    try {
+      await this.loadPermissionProfiles(this.state.thread.cwd);
+      this.updateAccessFromCodex(resumed);
+    } catch (error) {
+      this.permissionProfiles = [];
+      this.state.access = emptyAccess();
+      this.state.access.description = compact(error instanceof Error ? error.message : String(error), 240);
+    }
     if (this.canAcceptDirectInput && this.state.threadStatus.startsWith("active") && this.state.turn?.status !== "inProgress") {
       await this.loadActiveTurn();
     }
@@ -1298,19 +1592,85 @@ class MachineRuntime {
     const method = String(message.method ?? "");
     const params = message.params ?? {};
     if (!this.state.thread) return;
-    if (params.threadId && String(params.threadId) !== this.state.thread.id) return;
+    const requestThreadId = String(params.threadId ?? params.conversationId ?? "");
+    if (requestThreadId && requestThreadId !== this.state.thread.id) return;
     let request: PocketRequest | null = null;
-    if (method.includes("requestApproval")) {
+    let supported = false;
+    if (method === "item/commandExecution/requestApproval") {
+      supported = true;
       request = {
         id: String(message.id),
         kind: "permission",
-        label: safeSummary(params.reason ?? params.command ?? "Permission requested", 240),
+        label: safeSummary(params.command ?? "Command execution", 240),
+        reason: safeSummary(params.reason, 220) || undefined,
+        scope: params.additionalPermissions ? permissionScopeSummary(params.additionalPermissions) : undefined,
+        supported,
+      };
+    } else if (method === "item/fileChange/requestApproval") {
+      supported = true;
+      request = {
+        id: String(message.id),
+        kind: "permission",
+        label: "File changes requested",
+        reason: safeSummary(params.reason, 220) || undefined,
+        scope: params.grantRoot ? "Additional write access" : undefined,
+        supported,
+      };
+    } else if (method === "item/permissions/requestApproval") {
+      supported = Boolean(params.permissions && typeof params.permissions === "object");
+      request = {
+        id: String(message.id),
+        kind: "permission",
+        label: "Additional permissions requested",
+        reason: safeSummary(params.reason, 220) || undefined,
+        scope: permissionScopeSummary(params.permissions),
+        supported,
+      };
+    } else if (method === "execCommandApproval") {
+      supported = true;
+      request = {
+        id: String(message.id),
+        kind: "permission",
+        label: safeSummary(params.command ?? "Command execution", 240),
+        reason: safeSummary(params.reason, 220) || undefined,
+        supported,
+      };
+    } else if (method === "applyPatchApproval") {
+      supported = true;
+      const count = params.fileChanges && typeof params.fileChanges === "object" ? Object.keys(params.fileChanges).length : 0;
+      request = {
+        id: String(message.id),
+        kind: "permission",
+        label: count ? `File changes to ${count} path${count === 1 ? "" : "s"}` : "File changes requested",
+        reason: safeSummary(params.reason, 220) || undefined,
+        supported,
       };
     } else if (method.includes("requestUserInput") || method.includes("requestInput")) {
       const questionCount = Array.isArray(params.questions) ? params.questions.length : 1;
-      request = { id: String(message.id), kind: "input", label: `${questionCount} input request${questionCount === 1 ? "" : "s"}` };
+      request = {
+        id: String(message.id),
+        kind: "input",
+        label: `${questionCount} structured input request${questionCount === 1 ? "" : "s"} · answer in the local Codex client`,
+        supported: false,
+      };
+    } else if (method.includes("Approval") || method.includes("requestApproval")) {
+      request = {
+        id: String(message.id),
+        kind: "permission",
+        label: "Unsupported approval request · handle in the local Codex client",
+        supported: false,
+      };
     }
     if (!request) return;
+    if (request.kind === "permission") {
+      this.pendingServerRequests.set(request.id, {
+        rawId: message.id,
+        threadId: requestThreadId || this.state.thread.id,
+        method,
+        params,
+        supported,
+      });
+    }
     this.state.pending = [...this.state.pending.filter((candidate) => candidate.id !== request!.id), request];
     this.state.phase = this.computePhase();
     this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
@@ -1334,9 +1694,13 @@ class MachineRuntime {
         break;
       case "thread/settings/updated":
         this.updateModel(params.threadSettings);
+        this.updateAccessFromCodex(params.threadSettings);
+        this.settingsRevision += 1;
+        for (const resolve of [...this.settingsWaiters]) resolve();
         this.broadcast("settings", {
           model: this.state.model,
           reasoningEffort: this.state.reasoningEffort,
+          access: this.state.access,
           appliesTo: this.state.turn?.status === "inProgress" ? "next_turn" : "current",
         });
         break;
@@ -1352,6 +1716,7 @@ class MachineRuntime {
         this.state.plan = [];
         this.state.activities = [];
         this.state.pending = [];
+        this.pendingServerRequests.clear();
         this.state.phase = "working";
         this.broadcast("turn", {
           turn: this.state.turn,
@@ -1374,6 +1739,7 @@ class MachineRuntime {
           error,
         };
         this.state.pending = [];
+        this.pendingServerRequests.clear();
         this.state.phase = error || status === "failed" ? "failed" : "done";
         this.flushAllAssistantDeltas();
         this.broadcast("turn", { turn: this.state.turn, phase: this.state.phase, message: this.messageCapability() });
@@ -1397,6 +1763,7 @@ class MachineRuntime {
         this.handleItem(params.item, params.turnId, method === "item/started" ? "start" : "done");
         break;
       case "serverRequest/resolved":
+        this.pendingServerRequests.delete(String(params.requestId));
         this.state.pending = this.state.pending.filter((request) => request.id !== String(params.requestId));
         this.state.phase = this.computePhase();
         this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
@@ -1477,9 +1844,11 @@ class MachineRuntime {
     this.state.plan = [];
     this.state.activities = [];
     this.state.pending = [];
+    this.pendingServerRequests.clear();
     this.state.liveMessages = [];
     this.state.model = "Not exposed";
     this.state.reasoningEffort = "Not exposed";
+    this.state.access = emptyAccess();
     this.state.queuedMessage = null;
     this.startingQueuedMessage = false;
     this.canAcceptDirectInput = false;
@@ -1689,6 +2058,14 @@ class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).updateThreadSettings(model, effort));
   }
 
+  updateAccess(machineId: unknown, mode: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).updateAccess(mode));
+  }
+
+  resolveApproval(machineId: unknown, requestId: unknown, decision: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).resolveApproval(requestId, decision));
+  }
+
   countBrowserPayload(payload: Buffer | string): void {
     this.selected().countBrowserPayload(payload);
   }
@@ -1865,6 +2242,24 @@ async function handleRequest(
     try {
       const body = await readJsonBody(request);
       sendJson(response, 200, await gateway.updateThreadSettings(body.machineId, body.model, body.effort), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/thread/access") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await gateway.updateAccess(body.machineId, body.mode), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/approval") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 202, await gateway.resolveApproval(body.machineId, body.requestId, body.decision), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }

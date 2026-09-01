@@ -42,6 +42,8 @@
           <select id="model-select" aria-label="Model" disabled><option>Model</option></select>
           <label class="sr-only" for="effort-select">Reasoning effort</label>
           <select id="effort-select" aria-label="Reasoning effort" disabled><option>Effort</option></select>
+          <label class="sr-only" for="access-select">Access</label>
+          <select id="access-select" aria-label="Access" disabled><option>Access</option></select>
           <span class="next-turn-label" id="next-turn-label" hidden>Next turn</span>
         </div>
         <div class="topbar-actions">
@@ -61,7 +63,7 @@
           </div>
           <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state">Loading recent messages…</p></div>
           <div class="composer-zone">
-            <div class="attention-banner" id="attention-banner" hidden></div>
+            <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
             <div class="queue-banner" id="queue-banner" hidden>
               <div><strong>Queued next</strong><span id="queue-text"></span></div>
               <button class="text-button" id="cancel-queue" type="button">Cancel</button>
@@ -91,6 +93,7 @@
               <div><dt>Project</dt><dd id="project">—</dd></div>
               <div><dt>Task</dt><dd id="thread">—</dd></div>
               <div><dt>Model</dt><dd id="model">—</dd></div>
+              <div><dt>Access profile</dt><dd id="access-profile">—</dd></div>
             </dl>
             <section class="secondary-panel" id="plan-panel" aria-labelledby="plan-title">
               <div class="panel-heading"><h3 id="plan-title">Current plan</h3><span class="count-badge" id="plan-count">0/0</span></div>

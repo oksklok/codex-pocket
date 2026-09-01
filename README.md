@@ -1,6 +1,6 @@
 # Codex Pocket
 
-Codex Pocket v0.1 is a tiny browser view for loaded Codex app-server threads with normal message and follow-up sending.
+Codex Pocket v0.1 is a tiny browser client for loaded Codex app-server threads with normal message sending, task access controls, and approval handling.
 
 ```text
 Codex app-server
@@ -108,20 +108,24 @@ On macOS with only the Codex Desktop bundled Node runtime available:
 
 - a fixed-height chat client whose transcript is the only normally scrolling area;
 - compact Machine → Task selectors plus state, model, reasoning effort, task info, and Settings;
+- an Access selector for Ask for approval, Approve for me, and Full access using each task's app-server permission profile;
 - a collapsible desktop inspector (phone drawer) for machine/project/task details, plans, and command/tool activity;
 - Working, Waiting for input, Waiting for permission, Done, and Failed states;
 - elapsed current-turn time;
 - live coalesced assistant messages and user messages when exposed;
-- recent conversation history with older pages loaded automatically when scrolling upward; and
-- a bottom composer that starts an idle turn, steers an active turn immediately, or holds one in-memory message for the next turn.
+- recent conversation history with older pages loaded automatically when scrolling upward;
+- a bottom composer that starts an idle turn, steers an active turn immediately, or holds one in-memory message for the next turn; and
+- compact Approve/Deny cards for command, file-change, and additional-permission requests.
 
 Model and effort options come from the connected app-server's `model/list` catalog. Pocket applies changes with `thread/settings/update`; while a turn is active, the controls are marked **Next turn**. The one-message queue exists only in gateway memory, can be replaced or cancelled, starts after the current turn completes, and is discarded when the selected task changes or Pocket restarts.
 
 The low-bandwidth filtering remains internal. Optional byte counters are available from `/api/diagnostics`; they are not included in normal browser snapshots or SSE events.
 
-## Read-only boundary
+## Control boundary
 
-Codex Pocket v0.1 cannot approve requests, answer structured input requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. Pending permission and structured-input requests disable the normal composer instead of guessing how to answer them. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is opt-in through local Settings or an explicit `--host` override and always requires a valid four-digit PIN.
+Access choices and approval decisions use the selected machine's supported app-server protocol; Pocket does not edit `config.toml`. Approve is one request/one turn only, and additional-permission approval grants only the requested subset. Structured input requests remain unsupported and must be answered in the local Codex client.
+
+Codex Pocket v0.1 still cannot interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is opt-in through local Settings or an explicit `--host` override and always requires a valid four-digit PIN.
 
 ## Protocol probe
 
