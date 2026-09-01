@@ -12,14 +12,13 @@ const elements = {
   model: document.querySelector("#model"),
   historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
+  workspace: document.querySelector("#workspace"),
+  sidebar: document.querySelector("#sidebar"),
+  planPanel: document.querySelector("#plan-panel"),
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
+  activityPanel: document.querySelector("#activity-panel"),
   activityList: document.querySelector("#activity-list"),
-  rawBytes: document.querySelector("#raw-bytes"),
-  rawMessages: document.querySelector("#raw-messages"),
-  browserBytes: document.querySelector("#browser-bytes"),
-  browserMessages: document.querySelector("#browser-messages"),
-  reduction: document.querySelector("#reduction"),
 };
 
 const phaseLabels = {
@@ -42,13 +41,6 @@ let historyEpoch = 0;
 let historyRequest = null;
 let threadsRequest = null;
 let switchingThread = false;
-
-function formatBytes(value) {
-  const bytes = Number(value || 0);
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
-}
 
 function formatElapsed(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
@@ -144,8 +136,13 @@ function renderState() {
     || (state.thread ? `${state.thread.name} · ${state.threadStatus}` : "Waiting for a loaded task.");
   renderPlan();
   renderActivities();
-  renderMetrics();
   renderThreadSelector();
+}
+
+function updateSecondaryVisibility() {
+  const empty = elements.planPanel.hidden && elements.activityPanel.hidden;
+  elements.sidebar.hidden = empty;
+  elements.workspace.classList.toggle("secondary-empty", empty);
 }
 
 function renderPlan() {
@@ -153,11 +150,9 @@ function renderPlan() {
   const complete = plan.filter((item) => item.status === "completed").length;
   elements.planCount.textContent = `${complete}/${plan.length}`;
   elements.planList.replaceChildren();
+  elements.planPanel.hidden = plan.length === 0;
   if (plan.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "empty-state";
-    empty.textContent = "No plan is active.";
-    elements.planList.append(empty);
+    updateSecondaryVisibility();
     return;
   }
   for (const item of plan) {
@@ -166,16 +161,15 @@ function renderPlan() {
     li.textContent = item.step;
     elements.planList.append(li);
   }
+  updateSecondaryVisibility();
 }
 
 function renderActivities() {
   const activities = [...(state?.activities || [])].reverse();
   elements.activityList.replaceChildren();
+  elements.activityPanel.hidden = activities.length === 0;
   if (activities.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "empty-state";
-    empty.textContent = "No command or tool activity.";
-    elements.activityList.append(empty);
+    updateSecondaryVisibility();
     return;
   }
   for (const activity of activities) {
@@ -195,18 +189,7 @@ function renderActivities() {
     }
     elements.activityList.append(li);
   }
-}
-
-function renderMetrics() {
-  const metrics = state?.metrics || {};
-  const raw = Number(metrics.rawBytes || 0);
-  const browser = Number(metrics.browserBytes || 0);
-  elements.rawBytes.textContent = formatBytes(raw);
-  elements.rawMessages.textContent = `${Number(metrics.rawMessages || 0).toLocaleString()} messages`;
-  elements.browserBytes.textContent = formatBytes(browser);
-  elements.browserMessages.textContent = `${Number(metrics.browserMessages || 0).toLocaleString()} messages`;
-  if (raw <= 0) elements.reduction.textContent = "—";
-  else elements.reduction.textContent = `${Math.max(0, (1 - browser / raw) * 100).toFixed(1)}%`;
+  updateSecondaryVisibility();
 }
 
 function messageNode(message) {
@@ -437,9 +420,6 @@ function connectEvents() {
     existing.complete = false;
     liveMessages.set(value.id, existing);
     renderConversation();
-  });
-  source.addEventListener("metrics", (event) => {
-    if (!switchingThread) mergeState({ metrics: parseEvent(event) });
   });
 }
 

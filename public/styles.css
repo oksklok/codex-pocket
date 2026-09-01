@@ -23,6 +23,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -45,8 +49,7 @@ button {
 .topbar,
 .phase-row,
 .panel-heading,
-.connection,
-.ratio-row {
+.connection {
   display: flex;
   align-items: center;
 }
@@ -228,9 +231,7 @@ h2 {
   background: var(--surface-strong);
 }
 
-.metadata dt,
-.bandwidth-grid span,
-.ratio-row span {
+.metadata dt {
   color: var(--subtle);
   font-size: 0.67rem;
   font-weight: 700;
@@ -448,49 +449,6 @@ h2 {
   line-height: 1.5;
 }
 
-.bandwidth-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 14px;
-}
-
-.bandwidth-grid div {
-  min-width: 0;
-  padding: 11px;
-  border-radius: 10px;
-  background: var(--surface-strong);
-}
-
-.bandwidth-grid strong,
-.bandwidth-grid small {
-  display: block;
-}
-
-.bandwidth-grid strong {
-  margin-top: 5px;
-  font-size: 1rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.bandwidth-grid small {
-  margin-top: 3px;
-  color: var(--subtle);
-  font-size: 0.64rem;
-}
-
-.ratio-row {
-  justify-content: space-between;
-  margin-top: 10px;
-  padding: 10px 2px 0;
-  border-top: 1px solid var(--line-soft);
-}
-
-.ratio-row strong {
-  color: var(--accent);
-  font-size: 0.84rem;
-}
-
 @keyframes pulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
@@ -525,6 +483,10 @@ h2 {
   .workspace {
     grid-template-columns: minmax(0, 1.75fr) minmax(290px, 0.75fr);
     align-items: start;
+  }
+
+  .workspace.secondary-empty {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .conversation-panel {

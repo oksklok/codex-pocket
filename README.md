@@ -68,10 +68,9 @@ On macOS with only the Codex Desktop bundled Node runtime available:
 - elapsed current-turn time;
 - live coalesced assistant messages and user messages when exposed;
 - current plan and compact command/tool lifecycle summaries;
-- recent conversation history with older pages loaded automatically when scrolling upward; and
-- raw app-server bytes versus filtered dynamic bytes emitted to browser clients.
+- recent conversation history with older pages loaded automatically when scrolling upward.
 
-The bandwidth counters exclude the static HTML, CSS, and JavaScript assets. They count app-server JSON payload bytes received locally and filtered SSE/API payload bytes sent to browser clients.
+The low-bandwidth filtering remains internal. Optional byte counters are available from `/api/diagnostics`; they are not included in normal browser snapshots or SSE events.
 
 ## Read-only boundary
 

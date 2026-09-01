@@ -515,8 +515,6 @@ class PocketGateway {
   private rpc: RpcClient | null = null;
   private subscribers = new Set<ServerResponse>();
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
-  private metricsDirty = false;
-  private metricsTimer: NodeJS.Timeout | null = null;
   private loadedThreads: LoadedThreadSummary[] = [];
   private options: Options;
   private shuttingDown = false;
@@ -560,8 +558,6 @@ class PocketGateway {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     for (const pending of this.assistantFlushes.values()) clearTimeout(pending.timer);
     this.assistantFlushes.clear();
-    if (this.metricsTimer) clearTimeout(this.metricsTimer);
-    this.metricsTimer = null;
     this.rpc?.close();
     for (const response of this.subscribers) response.end();
     this.subscribers.clear();
@@ -573,8 +569,14 @@ class PocketGateway {
     response.on("close", () => this.subscribers.delete(response));
   }
 
-  snapshot(): PocketState {
-    return JSON.parse(JSON.stringify(this.state));
+  snapshot(): JsonObject {
+    const snapshot = JSON.parse(JSON.stringify(this.state));
+    delete snapshot.metrics;
+    return snapshot;
+  }
+
+  diagnostics(): JsonObject {
+    return JSON.parse(JSON.stringify(this.state.metrics));
   }
 
   async history(cursor: string | null, limit: number): Promise<JsonObject> {
@@ -595,7 +597,7 @@ class PocketGateway {
     return JSON.parse(JSON.stringify(await this.refreshLoadedThreads()));
   }
 
-  selectThread(threadId: string): Promise<PocketState> {
+  selectThread(threadId: string): Promise<JsonObject> {
     const selection = this.selectionQueue.then(
       () => this.selectThreadNow(threadId),
       () => this.selectThreadNow(threadId),
@@ -604,21 +606,9 @@ class PocketGateway {
     return selection;
   }
 
-  countBrowserPayload(payload: Buffer | string, markDirty = true): void {
+  countBrowserPayload(payload: Buffer | string): void {
     this.state.metrics.browserBytes += Buffer.byteLength(payload);
     this.state.metrics.browserMessages += 1;
-    if (markDirty) this.markMetricsDirty();
-  }
-
-  private markMetricsDirty(): void {
-    this.metricsDirty = true;
-    if (this.shuttingDown || this.metricsTimer) return;
-    this.metricsTimer = setTimeout(() => {
-      this.metricsTimer = null;
-      if (!this.metricsDirty) return;
-      this.metricsDirty = false;
-      for (const response of this.subscribers) this.writeSse(response, "metrics", this.state.metrics, false);
-    }, 250);
   }
 
   private async connect(): Promise<void> {
@@ -636,7 +626,6 @@ class PocketGateway {
     rpc.onRawPayload = (bytes) => {
       this.state.metrics.rawBytes += bytes;
       this.state.metrics.rawMessages += 1;
-      this.markMetricsDirty();
     };
     rpc.onNotification = (message) => this.handleNotification(message);
     rpc.onServerRequest = (message) => this.handleServerRequest(message);
@@ -715,7 +704,7 @@ class PocketGateway {
     return this.loadedThreads;
   }
 
-  private async selectThreadNow(threadId: string): Promise<PocketState> {
+  private async selectThreadNow(threadId: string): Promise<JsonObject> {
     const requestedId = String(threadId ?? "").trim();
     if (!requestedId) throw new Error("threadId is required");
     const loadedThreads = await this.refreshLoadedThreads();
@@ -811,7 +800,12 @@ class PocketGateway {
         this.state.activities = [];
         this.state.pending = [];
         this.state.phase = "working";
-        this.broadcast("turn", { turn: this.state.turn, phase: this.state.phase });
+        this.broadcast("turn", {
+          turn: this.state.turn,
+          phase: this.state.phase,
+          plan: this.state.plan,
+          activities: this.state.activities,
+        });
         break;
       case "turn/completed": {
         const turn = params.turn ?? {};
@@ -967,10 +961,10 @@ class PocketGateway {
     for (const response of this.subscribers) this.writeSse(response, event, data);
   }
 
-  private writeSse(response: ServerResponse, event: string, data: unknown, markMetricsDirty = true): void {
+  private writeSse(response: ServerResponse, event: string, data: unknown): void {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     response.write(payload);
-    this.countBrowserPayload(payload, markMetricsDirty);
+    this.countBrowserPayload(payload);
   }
 }
 
@@ -1050,6 +1044,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
   }
   if (url.pathname === "/api/state") {
     sendJson(response, 200, gateway.snapshot(), gateway);
+    return;
+  }
+  if (url.pathname === "/api/diagnostics") {
+    sendJson(response, 200, gateway.diagnostics(), gateway);
     return;
   }
   if (url.pathname === "/api/threads") {

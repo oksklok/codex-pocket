@@ -56,7 +56,7 @@
         </dl>
       </section>
 
-      <div class="workspace">
+      <div class="workspace secondary-empty" id="workspace">
         <section class="panel conversation-panel" aria-labelledby="conversation-title">
           <div class="panel-heading">
             <div>
@@ -70,8 +70,8 @@
           </div>
         </section>
 
-        <aside class="sidebar">
-          <section class="panel" aria-labelledby="plan-title">
+        <aside class="sidebar" id="sidebar" hidden>
+          <section class="panel secondary-panel" id="plan-panel" aria-labelledby="plan-title" hidden>
             <div class="panel-heading compact-heading">
               <div>
                 <p class="section-label">Progress</p>
@@ -79,46 +79,17 @@
               </div>
               <span class="count-badge" id="plan-count">0/0</span>
             </div>
-            <ol class="plan-list" id="plan-list">
-              <li class="empty-state">No plan is active.</li>
-            </ol>
+            <ol class="plan-list" id="plan-list"></ol>
           </section>
 
-          <section class="panel" aria-labelledby="activity-title">
+          <section class="panel secondary-panel" id="activity-panel" aria-labelledby="activity-title" hidden>
             <div class="panel-heading compact-heading">
               <div>
                 <p class="section-label">Commands &amp; tools</p>
                 <h2 id="activity-title">Current activity</h2>
               </div>
             </div>
-            <ul class="activity-list" id="activity-list">
-              <li class="empty-state">No command or tool activity.</li>
-            </ul>
-          </section>
-
-          <section class="panel bandwidth-panel" aria-labelledby="bandwidth-title">
-            <div class="panel-heading compact-heading">
-              <div>
-                <p class="section-label">Filtering</p>
-                <h2 id="bandwidth-title">Bandwidth</h2>
-              </div>
-            </div>
-            <div class="bandwidth-grid">
-              <div>
-                <span>Raw app-server</span>
-                <strong id="raw-bytes">0 B</strong>
-                <small id="raw-messages">0 messages</small>
-              </div>
-              <div>
-                <span>Filtered browser</span>
-                <strong id="browser-bytes">0 B</strong>
-                <small id="browser-messages">0 messages</small>
-              </div>
-            </div>
-            <div class="ratio-row">
-              <span>Reduction</span>
-              <strong id="reduction">—</strong>
-            </div>
+            <ul class="activity-list" id="activity-list"></ul>
           </section>
         </aside>
       </div>
