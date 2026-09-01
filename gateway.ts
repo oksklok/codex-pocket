@@ -19,6 +19,7 @@ type Wire = {
   close(): void;
 };
 type Options = {
+  host: string;
   port: number;
   ws?: string;
   thread?: string;
@@ -97,7 +98,8 @@ function usage(): never {
   console.log(`Usage: node --experimental-strip-types gateway.ts [options]
 
 Options:
-  --port N       Browser port on 127.0.0.1 (default: 4173)
+  --host ADDRESS Browser bind address (default: 127.0.0.1)
+  --port N       Browser port (default: 4173)
   --ws URL       Connect to an explicit app-server WebSocket
   --thread ID    Select a specific loaded thread
   --help         Show this help
@@ -109,7 +111,7 @@ Environment:
 }
 
 function parseArgs(args: string[]): Options {
-  const options: Options = { port: 4173 };
+  const options: Options = { host: "127.0.0.1", port: 4173 };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const next = () => {
@@ -118,6 +120,7 @@ function parseArgs(args: string[]): Options {
       return value;
     };
     if (flag === "--help" || flag === "-h") usage();
+    else if (flag === "--host") options.host = next();
     else if (flag === "--ws") options.ws = next();
     else if (flag === "--thread") options.thread = next();
     else if (flag === "--port") {
@@ -1111,8 +1114,12 @@ async function main(): Promise<void> {
       else response.end();
     });
   });
-  server.listen(options.port, "127.0.0.1", () => {
-    console.log(`Codex Pocket: http://127.0.0.1:${options.port}`);
+  server.listen(options.port, options.host, () => {
+    const displayHost = options.host.includes(":") ? `[${options.host}]` : options.host;
+    console.log(`Codex Pocket: http://${displayHost}:${options.port}`);
+    if (!["127.0.0.1", "localhost", "::1"].includes(options.host)) {
+      console.warn("Warning: LAN mode is unauthenticated; use it only on a trusted network.");
+    }
   });
   const shutdown = () => {
     gateway.stop();

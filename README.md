@@ -36,7 +36,16 @@ npm start
 
 Then open [http://127.0.0.1:4173](http://127.0.0.1:4173).
 
-The gateway always binds to `127.0.0.1`. Optional arguments:
+The gateway binds to `127.0.0.1` by default. To make it available to a phone or another device on a trusted local network, opt into LAN mode:
+
+```sh
+npm start
+npm start -- --host 0.0.0.0
+```
+
+Then open `http://YOUR_MAC_LAN_IP:4173` on the other device. LAN mode is unauthenticated, so use it only on a trusted network and stop the gateway when finished. You can also bind only to a specific local address with `--host 192.168.1.123`.
+
+Other optional arguments:
 
 ```sh
 npm start -- --thread THREAD_ID
@@ -66,7 +75,7 @@ The bandwidth counters exclude the static HTML, CSS, and JavaScript assets. They
 
 ## Read-only boundary
 
-Codex Pocket v0.1 cannot send messages, approve requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, authentication, LAN listener, PWA layer, or deployment configuration.
+Codex Pocket v0.1 cannot send messages, approve requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, authentication, PWA layer, or deployment configuration. LAN listening is available only through the explicit `--host` option.
 
 ## Protocol probe
 
