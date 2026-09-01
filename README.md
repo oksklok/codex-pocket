@@ -1,6 +1,6 @@
 # Codex Pocket
 
-Codex Pocket v0.1 is a tiny browser client for loaded Codex app-server threads with normal message sending, task access controls, and approval handling.
+Codex Pocket v0.1 is a tiny browser client for loaded Codex app-server threads with normal message sending, task access controls, approval handling, and structured input answers.
 
 ```text
 Codex app-server
@@ -115,7 +115,8 @@ On macOS with only the Codex Desktop bundled Node runtime available:
 - live coalesced assistant messages and user messages when exposed;
 - recent conversation history with older pages loaded automatically when scrolling upward;
 - a bottom composer that starts an idle turn, steers an active turn immediately, or holds one in-memory message for the next turn; and
-- compact Approve/Deny cards for command, file-change, and additional-permission requests.
+- compact Approve/Deny cards for command, file-change, and additional-permission requests; and
+- compact answer cards for supported Codex multiple-choice, Other, and free-text questions.
 
 Model and effort options come from the connected app-server's `model/list` catalog. Pocket applies changes with `thread/settings/update`; while a turn is active, the controls are marked **Next turn**. The one-message queue exists only in gateway memory, can be replaced or cancelled, starts after the current turn completes, and is discarded when the selected task changes or Pocket restarts.
 
@@ -123,7 +124,7 @@ The low-bandwidth filtering remains internal. Optional byte counters are availab
 
 ## Control boundary
 
-Access choices and approval decisions use the selected machine's supported app-server protocol; Pocket does not edit `config.toml`. Approve is one request/one turn only, and additional-permission approval grants only the requested subset. Structured input requests remain unsupported and must be answered in the local Codex client.
+Access choices, approval decisions, and structured input answers use the selected machine's supported app-server protocol; Pocket does not edit `config.toml`. Approve is one request/one turn only, and additional-permission approval grants only the requested subset. Pocket validates every structured answer against the pending request and sends the app-server's exact response shape; unsupported or stale request variants remain local-only.
 
 Codex Pocket v0.1 still cannot interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is opt-in through local Settings or an explicit `--host` override and always requires a valid four-digit PIN.
 

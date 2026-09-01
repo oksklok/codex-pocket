@@ -87,6 +87,8 @@ let submittingMessage = false;
 let updatingModel = false;
 let updatingAccess = false;
 let resolvingApproval = false;
+let submittingInputRequestId = null;
+const inputDrafts = new Map();
 let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
@@ -148,7 +150,7 @@ function renderMachineSelector() {
     option.selected = machine.id === selectedId;
     elements.machineSelect.append(option);
   }
-  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval;
+  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId;
 }
 
 async function refreshMachines() {
@@ -186,7 +188,7 @@ function renderThreadSelector() {
     option.selected = thread.id === selectedId;
     elements.threadSelect.append(option);
   }
-  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || !state?.connected;
+  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || !state?.connected;
   elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
@@ -259,7 +261,8 @@ function renderModelControls() {
     && !switchingThread
     && !updatingModel
     && !updatingAccess
-    && !resolvingApproval;
+    && !resolvingApproval
+    && !submittingInputRequestId;
   elements.modelSelect.disabled = !enabled;
   elements.effortSelect.disabled = !enabled || !efforts.length;
   elements.nextTurnLabel.hidden = state?.turn?.status !== "inProgress";
@@ -296,7 +299,8 @@ function renderAccessControl() {
     || switchingMachine
     || switchingThread
     || updatingAccess
-    || resolvingApproval;
+    || resolvingApproval
+    || submittingInputRequestId;
   elements.accessSelect.classList.toggle("full-access", access?.mode === "full");
   elements.accessSelect.title = access?.mode === "full"
     ? "Unrestricted access to files and network"
@@ -350,15 +354,149 @@ function renderQueue() {
   }
 }
 
+function inputDraft(requestId, questionId) {
+  let requestDraft = inputDrafts.get(requestId);
+  if (!requestDraft) {
+    requestDraft = new Map();
+    inputDrafts.set(requestId, requestDraft);
+  }
+  return {
+    get: () => requestDraft.get(questionId),
+    set: (value) => requestDraft.set(questionId, value),
+  };
+}
+
+function renderStructuredInput(pending) {
+  const heading = document.createElement("div");
+  heading.className = "approval-heading";
+  const title = document.createElement("strong");
+  title.textContent = "Input needed";
+  const behavior = document.createElement("span");
+  behavior.textContent = pending.blocking === false ? "Non-blocking" : "Turn paused";
+  heading.append(title, behavior);
+  elements.attentionBanner.append(heading);
+
+  if (!pending.supported || !Array.isArray(pending.questions)) {
+    const unsupported = document.createElement("div");
+    unsupported.className = "approval-detail";
+    unsupported.textContent = "Handle this request in the local Codex client.";
+    elements.attentionBanner.append(unsupported);
+    return;
+  }
+
+  const form = document.createElement("form");
+  form.className = "structured-input-form";
+  pending.questions.forEach((question, questionIndex) => {
+    const draft = inputDraft(pending.id, question.id);
+    const fieldset = document.createElement("fieldset");
+    fieldset.className = "input-question";
+    const legend = document.createElement("legend");
+    legend.textContent = question.header || `Question ${questionIndex + 1}`;
+    const prompt = document.createElement("div");
+    prompt.className = "input-prompt";
+    prompt.textContent = question.question;
+    fieldset.append(legend, prompt);
+
+    if (Array.isArray(question.options)) {
+      const choices = document.createElement("div");
+      choices.className = "input-choices";
+      question.options.forEach((option, optionIndex) => {
+        const row = document.createElement("label");
+        row.className = "input-choice";
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = `input-${questionIndex}`;
+        radio.checked = draft.get()?.type === "option" && draft.get()?.optionIndex === optionIndex;
+        radio.disabled = Boolean(submittingInputRequestId || pending.resolving);
+        radio.addEventListener("change", () => {
+          if (radio.checked) draft.set({ type: "option", optionIndex });
+        });
+        const copy = document.createElement("span");
+        const label = document.createElement("strong");
+        label.textContent = option.label;
+        copy.append(label);
+        if (option.description) {
+          const description = document.createElement("small");
+          description.textContent = option.description;
+          copy.append(description);
+        }
+        row.append(radio, copy);
+        choices.append(row);
+      });
+      if (question.isOther) {
+        const row = document.createElement("label");
+        row.className = "input-choice input-other";
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = `input-${questionIndex}`;
+        radio.checked = draft.get()?.type === "other";
+        radio.disabled = Boolean(submittingInputRequestId || pending.resolving);
+        const copy = document.createElement("span");
+        const label = document.createElement("strong");
+        label.textContent = "Other";
+        const other = document.createElement("input");
+        other.type = question.isSecret ? "password" : "text";
+        other.maxLength = 4000;
+        other.autocomplete = "off";
+        other.placeholder = "Type another answer";
+        other.value = draft.get()?.type === "other" ? draft.get().value || "" : "";
+        other.disabled = Boolean(submittingInputRequestId || pending.resolving);
+        const selectOther = () => {
+          radio.checked = true;
+          draft.set({ type: "other", value: other.value });
+        };
+        radio.addEventListener("change", selectOther);
+        other.addEventListener("focus", selectOther);
+        other.addEventListener("input", selectOther);
+        copy.append(label, other);
+        row.append(radio, copy);
+        choices.append(row);
+      }
+      fieldset.append(choices);
+    } else {
+      const answer = question.isSecret ? document.createElement("input") : document.createElement("textarea");
+      answer.className = "input-free-text";
+      if (question.isSecret) {
+        answer.type = "password";
+        answer.autocomplete = "off";
+      } else {
+        answer.rows = 2;
+      }
+      answer.maxLength = 4000;
+      answer.placeholder = question.isSecret ? "Enter private answer" : "Type your answer";
+      answer.value = draft.get()?.type === "text" ? draft.get().value || "" : "";
+      answer.disabled = Boolean(submittingInputRequestId || pending.resolving);
+      answer.addEventListener("input", () => draft.set({ type: "text", value: answer.value }));
+      fieldset.append(answer);
+    }
+    form.append(fieldset);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "approval-approve";
+  submit.textContent = submittingInputRequestId === pending.id || pending.resolving ? "Sending…" : "Send answer";
+  submit.disabled = Boolean(submittingInputRequestId || pending.resolving);
+  actions.append(submit);
+  form.append(actions);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitStructuredInput(pending);
+  });
+  elements.attentionBanner.append(form);
+}
+
 function renderAttention() {
   const pending = state?.pending?.[0];
+  const currentInputIds = new Set((state?.pending || []).filter((request) => request.kind === "input").map((request) => request.id));
+  for (const requestId of inputDrafts.keys()) if (!currentInputIds.has(requestId)) inputDrafts.delete(requestId);
   elements.attentionBanner.replaceChildren();
   elements.attentionBanner.hidden = !pending;
   if (!pending) return;
-  if (pending.kind !== "permission") {
-    const text = document.createElement("span");
-    text.textContent = `Input needed: ${pending.label}`;
-    elements.attentionBanner.append(text);
+  if (pending.kind === "input") {
+    renderStructuredInput(pending);
     return;
   }
   const heading = document.createElement("div");
@@ -417,7 +555,8 @@ function renderComposer() {
     && !switchingThread
     && !submittingMessage
     && !updatingAccess
-    && !resolvingApproval;
+    && !resolvingApproval
+    && !submittingInputRequestId;
   const active = capability?.mode === "steer";
   elements.messageText.disabled = !allowed;
   elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
@@ -428,6 +567,8 @@ function renderComposer() {
     ? "Sending…"
     : resolvingApproval
       ? "Sending approval response…"
+      : submittingInputRequestId
+        ? "Sending structured answer…"
       : updatingAccess
         ? "Updating access…"
     : composerError
@@ -560,6 +701,8 @@ function resetConversationState() {
   nextCursor = null;
   historyRequest = null;
   shouldFollowConversation = true;
+  submittingInputRequestId = null;
+  inputDrafts.clear();
   elements.historyStatus.textContent = "";
 }
 
@@ -850,6 +993,64 @@ async function resolveApproval(requestId, decision) {
     }
   } finally {
     resolvingApproval = false;
+    renderState();
+  }
+}
+
+async function submitStructuredInput(pending) {
+  if (!pending?.id || submittingInputRequestId || switchingMachine || switchingThread) return;
+  const requestDraft = inputDrafts.get(pending.id) || new Map();
+  const answers = [];
+  for (const question of pending.questions || []) {
+    const value = requestDraft.get(question.id);
+    if (!value) {
+      composerError = `Answer ${question.header || "every question"} before sending.`;
+      renderComposer();
+      return;
+    }
+    if (Array.isArray(question.options)) {
+      if (value.type === "option" && Number.isInteger(value.optionIndex)) {
+        answers.push({ questionId: question.id, type: "option", optionIndex: value.optionIndex });
+      } else if (value.type === "other" && question.isOther && String(value.value || "").trim()) {
+        answers.push({ questionId: question.id, type: "other", value: value.value });
+      } else {
+        composerError = `Choose an answer for ${question.header || "every question"}.`;
+        renderComposer();
+        return;
+      }
+    } else if (value.type === "text" && String(value.value || "").trim()) {
+      answers.push({ questionId: question.id, type: "text", value: value.value });
+    } else {
+      composerError = `Answer ${question.header || "every question"} before sending.`;
+      renderComposer();
+      return;
+    }
+  }
+
+  submittingInputRequestId = pending.id;
+  composerError = "";
+  composerNotice = "Sending structured answer…";
+  const nextPending = (state?.pending || []).map((request) => request.id === pending.id ? { ...request, resolving: true } : request);
+  mergeState({ pending: nextPending });
+  try {
+    const response = await apiFetch("/api/input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ machineId: state?.machineId, requestId: pending.id, answers }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the answer");
+    composerNotice = "Answer sent.";
+  } catch (error) {
+    composerError = error.message;
+    try {
+      const response = await apiFetch("/api/state");
+      if (response.ok) applySnapshot(await response.json(), false);
+    } catch {
+      // SSE/reconnect restores the authoritative pending request.
+    }
+  } finally {
+    submittingInputRequestId = null;
     renderState();
   }
 }

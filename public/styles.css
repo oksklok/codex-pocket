@@ -154,6 +154,24 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .approval-actions button { min-height: 32px; padding: 5px 11px; border-radius: 7px; cursor: pointer; font-size: .68rem; font-weight: 750; }
 .approval-deny { border: 1px solid var(--line); background: var(--surface-strong); color: var(--muted); }
 .approval-approve { border: 1px solid rgba(69,200,138,.4); background: rgba(69,200,138,.17); color: var(--accent); }
+.structured-input-form {
+  display: grid; gap: 8px; max-height: min(42dvh, 380px); padding-right: 2px;
+  overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+}
+.input-question { min-width: 0; margin: 0; padding: 8px; border: 1px solid rgba(240,195,106,.2); border-radius: 7px; }
+.input-question legend { padding: 0 4px; color: var(--warning); font-size: .64rem; font-weight: 800; }
+.input-prompt { margin-bottom: 7px; color: var(--text); font-size: .7rem; line-height: 1.4; overflow-wrap: anywhere; }
+.input-choices { display: grid; gap: 5px; }
+.input-choice { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 7px; color: var(--text); cursor: pointer; }
+.input-choice > input[type="radio"] { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent-strong); }
+.input-choice > span { min-width: 0; display: grid; gap: 1px; }
+.input-choice strong { font-size: .68rem; line-height: 1.35; overflow-wrap: anywhere; }
+.input-choice small { color: var(--muted); font-size: .62rem; line-height: 1.35; overflow-wrap: anywhere; }
+.input-other input, .input-free-text {
+  width: 100%; min-width: 0; margin-top: 4px; padding: 7px 8px; border: 1px solid var(--line);
+  border-radius: 7px; background: var(--surface-strong); color: var(--text); font-size: .7rem;
+}
+textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4; }
 .queue-banner { justify-content: space-between; gap: 10px; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
 .queue-banner div { min-width: 0; display: flex; gap: 8px; }
 .queue-banner span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

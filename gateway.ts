@@ -69,6 +69,18 @@ type PocketActivity = {
   status: "running" | "completed" | "failed";
   detail?: string;
 };
+type PocketInputOption = {
+  label: string;
+  description: string;
+};
+type PocketInputQuestion = {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: PocketInputOption[] | null;
+};
 type PocketRequest = {
   id: string;
   kind: "permission" | "input";
@@ -76,6 +88,9 @@ type PocketRequest = {
   reason?: string;
   scope?: string;
   supported: boolean;
+  blocking?: boolean;
+  autoResolutionMs?: number | null;
+  questions?: PocketInputQuestion[];
   resolving?: boolean;
 };
 type PermissionProfileSummary = {
@@ -171,6 +186,7 @@ type PocketState = {
 
 const MAX_TEXT = 12_000;
 const MAX_MESSAGE_LENGTH = 12_000;
+const MAX_INPUT_ANSWER_LENGTH = 4_000;
 const MAX_LIVE_MESSAGES = 16;
 const MAX_ACTIVITIES = 10;
 const ASSISTANT_FLUSH_MS = 120;
@@ -920,6 +936,40 @@ function normalizeHistoryTurn(turn: any): JsonObject {
   };
 }
 
+function normalizeInputQuestions(params: JsonObject): PocketInputQuestion[] | null {
+  if (!Array.isArray(params.questions) || params.questions.length < 1 || params.questions.length > 3) return null;
+  const ids = new Set<string>();
+  const questions: PocketInputQuestion[] = [];
+  for (const value of params.questions) {
+    if (!value || typeof value !== "object") return null;
+    const id = typeof value.id === "string" ? value.id : "";
+    if (!id || ids.has(id) || typeof value.header !== "string" || typeof value.question !== "string") return null;
+    ids.add(id);
+    let options: PocketInputOption[] | null = null;
+    if (value.options !== null && value.options !== undefined) {
+      if (!Array.isArray(value.options) || value.options.length > 20) return null;
+      options = [];
+      for (const option of value.options) {
+        if (!option || typeof option !== "object" || typeof option.label !== "string" || typeof option.description !== "string") return null;
+        options.push({
+          label: safeSummary(option.label, 240),
+          description: safeSummary(option.description, 500),
+        });
+      }
+      if (options.length === 0 && value.isOther !== true) return null;
+    }
+    questions.push({
+      id,
+      header: safeSummary(value.header, 160),
+      question: safeSummary(value.question, 1_000),
+      isOther: value.isOther === true,
+      isSecret: value.isSecret === true,
+      options,
+    });
+  }
+  return questions;
+}
+
 class MachineRuntime {
   readonly state: PocketState;
   private rpc: RpcClient | null = null;
@@ -1095,6 +1145,15 @@ class MachineRuntime {
     return operation;
   }
 
+  resolveInput(requestId: unknown, answers: unknown): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(
+      () => this.resolveInputNow(requestId, answers),
+      () => this.resolveInputNow(requestId, answers),
+    );
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
   countBrowserPayload(payload: Buffer | string): void {
     this.state.metrics.browserBytes += Buffer.byteLength(payload);
     this.state.metrics.browserMessages += 1;
@@ -1112,6 +1171,8 @@ class MachineRuntime {
     this.state.phase = "connecting";
     this.permissionProfiles = [];
     this.allowedReviewers = null;
+    this.state.pending = [];
+    this.pendingServerRequests.clear();
     this.broadcast("status", this.statusPayload());
     const rpc = new RpcClient();
     this.rpc = rpc;
@@ -1467,6 +1528,64 @@ class MachineRuntime {
     return { accepted: true, requestId, decision };
   }
 
+  private async resolveInputNow(requestIdValue: unknown, answersValue: unknown): Promise<JsonObject> {
+    if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const requestId = String(requestIdValue ?? "");
+    if (!requestId || !Array.isArray(answersValue)) throw new Error("invalid structured input response");
+    const pending = this.pendingServerRequests.get(requestId);
+    const visible = this.state.pending.find((request) => request.id === requestId && request.kind === "input");
+    if (!pending || !visible || pending.threadId !== this.state.thread.id) throw new Error("This input request is no longer pending");
+    if (visible.resolving) throw new Error("This input response is already being sent");
+    if (!pending.supported || pending.method !== "item/tool/requestUserInput" || !visible.supported) {
+      throw new Error("This request must be handled in the local Codex client");
+    }
+    const questions = normalizeInputQuestions(pending.params);
+    if (!questions) throw new Error("This structured input request is unsupported");
+    if (answersValue.length !== questions.length) throw new Error("Answer every question before sending");
+
+    const submissions = new Map<string, JsonObject>();
+    for (const value of answersValue) {
+      if (!value || typeof value !== "object") throw new Error("invalid structured input answer");
+      const questionId = String(value.questionId ?? "");
+      if (!questionId || submissions.has(questionId)) throw new Error("Each question must have exactly one answer");
+      submissions.set(questionId, value);
+    }
+
+    const answers: JsonObject = {};
+    for (const [questionIndex, question] of questions.entries()) {
+      const submission = submissions.get(question.id);
+      if (!submission) throw new Error("Answer every question before sending");
+      let answer = "";
+      if (question.options) {
+        if (submission.type === "option") {
+          const index = Number(submission.optionIndex);
+          if (!Number.isInteger(index) || index < 0 || index >= question.options.length) {
+            throw new Error(`Choose a valid option for ${question.header || "the question"}`);
+          }
+          answer = String(pending.params.questions[questionIndex].options[index].label);
+        } else if (submission.type === "other" && question.isOther && typeof submission.value === "string") {
+          answer = submission.value.replace(/\r\n/g, "\n");
+        } else {
+          throw new Error(`Choose a valid option for ${question.header || "the question"}`);
+        }
+      } else if (submission.type === "text" && typeof submission.value === "string") {
+        answer = submission.value.replace(/\r\n/g, "\n");
+      } else {
+        throw new Error(`Enter a valid answer for ${question.header || "the question"}`);
+      }
+      if (!answer.trim()) throw new Error(`Answer ${question.header || "every question"} before sending`);
+      if (answer.length > MAX_INPUT_ANSWER_LENGTH) {
+        throw new Error(`An answer exceeds ${MAX_INPUT_ANSWER_LENGTH.toLocaleString()} characters`);
+      }
+      answers[question.id] = { answers: [answer] };
+    }
+
+    visible.resolving = true;
+    this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
+    this.rpc.respond(pending.rawId, { answers });
+    return { accepted: true, requestId };
+  }
+
   private async sendMessageNow(value: unknown, requestedAction: unknown): Promise<JsonObject> {
     if (typeof value !== "string") throw new Error("message text is required");
     const text = value.replace(/\r\n/g, "\n");
@@ -1645,13 +1764,38 @@ class MachineRuntime {
         reason: safeSummary(params.reason, 220) || undefined,
         supported,
       };
-    } else if (method.includes("requestUserInput") || method.includes("requestInput")) {
-      const questionCount = Array.isArray(params.questions) ? params.questions.length : 1;
+    } else if (method === "item/tool/requestUserInput") {
+      const questions = normalizeInputQuestions(params);
+      const isBlocking = typeof params.isBlocking === "boolean" ? params.isBlocking : null;
+      const autoResolutionMs = params.autoResolutionMs === null || params.autoResolutionMs === undefined
+        ? null
+        : Number(params.autoResolutionMs);
+      supported = Boolean(
+        questions
+        && isBlocking !== null
+        && typeof params.turnId === "string"
+        && params.turnId
+        && typeof params.itemId === "string"
+        && params.itemId
+        && (autoResolutionMs === null || (Number.isSafeInteger(autoResolutionMs) && autoResolutionMs >= 0)),
+      );
+      const questionCount = Array.isArray(params.questions) ? params.questions.length : 0;
       request = {
         id: String(message.id),
         kind: "input",
-        label: `${questionCount} structured input request${questionCount === 1 ? "" : "s"} · answer in the local Codex client`,
+        label: `${questionCount || 1} structured input request${questionCount === 1 ? "" : "s"}`,
+        supported,
+        blocking: isBlocking ?? true,
+        autoResolutionMs,
+        questions: questions ?? undefined,
+      };
+    } else if (method.includes("requestUserInput") || method.includes("requestInput")) {
+      request = {
+        id: String(message.id),
+        kind: "input",
+        label: "Unsupported structured input request",
         supported: false,
+        blocking: true,
       };
     } else if (method.includes("Approval") || method.includes("requestApproval")) {
       request = {
@@ -1662,7 +1806,7 @@ class MachineRuntime {
       };
     }
     if (!request) return;
-    if (request.kind === "permission") {
+    if (request.kind === "permission" || request.kind === "input") {
       this.pendingServerRequests.set(request.id, {
         rawId: message.id,
         threadId: requestThreadId || this.state.thread.id,
@@ -1912,7 +2056,7 @@ class MachineRuntime {
   private computePhase(): PocketState["phase"] {
     if (this.state.connectionError && !this.state.connected) return "failed";
     if (this.state.pending.some((request) => request.kind === "permission")) return "waiting_permission";
-    if (this.state.pending.some((request) => request.kind === "input")) return "waiting_input";
+    if (this.state.pending.some((request) => request.kind === "input" && request.blocking !== false)) return "waiting_input";
     if (this.state.turn?.error || this.state.turn?.status === "failed") return "failed";
     if (this.state.turn?.status === "inProgress" || this.state.threadStatus.startsWith("active")) return "working";
     return this.state.connected ? "done" : "connecting";
@@ -1924,8 +2068,8 @@ class MachineRuntime {
     if (this.state.pending.some((request) => request.kind === "permission")) {
       return { allowed: false, mode: null, reason: "Resolve the pending permission request in Codex first" };
     }
-    if (this.state.pending.some((request) => request.kind === "input")) {
-      return { allowed: false, mode: null, reason: "Answer the structured input request in Codex first" };
+    if (this.state.pending.some((request) => request.kind === "input" && request.blocking !== false)) {
+      return { allowed: false, mode: null, reason: "Answer the structured input request first" };
     }
     if (this.state.phase === "failed") return { allowed: false, mode: null, reason: "This task cannot accept a message while failed" };
     if (!this.canAcceptDirectInput) {
@@ -2064,6 +2208,10 @@ class PocketGateway {
 
   resolveApproval(machineId: unknown, requestId: unknown, decision: unknown): Promise<JsonObject> {
     return this.enqueue(() => this.requireSelected(machineId).resolveApproval(requestId, decision));
+  }
+
+  resolveInput(machineId: unknown, requestId: unknown, answers: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).resolveInput(requestId, answers));
   }
 
   countBrowserPayload(payload: Buffer | string): void {
@@ -2260,6 +2408,15 @@ async function handleRequest(
     try {
       const body = await readJsonBody(request);
       sendJson(response, 202, await gateway.resolveApproval(body.machineId, body.requestId, body.decision), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/input") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 202, await gateway.resolveInput(body.machineId, body.requestId, body.answers), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
