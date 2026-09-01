@@ -192,6 +192,7 @@ const MAX_LIVE_MESSAGES = 16;
 const MAX_ACTIVITIES = 10;
 const ASSISTANT_FLUSH_MS = 120;
 const ACCESS_SETTINGS_TIMEOUT_MS = 2_000;
+const THREAD_UNSUBSCRIBE_TIMEOUT_MS = 1_000;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_FAILURE_WINDOW_MS = 60_000;
 const LOGIN_BLOCK_MS = 8_000;
@@ -645,6 +646,7 @@ function clientFrame(opcode: number, payload: Buffer): Buffer {
 function connectProxy(
   onPayload: (payload: Buffer) => void,
   onClose: (error?: Error) => void,
+  registerAbort: (abort: () => void) => void,
   sshAlias?: string,
 ): Promise<Wire> {
   return new Promise((resolve, reject) => {
@@ -668,6 +670,11 @@ function connectProxy(
     let fragments: Buffer[] = [];
 
     const sendFrame = (opcode: number, payload: Buffer) => child.stdin.write(clientFrame(opcode, payload));
+    registerAbort(() => {
+      closing = true;
+      child.stdin.end();
+      child.kill("SIGTERM");
+    });
     const parseFrames = () => {
       for (;;) {
         if (buffer.length < 2) return;
@@ -778,9 +785,11 @@ function connectWebSocket(
   url: string,
   onPayload: (payload: Buffer) => void,
   onClose: (error?: Error) => void,
+  registerAbort: (abort: () => void) => void,
 ): Promise<Wire> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
+    registerAbort(() => socket.close());
     let opened = false;
     socket.addEventListener("open", () => {
       opened = true;
@@ -810,6 +819,8 @@ function connectWebSocket(
 
 class RpcClient {
   private wire!: Wire;
+  private abortTransport: (() => void) | null = null;
+  private closing = false;
   private nextId = 1;
   private pending = new Map<number, PendingRpc>();
   onNotification: (message: JsonObject) => void = () => {};
@@ -826,18 +837,24 @@ class RpcClient {
         console.error(`invalid JSON from app-server: ${compact((error as Error).message)}`);
       }
     };
+    const registerAbort = (abort: () => void) => { this.abortTransport = abort; };
     this.wire = ws
-      ? await connectWebSocket(ws, onPayload, (error) => this.onClose(error))
-      : await connectProxy(onPayload, (error) => this.onClose(error), sshAlias);
+      ? await connectWebSocket(ws, onPayload, (error) => this.onClose(error), registerAbort)
+      : await connectProxy(onPayload, (error) => this.onClose(error), registerAbort, sshAlias);
+    this.abortTransport = null;
+    if (this.closing) {
+      this.wire.close();
+      throw new Error("app-server connection closed");
+    }
   }
 
-  request(method: string, params: JsonObject = {}): Promise<any> {
+  request(method: string, params: JsonObject = {}, timeoutMs = 20_000): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} timed out`));
-      }, 20_000);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.wire.send({ method, id, params });
     });
@@ -852,6 +869,9 @@ class RpcClient {
   }
 
   close(): void {
+    this.closing = true;
+    this.abortTransport?.();
+    this.abortTransport = null;
     this.wire?.close();
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
@@ -1029,12 +1049,24 @@ class MachineRuntime {
     await this.connect();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.shuttingDown = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     for (const pending of this.assistantFlushes.values()) clearTimeout(pending.timer);
     this.assistantFlushes.clear();
-    this.rpc?.close();
+    const rpc = this.rpc;
+    const threadId = this.state.thread?.id;
+    if (rpc && threadId && this.state.connected) {
+      try {
+        const result = await rpc.request("thread/unsubscribe", { threadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS);
+        console.log(`${this.definition.name}: thread unsubscribe ${result?.status ?? "completed"}`);
+      } catch (error) {
+        console.warn(`${this.definition.name}: thread unsubscribe skipped: ${compact(error, 180)}`);
+      }
+    }
+    if (this.rpc === rpc) this.rpc = null;
+    rpc?.close();
     for (const response of this.subscribers) response.end();
     this.subscribers.clear();
   }
@@ -2217,8 +2249,8 @@ class PocketGateway {
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.start()));
   }
 
-  stop(): void {
-    for (const runtime of this.runtimes.values()) runtime.stop();
+  async stop(): Promise<void> {
+    await Promise.all([...this.runtimes.values()].map((runtime) => runtime.stop()));
     this.subscribers.clear();
   }
 
@@ -2396,6 +2428,8 @@ async function handleRequest(
   settings: LocalSettings,
   options: Options,
   restartPocket: () => Promise<{ localUrl: string }>,
+  quitPocket: () => void,
+  isShuttingDown: () => boolean,
 ): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -2427,6 +2461,19 @@ async function handleRequest(
   }
   if ((url.pathname.startsWith("/api/") || url.pathname === "/events") && !isAuthenticated(request, auth)) {
     sendJson(response, 401, { error: "Authentication required" }, gateway);
+    return;
+  }
+  if (url.pathname === "/api/shutdown" && method === "POST") {
+    try {
+      quitPocket();
+      sendJson(response, 202, { shuttingDown: true }, gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (isShuttingDown() && (url.pathname.startsWith("/api/") || url.pathname === "/events")) {
+    sendJson(response, 503, { error: "Codex Pocket is stopping" }, gateway);
     return;
   }
   if (url.pathname === "/api/settings" && method === "GET") {
@@ -2654,20 +2701,38 @@ async function main(): Promise<void> {
   for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
   const gateway = new PocketGateway(options);
   let restartPocket: () => Promise<{ localUrl: string }>;
+  let quitPocket: () => void;
+  let shuttingDown = false;
   const server = createServer((request, response) => {
-    handleRequest(request, response, gateway, auth, settings, options, () => restartPocket()).catch((error) => {
+    handleRequest(
+      request,
+      response,
+      gateway,
+      auth,
+      settings,
+      options,
+      () => restartPocket(),
+      () => quitPocket(),
+      () => shuttingDown,
+    ).catch((error) => {
       if (!response.headersSent) sendJson(response, 500, { error: compact(error, 400) }, gateway);
       else response.end();
     });
   });
-  let shuttingDown = false;
-  const shutdown = () => {
-    if (shuttingDown) return;
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
     shuttingDown = true;
-    gateway.stop();
-    clearRuntimeInfo();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 1_500).unref();
+    const forceExit = setTimeout(() => process.exit(0), 2_000);
+    forceExit.unref();
+    shutdownPromise = (async () => {
+      await gateway.stop();
+      clearRuntimeInfo();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      clearTimeout(forceExit);
+      process.exit(0);
+    })();
+    return shutdownPromise;
   };
   restartPocket = async () => {
     if (shuttingDown) throw new Error("Pocket is already restarting");
@@ -2677,8 +2742,14 @@ async function main(): Promise<void> {
       settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
       settings.config.port,
     );
-    setTimeout(shutdown, 350).unref();
+    shuttingDown = true;
+    setTimeout(() => void shutdown(), 350).unref();
     return { localUrl };
+  };
+  quitPocket = () => {
+    if (shuttingDown) throw new Error("Pocket is already stopping");
+    shuttingDown = true;
+    setTimeout(() => void shutdown(), 75).unref();
   };
   server.listen(options.port, options.host, () => {
     try {
@@ -2695,8 +2766,8 @@ async function main(): Promise<void> {
     }
   });
   process.once("exit", clearRuntimeInfo);
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", () => void shutdown());
+  process.once("SIGTERM", () => void shutdown());
   await gateway.start();
 }
 

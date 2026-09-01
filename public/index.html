@@ -20,6 +20,14 @@
       </form>
     </section>
 
+    <section class="stopped-screen" id="stopped-screen" hidden aria-labelledby="stopped-title">
+      <div class="stopped-card">
+        <p class="eyebrow">Gateway stopped</p>
+        <h1 id="stopped-title">Codex Pocket has stopped.</h1>
+        <p>You can close this tab. Double-click Codex Pocket.app whenever you want to start it again.</p>
+      </div>
+    </section>
+
     <main class="shell" id="app-shell" hidden>
       <header class="topbar">
         <div class="brand" aria-label="Codex Pocket">CP</div>
@@ -135,6 +143,7 @@
           <p class="field-help">Use an SSH alias that already works from this Mac. Pocket never stores SSH credentials.</p>
         </fieldset>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
+        <div class="settings-quit"><p>Close Pocket and release its local and remote connections.</p><button class="danger-button" id="quit-pocket" type="button">Quit Pocket</button></div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
         <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save settings</button></div>
       </form>

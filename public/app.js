@@ -1,6 +1,7 @@
 const elements = {
   appShell: document.querySelector("#app-shell"),
   loginScreen: document.querySelector("#login-screen"),
+  stoppedScreen: document.querySelector("#stopped-screen"),
   loginForm: document.querySelector("#login-form"),
   loginPin: document.querySelector("#login-pin"),
   loginError: document.querySelector("#login-error"),
@@ -57,6 +58,7 @@ const elements = {
   machineAdd: document.querySelector("#machine-add"),
   settingsRestart: document.querySelector("#settings-restart"),
   restartPocket: document.querySelector("#restart-pocket"),
+  quitPocket: document.querySelector("#quit-pocket"),
   phoneUrls: document.querySelector("#phone-urls"),
   phoneUrlList: document.querySelector("#phone-url-list"),
   settingsStatus: document.querySelector("#settings-status"),
@@ -100,15 +102,28 @@ let composerNotice = "";
 let settingsValue = null;
 let savingSettings = false;
 let restartingPocket = false;
+let quittingPocket = false;
+let intentionalQuit = false;
 
 function showLogin(message = "") {
   source?.close();
   source = null;
   closeSettings();
   elements.appShell.hidden = true;
+  elements.stoppedScreen.hidden = true;
   elements.loginScreen.hidden = false;
   elements.loginError.textContent = message;
   elements.loginPin.focus();
+}
+
+function showStopped() {
+  intentionalQuit = true;
+  source?.close();
+  source = null;
+  closeSettings();
+  elements.loginScreen.hidden = true;
+  elements.appShell.hidden = true;
+  elements.stoppedScreen.hidden = false;
 }
 
 async function apiFetch(url, options) {
@@ -1132,6 +1147,7 @@ async function submitStructuredInput(pending) {
 function parseEvent(event) { return JSON.parse(event.data); }
 
 async function handleEventError() {
+  if (intentionalQuit) return;
   setConnection(false, true);
   try {
     const response = await fetch("/api/auth");
@@ -1143,6 +1159,7 @@ async function handleEventError() {
 }
 
 function connectEvents() {
+  if (intentionalQuit) return;
   source?.close();
   source = new EventSource("/events");
   source.addEventListener("open", () => setConnection(true));
@@ -1458,9 +1475,30 @@ elements.restartPocket.addEventListener("click", async () => {
     elements.settingsStatus.classList.add("error-text");
   }
 });
+elements.quitPocket.addEventListener("click", async () => {
+  if (quittingPocket) return;
+  quittingPocket = true;
+  elements.quitPocket.disabled = true;
+  elements.quitPocket.textContent = "Quitting Pocket…";
+  elements.settingsStatus.textContent = "Quitting Pocket…";
+  elements.settingsStatus.classList.remove("error-text");
+  try {
+    const response = await apiFetch("/api/shutdown", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok || !result.shuttingDown) throw new Error(result.error || "Could not quit Pocket");
+    showStopped();
+  } catch (error) {
+    quittingPocket = false;
+    elements.quitPocket.disabled = false;
+    elements.quitPocket.textContent = "Quit Pocket";
+    elements.settingsStatus.textContent = error.message;
+    elements.settingsStatus.classList.add("error-text");
+  }
+});
 
 async function startApp() {
   elements.loginScreen.hidden = true;
+  elements.stoppedScreen.hidden = true;
   elements.appShell.hidden = false;
   try {
     const response = await apiFetch("/api/state");
