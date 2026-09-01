@@ -2,9 +2,10 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, readFileSync, statSync } from "node:fs";
+import { createReadStream, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { basename, extname, join } from "node:path";
+import { isIP } from "node:net";
+import { basename, dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +24,17 @@ type Options = {
   port: number;
   ws?: string;
   thread?: string;
+};
+type LocalConfig = {
+  lanEnabled: boolean;
+  host: string;
+  port: number;
+  pin: string | null;
+};
+type LocalSettings = {
+  path: string;
+  config: LocalConfig;
+  loaded: boolean;
 };
 type AuthConfig = {
   required: boolean;
@@ -102,14 +114,22 @@ const ASSISTANT_FLUSH_MS = 120;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_FAILURE_WINDOW_MS = 60_000;
 const LOGIN_BLOCK_MS = 8_000;
-const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
+const ROOT_DIR = dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = join(ROOT_DIR, "public");
+const CONFIG_PATH = join(ROOT_DIR, ".codex-pocket.local.json");
+const SAFE_CONFIG: LocalConfig = {
+  lanEnabled: false,
+  host: "127.0.0.1",
+  port: 4173,
+  pin: null,
+};
 
 function usage(): never {
   console.log(`Usage: node --experimental-strip-types gateway.ts [options]
 
 Options:
-  --host ADDRESS Browser bind address (default: 127.0.0.1)
-  --port N       Browser port (default: 4173)
+  --host ADDRESS Override saved browser bind address
+  --port N       Override saved browser port
   --ws URL       Connect to an explicit app-server WebSocket
   --thread ID    Select a specific loaded thread
   --help         Show this help
@@ -121,8 +141,8 @@ Environment:
   process.exit(0);
 }
 
-function parseArgs(args: string[]): Options {
-  const options: Options = { host: "127.0.0.1", port: 4173 };
+function parseArgs(args: string[], defaults: Options): Options {
+  const options: Options = { ...defaults };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const next = () => {
@@ -141,6 +161,78 @@ function parseArgs(args: string[]): Options {
     } else throw new Error(`unknown option: ${flag}`);
   }
   return options;
+}
+
+function validHost(host: unknown): host is string {
+  if (typeof host !== "string" || host.length < 1 || host.length > 253 || host.trim() !== host) return false;
+  return isIP(host) !== 0 || /^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)$/i.test(host);
+}
+
+function validateLocalConfig(value: unknown): LocalConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected a JSON object");
+  const candidate = value as JsonObject;
+  if (typeof candidate.lanEnabled !== "boolean") throw new Error("lanEnabled must be true or false");
+  if (!validHost(candidate.host)) throw new Error("host must be a valid bind address or hostname");
+  if (!Number.isInteger(candidate.port) || candidate.port < 1 || candidate.port > 65_535) {
+    throw new Error("port must be between 1 and 65535");
+  }
+  if (candidate.pin !== null && (typeof candidate.pin !== "string" || !/^\d{4}$/.test(candidate.pin))) {
+    throw new Error("pin must be exactly four numeric digits or null");
+  }
+  if (candidate.lanEnabled && !/^\d{4}$/.test(candidate.pin ?? "")) {
+    throw new Error("LAN access requires a four-digit PIN");
+  }
+  return {
+    lanEnabled: candidate.lanEnabled,
+    host: candidate.host,
+    port: candidate.port,
+    pin: candidate.pin,
+  };
+}
+
+function loadLocalSettings(): LocalSettings {
+  try {
+    const config = validateLocalConfig(JSON.parse(readFileSync(CONFIG_PATH, "utf8")));
+    return { path: CONFIG_PATH, config, loaded: true };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn(`Warning: ignoring invalid config at ${CONFIG_PATH}: ${compact(error, 240)}. Using safe localhost defaults.`);
+    }
+    return { path: CONFIG_PATH, config: { ...SAFE_CONFIG }, loaded: false };
+  }
+}
+
+function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin: string | null): LocalConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("settings must be a JSON object");
+  const candidate = value as JsonObject;
+  const submittedPin = candidate.pin;
+  if (submittedPin !== undefined && submittedPin !== "" && (typeof submittedPin !== "string" || !/^\d{4}$/.test(submittedPin))) {
+    throw new Error("PIN must be exactly four numeric digits");
+  }
+  const pin = typeof submittedPin === "string" && submittedPin !== ""
+    ? submittedPin
+    : settings.config.pin ?? fallbackPin;
+  const config = validateLocalConfig({
+    lanEnabled: candidate.lanEnabled,
+    host: candidate.host,
+    port: candidate.port,
+    pin,
+  });
+  const temporaryPath = `${settings.path}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporaryPath, settings.path);
+  settings.config = config;
+  settings.loaded = true;
+  return config;
+}
+
+function publicSettings(settings: LocalSettings, fallbackPin: string | null): JsonObject {
+  return {
+    lanEnabled: settings.config.lanEnabled,
+    host: settings.config.host,
+    port: settings.config.port,
+    pinConfigured: /^\d{4}$/.test(settings.config.pin ?? fallbackPin ?? ""),
+  };
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -1196,6 +1288,8 @@ async function handleRequest(
   response: ServerResponse,
   gateway: PocketGateway,
   auth: AuthConfig,
+  settings: LocalSettings,
+  options: Options,
 ): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -1227,6 +1321,26 @@ async function handleRequest(
   }
   if ((url.pathname.startsWith("/api/") || url.pathname === "/events") && !isAuthenticated(request, auth)) {
     sendJson(response, 401, { error: "Authentication required" }, gateway);
+    return;
+  }
+  if (url.pathname === "/api/settings" && method === "GET") {
+    sendJson(response, 200, {
+      settings: publicSettings(settings, auth.pin),
+      effective: { host: options.host, port: options.port, pinRequired: auth.required },
+    }, gateway);
+    return;
+  }
+  if (url.pathname === "/api/settings" && method === "POST") {
+    try {
+      const config = saveLocalSettings(settings, await readJsonBody(request), auth.pin);
+      sendJson(response, 200, {
+        saved: true,
+        restartRequired: true,
+        settings: publicSettings(settings, config.pin),
+      }, gateway);
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
     return;
   }
   if (method === "POST" && url.pathname === "/api/message") {
@@ -1318,22 +1432,28 @@ async function handleRequest(
 }
 
 async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+  const settings = loadLocalSettings();
+  const options = parseArgs(process.argv.slice(2), {
+    host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
+    port: settings.config.port,
+  });
   const authRequired = !isLoopbackHost(options.host);
-  const pin = process.env.CODEX_POCKET_PIN ?? "";
+  const pin = Object.prototype.hasOwnProperty.call(process.env, "CODEX_POCKET_PIN")
+    ? process.env.CODEX_POCKET_PIN ?? ""
+    : settings.config.pin ?? "";
   if (authRequired && !/^\d{4}$/.test(pin)) {
-    throw new Error("CODEX_POCKET_PIN must be exactly 4 numeric digits when --host is not loopback");
+    throw new Error("LAN listening requires a valid four-digit PIN in Settings or CODEX_POCKET_PIN");
   }
   const auth: AuthConfig = {
     required: authRequired,
-    pin: authRequired ? pin : null,
+    pin: /^\d{4}$/.test(pin) ? pin : null,
     sessionId: randomBytes(32).toString("hex"),
     attempts: new Map(),
   };
   for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
   const gateway = new PocketGateway(options);
   const server = createServer((request, response) => {
-    handleRequest(request, response, gateway, auth).catch((error) => {
+    handleRequest(request, response, gateway, auth, settings, options).catch((error) => {
       if (!response.headersSent) sendJson(response, 500, { error: compact(error, 400) }, gateway);
       else response.end();
     });
@@ -1341,7 +1461,9 @@ async function main(): Promise<void> {
   server.listen(options.port, options.host, () => {
     const displayHost = options.host.includes(":") ? `[${options.host}]` : options.host;
     console.log(`Codex Pocket: http://${displayHost}:${options.port}`);
-    if (!isLoopbackHost(options.host)) {
+    console.log(`Network: ${authRequired ? "LAN access enabled" : "localhost only"}; PIN protection ${authRequired ? "enabled" : "disabled"}`);
+    if (settings.loaded) console.log(`Config: ${settings.path}`);
+    if (authRequired) {
       console.warn("Warning: LAN control uses plain HTTP; use it only on a trusted network.");
     }
   });

@@ -28,6 +28,19 @@ const elements = {
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
   composerStatus: document.querySelector("#composer-status"),
+  settingsButton: document.querySelector("#settings-button"),
+  settingsScreen: document.querySelector("#settings-screen"),
+  settingsForm: document.querySelector("#settings-form"),
+  settingsClose: document.querySelector("#settings-close"),
+  settingsCancel: document.querySelector("#settings-cancel"),
+  settingsSave: document.querySelector("#settings-save"),
+  settingsLanEnabled: document.querySelector("#settings-lan-enabled"),
+  settingsHost: document.querySelector("#settings-host"),
+  settingsPort: document.querySelector("#settings-port"),
+  settingsPin: document.querySelector("#settings-pin"),
+  settingsPinState: document.querySelector("#settings-pin-state"),
+  settingsRestart: document.querySelector("#settings-restart"),
+  settingsStatus: document.querySelector("#settings-status"),
 };
 
 const phaseLabels = {
@@ -53,10 +66,13 @@ let switchingThread = false;
 let submittingMessage = false;
 let composerError = "";
 let composerNotice = "";
+let settingsValue = null;
+let savingSettings = false;
 
 function showLogin(message = "") {
   source?.close();
   source = null;
+  closeSettings();
   elements.appShell.hidden = true;
   elements.loginScreen.hidden = false;
   elements.loginError.textContent = message;
@@ -70,6 +86,42 @@ async function apiFetch(url, options) {
     throw new Error("Authentication required");
   }
   return response;
+}
+
+function closeSettings() {
+  elements.settingsScreen.hidden = true;
+  document.body.classList.remove("settings-open");
+}
+
+function renderSettings(value) {
+  settingsValue = value;
+  elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
+  elements.settingsHost.value = value.host || "127.0.0.1";
+  elements.settingsPort.value = String(value.port || 4173);
+  elements.settingsPin.value = "";
+  elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
+  elements.settingsPinState.textContent = value.pinConfigured
+    ? "PIN configured. Enter a new PIN only to change it."
+    : "No PIN configured.";
+}
+
+async function openSettings() {
+  elements.settingsScreen.hidden = false;
+  document.body.classList.add("settings-open");
+  elements.settingsStatus.textContent = "Loading settings…";
+  elements.settingsStatus.classList.remove("error-text");
+  elements.settingsRestart.hidden = true;
+  try {
+    const response = await apiFetch("/api/settings");
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Settings unavailable");
+    renderSettings(result.settings);
+    elements.settingsStatus.textContent = "";
+    elements.settingsLanEnabled.focus();
+  } catch (error) {
+    elements.settingsStatus.textContent = error.message;
+    elements.settingsStatus.classList.add("error-text");
+  }
 }
 
 function formatElapsed(milliseconds) {
@@ -594,6 +646,69 @@ elements.loginForm.addEventListener("submit", async (event) => {
 elements.loginPin.addEventListener("input", () => {
   elements.loginPin.value = elements.loginPin.value.replace(/\D/g, "").slice(0, 4);
   elements.loginError.textContent = "";
+});
+
+elements.settingsButton.addEventListener("click", openSettings);
+elements.settingsClose.addEventListener("click", closeSettings);
+elements.settingsCancel.addEventListener("click", closeSettings);
+
+elements.settingsScreen.addEventListener("click", (event) => {
+  if (event.target === elements.settingsScreen) closeSettings();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.settingsScreen.hidden) closeSettings();
+});
+
+elements.settingsLanEnabled.addEventListener("change", () => {
+  if (elements.settingsLanEnabled.checked && elements.settingsHost.value === "127.0.0.1") {
+    elements.settingsHost.value = "0.0.0.0";
+  }
+});
+
+elements.settingsPin.addEventListener("input", () => {
+  elements.settingsPin.value = elements.settingsPin.value.replace(/\D/g, "").slice(0, 4);
+  elements.settingsStatus.textContent = "";
+  elements.settingsStatus.classList.remove("error-text");
+});
+
+elements.settingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (savingSettings) return;
+  const pin = elements.settingsPin.value;
+  if (elements.settingsLanEnabled.checked && !settingsValue?.pinConfigured && !/^\d{4}$/.test(pin)) {
+    elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access.";
+    elements.settingsStatus.classList.add("error-text");
+    elements.settingsPin.focus();
+    return;
+  }
+  savingSettings = true;
+  elements.settingsSave.disabled = true;
+  elements.settingsStatus.textContent = "Saving…";
+  elements.settingsStatus.classList.remove("error-text");
+  try {
+    const response = await apiFetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lanEnabled: elements.settingsLanEnabled.checked,
+        host: elements.settingsHost.value.trim(),
+        port: Number(elements.settingsPort.value),
+        pin,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.saved) throw new Error(result.error || "Could not save settings");
+    renderSettings(result.settings);
+    elements.settingsRestart.hidden = !result.restartRequired;
+    elements.settingsStatus.textContent = "Settings saved.";
+  } catch (error) {
+    elements.settingsStatus.textContent = error.message;
+    elements.settingsStatus.classList.add("error-text");
+  } finally {
+    savingSettings = false;
+    elements.settingsSave.disabled = false;
+  }
 });
 
 async function start() {

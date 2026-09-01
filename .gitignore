@@ -1,3 +1,5 @@
 node_modules/
 *.log
 .DS_Store
+.codex-pocket.local.json
+.codex-pocket.local.json.tmp

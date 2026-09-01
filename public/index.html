@@ -26,9 +26,12 @@
           <p class="eyebrow">Live task view</p>
           <h1>Codex Pocket</h1>
         </div>
-        <div class="connection" id="connection" aria-live="polite">
-          <span class="connection-dot"></span>
-          <span id="connection-label">Connecting</span>
+        <div class="topbar-actions">
+          <button class="secondary-button" id="settings-button" type="button">Settings</button>
+          <div class="connection" id="connection" aria-live="polite">
+            <span class="connection-dot"></span>
+            <span id="connection-label">Connecting</span>
+          </div>
         </div>
       </header>
 
@@ -112,6 +115,47 @@
         </aside>
       </div>
     </main>
+
+    <section class="settings-screen" id="settings-screen" hidden role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <form class="settings-card" id="settings-form">
+        <div class="settings-heading">
+          <div>
+            <p class="eyebrow">Local configuration</p>
+            <h2 id="settings-title">Settings</h2>
+          </div>
+          <button class="icon-button" id="settings-close" type="button" aria-label="Close settings">×</button>
+        </div>
+
+        <fieldset>
+          <legend>Network</legend>
+          <label class="checkbox-row" for="settings-lan-enabled">
+            <input id="settings-lan-enabled" type="checkbox">
+            <span>Enable access from local network</span>
+          </label>
+
+          <label for="settings-host">Bind address</label>
+          <input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required>
+          <p class="field-help">Use 0.0.0.0 for all local-network interfaces.</p>
+
+          <label for="settings-port">Port</label>
+          <input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required>
+        </fieldset>
+
+        <fieldset>
+          <legend>Access</legend>
+          <label for="settings-pin">4-digit PIN</label>
+          <input id="settings-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="Leave blank to keep current PIN">
+          <p class="field-help" id="settings-pin-state">No PIN configured.</p>
+        </fieldset>
+
+        <p class="settings-restart" id="settings-restart" hidden>Restart Codex Pocket to apply network changes.</p>
+        <p class="form-status" id="settings-status" aria-live="polite"></p>
+        <div class="settings-actions">
+          <button class="secondary-button" id="settings-cancel" type="button">Cancel</button>
+          <button class="primary-button" id="settings-save" type="submit">Save settings</button>
+        </div>
+      </form>
+    </section>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

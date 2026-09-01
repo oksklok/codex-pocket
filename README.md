@@ -36,14 +36,24 @@ npm start
 
 Then open [http://127.0.0.1:4173](http://127.0.0.1:4173).
 
-The gateway binds to `127.0.0.1` by default and does not require a PIN there. To make it available to a phone or another device on a trusted local network, configure a four-digit PIN and opt into LAN mode:
+The gateway binds to `127.0.0.1` by default and does not require a PIN there. For normal phone setup:
+
+1. Run `npm start` and open Codex Pocket locally.
+2. Open **Settings**.
+3. Enable local-network access, choose the bind address and port, and enter a four-digit PIN.
+4. Save, stop Codex Pocket, and run `npm start` again.
+5. Open `http://YOUR_MAC_LAN_IP:PORT` on the phone and enter the PIN.
+
+Settings are stored locally in `.codex-pocket.local.json`, which is ignored by Git and created only after the first save. Network and PIN changes take effect after restarting Codex Pocket. A malformed or unsafe config is ignored with a warning and the gateway falls back to `127.0.0.1:4173`.
+
+For troubleshooting or one-off overrides, command-line host/port values and `CODEX_POCKET_PIN` take precedence over the saved file:
 
 ```sh
-npm start
 CODEX_POCKET_PIN=1234 npm start -- --host 0.0.0.0
+npm start -- --host 192.168.1.123 --port 4180
 ```
 
-Then open `http://YOUR_MAC_LAN_IP:4173` on the other device and enter the same PIN. Successful login creates the existing random HttpOnly, SameSite session cookie; the PIN is not placed in URLs. Repeated incorrect PIN attempts are temporarily throttled in memory. You can also bind only to a specific local address with `--host 192.168.1.123`.
+Precedence is: safe defaults, then the saved local file, then explicit CLI `--host`/`--port` and the `CODEX_POCKET_PIN` environment variable. Successful LAN login creates a random HttpOnly, SameSite session cookie; the PIN is not placed in URLs. Repeated incorrect PIN attempts are temporarily throttled in memory.
 
 LAN mode uses plain HTTP and is intended only for a trusted home network. Remote or untrusted-network access should later go through an encrypted private network such as Tailscale rather than exposing this listener directly.
 
@@ -77,7 +87,7 @@ The low-bandwidth filtering remains internal. Optional byte counters are availab
 
 ## Read-only boundary
 
-Codex Pocket v0.1 cannot approve requests, answer structured input requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is available only through the explicit `--host` option and requires `CODEX_POCKET_PIN`.
+Codex Pocket v0.1 cannot approve requests, answer structured input requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is opt-in through local Settings or an explicit `--host` override and always requires a valid four-digit PIN.
 
 ## Protocol probe
 
