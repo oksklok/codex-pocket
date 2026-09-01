@@ -8,10 +8,22 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <main class="shell">
+    <section class="login-screen" id="login-screen" hidden aria-labelledby="login-title">
+      <form class="login-card" id="login-form" method="post" action="/api/login">
+        <p class="eyebrow">Trusted LAN access</p>
+        <h1 id="login-title">Codex Pocket</h1>
+        <p class="login-copy">Enter the shared token configured on this Mac.</p>
+        <label for="login-token">Access token</label>
+        <input id="login-token" name="token" type="password" autocomplete="current-password" required>
+        <button type="submit">Unlock</button>
+        <p class="form-status error-text" id="login-error" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <main class="shell" id="app-shell" hidden>
       <header class="topbar">
         <div>
-          <p class="eyebrow">Read-only live view</p>
+          <p class="eyebrow">Live task view</p>
           <h1>Codex Pocket</h1>
         </div>
         <div class="connection" id="connection" aria-live="polite">
@@ -68,6 +80,12 @@
           <div class="conversation" id="conversation" aria-live="polite">
             <p class="empty-state">Loading recent messages…</p>
           </div>
+          <form class="composer" id="composer">
+            <label class="sr-only" for="message-text">Message Codex</label>
+            <textarea id="message-text" rows="2" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
+            <button type="submit" id="send-message" disabled>Send</button>
+            <p class="form-status" id="composer-status" aria-live="polite"></p>
+          </form>
         </section>
 
         <aside class="sidebar" id="sidebar" hidden>

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, extname, join } from "node:path";
@@ -23,6 +23,11 @@ type Options = {
   port: number;
   ws?: string;
   thread?: string;
+};
+type AuthConfig = {
+  required: boolean;
+  token: string | null;
+  sessionId: string;
 };
 type PocketMessage = {
   id: string;
@@ -89,6 +94,7 @@ type PocketState = {
 };
 
 const MAX_TEXT = 12_000;
+const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_LIVE_MESSAGES = 16;
 const MAX_ACTIVITIES = 10;
 const ASSISTANT_FLUSH_MS = 120;
@@ -106,6 +112,7 @@ Options:
 
 Environment:
   CODEX_BIN      Codex executable to spawn (default: codex)
+  CODEX_POCKET_TOKEN Shared token required for non-loopback hosts
 `);
   process.exit(0);
 }
@@ -130,6 +137,34 @@ function parseArgs(args: string[]): Options {
     } else throw new Error(`unknown option: ${flag}`);
   }
   return options;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  if (normalized === "localhost" || normalized === "::1") return true;
+  const ipv4 = normalized.match(/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  return Boolean(ipv4 && ipv4.slice(1).every((part) => Number(part) <= 255));
+}
+
+function secretMatches(candidate: string, expected: string): boolean {
+  const left = Buffer.from(candidate);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function cookieValue(request: IncomingMessage, name: string): string | null {
+  for (const entry of String(request.headers.cookie ?? "").split(";")) {
+    const separator = entry.indexOf("=");
+    if (separator < 0 || entry.slice(0, separator).trim() !== name) continue;
+    return entry.slice(separator + 1).trim();
+  }
+  return null;
+}
+
+function isAuthenticated(request: IncomingMessage, auth: AuthConfig): boolean {
+  if (!auth.required) return true;
+  const session = cookieValue(request, "codex_pocket_session");
+  return Boolean(session && secretMatches(session, auth.sessionId));
 }
 
 function compact(value: unknown, limit = 240): string {
@@ -515,6 +550,7 @@ class PocketGateway {
   private rpc: RpcClient | null = null;
   private subscribers = new Set<ServerResponse>();
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
+  private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
   private options: Options;
   private shuttingDown = false;
@@ -572,6 +608,7 @@ class PocketGateway {
   snapshot(): JsonObject {
     const snapshot = JSON.parse(JSON.stringify(this.state));
     delete snapshot.metrics;
+    snapshot.message = this.messageCapability();
     return snapshot;
   }
 
@@ -606,6 +643,15 @@ class PocketGateway {
     return selection;
   }
 
+  sendMessage(text: unknown): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(
+      () => this.sendMessageNow(text),
+      () => this.sendMessageNow(text),
+    );
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
   countBrowserPayload(payload: Buffer | string): void {
     this.state.metrics.browserBytes += Buffer.byteLength(payload);
     this.state.metrics.browserMessages += 1;
@@ -618,6 +664,7 @@ class PocketGateway {
       this.rpc = null;
     }
     this.state.connected = false;
+    this.canAcceptDirectInput = false;
     this.state.connectionError = null;
     this.state.phase = "connecting";
     this.broadcast("status", this.statusPayload());
@@ -717,6 +764,50 @@ class PocketGateway {
     return this.snapshot();
   }
 
+  private async sendMessageNow(value: unknown): Promise<JsonObject> {
+    if (typeof value !== "string") throw new Error("message text is required");
+    const text = value.replace(/\r\n/g, "\n");
+    if (!text.trim()) throw new Error("message text is required");
+    if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`message exceeds ${MAX_MESSAGE_LENGTH.toLocaleString()} characters`);
+    if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const capability = this.messageCapability();
+    if (!capability.allowed || !capability.mode) throw new Error(capability.reason ?? "This task cannot accept a message right now");
+
+    const threadId = this.state.thread.id;
+    const input = [{ type: "text", text, text_elements: [] }];
+    if (capability.mode === "steer") {
+      const expectedTurnId = this.state.turn?.id;
+      if (!expectedTurnId) throw new Error("The active turn is not ready for a follow-up");
+      const result = await this.rpc.request("turn/steer", { threadId, expectedTurnId, input });
+      return {
+        accepted: true,
+        mode: "steer",
+        turnId: String(result?.turnId ?? expectedTurnId),
+        message: this.messageCapability(),
+      };
+    }
+
+    const result = await this.rpc.request("turn/start", { threadId, input });
+    const turn = result?.turn ?? {};
+    this.state.turn = {
+      id: String(turn.id ?? ""),
+      status: String(turn.status ?? "inProgress"),
+      startedAt: numberTime(turn.createdAt ?? turn.startedAt),
+      completedAt: null,
+      error: null,
+    };
+    this.state.phase = "working";
+    const message = this.messageCapability();
+    this.broadcast("turn", {
+      turn: this.state.turn,
+      phase: this.state.phase,
+      plan: this.state.plan,
+      activities: this.state.activities,
+      message,
+    });
+    return { accepted: true, mode: "start", turnId: this.state.turn.id, turn: this.state.turn, phase: this.state.phase, message };
+  }
+
   private async attachLoadedThread(threadId: string, broadcastReset: boolean): Promise<void> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const summary = this.loadedThreads.find((thread) => thread.id === threadId);
@@ -744,11 +835,35 @@ class PocketGateway {
       cwd: String(thread.cwd ?? summary.cwd),
       source: String(thread.source ?? "unknown"),
     };
+    this.canAcceptDirectInput = thread.canAcceptDirectInput === true;
     this.state.threadStatus = statusText(thread.status ?? summary.status);
     this.updateModel(thread);
+    if (this.canAcceptDirectInput && this.state.threadStatus.startsWith("active") && this.state.turn?.status !== "inProgress") {
+      await this.loadActiveTurn();
+    }
     this.state.phase = this.computePhase();
     if (broadcastReset) this.broadcast("snapshot", this.snapshot());
     console.log(`attached to ${this.state.thread.id} (${this.state.thread.name})`);
+  }
+
+  private async loadActiveTurn(): Promise<void> {
+    if (!this.rpc || !this.state.thread) return;
+    const page = await this.rpc.request("thread/turns/list", {
+      threadId: this.state.thread.id,
+      cursor: null,
+      limit: 5,
+      sortDirection: "desc",
+      itemsView: "summary",
+    });
+    const turn = Array.isArray(page?.data) ? page.data.find((candidate: any) => candidate?.status === "inProgress") : null;
+    if (!turn) return;
+    this.state.turn = {
+      id: String(turn.id ?? ""),
+      status: "inProgress",
+      startedAt: numberTime(turn.createdAt ?? turn.startedAt),
+      completedAt: null,
+      error: null,
+    };
   }
 
   private handleServerRequest(message: JsonObject): void {
@@ -768,7 +883,7 @@ class PocketGateway {
     if (!request) return;
     this.state.pending = [...this.state.pending.filter((candidate) => candidate.id !== request!.id), request];
     this.state.phase = this.computePhase();
-    this.broadcast("request", { pending: this.state.pending, phase: this.state.phase });
+    this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
   }
 
   private handleNotification(message: JsonObject): void {
@@ -805,6 +920,7 @@ class PocketGateway {
           phase: this.state.phase,
           plan: this.state.plan,
           activities: this.state.activities,
+          message: this.messageCapability(),
         });
         break;
       case "turn/completed": {
@@ -822,7 +938,7 @@ class PocketGateway {
         this.state.pending = [];
         this.state.phase = error || status === "failed" ? "failed" : "done";
         this.flushAllAssistantDeltas();
-        this.broadcast("turn", { turn: this.state.turn, phase: this.state.phase });
+        this.broadcast("turn", { turn: this.state.turn, phase: this.state.phase, message: this.messageCapability() });
         break;
       }
       case "turn/plan/updated":
@@ -841,7 +957,7 @@ class PocketGateway {
       case "serverRequest/resolved":
         this.state.pending = this.state.pending.filter((request) => request.id !== String(params.requestId));
         this.state.phase = this.computePhase();
-        this.broadcast("request", { pending: this.state.pending, phase: this.state.phase });
+        this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
         break;
       case "error":
         this.state.connectionError = compact(params.error?.message ?? params.message ?? params, 400);
@@ -922,6 +1038,7 @@ class PocketGateway {
     this.state.liveMessages = [];
     this.state.model = "Not exposed";
     this.state.reasoningEffort = "Not exposed";
+    this.canAcceptDirectInput = false;
   }
 
   private upsertLiveMessage(message: PocketMessage): void {
@@ -948,12 +1065,33 @@ class PocketGateway {
     return this.state.connected ? "done" : "connecting";
   }
 
+  private messageCapability(): JsonObject {
+    if (!this.state.connected || !this.rpc) return { allowed: false, mode: null, reason: "Codex is disconnected" };
+    if (!this.state.thread) return { allowed: false, mode: null, reason: "No loaded task is selected" };
+    if (this.state.pending.some((request) => request.kind === "permission")) {
+      return { allowed: false, mode: null, reason: "Resolve the pending permission request in Codex first" };
+    }
+    if (this.state.pending.some((request) => request.kind === "input")) {
+      return { allowed: false, mode: null, reason: "Answer the structured input request in Codex first" };
+    }
+    if (this.state.phase === "failed") return { allowed: false, mode: null, reason: "This task cannot accept a message while failed" };
+    if (!this.canAcceptDirectInput) {
+      return { allowed: false, mode: null, reason: "This loaded task does not accept direct input" };
+    }
+    if (this.state.turn?.status === "inProgress") return { allowed: true, mode: "steer", reason: null };
+    if (this.state.threadStatus.startsWith("active")) {
+      return { allowed: false, mode: null, reason: "The active turn is not ready for a follow-up" };
+    }
+    return { allowed: true, mode: "start", reason: null };
+  }
+
   private statusPayload(): JsonObject {
     return {
       connected: this.state.connected,
       connectionError: this.state.connectionError,
       threadStatus: this.state.threadStatus,
       phase: this.state.phase,
+      message: this.messageCapability(),
     };
   }
 
@@ -977,14 +1115,20 @@ const CONTENT_TYPES: Record<string, string> = {
 
 function securityHeaders(): Record<string, string> {
   return {
-    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
   };
 }
 
-function sendJson(response: ServerResponse, statusCode: number, value: unknown, gateway: PocketGateway): void {
+function sendJson(
+  response: ServerResponse,
+  statusCode: number,
+  value: unknown,
+  gateway: PocketGateway,
+  extraHeaders: Record<string, string> = {},
+): void {
   const payload = Buffer.from(JSON.stringify(value));
   gateway.countBrowserPayload(payload);
   response.writeHead(statusCode, {
@@ -992,6 +1136,7 @@ function sendJson(response: ServerResponse, statusCode: number, value: unknown, 
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
     "Content-Length": payload.length,
+    ...extraHeaders,
   });
   response.end(payload);
 }
@@ -1009,7 +1154,7 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     length += buffer.length;
-    if (length > 4_096) throw new Error("request body is too large");
+    if (length > 65_536) throw new Error("request body is too large");
     chunks.push(buffer);
   }
   if (length === 0) return {};
@@ -1020,9 +1165,43 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
   }
 }
 
-async function handleRequest(request: IncomingMessage, response: ServerResponse, gateway: PocketGateway): Promise<void> {
+async function handleRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gateway: PocketGateway,
+  auth: AuthConfig,
+): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (method === "GET" && url.pathname === "/api/auth") {
+    sendJson(response, 200, { required: auth.required, authenticated: isAuthenticated(request, auth) }, gateway);
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/login") {
+    const body = await readJsonBody(request);
+    const accepted = !auth.required || (typeof body.token === "string" && auth.token !== null && secretMatches(body.token, auth.token));
+    if (!accepted) {
+      sendJson(response, 401, { error: "Invalid access token" }, gateway);
+      return;
+    }
+    sendJson(response, 200, { authenticated: true }, gateway, {
+      "Set-Cookie": `codex_pocket_session=${auth.sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`,
+    });
+    return;
+  }
+  if ((url.pathname.startsWith("/api/") || url.pathname === "/events") && !isAuthenticated(request, auth)) {
+    sendJson(response, 401, { error: "Authentication required" }, gateway);
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/message") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 202, await gateway.sendMessage(body.text), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
   if (method === "POST" && url.pathname === "/api/thread") {
     try {
       const body = await readJsonBody(request);
@@ -1035,7 +1214,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     return;
   }
   if (method !== "GET" && method !== "HEAD") {
-    sendJson(response, 405, { error: "read-only gateway" }, gateway);
+    sendJson(response, 405, { error: "unsupported method" }, gateway);
     return;
   }
   if (url.pathname === "/healthz") {
@@ -1104,10 +1283,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  const authRequired = !isLoopbackHost(options.host);
+  const token = process.env.CODEX_POCKET_TOKEN ?? "";
+  if (authRequired && !token) throw new Error("CODEX_POCKET_TOKEN is required when --host is not loopback");
+  const auth: AuthConfig = {
+    required: authRequired,
+    token: authRequired ? token : null,
+    sessionId: randomBytes(32).toString("hex"),
+  };
   for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
   const gateway = new PocketGateway(options);
   const server = createServer((request, response) => {
-    handleRequest(request, response, gateway).catch((error) => {
+    handleRequest(request, response, gateway, auth).catch((error) => {
       if (!response.headersSent) sendJson(response, 500, { error: compact(error, 400) }, gateway);
       else response.end();
     });
@@ -1115,8 +1302,8 @@ async function main(): Promise<void> {
   server.listen(options.port, options.host, () => {
     const displayHost = options.host.includes(":") ? `[${options.host}]` : options.host;
     console.log(`Codex Pocket: http://${displayHost}:${options.port}`);
-    if (!["127.0.0.1", "localhost", "::1"].includes(options.host)) {
-      console.warn("Warning: LAN mode is unauthenticated; use it only on a trusted network.");
+    if (!isLoopbackHost(options.host)) {
+      console.warn("Warning: LAN control uses plain HTTP; use it only on a trusted network.");
     }
   });
   const shutdown = () => {

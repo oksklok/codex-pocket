@@ -1,4 +1,9 @@
 const elements = {
+  appShell: document.querySelector("#app-shell"),
+  loginScreen: document.querySelector("#login-screen"),
+  loginForm: document.querySelector("#login-form"),
+  loginToken: document.querySelector("#login-token"),
+  loginError: document.querySelector("#login-error"),
   connection: document.querySelector("#connection"),
   connectionLabel: document.querySelector("#connection-label"),
   phase: document.querySelector("#phase-pill"),
@@ -19,6 +24,10 @@ const elements = {
   planCount: document.querySelector("#plan-count"),
   activityPanel: document.querySelector("#activity-panel"),
   activityList: document.querySelector("#activity-list"),
+  composer: document.querySelector("#composer"),
+  messageText: document.querySelector("#message-text"),
+  sendMessage: document.querySelector("#send-message"),
+  composerStatus: document.querySelector("#composer-status"),
 };
 
 const phaseLabels = {
@@ -41,6 +50,27 @@ let historyEpoch = 0;
 let historyRequest = null;
 let threadsRequest = null;
 let switchingThread = false;
+let submittingMessage = false;
+let composerError = "";
+let composerNotice = "";
+
+function showLogin(message = "") {
+  source?.close();
+  source = null;
+  elements.appShell.hidden = true;
+  elements.loginScreen.hidden = false;
+  elements.loginError.textContent = message;
+  elements.loginToken.focus();
+}
+
+async function apiFetch(url, options) {
+  const response = await fetch(url, options);
+  if (response.status === 401) {
+    showLogin("Enter the shared token to continue.");
+    throw new Error("Authentication required");
+  }
+  return response;
+}
 
 function formatElapsed(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
@@ -81,14 +111,14 @@ function renderThreadSelector() {
     option.selected = thread.id === selectedId;
     elements.threadSelect.append(option);
   }
-  elements.threadSelect.disabled = switchingThread;
+  elements.threadSelect.disabled = switchingThread || submittingMessage;
   elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
 async function refreshLoadedThreads() {
   if (threadsRequest) return threadsRequest;
   threadsRequest = (async () => {
-    const response = await fetch("/api/threads");
+    const response = await apiFetch("/api/threads");
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || "Loaded tasks unavailable");
     loadedThreads = Array.isArray(value.threads) ? value.threads : [];
@@ -137,6 +167,22 @@ function renderState() {
   renderPlan();
   renderActivities();
   renderThreadSelector();
+  renderComposer();
+}
+
+function renderComposer() {
+  const capability = state?.message;
+  const allowed = Boolean(capability?.allowed) && !switchingThread && !submittingMessage;
+  elements.messageText.disabled = !allowed;
+  elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
+  const status = submittingMessage
+    ? "Sending…"
+    : composerError
+      || composerNotice
+      || (switchingThread ? "Switching tasks…" : capability?.reason)
+      || (capability?.mode === "steer" ? "Send a follow-up to the active turn." : "Start a new turn.");
+  elements.composerStatus.textContent = status;
+  elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
 }
 
 function updateSecondaryVisibility() {
@@ -237,6 +283,10 @@ function renderConversation({ preserveScroll = null, forceBottom = false } = {})
 }
 
 function mergeState(next, renderMessages = Array.isArray(next.liveMessages)) {
+  if (next.message && !next.message.allowed) {
+    composerError = "";
+    composerNotice = "";
+  }
   state = { ...(state || {}), ...next };
   if (Array.isArray(next.liveMessages)) {
     for (const message of next.liveMessages) liveMessages.set(message.id, message);
@@ -277,7 +327,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     const url = new URL("/api/history", location.origin);
     url.searchParams.set("limit", "2");
     if (cursor) url.searchParams.set("cursor", cursor);
-    const response = await fetch(url);
+    const response = await apiFetch(url);
     const page = await response.json();
     if (!response.ok) throw new Error(page.error || "History unavailable");
     if (epoch !== historyEpoch || requestedThreadId !== state?.thread?.id || page.threadId !== requestedThreadId) return;
@@ -309,6 +359,8 @@ async function selectThread(threadId) {
   if (!threadId || threadId === state?.thread?.id || switchingThread) return;
   const selected = loadedThreads.find((thread) => thread.id === threadId);
   switchingThread = true;
+  composerError = "";
+  composerNotice = "";
   source?.close();
   source = null;
   resetConversationState();
@@ -335,7 +387,7 @@ async function selectThread(threadId) {
   renderConversation({ forceBottom: true });
   elements.statusDetail.textContent = "Switching loaded task…";
   try {
-    const response = await fetch("/api/thread", {
+    const response = await apiFetch("/api/thread", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ threadId }),
@@ -345,14 +397,16 @@ async function selectThread(threadId) {
     applySnapshot(snapshot, false);
     switchingThread = false;
     renderThreadSelector();
+    renderComposer();
     connectEvents();
     await loadHistory(null, historyEpoch, true);
     await refreshLoadedThreads();
   } catch (error) {
     switchingThread = false;
+    renderComposer();
     elements.statusDetail.textContent = error.message;
     try {
-      const response = await fetch("/api/state");
+      const response = await apiFetch("/api/state");
       applySnapshot(await response.json(), true);
     } catch {
       setConnection(false, true);
@@ -366,11 +420,22 @@ function parseEvent(event) {
   return JSON.parse(event.data);
 }
 
+async function handleEventError() {
+  setConnection(false, true);
+  try {
+    const response = await fetch("/api/auth");
+    const auth = await response.json();
+    if (auth.required && !auth.authenticated) showLogin("Your session expired. Enter the shared token again.");
+  } catch {
+    // The normal EventSource retry handles transient gateway outages.
+  }
+}
+
 function connectEvents() {
   source?.close();
   source = new EventSource("/events");
   source.addEventListener("open", () => setConnection(true));
-  source.addEventListener("error", () => setConnection(false, true));
+  source.addEventListener("error", handleEventError);
   source.addEventListener("snapshot", (event) => {
     if (!switchingThread) applySnapshot(parseEvent(event));
   });
@@ -383,6 +448,7 @@ function connectEvents() {
   source.addEventListener("turn", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
+    if (value.turn?.status && value.turn.status !== "inProgress") composerNotice = "";
     mergeState(value);
   });
   source.addEventListener("plan", (event) => {
@@ -431,6 +497,52 @@ elements.threadSelect.addEventListener("focus", () => {
   refreshLoadedThreads();
 });
 
+elements.composer.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const text = elements.messageText.value;
+  if (!text.trim() || submittingMessage || switchingThread) return;
+  submittingMessage = true;
+  composerError = "";
+  composerNotice = "";
+  renderComposer();
+  renderThreadSelector();
+  try {
+    const response = await apiFetch("/api/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
+    elements.messageText.value = "";
+    composerNotice = result.mode === "steer" ? "Follow-up accepted." : "Message accepted.";
+    mergeState({
+      ...(result.turn ? { turn: result.turn } : {}),
+      ...(result.phase ? { phase: result.phase } : {}),
+      ...(result.message ? { message: result.message } : {}),
+    });
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    submittingMessage = false;
+    renderComposer();
+    renderThreadSelector();
+  }
+});
+
+elements.messageText.addEventListener("input", () => {
+  composerError = "";
+  composerNotice = "";
+  renderComposer();
+});
+
+elements.messageText.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    elements.composer.requestSubmit();
+  }
+});
+
 elements.conversation.addEventListener("scroll", () => {
   shouldFollowConversation = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 80;
   if (!shouldFollowConversation && elements.conversation.scrollTop < 140 && nextCursor && !historyRequest) {
@@ -444,9 +556,11 @@ setInterval(() => {
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
 }, 1_000);
 
-async function start() {
+async function startApp() {
+  elements.loginScreen.hidden = true;
+  elements.appShell.hidden = false;
   try {
-    const [response] = await Promise.all([fetch("/api/state"), refreshLoadedThreads()]);
+    const [response] = await Promise.all([apiFetch("/api/state"), refreshLoadedThreads()]);
     applySnapshot(await response.json(), false);
   } catch (error) {
     elements.statusDetail.textContent = error.message;
@@ -454,6 +568,41 @@ async function start() {
   }
   await loadHistory(null, historyEpoch, true);
   connectEvents();
+}
+
+elements.loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = elements.loginForm.querySelector("button");
+  button.disabled = true;
+  elements.loginError.textContent = "Checking…";
+  try {
+    const response = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: elements.loginToken.value }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.authenticated) throw new Error(result.error || "Could not sign in");
+    elements.loginToken.value = "";
+    location.reload();
+  } catch (error) {
+    elements.loginError.textContent = error.message;
+    button.disabled = false;
+  }
+});
+
+async function start() {
+  try {
+    const response = await fetch("/api/auth");
+    const auth = await response.json();
+    if (auth.required && !auth.authenticated) {
+      showLogin();
+      return;
+    }
+    await startApp();
+  } catch (error) {
+    showLogin(`Gateway unavailable: ${error.message}`);
+  }
 }
 
 start();
