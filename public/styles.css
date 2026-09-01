@@ -62,7 +62,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .shell { height: 100dvh; display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; }
 .topbar {
   position: relative; z-index: 4; display: grid;
-  grid-template-columns: auto minmax(190px,1fr) auto minmax(230px,auto) auto;
+  grid-template-columns: auto minmax(280px,1fr) auto minmax(230px,auto) auto;
   align-items: center; gap: 10px; min-height: 58px; padding: 8px 12px;
   border-bottom: 1px solid var(--line-soft); background: rgba(13,17,23,.96);
 }
@@ -70,8 +70,9 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px;
   background: rgba(69,200,138,.13); color: var(--accent); font-size: .74rem; font-weight: 850;
 }
-.task-control { min-width: 0; }
-.task-control select, .runtime-controls select {
+.selection-controls { min-width: 0; display: grid; grid-template-columns: minmax(96px,.34fr) minmax(150px,1fr); gap: 7px; }
+.machine-control, .task-control { min-width: 0; }
+.machine-control select, .task-control select, .runtime-controls select {
   min-height: 36px; padding: 6px 28px 6px 9px; font-size: .76rem; text-overflow: ellipsis;
 }
 .phase-row, .runtime-controls, .topbar-actions, .connection, .panel-heading, .inspector-heading, .settings-heading, .settings-actions, .composer-actions, .queue-banner {
@@ -177,6 +178,12 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .settings-card fieldset { display: grid; gap: 8px; margin: 0 0 13px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 10px; }
 .settings-card legend { padding: 0 5px; color: var(--text); font-size: .78rem; font-weight: 750; }
 .settings-card input { min-height: 39px; padding: 8px 10px; }
+.settings-machines { display: grid; gap: 7px; }
+.machine-settings-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; gap: 7px; align-items: center; }
+.machine-settings-row input { min-width: 0; }
+.machine-settings-row .icon-button { width: 39px; height: 39px; color: var(--muted); }
+.machine-settings-empty { margin: 2px 0; color: var(--subtle); font-size: .7rem; }
+.machine-add { justify-self: start; }
 .checkbox-row { display: flex !important; align-items: center; gap: 9px; }
 .checkbox-row input { width: 17px; min-height: 17px; }
 .field-help { margin: -3px 0 5px; color: var(--subtle); font-size: .65rem; }
@@ -190,7 +197,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 @media (max-width: 860px) {
   .topbar { grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; padding: 7px 9px; }
   .brand { display: none; }
-  .task-control { grid-column: 1 / 4; grid-row: 1; }
+  .selection-controls { grid-column: 1 / 4; grid-row: 1; grid-template-columns: minmax(88px,.34fr) minmax(0,1fr); }
   .phase-row { grid-column: 1; grid-row: 2; }
   .runtime-controls { grid-column: 2; grid-row: 2; }
   .topbar-actions { grid-column: 3; grid-row: 2; }

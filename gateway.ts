@@ -25,12 +25,23 @@ type Options = {
   port: number;
   ws?: string;
   thread?: string;
+  machines: MachineConfig[];
+};
+type MachineConfig = {
+  name: string;
+  ssh: string;
+};
+type MachineDefinition = {
+  id: string;
+  name: string;
+  ssh: string | null;
 };
 type LocalConfig = {
   lanEnabled: boolean;
   host: string;
   port: number;
   pin: string | null;
+  machines: MachineConfig[];
 };
 type LocalSettings = {
   path: string;
@@ -88,7 +99,9 @@ type QueuedMessage = {
 type PocketState = {
   connected: boolean;
   connectionError: string | null;
+  machineId: string;
   machine: string;
+  transport: string;
   platform: string;
   userAgent: string;
   thread: null | {
@@ -141,6 +154,7 @@ const SAFE_CONFIG: LocalConfig = {
   host: "127.0.0.1",
   port: 4173,
   pin: null,
+  machines: [],
 };
 
 function usage(): never {
@@ -187,6 +201,31 @@ function validHost(host: unknown): host is string {
   return isIP(host) !== 0 || /^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)$/i.test(host);
 }
 
+function validSshAlias(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= 128
+    && value.trim() === value
+    && /^[a-z0-9][a-z0-9._-]*$/i.test(value);
+}
+
+function validateMachines(value: unknown): MachineConfig[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("machines must be an array");
+  const aliases = new Set<string>();
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`machine ${index + 1} must be an object`);
+    const candidate = entry as JsonObject;
+    const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+    if (!name || name.length > 80) throw new Error(`machine ${index + 1} needs a name of 80 characters or fewer`);
+    if (!validSshAlias(candidate.ssh)) throw new Error(`machine ${index + 1} needs a simple SSH alias`);
+    const normalized = candidate.ssh.toLowerCase();
+    if (aliases.has(normalized)) throw new Error(`duplicate SSH alias: ${candidate.ssh}`);
+    aliases.add(normalized);
+    return { name, ssh: candidate.ssh };
+  });
+}
+
 function validateLocalConfig(value: unknown): LocalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected a JSON object");
   const candidate = value as JsonObject;
@@ -206,6 +245,7 @@ function validateLocalConfig(value: unknown): LocalConfig {
     host: candidate.host,
     port: candidate.port,
     pin: candidate.pin,
+    machines: validateMachines(candidate.machines),
   };
 }
 
@@ -236,6 +276,7 @@ function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin:
     host: candidate.host,
     port: candidate.port,
     pin,
+    machines: candidate.machines ?? settings.config.machines,
   });
   const temporaryPath = `${settings.path}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -252,6 +293,7 @@ function publicSettings(settings: LocalSettings, fallbackPin: string | null): Js
     port: settings.config.port,
     pinConfigured: /^\d{4}$/.test(settings.config.pin ?? fallbackPin ?? ""),
     phoneUrls: phoneUrls(settings.config),
+    machines: settings.config.machines.map((machine) => ({ ...machine })),
   };
 }
 
@@ -260,7 +302,8 @@ function settingsNeedRestart(settings: LocalSettings, options: Options, auth: Au
   const desiredPin = settings.config.pin;
   return desiredHost !== options.host
     || settings.config.port !== options.port
-    || !secretMatches(desiredPin ?? "", auth.pin ?? "");
+    || !secretMatches(desiredPin ?? "", auth.pin ?? "")
+    || JSON.stringify(settings.config.machines) !== JSON.stringify(options.machines);
 }
 
 function browserUrl(host: string, port: number): string {
@@ -516,10 +559,15 @@ function clientFrame(opcode: number, payload: Buffer): Buffer {
 function connectProxy(
   onPayload: (payload: Buffer) => void,
   onClose: (error?: Error) => void,
+  sshAlias?: string,
 ): Promise<Wire> {
   return new Promise((resolve, reject) => {
     const codexBin = process.env.CODEX_BIN || "codex";
-    const child: ChildProcessWithoutNullStreams = spawn(codexBin, ["app-server", "proxy"], {
+    const command = sshAlias ? process.env.SSH_BIN || "ssh" : codexBin;
+    const args = sshAlias
+      ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshAlias, "codex", "app-server", "proxy"]
+      : ["app-server", "proxy"];
+    const child: ChildProcessWithoutNullStreams = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const websocketKey = randomBytes(16).toString("base64");
@@ -622,7 +670,7 @@ function connectProxy(
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       const text = compact(chunk, 400);
-      if (text) console.error(`app-server proxy: ${text}`);
+      if (text) console.error(`${sshAlias ? `${sshAlias} SSH proxy` : "app-server proxy"}: ${text}`);
     });
     child.once("error", (error) => {
       if (!settled) reject(error);
@@ -683,7 +731,7 @@ class RpcClient {
   onRawPayload: (bytes: number) => void = () => {};
   onClose: (error?: Error) => void = () => {};
 
-  async connect(ws?: string): Promise<void> {
+  async connect(ws?: string, sshAlias?: string): Promise<void> {
     const onPayload = (payload: Buffer) => {
       this.onRawPayload(payload.length);
       try {
@@ -694,7 +742,7 @@ class RpcClient {
     };
     this.wire = ws
       ? await connectWebSocket(ws, onPayload, (error) => this.onClose(error))
-      : await connectProxy(onPayload, (error) => this.onClose(error));
+      : await connectProxy(onPayload, (error) => this.onClose(error), sshAlias);
   }
 
   request(method: string, params: JsonObject = {}): Promise<any> {
@@ -799,7 +847,7 @@ function normalizeHistoryTurn(turn: any): JsonObject {
   };
 }
 
-class PocketGateway {
+class MachineRuntime {
   readonly state: PocketState;
   private rpc: RpcClient | null = null;
   private subscribers = new Set<ServerResponse>();
@@ -807,17 +855,21 @@ class PocketGateway {
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
   private options: Options;
+  private definition: MachineDefinition;
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private selectionQueue: Promise<void> = Promise.resolve();
   private startingQueuedMessage = false;
 
-  constructor(options: Options) {
+  constructor(options: Options, definition: MachineDefinition) {
     this.options = options;
+    this.definition = definition;
     this.state = {
       connected: false,
       connectionError: null,
-      machine: "local",
+      machineId: definition.id,
+      machine: definition.name,
+      transport: definition.ssh ? `SSH · ${definition.ssh}` : "Local",
       platform: "unknown",
       userAgent: "unknown",
       thread: null,
@@ -859,7 +911,10 @@ class PocketGateway {
   addSubscriber(response: ServerResponse): void {
     this.subscribers.add(response);
     this.writeSse(response, "snapshot", this.snapshot());
-    response.on("close", () => this.subscribers.delete(response));
+  }
+
+  removeSubscriber(response: ServerResponse): void {
+    this.subscribers.delete(response);
   }
 
   snapshot(): JsonObject {
@@ -884,11 +939,25 @@ class PocketGateway {
       itemsView: "summary",
     });
     const turns = Array.isArray(page?.data) ? page.data.map(normalizeHistoryTurn).reverse() : [];
-    return { threadId, turns, nextCursor: page?.nextCursor ?? null };
+    return { machineId: this.definition.id, threadId, turns, nextCursor: page?.nextCursor ?? null };
   }
 
   async listLoadedThreads(): Promise<LoadedThreadSummary[]> {
+    if (!this.rpc || !this.state.connected) return [];
     return JSON.parse(JSON.stringify(await this.refreshLoadedThreads()));
+  }
+
+  machineSummary(): JsonObject {
+    return {
+      id: this.definition.id,
+      name: this.definition.name,
+      ssh: this.definition.ssh,
+      transport: this.state.transport,
+      connected: this.state.connected,
+      connectionError: this.state.connectionError,
+      loadedTaskCount: this.loadedThreads.length,
+      selectedThreadId: this.state.thread?.id ?? null,
+    };
   }
 
   selectThread(threadId: string): Promise<JsonObject> {
@@ -953,7 +1022,7 @@ class PocketGateway {
       if (this.rpc === rpc) this.handleClose(error);
     };
     try {
-      await rpc.connect(this.options.ws);
+      await rpc.connect(this.definition.ssh ? undefined : this.options.ws, this.definition.ssh ?? undefined);
       const initialized = await rpc.request("initialize", {
         clientInfo: { name: "codex_pocket_gateway", title: "Codex Pocket Gateway", version: "0.1.0" },
         capabilities: { experimentalApi: true, requestAttestation: false },
@@ -961,14 +1030,27 @@ class PocketGateway {
       rpc.notify("initialized");
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
-      this.state.machine = initialized?.platformOs || initialized?.platformFamily || "local";
       await this.loadModels();
       const loadedThreads = await this.refreshLoadedThreads();
       const active = loadedThreads.find((thread) => thread.status.startsWith("active"));
-      const targetId = this.options.thread ?? active?.id ?? loadedThreads[0]?.id;
-      if (!targetId) throw new Error("no loaded Codex thread is available");
-      await this.attachLoadedThread(String(targetId), false);
+      const preferred = this.options.thread && loadedThreads.some((thread) => thread.id === this.options.thread)
+        ? this.options.thread
+        : undefined;
+      const targetId = preferred ?? active?.id ?? loadedThreads[0]?.id;
       this.state.connected = true;
+      this.state.connectionError = null;
+      if (!targetId) {
+        this.resetThreadState();
+        this.state.thread = null;
+        this.state.threadStatus = "idle";
+        this.state.connectionError = null;
+        this.state.phase = "done";
+        this.broadcast("snapshot", this.snapshot());
+        console.log(`${this.definition.name}: connected; no loaded tasks`);
+        return;
+      }
+      await this.attachLoadedThread(String(targetId), false);
+      this.options.thread = String(targetId);
       this.state.connectionError = null;
       this.state.phase = this.computePhase();
       this.broadcast("snapshot", this.snapshot());
@@ -976,10 +1058,17 @@ class PocketGateway {
       rpc.onClose = () => {};
       rpc.close();
       if (this.rpc === rpc) this.rpc = null;
-      this.state.connectionError = error instanceof Error ? error.message : String(error);
+      const technicalError = error instanceof Error ? error.message : String(error);
+      this.state.connectionError = this.definition.ssh
+        ? `Could not connect to ${this.definition.name}. Make sure “ssh ${this.definition.ssh}” works from this Mac.`
+        : technicalError;
+      this.loadedThreads = [];
+      this.resetThreadState();
+      this.state.thread = null;
+      this.state.threadStatus = "disconnected";
       this.state.phase = "failed";
-      this.broadcast("status", this.statusPayload());
-      console.error(`gateway attach failed: ${this.state.connectionError}`);
+      this.broadcast("snapshot", this.snapshot());
+      console.error(`${this.definition.name} attach failed: ${technicalError}`);
       this.scheduleReconnect();
     }
   }
@@ -988,9 +1077,15 @@ class PocketGateway {
     if (this.shuttingDown) return;
     this.rpc = null;
     this.state.connected = false;
-    this.state.connectionError = error?.message ?? "app-server connection closed";
+    this.state.connectionError = this.definition.ssh
+      ? `Connection to ${this.definition.name} dropped. Pocket will retry automatically.`
+      : error?.message ?? "app-server connection closed";
+    this.loadedThreads = [];
+    this.resetThreadState();
+    this.state.thread = null;
+    this.state.threadStatus = "disconnected";
     this.state.phase = "failed";
-    this.broadcast("status", this.statusPayload());
+    this.broadcast("snapshot", this.snapshot());
     this.scheduleReconnect();
   }
 
@@ -999,7 +1094,7 @@ class PocketGateway {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect().catch((error) => console.error(error));
-    }, 2_000);
+    }, 5_000);
   }
 
   private async refreshLoadedThreads(): Promise<LoadedThreadSummary[]> {
@@ -1176,7 +1271,7 @@ class PocketGateway {
     }
     this.state.phase = this.computePhase();
     if (broadcastReset) this.broadcast("snapshot", this.snapshot());
-    console.log(`attached to ${this.state.thread.id} (${this.state.thread.name})`);
+    console.log(`${this.definition.name}: attached to ${this.state.thread.id} (${this.state.thread.name})`);
   }
 
   private async loadActiveTurn(): Promise<void> {
@@ -1202,6 +1297,8 @@ class PocketGateway {
   private handleServerRequest(message: JsonObject): void {
     const method = String(message.method ?? "");
     const params = message.params ?? {};
+    if (!this.state.thread) return;
+    if (params.threadId && String(params.threadId) !== this.state.thread.id) return;
     let request: PocketRequest | null = null;
     if (method.includes("requestApproval")) {
       request = {
@@ -1222,7 +1319,7 @@ class PocketGateway {
   private handleNotification(message: JsonObject): void {
     const method = String(message.method ?? "");
     const params = message.params ?? {};
-    if (this.state.thread && params.threadId && String(params.threadId) !== this.state.thread.id) return;
+    if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
     switch (method) {
       case "thread/status/changed":
         this.state.threadStatus = statusText(params.status);
@@ -1493,6 +1590,127 @@ class PocketGateway {
   }
 }
 
+class PocketGateway {
+  private runtimes = new Map<string, MachineRuntime>();
+  private selectedMachineId = "local";
+  private subscribers = new Set<ServerResponse>();
+  private operationQueue: Promise<void> = Promise.resolve();
+
+  constructor(options: Options) {
+    const definitions: MachineDefinition[] = [
+      { id: "local", name: "This Mac", ssh: null },
+      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh })),
+    ];
+    for (const definition of definitions) {
+      const runtimeOptions: Options = {
+        ...options,
+        ws: definition.id === "local" ? options.ws : undefined,
+        thread: definition.id === "local" ? options.thread : undefined,
+      };
+      this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition));
+    }
+  }
+
+  get state(): PocketState {
+    return this.selected().state;
+  }
+
+  async start(): Promise<void> {
+    await Promise.all([...this.runtimes.values()].map((runtime) => runtime.start()));
+  }
+
+  stop(): void {
+    for (const runtime of this.runtimes.values()) runtime.stop();
+    this.subscribers.clear();
+  }
+
+  addSubscriber(response: ServerResponse): void {
+    this.subscribers.add(response);
+    this.selected().addSubscriber(response);
+    response.on("close", () => {
+      this.subscribers.delete(response);
+      for (const runtime of this.runtimes.values()) runtime.removeSubscriber(response);
+    });
+  }
+
+  snapshot(): JsonObject {
+    return this.selected().snapshot();
+  }
+
+  diagnostics(): JsonObject {
+    return {
+      selectedMachineId: this.selectedMachineId,
+      machines: Object.fromEntries([...this.runtimes].map(([id, runtime]) => [id, runtime.diagnostics()])),
+    };
+  }
+
+  listMachines(): JsonObject[] {
+    return [...this.runtimes.values()].map((runtime) => ({
+      ...runtime.machineSummary(),
+      selected: runtime.state.machineId === this.selectedMachineId,
+    }));
+  }
+
+  selectMachine(machineId: unknown): Promise<JsonObject> {
+    return this.enqueue(async () => {
+      const requestedId = String(machineId ?? "").trim();
+      const next = this.runtimes.get(requestedId);
+      if (!next) throw new Error("selected machine is not configured");
+      if (requestedId === this.selectedMachineId) return next.snapshot();
+      const previous = this.selected();
+      for (const response of this.subscribers) previous.removeSubscriber(response);
+      this.selectedMachineId = requestedId;
+      for (const response of this.subscribers) next.addSubscriber(response);
+      return next.snapshot();
+    });
+  }
+
+  async history(cursor: string | null, limit: number, machineId?: unknown): Promise<JsonObject> {
+    return this.requireSelected(machineId).history(cursor, limit);
+  }
+
+  async listLoadedThreads(machineId?: unknown): Promise<LoadedThreadSummary[]> {
+    return this.requireSelected(machineId).listLoadedThreads();
+  }
+
+  selectThread(machineId: unknown, threadId: string): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).selectThread(threadId));
+  }
+
+  sendMessage(machineId: unknown, text: unknown, action: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).sendMessage(text, action));
+  }
+
+  cancelQueuedMessage(machineId: unknown): Promise<JsonObject> {
+    return this.enqueue(async () => this.requireSelected(machineId).cancelQueuedMessage());
+  }
+
+  updateThreadSettings(machineId: unknown, model: unknown, effort: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).updateThreadSettings(model, effort));
+  }
+
+  countBrowserPayload(payload: Buffer | string): void {
+    this.selected().countBrowserPayload(payload);
+  }
+
+  private selected(): MachineRuntime {
+    return this.runtimes.get(this.selectedMachineId)!;
+  }
+
+  private requireSelected(machineId: unknown): MachineRuntime {
+    const requestedId = String(machineId ?? "").trim();
+    if (!requestedId) throw new Error("machineId is required");
+    if (requestedId !== this.selectedMachineId) throw new Error("selected machine changed; refresh and try again");
+    return this.selected();
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operationQueue.then(operation, operation);
+    this.operationQueue = result.then(() => {}, () => {});
+    return result;
+  }
+}
+
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -1629,20 +1847,24 @@ async function handleRequest(
   if (method === "POST" && url.pathname === "/api/message") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 202, await gateway.sendMessage(body.text, body.action), gateway);
+      sendJson(response, 202, await gateway.sendMessage(body.machineId, body.text, body.action), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
     return;
   }
   if (method === "DELETE" && url.pathname === "/api/message/queue") {
-    sendJson(response, 200, gateway.cancelQueuedMessage(), gateway);
+    try {
+      sendJson(response, 200, await gateway.cancelQueuedMessage(url.searchParams.get("machineId")), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
     return;
   }
   if (method === "POST" && url.pathname === "/api/thread/settings") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 200, await gateway.updateThreadSettings(body.model, body.effort), gateway);
+      sendJson(response, 200, await gateway.updateThreadSettings(body.machineId, body.model, body.effort), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
@@ -1651,11 +1873,20 @@ async function handleRequest(
   if (method === "POST" && url.pathname === "/api/thread") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 200, await gateway.selectThread(String(body.threadId ?? "")), gateway);
+      sendJson(response, 200, await gateway.selectThread(body.machineId, String(body.threadId ?? "")), gateway);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const status = message.includes("not currently loaded") || message.includes("required") ? 409 : 400;
+      const status = message.includes("not currently loaded") || message.includes("required") || message.includes("selected machine") ? 409 : 400;
       sendJson(response, status, { error: message }, gateway);
+    }
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/machine") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await gateway.selectMachine(body.machineId), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
     return;
   }
@@ -1664,7 +1895,7 @@ async function handleRequest(
     return;
   }
   if (url.pathname === "/healthz") {
-    sendJson(response, gateway.state.connected ? 200 : 503, { ok: gateway.state.connected }, gateway);
+    sendJson(response, 200, { ok: true, selectedConnected: gateway.state.connected }, gateway);
     return;
   }
   if (url.pathname === "/api/state") {
@@ -1677,10 +1908,15 @@ async function handleRequest(
   }
   if (url.pathname === "/api/threads") {
     try {
-      sendJson(response, 200, { threads: await gateway.listLoadedThreads() }, gateway);
+      sendJson(response, 200, { threads: await gateway.listLoadedThreads(url.searchParams.get("machineId")) }, gateway);
     } catch (error) {
-      sendJson(response, 503, { error: error instanceof Error ? error.message : String(error) }, gateway);
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(response, message.includes("selected machine") ? 409 : 503, { error: message }, gateway);
     }
+    return;
+  }
+  if (url.pathname === "/api/machines") {
+    sendJson(response, 200, { machines: gateway.listMachines() }, gateway);
     return;
   }
   if (url.pathname === "/api/history") {
@@ -1688,9 +1924,10 @@ async function handleRequest(
     const rawLimit = Number(url.searchParams.get("limit") ?? 6);
     const limit = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 20) : 6;
     try {
-      sendJson(response, 200, await gateway.history(cursor, limit), gateway);
+      sendJson(response, 200, await gateway.history(cursor, limit, url.searchParams.get("machineId")), gateway);
     } catch (error) {
-      sendJson(response, 503, { error: error instanceof Error ? error.message : String(error) }, gateway);
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(response, message.includes("selected machine") ? 409 : 503, { error: message }, gateway);
     }
     return;
   }
@@ -1732,6 +1969,7 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2), {
     host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
     port: settings.config.port,
+    machines: settings.config.machines,
   });
   const authRequired = !isLoopbackHost(options.host);
   const pin = Object.prototype.hasOwnProperty.call(process.env, "CODEX_POCKET_PIN")

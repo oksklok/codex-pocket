@@ -10,6 +10,7 @@ const elements = {
   elapsed: document.querySelector("#elapsed"),
   statusDetail: document.querySelector("#status-detail"),
   machine: document.querySelector("#machine"),
+  machineSelect: document.querySelector("#machine-select"),
   project: document.querySelector("#project"),
   thread: document.querySelector("#thread"),
   threadSelect: document.querySelector("#thread-select"),
@@ -48,6 +49,8 @@ const elements = {
   settingsPort: document.querySelector("#settings-port"),
   settingsPin: document.querySelector("#settings-pin"),
   settingsPinState: document.querySelector("#settings-pin-state"),
+  settingsMachines: document.querySelector("#settings-machines"),
+  machineAdd: document.querySelector("#machine-add"),
   settingsRestart: document.querySelector("#settings-restart"),
   restartPocket: document.querySelector("#restart-pocket"),
   phoneUrls: document.querySelector("#phone-urls"),
@@ -68,13 +71,16 @@ let state = null;
 let historyMessages = new Map();
 let liveMessages = new Map();
 let loadedThreads = [];
+let machines = [];
 let nextCursor = null;
 let source = null;
 let shouldFollowConversation = true;
 let historyEpoch = 0;
 let historyRequest = null;
 let threadsRequest = null;
+let machinesRequest = null;
 let switchingThread = false;
+let switchingMachine = false;
 let submittingMessage = false;
 let updatingModel = false;
 let cancellingQueue = false;
@@ -127,15 +133,45 @@ function setConnection(connected, failed = false) {
   elements.connectionLabel.textContent = connected ? "Live" : failed ? "Disconnected" : "Connecting";
 }
 
+function renderMachineSelector() {
+  const selectedId = state?.machineId || "local";
+  elements.machineSelect.replaceChildren();
+  for (const machine of machines) {
+    const option = document.createElement("option");
+    option.value = machine.id;
+    option.textContent = machine.connected ? machine.name : `${machine.name} · Offline`;
+    option.title = machine.ssh ? `SSH · ${machine.ssh}` : "Local Codex runtime";
+    option.selected = machine.id === selectedId;
+    elements.machineSelect.append(option);
+  }
+  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel;
+}
+
+async function refreshMachines() {
+  if (machinesRequest) return machinesRequest;
+  machinesRequest = (async () => {
+    const response = await apiFetch("/api/machines");
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error || "Machines unavailable");
+    machines = Array.isArray(value.machines) ? value.machines : [];
+    renderMachineSelector();
+  })();
+  try {
+    await machinesRequest;
+  } finally {
+    machinesRequest = null;
+  }
+}
+
 function renderThreadSelector() {
   const selectedId = state?.thread?.id || "";
   elements.threadSelect.replaceChildren();
   if (loadedThreads.length === 0) {
     const option = document.createElement("option");
-    option.textContent = "No loaded tasks";
+    option.textContent = state?.connected ? "No loaded tasks" : "Machine unavailable";
     elements.threadSelect.append(option);
     elements.threadSelect.disabled = true;
-    elements.threadCount.textContent = "No loaded tasks";
+    elements.threadCount.textContent = state?.connected ? "No loaded tasks" : state?.connectionError || "Machine unavailable";
     return;
   }
   for (const thread of loadedThreads) {
@@ -146,25 +182,35 @@ function renderThreadSelector() {
     option.selected = thread.id === selectedId;
     elements.threadSelect.append(option);
   }
-  elements.threadSelect.disabled = switchingThread || submittingMessage || updatingModel;
+  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || !state?.connected;
   elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
 async function refreshLoadedThreads() {
-  if (threadsRequest) return threadsRequest;
-  threadsRequest = (async () => {
-    const response = await apiFetch("/api/threads");
+  const requestedMachineId = state?.machineId || "local";
+  if (threadsRequest?.machineId === requestedMachineId) return threadsRequest.promise;
+  const token = { machineId: requestedMachineId, promise: null };
+  token.promise = (async () => {
+    const url = new URL("/api/threads", location.origin);
+    url.searchParams.set("machineId", requestedMachineId);
+    const response = await apiFetch(url);
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || "Loaded tasks unavailable");
+    if (requestedMachineId !== state?.machineId) return;
     loadedThreads = Array.isArray(value.threads) ? value.threads : [];
     renderThreadSelector();
   })();
+  threadsRequest = token;
   try {
-    await threadsRequest;
+    await token.promise;
   } catch (error) {
-    elements.threadCount.textContent = error.message;
+    if (requestedMachineId === state?.machineId) {
+      loadedThreads = [];
+      renderThreadSelector();
+      elements.threadCount.textContent = error.message;
+    }
   } finally {
-    threadsRequest = null;
+    if (threadsRequest === token) threadsRequest = null;
   }
 }
 
@@ -173,7 +219,7 @@ function currentCatalogModel(modelName = state?.model) {
 }
 
 function renderModelControls() {
-  const models = state?.models || [];
+  const models = state?.thread ? state?.models || [] : [];
   elements.modelSelect.replaceChildren();
   for (const model of models) {
     const option = document.createElement("option");
@@ -260,7 +306,7 @@ function renderQueue() {
 
 function renderComposer() {
   const capability = state?.message;
-  const allowed = Boolean(capability?.allowed) && !switchingThread && !submittingMessage;
+  const allowed = Boolean(capability?.allowed) && !switchingMachine && !switchingThread && !submittingMessage;
   const active = capability?.mode === "steer";
   elements.messageText.disabled = !allowed;
   elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
@@ -276,7 +322,7 @@ function renderComposer() {
     ? "Sending…"
     : composerError
       || composerNotice
-      || (switchingThread ? "Switching tasks…" : capability?.reason)
+      || (switchingMachine ? "Switching machines…" : switchingThread ? "Switching tasks…" : capability?.reason)
       || (active ? "Send immediately, or keep one message for the next turn." : "Start a new turn.");
   elements.composerStatus.textContent = status;
   elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
@@ -285,6 +331,13 @@ function renderComposer() {
 
 function renderState() {
   if (!state) return;
+  const selectedMachine = machines.find((machine) => machine.id === state.machineId);
+  if (selectedMachine) {
+    selectedMachine.connected = Boolean(state.connected);
+    selectedMachine.connectionError = state.connectionError || null;
+    selectedMachine.selectedThreadId = state.thread?.id || null;
+    selectedMachine.loadedTaskCount = loadedThreads.length;
+  }
   const selectedThread = loadedThreads.find((thread) => thread.id === state.thread?.id);
   if (selectedThread) {
     selectedThread.name = state.thread?.name || selectedThread.name;
@@ -296,7 +349,10 @@ function renderState() {
   const phase = state.phase || "connecting";
   elements.phase.textContent = phaseLabels[phase] || phase;
   elements.phase.className = `phase-pill ${phase}`;
-  elements.machine.textContent = state.platform || state.machine || "—";
+  const startedAt = state.turn?.startedAt;
+  const completedAt = state.turn?.completedAt;
+  elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
+  elements.machine.textContent = [state.machine, state.transport, state.platform].filter(Boolean).join(" · ") || "—";
   elements.project.textContent = projectName(state.thread?.cwd);
   elements.project.title = state.thread?.cwd || "";
   elements.thread.textContent = state.thread?.name || "—";
@@ -308,7 +364,8 @@ function renderState() {
     || pending?.label
     || state.activities?.findLast((activity) => activity.status === "running")?.label
     || state.turn?.error
-    || (state.thread ? `${state.thread.name} · ${state.threadStatus}` : "Waiting for a loaded task.");
+    || (state.thread ? `${state.thread.name} · ${state.threadStatus}` : state.connected ? "No loaded tasks on this machine." : "Machine unavailable.");
+  renderMachineSelector();
   renderThreadSelector();
   renderModelControls();
   renderPlan();
@@ -392,17 +449,20 @@ function resetConversationState() {
 }
 
 function applySnapshot(next, loadChangedHistory = true) {
+  const previousMachineId = state?.machineId;
   const previousThreadId = state?.thread?.id;
+  const nextMachineId = next?.machineId;
   const nextThreadId = next?.thread?.id;
-  const threadChanged = previousThreadId !== nextThreadId && Boolean(previousThreadId || nextThreadId);
-  if (threadChanged) resetConversationState();
+  const taskChanged = previousMachineId !== nextMachineId || previousThreadId !== nextThreadId;
+  if (taskChanged) resetConversationState();
   mergeState(next, true);
-  if (threadChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
+  if (taskChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
 }
 
 async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = false) {
+  const requestedMachineId = state?.machineId;
   const requestedThreadId = state?.thread?.id;
-  if (!requestedThreadId || historyRequest?.epoch === epoch) return;
+  if (!requestedMachineId || !requestedThreadId || historyRequest?.epoch === epoch) return;
   const token = { epoch };
   let automaticCursor = null;
   historyRequest = token;
@@ -410,11 +470,16 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   try {
     const url = new URL("/api/history", location.origin);
     url.searchParams.set("limit", "2");
+    url.searchParams.set("machineId", requestedMachineId);
     if (cursor) url.searchParams.set("cursor", cursor);
     const response = await apiFetch(url);
     const page = await response.json();
     if (!response.ok) throw new Error(page.error || "History unavailable");
-    if (epoch !== historyEpoch || requestedThreadId !== state?.thread?.id || page.threadId !== requestedThreadId) return;
+    if (epoch !== historyEpoch
+      || requestedMachineId !== state?.machineId
+      || requestedThreadId !== state?.thread?.id
+      || page.machineId !== requestedMachineId
+      || page.threadId !== requestedThreadId) return;
     const preserveScroll = cursor ? { scrollHeight: elements.conversation.scrollHeight, scrollTop: elements.conversation.scrollTop } : null;
     for (const turn of page.turns || []) {
       for (const message of turn.messages || []) historyMessages.set(message.id, message);
@@ -425,19 +490,80 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     const transcriptFits = elements.conversation.scrollHeight <= elements.conversation.clientHeight + 1;
     if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {
-    if (epoch !== historyEpoch || requestedThreadId !== state?.thread?.id) return;
+    if (epoch !== historyEpoch || requestedMachineId !== state?.machineId || requestedThreadId !== state?.thread?.id) return;
     elements.historyStatus.textContent = "History unavailable";
     elements.statusDetail.textContent = error.message;
   } finally {
     if (historyRequest === token) historyRequest = null;
   }
-  if (automaticCursor && epoch === historyEpoch && requestedThreadId === state?.thread?.id) {
+  if (automaticCursor && epoch === historyEpoch && requestedMachineId === state?.machineId && requestedThreadId === state?.thread?.id) {
     await loadHistory(automaticCursor, epoch, forceBottom);
   }
 }
 
+async function selectMachine(machineId) {
+  if (!machineId || machineId === state?.machineId || switchingMachine || switchingThread) return;
+  const selected = machines.find((machine) => machine.id === machineId);
+  switchingMachine = true;
+  composerError = "";
+  composerNotice = "";
+  source?.close();
+  source = null;
+  resetConversationState();
+  loadedThreads = [];
+  threadsRequest = null;
+  state = {
+    ...(state || {}),
+    machineId,
+    machine: selected?.name || "Switching machine",
+    transport: selected?.transport || (selected?.ssh ? `SSH · ${selected.ssh}` : "Local"),
+    connected: false,
+    connectionError: null,
+    thread: null,
+    threadStatus: "connecting",
+    phase: "connecting",
+    turn: null,
+    plan: [],
+    activities: [],
+    pending: [],
+    liveMessages: [],
+    queuedMessage: null,
+    model: "Not exposed",
+    reasoningEffort: "Not exposed",
+    models: [],
+  };
+  renderState();
+  renderConversation({ forceBottom: true });
+  elements.statusDetail.textContent = `Switching to ${selected?.name || "machine"}…`;
+  try {
+    const response = await apiFetch("/api/machine", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId }),
+    });
+    const snapshot = await response.json();
+    if (!response.ok) throw new Error(snapshot.error || "Could not switch machines");
+    applySnapshot(snapshot, false);
+    switchingMachine = false;
+    await Promise.all([refreshMachines(), refreshLoadedThreads()]);
+    renderState();
+    connectEvents();
+    await loadHistory(null, historyEpoch, true);
+  } catch (error) {
+    switchingMachine = false;
+    elements.statusDetail.textContent = error.message;
+    try {
+      const response = await apiFetch("/api/state");
+      applySnapshot(await response.json(), true);
+      await Promise.all([refreshMachines(), refreshLoadedThreads()]);
+    } catch {
+      setConnection(false, true);
+    }
+    renderState();
+    connectEvents();
+  }
+}
+
 async function selectThread(threadId) {
-  if (!threadId || threadId === state?.thread?.id || switchingThread) return;
+  if (!threadId || threadId === state?.thread?.id || switchingMachine || switchingThread) return;
   const selected = loadedThreads.find((thread) => thread.id === threadId);
   switchingThread = true;
   composerError = "";
@@ -465,7 +591,7 @@ async function selectThread(threadId) {
   elements.statusDetail.textContent = "Switching loaded task…";
   try {
     const response = await apiFetch("/api/thread", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, threadId }),
     });
     const snapshot = await response.json();
     if (!response.ok) throw new Error(snapshot.error || "Could not switch tasks");
@@ -491,14 +617,14 @@ async function selectThread(threadId) {
 
 async function submitMessage(action) {
   const text = elements.messageText.value;
-  if (!text.trim() || submittingMessage || switchingThread) return;
+  if (!text.trim() || submittingMessage || switchingMachine || switchingThread) return;
   submittingMessage = true;
   composerError = "";
   composerNotice = "";
   renderState();
   try {
     const response = await apiFetch("/api/message", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, action }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, text, action }),
     });
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
@@ -523,7 +649,9 @@ async function cancelQueuedMessage() {
   cancellingQueue = true;
   renderQueue();
   try {
-    const response = await apiFetch("/api/message/queue", { method: "DELETE" });
+    const url = new URL("/api/message/queue", location.origin);
+    url.searchParams.set("machineId", state?.machineId || "");
+    const response = await apiFetch(url, { method: "DELETE" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not cancel queued message");
     mergeState({ queuedMessage: null });
@@ -537,14 +665,14 @@ async function cancelQueuedMessage() {
 }
 
 async function updateThreadSettings(model, effort) {
-  if (updatingModel || switchingThread || !state?.thread) return;
+  if (updatingModel || switchingMachine || switchingThread || !state?.thread) return;
   updatingModel = true;
   composerError = "";
   composerNotice = "Updating model settings…";
   renderState();
   try {
     const response = await apiFetch("/api/thread/settings", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, effort }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, model, effort }),
     });
     const result = await response.json();
     if (!response.ok || !result.updated) throw new Error(result.error || "Could not update model settings");
@@ -643,6 +771,60 @@ function closeSettings() {
   document.body.classList.remove("settings-open");
 }
 
+function machineSettingsValue() {
+  return [...elements.settingsMachines.querySelectorAll(".machine-settings-row")].map((row) => ({
+    name: row.querySelector("[data-machine-name]").value.trim(),
+    ssh: row.querySelector("[data-machine-ssh]").value.trim(),
+  }));
+}
+
+function renderMachineSettings(values) {
+  elements.settingsMachines.replaceChildren();
+  const configured = Array.isArray(values) ? values : [];
+  if (!configured.length) {
+    const empty = document.createElement("p");
+    empty.className = "machine-settings-empty";
+    empty.textContent = "Only This Mac is configured.";
+    elements.settingsMachines.append(empty);
+    return;
+  }
+  configured.forEach((machine, index) => {
+    const row = document.createElement("div");
+    row.className = "machine-settings-row";
+    const name = document.createElement("input");
+    name.dataset.machineName = "";
+    name.type = "text";
+    name.maxLength = 80;
+    name.placeholder = "Name";
+    name.setAttribute("aria-label", `Machine ${index + 1} name`);
+    name.required = true;
+    name.value = machine.name || "";
+    const ssh = document.createElement("input");
+    ssh.dataset.machineSsh = "";
+    ssh.type = "text";
+    ssh.maxLength = 128;
+    ssh.pattern = "[A-Za-z0-9][A-Za-z0-9._-]*";
+    ssh.placeholder = "SSH alias";
+    ssh.autocomplete = "off";
+    ssh.spellcheck = false;
+    ssh.setAttribute("aria-label", `Machine ${index + 1} SSH alias`);
+    ssh.required = true;
+    ssh.value = machine.ssh || "";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button";
+    remove.setAttribute("aria-label", `Remove ${machine.name || `machine ${index + 1}`}`);
+    remove.textContent = "×";
+    remove.addEventListener("click", () => {
+      const next = machineSettingsValue();
+      next.splice(index, 1);
+      renderMachineSettings(next);
+    });
+    row.append(name, ssh, remove);
+    elements.settingsMachines.append(row);
+  });
+}
+
 function renderSettings(value) {
   settingsValue = value;
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
@@ -651,6 +833,7 @@ function renderSettings(value) {
   elements.settingsPin.value = "";
   elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
   elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured. Enter a new PIN only to change it." : "No PIN configured.";
+  renderMachineSettings(value.machines);
   elements.phoneUrlList.replaceChildren();
   const urls = Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
   for (const url of urls) {
@@ -682,6 +865,8 @@ async function openSettings() {
   }
 }
 
+elements.machineSelect.addEventListener("change", () => selectMachine(elements.machineSelect.value));
+elements.machineSelect.addEventListener("focus", refreshMachines);
 elements.threadSelect.addEventListener("change", () => selectThread(elements.threadSelect.value));
 elements.threadSelect.addEventListener("focus", refreshLoadedThreads);
 elements.composer.addEventListener("submit", (event) => {
@@ -763,6 +948,12 @@ elements.settingsPin.addEventListener("input", () => {
   elements.settingsStatus.textContent = "";
   elements.settingsStatus.classList.remove("error-text");
 });
+elements.machineAdd.addEventListener("click", () => {
+  const next = machineSettingsValue();
+  next.push({ name: "", ssh: "" });
+  renderMachineSettings(next);
+  elements.settingsMachines.querySelector(".machine-settings-row:last-child [data-machine-name]")?.focus();
+});
 elements.settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (savingSettings) return;
@@ -780,7 +971,13 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   try {
     const response = await apiFetch("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lanEnabled: elements.settingsLanEnabled.checked, host: elements.settingsHost.value.trim(), port: Number(elements.settingsPort.value), pin }),
+      body: JSON.stringify({
+        lanEnabled: elements.settingsLanEnabled.checked,
+        host: elements.settingsHost.value.trim(),
+        port: Number(elements.settingsPort.value),
+        pin,
+        machines: machineSettingsValue(),
+      }),
     });
     const result = await response.json();
     if (!response.ok || !result.saved) throw new Error(result.error || "Could not save settings");
@@ -819,8 +1016,9 @@ async function startApp() {
   elements.loginScreen.hidden = true;
   elements.appShell.hidden = false;
   try {
-    const [response] = await Promise.all([apiFetch("/api/state"), refreshLoadedThreads()]);
+    const response = await apiFetch("/api/state");
     applySnapshot(await response.json(), false);
+    await Promise.all([refreshMachines(), refreshLoadedThreads()]);
   } catch (error) {
     elements.statusDetail.textContent = error.message;
     setConnection(false, true);

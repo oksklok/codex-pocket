@@ -34,9 +34,37 @@ For normal phone setup:
 4. Save and click **Restart Pocket**.
 5. Open the phone URL shown in Settings and enter the PIN.
 
+To add a development machine that already works through SSH:
+
+```text
+Settings → Machines → Add
+Name: G14
+SSH alias: g14
+Save → Restart Pocket
+```
+
+`This Mac` is always available. The top bar's **Machine** selector chooses a local or configured SSH runtime, and **Task** then shows only that machine's loaded Codex tasks.
+
 Settings are stored locally in `.codex-pocket.local.json`, which is ignored by Git and created only after the first save. The restart action performs a one-shot background handoff and moves the browser to the new port when necessary. A malformed or unsafe config is ignored with a warning and the gateway falls back to `127.0.0.1:4173`.
 
 LAN mode uses plain HTTP and is intended only for a trusted home network. Remote or untrusted-network access should later go through an encrypted private network such as Tailscale rather than exposing this listener directly.
+
+## SSH machines
+
+Remote machines are optional entries in `.codex-pocket.local.json`:
+
+```json
+{
+  "machines": [
+    { "name": "G14", "ssh": "g14" },
+    { "name": "PC1", "ssh": "pc1" }
+  ]
+}
+```
+
+Pocket uses the existing SSH configuration, keys, and agent from this Mac. It does not store SSH credentials. Each alias must already work non-interactively; test it normally with `ssh g14` before adding it. Pocket connects with SSH batch mode to the remote `codex app-server proxy`, keeps each machine's runtime and task state isolated, and retries a dropped connection after five seconds without interrupting other machines.
+
+Only tasks loaded in a supported shared/managed app-server runtime are available. Private Desktop stdio tasks are intentionally not discovered or attached.
 
 ## Development and troubleshooting
 
@@ -79,7 +107,7 @@ On macOS with only the Codex Desktop bundled Node runtime available:
 ## Browser view
 
 - a fixed-height chat client whose transcript is the only normally scrolling area;
-- a compact top bar for loaded task, state, model, reasoning effort, task info, and Settings;
+- compact Machine → Task selectors plus state, model, reasoning effort, task info, and Settings;
 - a collapsible desktop inspector (phone drawer) for machine/project/task details, plans, and command/tool activity;
 - Working, Waiting for input, Waiting for permission, Done, and Failed states;
 - elapsed current-turn time;
