@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
     <title>Codex Pocket</title>
     <link rel="stylesheet" href="/styles.css">
@@ -12,7 +12,7 @@
       <form class="login-card" id="login-form" method="post" action="/api/login">
         <p class="eyebrow">Trusted LAN access</p>
         <h1 id="login-title">Codex Pocket</h1>
-        <p class="login-copy">Enter the four-digit PIN shown in the gateway setup.</p>
+        <p class="login-copy">Enter your four-digit Pocket PIN.</p>
         <label for="login-pin">4-digit PIN</label>
         <input id="login-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" required>
         <button type="submit">Unlock</button>
@@ -22,146 +22,102 @@
 
     <main class="shell" id="app-shell" hidden>
       <header class="topbar">
-        <div>
-          <p class="eyebrow">Live task view</p>
-          <h1>Codex Pocket</h1>
+        <div class="brand" aria-label="Codex Pocket">CP</div>
+        <div class="task-control">
+          <label class="sr-only" for="thread-select">Loaded task</label>
+          <select id="thread-select" disabled><option>Loading tasks…</option></select>
+        </div>
+        <div class="phase-row">
+          <span class="phase-pill" id="phase-pill">Connecting</span>
+          <span class="elapsed" id="elapsed">—</span>
+        </div>
+        <div class="runtime-controls">
+          <label class="sr-only" for="model-select">Model</label>
+          <select id="model-select" aria-label="Model" disabled><option>Model</option></select>
+          <label class="sr-only" for="effort-select">Reasoning effort</label>
+          <select id="effort-select" aria-label="Reasoning effort" disabled><option>Effort</option></select>
+          <span class="next-turn-label" id="next-turn-label" hidden>Next turn</span>
         </div>
         <div class="topbar-actions">
+          <button class="secondary-button" id="inspector-button" type="button" aria-expanded="false">Info</button>
           <button class="secondary-button" id="settings-button" type="button">Settings</button>
-          <div class="connection" id="connection" aria-live="polite">
-            <span class="connection-dot"></span>
-            <span id="connection-label">Connecting</span>
+          <div class="connection" id="connection" aria-live="polite" title="Gateway connection">
+            <span class="connection-dot"></span><span id="connection-label">Connecting</span>
           </div>
         </div>
       </header>
 
-      <section class="status-card" aria-labelledby="phase-label">
-        <div class="task-switcher">
-          <label for="thread-select">Loaded task</label>
-          <select id="thread-select" disabled>
-            <option>Loading tasks…</option>
-          </select>
-          <span id="thread-count">Checking the shared runtime.</span>
-        </div>
-        <div>
-          <p class="section-label" id="phase-label">Current state</p>
-          <div class="phase-row">
-            <span class="phase-pill" id="phase-pill">Connecting</span>
-            <span class="elapsed" id="elapsed">—</span>
-          </div>
-          <p class="status-detail" id="status-detail">Waiting for the local gateway.</p>
-        </div>
-        <dl class="metadata">
-          <div>
-            <dt>Machine</dt>
-            <dd id="machine">—</dd>
-          </div>
-          <div>
-            <dt>Project</dt>
-            <dd id="project">—</dd>
-          </div>
-          <div>
-            <dt>Task</dt>
-            <dd id="thread">—</dd>
-          </div>
-          <div>
-            <dt>Model</dt>
-            <dd id="model">—</dd>
-          </div>
-        </dl>
-      </section>
-
-      <div class="workspace secondary-empty" id="workspace">
-        <section class="panel conversation-panel" aria-labelledby="conversation-title">
-          <div class="panel-heading">
-            <div>
-              <p class="section-label">Live transcript</p>
-              <h2 id="conversation-title">Recent conversation</h2>
-            </div>
+      <div class="workspace" id="workspace">
+        <section class="chat-panel" aria-label="Codex conversation">
+          <div class="transcript-head">
+            <span id="thread-count">Checking shared runtime…</span>
             <span class="history-status" id="history-status" aria-live="polite"></span>
           </div>
-          <div class="conversation" id="conversation" aria-live="polite">
-            <p class="empty-state">Loading recent messages…</p>
+          <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state">Loading recent messages…</p></div>
+          <div class="composer-zone">
+            <div class="attention-banner" id="attention-banner" hidden></div>
+            <div class="queue-banner" id="queue-banner" hidden>
+              <div><strong>Queued next</strong><span id="queue-text"></span></div>
+              <button class="text-button" id="cancel-queue" type="button">Cancel</button>
+            </div>
+            <form class="composer" id="composer">
+              <label class="sr-only" for="message-text">Message Codex</label>
+              <textarea id="message-text" rows="2" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
+              <div class="composer-actions">
+                <button type="button" class="queue-button" id="queue-message" hidden>Queue next</button>
+                <button type="submit" id="send-message" disabled>Send</button>
+              </div>
+              <p class="form-status" id="composer-status" aria-live="polite"></p>
+            </form>
           </div>
-          <form class="composer" id="composer">
-            <label class="sr-only" for="message-text">Message Codex</label>
-            <textarea id="message-text" rows="2" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
-            <button type="submit" id="send-message" disabled>Send</button>
-            <p class="form-status" id="composer-status" aria-live="polite"></p>
-          </form>
         </section>
 
-        <aside class="sidebar" id="sidebar" hidden>
-          <section class="panel secondary-panel" id="plan-panel" aria-labelledby="plan-title" hidden>
-            <div class="panel-heading compact-heading">
-              <div>
-                <p class="section-label">Progress</p>
-                <h2 id="plan-title">Current plan</h2>
-              </div>
-              <span class="count-badge" id="plan-count">0/0</span>
-            </div>
-            <ol class="plan-list" id="plan-list"></ol>
-          </section>
-
-          <section class="panel secondary-panel" id="activity-panel" aria-labelledby="activity-title" hidden>
-            <div class="panel-heading compact-heading">
-              <div>
-                <p class="section-label">Commands &amp; tools</p>
-                <h2 id="activity-title">Current activity</h2>
-              </div>
-            </div>
-            <ul class="activity-list" id="activity-list"></ul>
-          </section>
+        <button class="inspector-backdrop" id="inspector-backdrop" type="button" aria-label="Close task info" hidden></button>
+        <aside class="inspector" id="sidebar" aria-labelledby="inspector-title">
+          <div class="inspector-heading">
+            <div><p class="eyebrow">Selected task</p><h2 id="inspector-title">Details</h2></div>
+            <button class="icon-button" id="inspector-close" type="button" aria-label="Close task info">×</button>
+          </div>
+          <div class="inspector-scroll">
+            <p class="status-detail" id="status-detail">Waiting for the local gateway.</p>
+            <dl class="metadata">
+              <div><dt>Machine</dt><dd id="machine">—</dd></div>
+              <div><dt>Project</dt><dd id="project">—</dd></div>
+              <div><dt>Task</dt><dd id="thread">—</dd></div>
+              <div><dt>Model</dt><dd id="model">—</dd></div>
+            </dl>
+            <section class="secondary-panel" id="plan-panel" aria-labelledby="plan-title">
+              <div class="panel-heading"><h3 id="plan-title">Current plan</h3><span class="count-badge" id="plan-count">0/0</span></div>
+              <ol class="plan-list" id="plan-list"></ol><p class="panel-empty" id="plan-empty">No active plan.</p>
+            </section>
+            <section class="secondary-panel" id="activity-panel" aria-labelledby="activity-title">
+              <div class="panel-heading"><h3 id="activity-title">Current activity</h3></div>
+              <ul class="activity-list" id="activity-list"></ul><p class="panel-empty" id="activity-empty">No command or tool activity.</p>
+            </section>
+          </div>
         </aside>
       </div>
     </main>
 
     <section class="settings-screen" id="settings-screen" hidden role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <form class="settings-card" id="settings-form">
-        <div class="settings-heading">
-          <div>
-            <p class="eyebrow">Local configuration</p>
-            <h2 id="settings-title">Settings</h2>
-          </div>
-          <button class="icon-button" id="settings-close" type="button" aria-label="Close settings">×</button>
-        </div>
-
+        <div class="settings-heading"><div><p class="eyebrow">Local configuration</p><h2 id="settings-title">Settings</h2></div><button class="icon-button" id="settings-close" type="button" aria-label="Close settings">×</button></div>
         <fieldset>
           <legend>Network</legend>
-          <label class="checkbox-row" for="settings-lan-enabled">
-            <input id="settings-lan-enabled" type="checkbox">
-            <span>Enable access from local network</span>
-          </label>
-
-          <label for="settings-host">Bind address</label>
-          <input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required>
+          <label class="checkbox-row" for="settings-lan-enabled"><input id="settings-lan-enabled" type="checkbox"><span>Enable access from local network</span></label>
+          <label for="settings-host">Bind address</label><input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required>
           <p class="field-help">Use 0.0.0.0 for all local-network interfaces.</p>
-
-          <label for="settings-port">Port</label>
-          <input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required>
-
-          <div class="phone-urls" id="phone-urls" hidden>
-            <span>Open on your phone</span>
-            <div id="phone-url-list"></div>
-          </div>
+          <label for="settings-port">Port</label><input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required>
+          <div class="phone-urls" id="phone-urls" hidden><span>Open on your phone</span><div id="phone-url-list"></div></div>
         </fieldset>
-
         <fieldset>
           <legend>Access</legend>
-          <label for="settings-pin">4-digit PIN</label>
-          <input id="settings-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="Leave blank to keep current PIN">
+          <label for="settings-pin">4-digit PIN</label><input id="settings-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="Leave blank to keep current PIN">
           <p class="field-help" id="settings-pin-state">No PIN configured.</p>
         </fieldset>
-
-        <div class="settings-restart" id="settings-restart" hidden>
-          <p>Restart Codex Pocket to apply saved changes.</p>
-          <button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button>
-        </div>
+        <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
-        <div class="settings-actions">
-          <button class="secondary-button" id="settings-cancel" type="button">Cancel</button>
-          <button class="primary-button" id="settings-save" type="submit">Save settings</button>
-        </div>
+        <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save settings</button></div>
       </form>
     </section>
     <script type="module" src="/app.js"></script>

@@ -15,19 +15,28 @@ const elements = {
   threadSelect: document.querySelector("#thread-select"),
   threadCount: document.querySelector("#thread-count"),
   model: document.querySelector("#model"),
+  modelSelect: document.querySelector("#model-select"),
+  effortSelect: document.querySelector("#effort-select"),
+  nextTurnLabel: document.querySelector("#next-turn-label"),
   historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
-  workspace: document.querySelector("#workspace"),
-  sidebar: document.querySelector("#sidebar"),
-  planPanel: document.querySelector("#plan-panel"),
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
-  activityPanel: document.querySelector("#activity-panel"),
+  planEmpty: document.querySelector("#plan-empty"),
   activityList: document.querySelector("#activity-list"),
+  activityEmpty: document.querySelector("#activity-empty"),
   composer: document.querySelector("#composer"),
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
+  queueMessage: document.querySelector("#queue-message"),
   composerStatus: document.querySelector("#composer-status"),
+  attentionBanner: document.querySelector("#attention-banner"),
+  queueBanner: document.querySelector("#queue-banner"),
+  queueText: document.querySelector("#queue-text"),
+  cancelQueue: document.querySelector("#cancel-queue"),
+  inspectorButton: document.querySelector("#inspector-button"),
+  inspectorClose: document.querySelector("#inspector-close"),
+  inspectorBackdrop: document.querySelector("#inspector-backdrop"),
   settingsButton: document.querySelector("#settings-button"),
   settingsScreen: document.querySelector("#settings-screen"),
   settingsForm: document.querySelector("#settings-form"),
@@ -67,6 +76,8 @@ let historyRequest = null;
 let threadsRequest = null;
 let switchingThread = false;
 let submittingMessage = false;
+let updatingModel = false;
+let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
 let settingsValue = null;
@@ -92,50 +103,9 @@ async function apiFetch(url, options) {
   return response;
 }
 
-function closeSettings() {
-  elements.settingsScreen.hidden = true;
-  document.body.classList.remove("settings-open");
-}
-
-function renderSettings(value) {
-  settingsValue = value;
-  elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
-  elements.settingsHost.value = value.host || "127.0.0.1";
-  elements.settingsPort.value = String(value.port || 4173);
-  elements.settingsPin.value = "";
-  elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
-  elements.settingsPinState.textContent = value.pinConfigured
-    ? "PIN configured. Enter a new PIN only to change it."
-    : "No PIN configured.";
-  elements.phoneUrlList.replaceChildren();
-  const urls = Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
-  for (const url of urls) {
-    const link = document.createElement("a");
-    link.href = url;
-    link.textContent = url;
-    elements.phoneUrlList.append(link);
-  }
-  elements.phoneUrls.hidden = urls.length === 0;
-}
-
-async function openSettings() {
-  elements.settingsScreen.hidden = false;
-  document.body.classList.add("settings-open");
-  elements.settingsStatus.textContent = "Loading settings…";
-  elements.settingsStatus.classList.remove("error-text");
-  elements.settingsRestart.hidden = true;
-  try {
-    const response = await apiFetch("/api/settings");
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Settings unavailable");
-    renderSettings(result.settings);
-    elements.settingsRestart.hidden = !result.restartRequired;
-    elements.settingsStatus.textContent = "";
-    elements.settingsLanEnabled.focus();
-  } catch (error) {
-    elements.settingsStatus.textContent = error.message;
-    elements.settingsStatus.classList.add("error-text");
-  }
+function projectName(cwd) {
+  const parts = String(cwd || "").split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) || "—";
 }
 
 function formatElapsed(milliseconds) {
@@ -146,16 +116,15 @@ function formatElapsed(milliseconds) {
   return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
 }
 
-function projectName(cwd) {
-  const parts = String(cwd || "").split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) || "—";
-}
-
 function threadLabel(thread) {
   const project = thread.project || projectName(thread.cwd);
   const name = thread.name || thread.preview || "Untitled task";
-  const label = project && project !== "—" && project !== name ? `${project} — ${name}` : name;
-  return thread.status && thread.status !== "unknown" ? `${label} (${thread.status})` : label;
+  return project && project !== "—" && project !== name ? `${project} — ${name}` : name;
+}
+
+function setConnection(connected, failed = false) {
+  elements.connection.className = `connection ${connected ? "connected" : failed ? "failed" : ""}`;
+  elements.connectionLabel.textContent = connected ? "Live" : failed ? "Disconnected" : "Connecting";
 }
 
 function renderThreadSelector() {
@@ -166,7 +135,7 @@ function renderThreadSelector() {
     option.textContent = "No loaded tasks";
     elements.threadSelect.append(option);
     elements.threadSelect.disabled = true;
-    elements.threadCount.textContent = "No tasks are loaded in the shared runtime.";
+    elements.threadCount.textContent = "No loaded tasks";
     return;
   }
   for (const thread of loadedThreads) {
@@ -177,7 +146,7 @@ function renderThreadSelector() {
     option.selected = thread.id === selectedId;
     elements.threadSelect.append(option);
   }
-  elements.threadSelect.disabled = switchingThread || submittingMessage;
+  elements.threadSelect.disabled = switchingThread || submittingMessage || updatingModel;
   elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
@@ -199,9 +168,119 @@ async function refreshLoadedThreads() {
   }
 }
 
-function setConnection(connected, failed = false) {
-  elements.connection.className = `connection ${connected ? "connected" : failed ? "failed" : ""}`;
-  elements.connectionLabel.textContent = connected ? "Live" : failed ? "Disconnected" : "Connecting";
+function currentCatalogModel(modelName = state?.model) {
+  return (state?.models || []).find((candidate) => candidate.model === modelName);
+}
+
+function renderModelControls() {
+  const models = state?.models || [];
+  elements.modelSelect.replaceChildren();
+  for (const model of models) {
+    const option = document.createElement("option");
+    option.value = model.model;
+    option.textContent = model.displayName || model.model;
+    option.title = model.description || model.model;
+    option.selected = model.model === state?.model;
+    elements.modelSelect.append(option);
+  }
+  if (!models.length) {
+    const option = document.createElement("option");
+    option.textContent = state?.model || "Model unavailable";
+    elements.modelSelect.append(option);
+  }
+
+  const selectedModel = currentCatalogModel(elements.modelSelect.value || state?.model);
+  const efforts = selectedModel?.supportedReasoningEfforts || [];
+  elements.effortSelect.replaceChildren();
+  for (const effort of efforts) {
+    const option = document.createElement("option");
+    option.value = effort.reasoningEffort;
+    option.textContent = effort.reasoningEffort;
+    option.title = effort.description || effort.reasoningEffort;
+    option.selected = effort.reasoningEffort === state?.reasoningEffort;
+    elements.effortSelect.append(option);
+  }
+  if (!efforts.length) {
+    const option = document.createElement("option");
+    option.textContent = state?.reasoningEffort || "Effort unavailable";
+    elements.effortSelect.append(option);
+  }
+  const enabled = Boolean(state?.connected && state?.thread && models.length) && !switchingThread && !updatingModel;
+  elements.modelSelect.disabled = !enabled;
+  elements.effortSelect.disabled = !enabled || !efforts.length;
+  elements.nextTurnLabel.hidden = state?.turn?.status !== "inProgress";
+}
+
+function renderPlan() {
+  const plan = state?.plan || [];
+  const complete = plan.filter((item) => item.status === "completed").length;
+  elements.planCount.textContent = `${complete}/${plan.length}`;
+  elements.planList.replaceChildren();
+  elements.planEmpty.hidden = plan.length > 0;
+  for (const item of plan) {
+    const li = document.createElement("li");
+    li.className = `plan-item ${item.status}`;
+    li.textContent = item.step;
+    elements.planList.append(li);
+  }
+}
+
+function renderActivities() {
+  const activities = [...(state?.activities || [])].reverse();
+  elements.activityList.replaceChildren();
+  elements.activityEmpty.hidden = activities.length > 0;
+  for (const activity of activities) {
+    const li = document.createElement("li");
+    li.className = `activity-item ${activity.status}`;
+    const kind = document.createElement("span");
+    kind.className = "activity-kind";
+    kind.textContent = `${activity.kind} · ${activity.status}`;
+    const label = document.createElement("span");
+    label.textContent = activity.label;
+    li.append(kind, label);
+    if (activity.detail) {
+      const detail = document.createElement("span");
+      detail.className = "activity-detail";
+      detail.textContent = activity.detail;
+      li.append(detail);
+    }
+    elements.activityList.append(li);
+  }
+}
+
+function renderQueue() {
+  const queued = state?.queuedMessage;
+  elements.queueBanner.hidden = !queued;
+  if (queued) {
+    elements.queueText.textContent = queued.text;
+    elements.queueText.title = queued.text;
+    elements.cancelQueue.disabled = cancellingQueue;
+  }
+}
+
+function renderComposer() {
+  const capability = state?.message;
+  const allowed = Boolean(capability?.allowed) && !switchingThread && !submittingMessage;
+  const active = capability?.mode === "steer";
+  elements.messageText.disabled = !allowed;
+  elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
+  elements.sendMessage.textContent = active ? "Steer now" : "Send";
+  elements.queueMessage.hidden = !active;
+  elements.queueMessage.disabled = !allowed || !elements.messageText.value.trim();
+  const pending = state?.pending?.[0];
+  elements.attentionBanner.hidden = !pending;
+  elements.attentionBanner.textContent = pending
+    ? `${pending.kind === "permission" ? "Permission needed" : "Input needed"}: ${pending.label}`
+    : "";
+  const status = submittingMessage
+    ? "Sending…"
+    : composerError
+      || composerNotice
+      || (switchingThread ? "Switching tasks…" : capability?.reason)
+      || (active ? "Send immediately, or keep one message for the next turn." : "Start a new turn.");
+  elements.composerStatus.textContent = status;
+  elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
+  renderQueue();
 }
 
 function renderState() {
@@ -227,81 +306,14 @@ function renderState() {
   const pending = state.pending?.[0];
   elements.statusDetail.textContent = state.connectionError
     || pending?.label
-    || (state.activities?.findLast((activity) => activity.status === "running")?.label)
-    || (state.turn?.error)
+    || state.activities?.findLast((activity) => activity.status === "running")?.label
+    || state.turn?.error
     || (state.thread ? `${state.thread.name} · ${state.threadStatus}` : "Waiting for a loaded task.");
+  renderThreadSelector();
+  renderModelControls();
   renderPlan();
   renderActivities();
-  renderThreadSelector();
   renderComposer();
-}
-
-function renderComposer() {
-  const capability = state?.message;
-  const allowed = Boolean(capability?.allowed) && !switchingThread && !submittingMessage;
-  elements.messageText.disabled = !allowed;
-  elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
-  const status = submittingMessage
-    ? "Sending…"
-    : composerError
-      || composerNotice
-      || (switchingThread ? "Switching tasks…" : capability?.reason)
-      || (capability?.mode === "steer" ? "Send a follow-up to the active turn." : "Start a new turn.");
-  elements.composerStatus.textContent = status;
-  elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
-}
-
-function updateSecondaryVisibility() {
-  const empty = elements.planPanel.hidden && elements.activityPanel.hidden;
-  elements.sidebar.hidden = empty;
-  elements.workspace.classList.toggle("secondary-empty", empty);
-}
-
-function renderPlan() {
-  const plan = state?.plan || [];
-  const complete = plan.filter((item) => item.status === "completed").length;
-  elements.planCount.textContent = `${complete}/${plan.length}`;
-  elements.planList.replaceChildren();
-  elements.planPanel.hidden = plan.length === 0;
-  if (plan.length === 0) {
-    updateSecondaryVisibility();
-    return;
-  }
-  for (const item of plan) {
-    const li = document.createElement("li");
-    li.className = `plan-item ${item.status}`;
-    li.textContent = item.step;
-    elements.planList.append(li);
-  }
-  updateSecondaryVisibility();
-}
-
-function renderActivities() {
-  const activities = [...(state?.activities || [])].reverse();
-  elements.activityList.replaceChildren();
-  elements.activityPanel.hidden = activities.length === 0;
-  if (activities.length === 0) {
-    updateSecondaryVisibility();
-    return;
-  }
-  for (const activity of activities) {
-    const li = document.createElement("li");
-    li.className = `activity-item ${activity.status}`;
-    const kind = document.createElement("span");
-    kind.className = "activity-kind";
-    kind.textContent = `${activity.kind} · ${activity.status}`;
-    const label = document.createElement("span");
-    label.textContent = activity.label;
-    li.append(kind, label);
-    if (activity.detail) {
-      const detail = document.createElement("span");
-      detail.className = "activity-detail";
-      detail.textContent = activity.detail;
-      li.append(detail);
-    }
-    elements.activityList.append(li);
-  }
-  updateSecondaryVisibility();
 }
 
 function messageNode(message) {
@@ -328,7 +340,15 @@ function messageNode(message) {
 function renderConversation({ preserveScroll = null, forceBottom = false } = {}) {
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
-  const messages = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  const ordered = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  const deduplicated = new Map();
+  for (const message of ordered) {
+    const key = message.turnId
+      ? `${message.turnId}\u0000${message.role}\u0000${message.text}`
+      : `id\u0000${message.id}`;
+    deduplicated.set(key, message);
+  }
+  const messages = [...deduplicated.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
   elements.conversation.replaceChildren();
   if (messages.length === 0) {
     const empty = document.createElement("p");
@@ -375,9 +395,7 @@ function applySnapshot(next, loadChangedHistory = true) {
   const previousThreadId = state?.thread?.id;
   const nextThreadId = next?.thread?.id;
   const threadChanged = previousThreadId !== nextThreadId && Boolean(previousThreadId || nextThreadId);
-  if (threadChanged) {
-    resetConversationState();
-  }
+  if (threadChanged) resetConversationState();
   mergeState(next, true);
   if (threadChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
 }
@@ -397,10 +415,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     const page = await response.json();
     if (!response.ok) throw new Error(page.error || "History unavailable");
     if (epoch !== historyEpoch || requestedThreadId !== state?.thread?.id || page.threadId !== requestedThreadId) return;
-    const preserveScroll = cursor ? {
-      scrollHeight: elements.conversation.scrollHeight,
-      scrollTop: elements.conversation.scrollTop,
-    } : null;
+    const preserveScroll = cursor ? { scrollHeight: elements.conversation.scrollHeight, scrollTop: elements.conversation.scrollTop } : null;
     for (const turn of page.turns || []) {
       for (const message of turn.messages || []) historyMessages.set(message.id, message);
     }
@@ -433,12 +448,7 @@ async function selectThread(threadId) {
   state = {
     ...(state || {}),
     connectionError: null,
-    thread: {
-      id: threadId,
-      name: selected?.name || selected?.preview || "Switching task",
-      cwd: selected?.cwd || "",
-      source: "unknown",
-    },
+    thread: { id: threadId, name: selected?.name || selected?.preview || "Switching task", cwd: selected?.cwd || "", source: "unknown" },
     threadStatus: selected?.status || "unknown",
     phase: "connecting",
     turn: null,
@@ -446,6 +456,7 @@ async function selectThread(threadId) {
     activities: [],
     pending: [],
     liveMessages: [],
+    queuedMessage: null,
     model: "Not exposed",
     reasoningEffort: "Not exposed",
   };
@@ -454,22 +465,18 @@ async function selectThread(threadId) {
   elements.statusDetail.textContent = "Switching loaded task…";
   try {
     const response = await apiFetch("/api/thread", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ threadId }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId }),
     });
     const snapshot = await response.json();
     if (!response.ok) throw new Error(snapshot.error || "Could not switch tasks");
     applySnapshot(snapshot, false);
     switchingThread = false;
-    renderThreadSelector();
-    renderComposer();
+    renderState();
     connectEvents();
     await loadHistory(null, historyEpoch, true);
     await refreshLoadedThreads();
   } catch (error) {
     switchingThread = false;
-    renderComposer();
     elements.statusDetail.textContent = error.message;
     try {
       const response = await apiFetch("/api/state");
@@ -477,14 +484,81 @@ async function selectThread(threadId) {
     } catch {
       setConnection(false, true);
     }
-    renderThreadSelector();
+    renderState();
     connectEvents();
   }
 }
 
-function parseEvent(event) {
-  return JSON.parse(event.data);
+async function submitMessage(action) {
+  const text = elements.messageText.value;
+  if (!text.trim() || submittingMessage || switchingThread) return;
+  submittingMessage = true;
+  composerError = "";
+  composerNotice = "";
+  renderState();
+  try {
+    const response = await apiFetch("/api/message", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, action }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
+    elements.messageText.value = "";
+    composerNotice = result.mode === "queue" ? "Saved for the next turn." : result.mode === "steer" ? "Steered the active turn." : "Message accepted.";
+    mergeState({
+      ...(result.turn ? { turn: result.turn } : {}),
+      ...(result.phase ? { phase: result.phase } : {}),
+      ...(result.message ? { message: result.message } : {}),
+      ...(Object.hasOwn(result, "queuedMessage") ? { queuedMessage: result.queuedMessage } : {}),
+    });
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    submittingMessage = false;
+    renderState();
+  }
 }
+
+async function cancelQueuedMessage() {
+  if (cancellingQueue) return;
+  cancellingQueue = true;
+  renderQueue();
+  try {
+    const response = await apiFetch("/api/message/queue", { method: "DELETE" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not cancel queued message");
+    mergeState({ queuedMessage: null });
+    composerNotice = "Queued message cancelled.";
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    cancellingQueue = false;
+    renderComposer();
+  }
+}
+
+async function updateThreadSettings(model, effort) {
+  if (updatingModel || switchingThread || !state?.thread) return;
+  updatingModel = true;
+  composerError = "";
+  composerNotice = "Updating model settings…";
+  renderState();
+  try {
+    const response = await apiFetch("/api/thread/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, effort }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.updated) throw new Error(result.error || "Could not update model settings");
+    composerNotice = result.appliesTo === "next_turn" ? "Model settings saved for the next turn." : "Model settings updated.";
+    mergeState({ model: result.model, reasoningEffort: result.reasoningEffort });
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    updatingModel = false;
+    renderState();
+  }
+}
+
+function parseEvent(event) { return JSON.parse(event.data); }
 
 async function handleEventError() {
   setConnection(false, true);
@@ -493,7 +567,7 @@ async function handleEventError() {
     const auth = await response.json();
     if (auth.required && !auth.authenticated) showLogin("Your session expired. Enter the PIN again.");
   } catch {
-    // The normal EventSource retry handles transient gateway outages.
+    // EventSource retries transient gateway outages itself.
   }
 }
 
@@ -502,27 +576,19 @@ function connectEvents() {
   source = new EventSource("/events");
   source.addEventListener("open", () => setConnection(true));
   source.addEventListener("error", handleEventError);
-  source.addEventListener("snapshot", (event) => {
-    if (!switchingThread) applySnapshot(parseEvent(event));
-  });
-  source.addEventListener("status", (event) => {
-    if (!switchingThread) mergeState(parseEvent(event));
-  });
-  source.addEventListener("thread", (event) => {
-    if (!switchingThread) mergeState({ thread: parseEvent(event) });
-  });
+  source.addEventListener("snapshot", (event) => { if (!switchingThread) applySnapshot(parseEvent(event)); });
+  source.addEventListener("status", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  source.addEventListener("thread", (event) => { if (!switchingThread) mergeState({ thread: parseEvent(event) }); });
+  source.addEventListener("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  source.addEventListener("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("turn", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
     if (value.turn?.status && value.turn.status !== "inProgress") composerNotice = "";
     mergeState(value);
   });
-  source.addEventListener("plan", (event) => {
-    if (!switchingThread) mergeState({ plan: parseEvent(event) });
-  });
-  source.addEventListener("request", (event) => {
-    if (!switchingThread) mergeState(parseEvent(event));
-  });
+  source.addEventListener("plan", (event) => { if (!switchingThread) mergeState({ plan: parseEvent(event) }); });
+  source.addEventListener("request", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("activity", (event) => {
     if (switchingThread) return;
     const activity = parseEvent(event);
@@ -541,13 +607,7 @@ function connectEvents() {
   source.addEventListener("assistant_delta", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
-    const existing = liveMessages.get(value.id) || {
-      id: value.id,
-      role: "assistant",
-      text: "",
-      createdAt: Date.now(),
-      complete: false,
-    };
+    const existing = liveMessages.get(value.id) || { id: value.id, role: "assistant", text: "", createdAt: Date.now(), complete: false };
     existing.text += value.delta;
     existing.complete = false;
     liveMessages.set(value.id, existing);
@@ -555,86 +615,114 @@ function connectEvents() {
   });
 }
 
-elements.threadSelect.addEventListener("change", () => {
-  selectThread(elements.threadSelect.value);
-});
-
-elements.threadSelect.addEventListener("focus", () => {
-  refreshLoadedThreads();
-});
-
-elements.composer.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const text = elements.messageText.value;
-  if (!text.trim() || submittingMessage || switchingThread) return;
-  submittingMessage = true;
-  composerError = "";
-  composerNotice = "";
-  renderComposer();
-  renderThreadSelector();
-  try {
-    const response = await apiFetch("/api/message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
-    elements.messageText.value = "";
-    composerNotice = result.mode === "steer" ? "Follow-up accepted." : "Message accepted.";
-    mergeState({
-      ...(result.turn ? { turn: result.turn } : {}),
-      ...(result.phase ? { phase: result.phase } : {}),
-      ...(result.message ? { message: result.message } : {}),
-    });
-  } catch (error) {
-    composerError = error.message;
-  } finally {
-    submittingMessage = false;
-    renderComposer();
-    renderThreadSelector();
+function isMobileInspector() { return matchMedia("(max-width: 860px)").matches; }
+function openInspector() {
+  if (isMobileInspector()) {
+    elements.appShell.classList.add("inspector-open");
+    elements.inspectorBackdrop.hidden = false;
+  } else {
+    elements.appShell.classList.remove("inspector-closed");
   }
-});
+  elements.inspectorButton.setAttribute("aria-expanded", "true");
+}
+function closeInspector() {
+  elements.appShell.classList.remove("inspector-open");
+  elements.inspectorBackdrop.hidden = true;
+  if (!isMobileInspector()) elements.appShell.classList.add("inspector-closed");
+  elements.inspectorButton.setAttribute("aria-expanded", "false");
+}
+function toggleInspector() {
+  const open = isMobileInspector()
+    ? elements.appShell.classList.contains("inspector-open")
+    : !elements.appShell.classList.contains("inspector-closed");
+  if (open) closeInspector(); else openInspector();
+}
 
+function closeSettings() {
+  elements.settingsScreen.hidden = true;
+  document.body.classList.remove("settings-open");
+}
+
+function renderSettings(value) {
+  settingsValue = value;
+  elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
+  elements.settingsHost.value = value.host || "127.0.0.1";
+  elements.settingsPort.value = String(value.port || 4173);
+  elements.settingsPin.value = "";
+  elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
+  elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured. Enter a new PIN only to change it." : "No PIN configured.";
+  elements.phoneUrlList.replaceChildren();
+  const urls = Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
+  for (const url of urls) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.textContent = url;
+    elements.phoneUrlList.append(link);
+  }
+  elements.phoneUrls.hidden = urls.length === 0;
+}
+
+async function openSettings() {
+  elements.settingsScreen.hidden = false;
+  document.body.classList.add("settings-open");
+  elements.settingsStatus.textContent = "Loading settings…";
+  elements.settingsStatus.classList.remove("error-text");
+  elements.settingsRestart.hidden = true;
+  try {
+    const response = await apiFetch("/api/settings");
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Settings unavailable");
+    renderSettings(result.settings);
+    elements.settingsRestart.hidden = !result.restartRequired;
+    elements.settingsStatus.textContent = "";
+    elements.settingsLanEnabled.focus();
+  } catch (error) {
+    elements.settingsStatus.textContent = error.message;
+    elements.settingsStatus.classList.add("error-text");
+  }
+}
+
+elements.threadSelect.addEventListener("change", () => selectThread(elements.threadSelect.value));
+elements.threadSelect.addEventListener("focus", refreshLoadedThreads);
+elements.composer.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitMessage(state?.message?.mode === "steer" ? "steer" : "start");
+});
+elements.queueMessage.addEventListener("click", () => submitMessage("queue"));
+elements.cancelQueue.addEventListener("click", cancelQueuedMessage);
 elements.messageText.addEventListener("input", () => {
   composerError = "";
   composerNotice = "";
   renderComposer();
 });
-
 elements.messageText.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     elements.composer.requestSubmit();
   }
 });
-
+elements.modelSelect.addEventListener("change", () => {
+  const model = currentCatalogModel(elements.modelSelect.value);
+  const efforts = model?.supportedReasoningEfforts || [];
+  const effort = efforts.some((option) => option.reasoningEffort === state?.reasoningEffort)
+    ? state.reasoningEffort
+    : model?.defaultReasoningEffort || efforts[0]?.reasoningEffort;
+  if (model && effort) updateThreadSettings(model.model, effort);
+});
+elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
 elements.conversation.addEventListener("scroll", () => {
   shouldFollowConversation = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 80;
-  if (!shouldFollowConversation && elements.conversation.scrollTop < 140 && nextCursor && !historyRequest) {
-    loadHistory(nextCursor, historyEpoch, false);
-  }
+  if (!shouldFollowConversation && elements.conversation.scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 });
+elements.inspectorButton.addEventListener("click", toggleInspector);
+elements.inspectorClose.addEventListener("click", closeInspector);
+elements.inspectorBackdrop.addEventListener("click", closeInspector);
 
 setInterval(() => {
   const startedAt = state?.turn?.startedAt;
   const completedAt = state?.turn?.completedAt;
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
 }, 1_000);
-
-async function startApp() {
-  elements.loginScreen.hidden = true;
-  elements.appShell.hidden = false;
-  try {
-    const [response] = await Promise.all([apiFetch("/api/state"), refreshLoadedThreads()]);
-    applySnapshot(await response.json(), false);
-  } catch (error) {
-    elements.statusDetail.textContent = error.message;
-    setConnection(false, true);
-  }
-  await loadHistory(null, historyEpoch, true);
-  connectEvents();
-}
 
 elements.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -643,9 +731,7 @@ elements.loginForm.addEventListener("submit", async (event) => {
   elements.loginError.textContent = "Checking…";
   try {
     const response = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin: elements.loginPin.value }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: elements.loginPin.value }),
     });
     const result = await response.json();
     if (!response.ok || !result.authenticated) throw new Error(result.error || "Could not sign in");
@@ -656,7 +742,6 @@ elements.loginForm.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
-
 elements.loginPin.addEventListener("input", () => {
   elements.loginPin.value = elements.loginPin.value.replace(/\D/g, "").slice(0, 4);
   elements.loginError.textContent = "";
@@ -665,27 +750,19 @@ elements.loginPin.addEventListener("input", () => {
 elements.settingsButton.addEventListener("click", openSettings);
 elements.settingsClose.addEventListener("click", closeSettings);
 elements.settingsCancel.addEventListener("click", closeSettings);
-
-elements.settingsScreen.addEventListener("click", (event) => {
-  if (event.target === elements.settingsScreen) closeSettings();
-});
-
+elements.settingsScreen.addEventListener("click", (event) => { if (event.target === elements.settingsScreen) closeSettings(); });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !elements.settingsScreen.hidden) closeSettings();
+  if (event.key !== "Escape") return;
+  if (!elements.settingsScreen.hidden) closeSettings(); else closeInspector();
 });
-
 elements.settingsLanEnabled.addEventListener("change", () => {
-  if (elements.settingsLanEnabled.checked && elements.settingsHost.value === "127.0.0.1") {
-    elements.settingsHost.value = "0.0.0.0";
-  }
+  if (elements.settingsLanEnabled.checked && elements.settingsHost.value === "127.0.0.1") elements.settingsHost.value = "0.0.0.0";
 });
-
 elements.settingsPin.addEventListener("input", () => {
   elements.settingsPin.value = elements.settingsPin.value.replace(/\D/g, "").slice(0, 4);
   elements.settingsStatus.textContent = "";
   elements.settingsStatus.classList.remove("error-text");
 });
-
 elements.settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (savingSettings) return;
@@ -702,14 +779,8 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   elements.settingsStatus.classList.remove("error-text");
   try {
     const response = await apiFetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        lanEnabled: elements.settingsLanEnabled.checked,
-        host: elements.settingsHost.value.trim(),
-        port: Number(elements.settingsPort.value),
-        pin,
-      }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lanEnabled: elements.settingsLanEnabled.checked, host: elements.settingsHost.value.trim(), port: Number(elements.settingsPort.value), pin }),
     });
     const result = await response.json();
     if (!response.ok || !result.saved) throw new Error(result.error || "Could not save settings");
@@ -724,7 +795,6 @@ elements.settingsForm.addEventListener("submit", async (event) => {
     elements.settingsSave.disabled = false;
   }
 });
-
 elements.restartPocket.addEventListener("click", async () => {
   if (restartingPocket) return;
   restartingPocket = true;
@@ -744,6 +814,20 @@ elements.restartPocket.addEventListener("click", async () => {
     elements.settingsStatus.classList.add("error-text");
   }
 });
+
+async function startApp() {
+  elements.loginScreen.hidden = true;
+  elements.appShell.hidden = false;
+  try {
+    const [response] = await Promise.all([apiFetch("/api/state"), refreshLoadedThreads()]);
+    applySnapshot(await response.json(), false);
+  } catch (error) {
+    elements.statusDetail.textContent = error.message;
+    setConnection(false, true);
+  }
+  await loadHistory(null, historyEpoch, true);
+  connectEvents();
+}
 
 async function start() {
   try {

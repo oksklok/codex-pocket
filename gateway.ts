@@ -71,6 +71,20 @@ type LoadedThreadSummary = {
   project: string;
   status: string;
 };
+type PocketModel = {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
+  defaultReasoningEffort: string;
+};
+type QueuedMessage = {
+  threadId: string;
+  text: string;
+  createdAt: number;
+  error?: string;
+};
 type PocketState = {
   connected: boolean;
   connectionError: string | null;
@@ -85,6 +99,8 @@ type PocketState = {
   };
   model: string;
   reasoningEffort: string;
+  models: PocketModel[];
+  queuedMessage: QueuedMessage | null;
   threadStatus: string;
   phase: "connecting" | "working" | "waiting_input" | "waiting_permission" | "done" | "failed";
   turn: null | {
@@ -794,6 +810,7 @@ class PocketGateway {
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private selectionQueue: Promise<void> = Promise.resolve();
+  private startingQueuedMessage = false;
 
   constructor(options: Options) {
     this.options = options;
@@ -806,6 +823,8 @@ class PocketGateway {
       thread: null,
       model: "Not exposed",
       reasoningEffort: "Not exposed",
+      models: [],
+      queuedMessage: null,
       threadStatus: "connecting",
       phase: "connecting",
       turn: null,
@@ -881,10 +900,26 @@ class PocketGateway {
     return selection;
   }
 
-  sendMessage(text: unknown): Promise<JsonObject> {
+  sendMessage(text: unknown, action: unknown): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.sendMessageNow(text),
-      () => this.sendMessageNow(text),
+      () => this.sendMessageNow(text, action),
+      () => this.sendMessageNow(text, action),
+    );
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
+  cancelQueuedMessage(): JsonObject {
+    if (!this.state.queuedMessage) return { cancelled: false, queuedMessage: null };
+    this.state.queuedMessage = null;
+    this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
+    return { cancelled: true, queuedMessage: null };
+  }
+
+  updateThreadSettings(model: unknown, effort: unknown): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(
+      () => this.updateThreadSettingsNow(model, effort),
+      () => this.updateThreadSettingsNow(model, effort),
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
@@ -927,6 +962,7 @@ class PocketGateway {
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.state.machine = initialized?.platformOs || initialized?.platformFamily || "local";
+      await this.loadModels();
       const loadedThreads = await this.refreshLoadedThreads();
       const active = loadedThreads.find((thread) => thread.status.startsWith("active"));
       const targetId = this.options.thread ?? active?.id ?? loadedThreads[0]?.id;
@@ -989,6 +1025,33 @@ class PocketGateway {
     return this.loadedThreads;
   }
 
+  private async loadModels(): Promise<void> {
+    if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const models: PocketModel[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await this.rpc.request("model/list", { cursor, limit: 100, includeHidden: false });
+      for (const value of Array.isArray(page?.data) ? page.data : []) {
+        if (!value || value.hidden === true || !value.model) continue;
+        models.push({
+          id: String(value.id ?? value.model),
+          model: String(value.model),
+          displayName: compact(value.displayName ?? value.model, 120),
+          description: compact(value.description, 240),
+          supportedReasoningEfforts: Array.isArray(value.supportedReasoningEfforts)
+            ? value.supportedReasoningEfforts.map((option: any) => ({
+              reasoningEffort: String(option.reasoningEffort),
+              description: compact(option.description, 180),
+            }))
+            : [],
+          defaultReasoningEffort: String(value.defaultReasoningEffort ?? ""),
+        });
+      }
+      cursor = page?.nextCursor ? String(page.nextCursor) : null;
+    } while (cursor);
+    this.state.models = models;
+  }
+
   private async selectThreadNow(threadId: string): Promise<JsonObject> {
     const requestedId = String(threadId ?? "").trim();
     if (!requestedId) throw new Error("threadId is required");
@@ -1002,7 +1065,28 @@ class PocketGateway {
     return this.snapshot();
   }
 
-  private async sendMessageNow(value: unknown): Promise<JsonObject> {
+  private async updateThreadSettingsNow(modelValue: unknown, effortValue: unknown): Promise<JsonObject> {
+    if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const model = String(modelValue ?? "").trim();
+    const effort = String(effortValue ?? "").trim();
+    const catalogModel = this.state.models.find((candidate) => candidate.model === model);
+    if (!catalogModel) throw new Error("selected model is not available from this app-server");
+    if (!catalogModel.supportedReasoningEfforts.some((option) => option.reasoningEffort === effort)) {
+      throw new Error("selected reasoning effort is not available for this model");
+    }
+    await this.rpc.request("thread/settings/update", { threadId: this.state.thread.id, model, effort });
+    this.state.model = model;
+    this.state.reasoningEffort = effort;
+    const payload = {
+      model,
+      reasoningEffort: effort,
+      appliesTo: this.state.turn?.status === "inProgress" ? "next_turn" : "current",
+    };
+    this.broadcast("settings", payload);
+    return { updated: true, ...payload };
+  }
+
+  private async sendMessageNow(value: unknown, requestedAction: unknown): Promise<JsonObject> {
     if (typeof value !== "string") throw new Error("message text is required");
     const text = value.replace(/\r\n/g, "\n");
     if (!text.trim()) throw new Error("message text is required");
@@ -1013,7 +1097,16 @@ class PocketGateway {
 
     const threadId = this.state.thread.id;
     const input = [{ type: "text", text, text_elements: [] }];
-    if (capability.mode === "steer") {
+    const action = String(requestedAction ?? capability.mode);
+    if (action === "queue") {
+      if (capability.mode !== "steer") throw new Error("Queue next is only available while a turn is active");
+      this.state.queuedMessage = { threadId, text, createdAt: Date.now() };
+      const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
+      this.broadcast("queue", payload);
+      return { accepted: true, mode: "queue", ...payload };
+    }
+    if (action === "steer") {
+      if (capability.mode !== "steer") throw new Error("There is no active turn to steer");
       const expectedTurnId = this.state.turn?.id;
       if (!expectedTurnId) throw new Error("The active turn is not ready for a follow-up");
       const result = await this.rpc.request("turn/steer", { threadId, expectedTurnId, input });
@@ -1024,6 +1117,8 @@ class PocketGateway {
         message: this.messageCapability(),
       };
     }
+
+    if (action !== "start" || capability.mode !== "start") throw new Error("This task is not idle");
 
     const result = await this.rpc.request("turn/start", { threadId, input });
     const turn = result?.turn ?? {};
@@ -1075,7 +1170,7 @@ class PocketGateway {
     };
     this.canAcceptDirectInput = thread.canAcceptDirectInput === true;
     this.state.threadStatus = statusText(thread.status ?? summary.status);
-    this.updateModel(thread);
+    this.updateModel(resumed);
     if (this.canAcceptDirectInput && this.state.threadStatus.startsWith("active") && this.state.turn?.status !== "inProgress") {
       await this.loadActiveTurn();
     }
@@ -1140,6 +1235,14 @@ class PocketGateway {
           this.broadcast("thread", this.state.thread);
         }
         break;
+      case "thread/settings/updated":
+        this.updateModel(params.threadSettings);
+        this.broadcast("settings", {
+          model: this.state.model,
+          reasoningEffort: this.state.reasoningEffort,
+          appliesTo: this.state.turn?.status === "inProgress" ? "next_turn" : "current",
+        });
+        break;
       case "turn/started":
         this.updateModel(params.turn);
         this.state.turn = {
@@ -1177,6 +1280,10 @@ class PocketGateway {
         this.state.phase = error || status === "failed" ? "failed" : "done";
         this.flushAllAssistantDeltas();
         this.broadcast("turn", { turn: this.state.turn, phase: this.state.phase, message: this.messageCapability() });
+        if (this.state.thread && this.state.queuedMessage?.threadId === this.state.thread.id) {
+          const operation = this.selectionQueue.then(() => this.startQueuedMessage(this.state.thread!.id));
+          this.selectionQueue = operation.then(() => {}, () => {});
+        }
         break;
       }
       case "turn/plan/updated":
@@ -1276,7 +1383,49 @@ class PocketGateway {
     this.state.liveMessages = [];
     this.state.model = "Not exposed";
     this.state.reasoningEffort = "Not exposed";
+    this.state.queuedMessage = null;
+    this.startingQueuedMessage = false;
     this.canAcceptDirectInput = false;
+  }
+
+  private async startQueuedMessage(threadId: string): Promise<void> {
+    if (this.startingQueuedMessage) return;
+    const queued = this.state.queuedMessage;
+    if (!queued || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return;
+    this.startingQueuedMessage = true;
+    try {
+      const input = [{ type: "text", text: queued.text, text_elements: [] }];
+      const result = await this.rpc.request("turn/start", { threadId, input });
+      if (this.state.thread?.id !== threadId || this.state.queuedMessage !== queued) return;
+      this.state.queuedMessage = null;
+      const turn = result?.turn ?? {};
+      this.state.turn = {
+        id: String(turn.id ?? this.state.turn?.id ?? ""),
+        status: String(turn.status ?? "inProgress"),
+        startedAt: numberTime(turn.createdAt ?? turn.startedAt),
+        completedAt: null,
+        error: null,
+      };
+      this.state.phase = "working";
+      this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
+      this.broadcast("turn", {
+        turn: this.state.turn,
+        phase: this.state.phase,
+        plan: this.state.plan,
+        activities: this.state.activities,
+        message: this.messageCapability(),
+      });
+    } catch (error) {
+      if (this.state.queuedMessage === queued) {
+        this.state.queuedMessage = {
+          ...queued,
+          error: compact(error instanceof Error ? error.message : String(error), 240),
+        };
+        this.broadcast("queue", { queuedMessage: this.state.queuedMessage, message: this.messageCapability() });
+      }
+    } finally {
+      this.startingQueuedMessage = false;
+    }
   }
 
   private upsertLiveMessage(message: PocketMessage): void {
@@ -1289,7 +1438,7 @@ class PocketGateway {
   private updateModel(value: any): void {
     if (!value || typeof value !== "object") return;
     const model = value.model ?? value.modelId ?? value.config?.model;
-    const effort = value.reasoningEffort ?? value.reasoning_effort ?? value.config?.reasoningEffort;
+    const effort = value.reasoningEffort ?? value.reasoning_effort ?? value.effort ?? value.config?.reasoningEffort;
     if (model) this.state.model = String(model);
     if (effort) this.state.reasoningEffort = String(effort);
   }
@@ -1480,7 +1629,20 @@ async function handleRequest(
   if (method === "POST" && url.pathname === "/api/message") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 202, await gateway.sendMessage(body.text), gateway);
+      sendJson(response, 202, await gateway.sendMessage(body.text, body.action), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (method === "DELETE" && url.pathname === "/api/message/queue") {
+    sendJson(response, 200, gateway.cancelQueuedMessage(), gateway);
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/thread/settings") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await gateway.updateThreadSettings(body.model, body.effort), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
