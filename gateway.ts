@@ -164,7 +164,7 @@ type PocketState = {
   queuedMessage: QueuedMessage | null;
   stoppingTurnId: string | null;
   threadStatus: string;
-  phase: "connecting" | "working" | "waiting_input" | "waiting_permission" | "done" | "failed";
+  phase: "connecting" | "working" | "waiting_input" | "waiting_permission" | "done" | "stopped" | "failed";
   turn: null | {
     id: string;
     status: string;
@@ -983,7 +983,6 @@ class MachineRuntime {
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private selectionQueue: Promise<void> = Promise.resolve();
-  private interruptBlockedUntil = 0;
   private startingQueuedMessage = false;
   private permissionProfiles: PermissionProfileSummary[] = [];
   private allowedReviewers: string[] | null = null;
@@ -1097,17 +1096,12 @@ class MachineRuntime {
   }
 
   selectThread(threadId: string): Promise<JsonObject> {
-    this.interruptBlockedUntil = Date.now() + 1_000;
     const selection = this.selectionQueue.then(
       () => this.selectThreadNow(threadId),
       () => this.selectThreadNow(threadId),
     );
-    const guarded = selection.then((result) => {
-      this.interruptBlockedUntil = Date.now() + 1_000;
-      return result;
-    });
-    this.selectionQueue = guarded.then(() => {}, () => {});
-    return guarded;
+    this.selectionQueue = selection.then(() => {}, () => {});
+    return selection;
   }
 
   sendMessage(text: unknown, action: unknown): Promise<JsonObject> {
@@ -1119,10 +1113,10 @@ class MachineRuntime {
     return operation;
   }
 
-  interruptTurn(): Promise<JsonObject> {
+  interruptTurn(expectedThreadId: unknown, expectedTurnId: unknown): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.interruptTurnNow(),
-      () => this.interruptTurnNow(),
+      () => this.interruptTurnNow(expectedThreadId, expectedTurnId),
+      () => this.interruptTurnNow(expectedThreadId, expectedTurnId),
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
@@ -1671,11 +1665,16 @@ class MachineRuntime {
     return { accepted: true, mode: "start", turnId: this.state.turn.id, turn: this.state.turn, phase: this.state.phase, message };
   }
 
-  private async interruptTurnNow(): Promise<JsonObject> {
+  private async interruptTurnNow(expectedThreadId: unknown, expectedTurnId: unknown): Promise<JsonObject> {
     if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
-    if (Date.now() < this.interruptBlockedUntil) throw new Error("The selected task just changed; refresh and try again");
+    if (String(expectedThreadId ?? "") !== this.state.thread.id) {
+      throw new Error("The selected task changed before Stop was received");
+    }
     const turn = this.state.turn;
     if (!turn || turn.status !== "inProgress" || !turn.id) throw new Error("There is no active turn to stop");
+    if (String(expectedTurnId ?? "") !== turn.id) {
+      throw new Error("The active turn changed before Stop was received");
+    }
     if (this.state.stoppingTurnId) throw new Error("This turn is already stopping");
     const threadId = this.state.thread.id;
     const turnId = turn.id;
@@ -1955,7 +1954,7 @@ class MachineRuntime {
               ...(status === "interrupted" ? { detail: "Stopped with turn" } : {}),
             }
           : activity);
-        this.state.phase = error || status === "failed" ? "failed" : "done";
+        this.state.phase = error || status === "failed" ? "failed" : status === "interrupted" ? "stopped" : "done";
         this.flushAllAssistantDeltas();
         this.broadcast("turn", {
           turn: this.state.turn,
@@ -2142,6 +2141,7 @@ class MachineRuntime {
     if (this.state.pending.some((request) => request.kind === "permission")) return "waiting_permission";
     if (this.state.pending.some((request) => request.kind === "input" && request.blocking !== false)) return "waiting_input";
     if (this.state.turn?.error || this.state.turn?.status === "failed") return "failed";
+    if (this.state.turn?.status === "interrupted") return "stopped";
     if (this.state.turn?.status === "inProgress" || this.state.threadStatus.startsWith("active")) return "working";
     return this.state.connected ? "done" : "connecting";
   }
@@ -2279,8 +2279,8 @@ class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).sendMessage(text, action));
   }
 
-  interruptTurn(machineId: unknown): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId).interruptTurn());
+  interruptTurn(machineId: unknown, expectedThreadId: unknown, expectedTurnId: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).interruptTurn(expectedThreadId, expectedTurnId));
   }
 
   sendQueuedMessage(machineId: unknown): Promise<JsonObject> {
@@ -2474,7 +2474,11 @@ async function handleRequest(
   if (method === "POST" && url.pathname === "/api/turn/interrupt") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 202, await gateway.interruptTurn(body.machineId), gateway);
+      sendJson(response, 202, await gateway.interruptTurn(
+        body.machineId,
+        body.expectedThreadId,
+        body.expectedTurnId,
+      ), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }

@@ -68,6 +68,7 @@ const phaseLabels = {
   waiting_input: "Waiting for input",
   waiting_permission: "Waiting for permission",
   done: "Done",
+  stopped: "Stopped",
   failed: "Failed",
 };
 
@@ -973,6 +974,10 @@ async function sendQueuedMessage() {
 
 async function interruptTurn() {
   if (submittingInterrupt || switchingMachine || switchingThread || state?.turn?.status !== "inProgress") return;
+  const machineId = state?.machineId;
+  const expectedThreadId = state?.thread?.id;
+  const expectedTurnId = state?.turn?.id;
+  if (!machineId || !expectedThreadId || !expectedTurnId) return;
   submittingInterrupt = true;
   composerError = "";
   composerNotice = "";
@@ -981,7 +986,7 @@ async function interruptTurn() {
     const response = await apiFetch("/api/turn/interrupt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ machineId: state?.machineId }),
+      body: JSON.stringify({ machineId, expectedThreadId, expectedTurnId }),
     });
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the stop request");
