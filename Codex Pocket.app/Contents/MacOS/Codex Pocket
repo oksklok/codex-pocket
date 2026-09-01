@@ -1,0 +1,119 @@
+#!/bin/zsh
+
+set -u
+
+show_error() {
+  POCKET_ERROR="$1" /usr/bin/osascript \
+    -e 'display alert "Codex Pocket" message (system attribute "POCKET_ERROR") as critical'
+  exit 1
+}
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+project_dir="$(cd "$script_dir/../../.." && pwd)"
+gateway_path="$project_dir/gateway.ts"
+config_path="$project_dir/.codex-pocket.local.json"
+runtime_path="$project_dir/.codex-pocket.runtime.json"
+log_path="$project_dir/.codex-pocket.log"
+
+[[ -f "$gateway_path" ]] || show_error "Could not find gateway.ts beside Codex Pocket.app. Keep the app inside the codex-pocket project folder."
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+usable_node() {
+  [[ -x "$1" ]] && "$1" -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 6) ? 0 : 1)' >/dev/null 2>&1
+}
+
+node_path="$(command -v node 2>/dev/null || true)"
+if ! usable_node "$node_path"; then
+  node_path=""
+  for candidate in \
+    "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node" \
+    "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"; do
+    if usable_node "$candidate"; then
+      node_path="$candidate"
+      break
+    fi
+  done
+fi
+
+[[ -n "$node_path" ]] || show_error "No usable Node.js runtime was found. Install Node.js 22.6 or newer, or keep the ChatGPT/Codex app installed."
+
+if ! command -v codex >/dev/null 2>&1; then
+  for candidate in \
+    "/Applications/ChatGPT.app/Contents/Resources/codex" \
+    "/Applications/Codex.app/Contents/Resources/codex"; do
+    if [[ -x "$candidate" ]]; then
+      export CODEX_BIN="$candidate"
+      break
+    fi
+  done
+fi
+
+pocket_ready() {
+  /usr/bin/curl -fsS --max-time 1 "$1/api/auth" 2>/dev/null | /usr/bin/grep -q '"authenticated"'
+}
+
+runtime_record="$($node_path -e '
+  const fs = require("node:fs");
+  try {
+    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (Number.isInteger(value.pid) && typeof value.localUrl === "string") {
+      process.stdout.write(`${value.pid}\t${value.localUrl}`);
+    }
+  } catch {}
+' "$runtime_path")"
+
+if [[ -n "$runtime_record" ]]; then
+  IFS=$'\t' read -r running_pid running_url <<< "$runtime_record"
+  if kill -0 "$running_pid" 2>/dev/null; then
+    for _ in {1..30}; do
+      if pocket_ready "$running_url"; then
+        /usr/bin/open "$running_url"
+        exit 0
+      fi
+      /bin/sleep 0.1
+    done
+    show_error "Codex Pocket is running but its browser service is not responding. Check $log_path for details."
+  fi
+fi
+
+local_url="$($node_path -e '
+  const fs = require("node:fs");
+  const net = require("node:net");
+  let config = { lanEnabled: false, host: "127.0.0.1", port: 4173 };
+  try {
+    const saved = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const hostOk = typeof saved.host === "string" && saved.host.length >= 1 && saved.host.length <= 253
+      && saved.host.trim() === saved.host
+      && (net.isIP(saved.host) !== 0 || /^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)$/i.test(saved.host));
+    const pinOk = saved.pin === null || (typeof saved.pin === "string" && /^\d{4}$/.test(saved.pin));
+    if (typeof saved.lanEnabled === "boolean"
+      && hostOk && pinOk
+      && (!saved.lanEnabled || (typeof saved.pin === "string" && /^\d{4}$/.test(saved.pin)))
+      && Number.isInteger(saved.port) && saved.port >= 1 && saved.port <= 65535) config = saved;
+  } catch {}
+  const host = config.lanEnabled ? config.host : "127.0.0.1";
+  const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  process.stdout.write(`http://${localHost.includes(":") ? `[${localHost}]` : localHost}:${config.port}`);
+' "$config_path")"
+
+if pocket_ready "$local_url"; then
+  /usr/bin/open "$local_url"
+  exit 0
+fi
+
+/usr/bin/nohup "$node_path" --experimental-strip-types "$gateway_path" >>"$log_path" 2>&1 </dev/null &
+gateway_pid=$!
+
+for _ in {1..80}; do
+  if pocket_ready "$local_url"; then
+    /usr/bin/open "$local_url"
+    exit 0
+  fi
+  if ! kill -0 "$gateway_pid" 2>/dev/null; then
+    break
+  fi
+  /bin/sleep 0.1
+done
+
+show_error "Codex Pocket could not start. Check $log_path for details."

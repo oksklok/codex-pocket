@@ -139,6 +139,11 @@
 
           <label for="settings-port">Port</label>
           <input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required>
+
+          <div class="phone-urls" id="phone-urls" hidden>
+            <span>Open on your phone</span>
+            <div id="phone-url-list"></div>
+          </div>
         </fieldset>
 
         <fieldset>
@@ -148,7 +153,10 @@
           <p class="field-help" id="settings-pin-state">No PIN configured.</p>
         </fieldset>
 
-        <p class="settings-restart" id="settings-restart" hidden>Restart Codex Pocket to apply network changes.</p>
+        <div class="settings-restart" id="settings-restart" hidden>
+          <p>Restart Codex Pocket to apply saved changes.</p>
+          <button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button>
+        </div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
         <div class="settings-actions">
           <button class="secondary-button" id="settings-cancel" type="button">Cancel</button>

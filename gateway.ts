@@ -2,9 +2,10 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { isIP } from "node:net";
+import { createServer as createNetServer, isIP } from "node:net";
+import { networkInterfaces } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -117,6 +118,8 @@ const LOGIN_BLOCK_MS = 8_000;
 const ROOT_DIR = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(ROOT_DIR, "public");
 const CONFIG_PATH = join(ROOT_DIR, ".codex-pocket.local.json");
+const RUNTIME_PATH = join(ROOT_DIR, ".codex-pocket.runtime.json");
+const LOG_PATH = join(ROOT_DIR, ".codex-pocket.log");
 const SAFE_CONFIG: LocalConfig = {
   lanEnabled: false,
   host: "127.0.0.1",
@@ -232,7 +235,124 @@ function publicSettings(settings: LocalSettings, fallbackPin: string | null): Js
     host: settings.config.host,
     port: settings.config.port,
     pinConfigured: /^\d{4}$/.test(settings.config.pin ?? fallbackPin ?? ""),
+    phoneUrls: phoneUrls(settings.config),
   };
+}
+
+function settingsNeedRestart(settings: LocalSettings, options: Options, auth: AuthConfig): boolean {
+  const desiredHost = settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host;
+  const desiredPin = settings.config.pin;
+  return desiredHost !== options.host
+    || settings.config.port !== options.port
+    || !secretMatches(desiredPin ?? "", auth.pin ?? "");
+}
+
+function browserUrl(host: string, port: number): string {
+  const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  return `http://${localHost.includes(":") ? `[${localHost}]` : localHost}:${port}`;
+}
+
+function restartUrlForRequest(request: IncomingMessage, config: LocalConfig, fallback: string): string {
+  if (!config.lanEnabled) return fallback;
+  try {
+    const requested = new URL(`http://${request.headers.host ?? ""}`);
+    const host = requested.hostname.replace(/^\[|\]$/g, "");
+    if (!isLoopbackHost(host)) return `http://${host.includes(":") ? `[${host}]` : host}:${config.port}`;
+  } catch {
+    // Fall back to the gateway's local URL for malformed Host headers.
+  }
+  return fallback;
+}
+
+function isPrivateIpv4(address: string): boolean {
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return parts[0] === 10
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 192 && parts[1] === 168);
+}
+
+function phoneUrls(config: LocalConfig): string[] {
+  if (!config.lanEnabled || isLoopbackHost(config.host)) return [];
+  const addresses = config.host !== "0.0.0.0" && isPrivateIpv4(config.host)
+    ? [config.host]
+    : Object.values(networkInterfaces())
+      .flatMap((entries) => entries ?? [])
+      .filter((entry) => entry.family === "IPv4" && !entry.internal && isPrivateIpv4(entry.address))
+      .map((entry) => entry.address);
+  return [...new Set(addresses)].sort().map((address) => `http://${address}:${config.port}`);
+}
+
+function writeRuntimeInfo(options: Options): void {
+  writeFileSync(RUNTIME_PATH, `${JSON.stringify({
+    pid: process.pid,
+    host: options.host,
+    port: options.port,
+    localUrl: browserUrl(options.host, options.port),
+  }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+function clearRuntimeInfo(): void {
+  try {
+    const value = JSON.parse(readFileSync(RUNTIME_PATH, "utf8"));
+    if (value?.pid === process.pid) unlinkSync(RUNTIME_PATH);
+  } catch {
+    // Missing or stale runtime metadata is harmless.
+  }
+}
+
+async function validateRestartTarget(config: LocalConfig, current: Options): Promise<void> {
+  const host = config.lanEnabled ? config.host : SAFE_CONFIG.host;
+  const port = config.port === current.port ? 0 : config.port;
+  await new Promise<void>((resolve, reject) => {
+    const probe = createNetServer();
+    probe.unref();
+    probe.once("error", reject);
+    probe.listen(port, host, () => probe.close((error) => error ? reject(error) : resolve()));
+  });
+}
+
+const RESTART_HELPER = String.raw`
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const [oldPid, nodePath, gatewayPath, cwd, logPath] = process.argv.slice(1);
+const waitForExit = () => {
+  try {
+    process.kill(Number(oldPid), 0);
+    setTimeout(waitForExit, 100);
+  } catch {
+    const env = { ...process.env };
+    delete env.CODEX_POCKET_PIN;
+    const log = fs.openSync(logPath, "a");
+    const child = spawn(nodePath, ["--experimental-strip-types", gatewayPath], {
+      cwd,
+      detached: true,
+      stdio: ["ignore", log, log],
+      env,
+    });
+    child.unref();
+  }
+};
+waitForExit();
+`;
+
+async function startRestartHandoff(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const helper = spawn(process.execPath, [
+      "-e",
+      RESTART_HELPER,
+      String(process.pid),
+      process.execPath,
+      fileURLToPath(import.meta.url),
+      ROOT_DIR,
+      LOG_PATH,
+    ], { cwd: ROOT_DIR, detached: true, stdio: "ignore", env: process.env });
+    helper.once("spawn", () => {
+      helper.unref();
+      resolve();
+    });
+    helper.once("error", reject);
+  });
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -1290,6 +1410,7 @@ async function handleRequest(
   auth: AuthConfig,
   settings: LocalSettings,
   options: Options,
+  restartPocket: () => Promise<{ localUrl: string }>,
 ): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -1327,6 +1448,7 @@ async function handleRequest(
     sendJson(response, 200, {
       settings: publicSettings(settings, auth.pin),
       effective: { host: options.host, port: options.port, pinRequired: auth.required },
+      restartRequired: settingsNeedRestart(settings, options, auth),
     }, gateway);
     return;
   }
@@ -1340,6 +1462,18 @@ async function handleRequest(
       }, gateway);
     } catch (error) {
       sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (url.pathname === "/api/restart" && method === "POST") {
+    try {
+      const result = await restartPocket();
+      sendJson(response, 202, {
+        restarting: true,
+        localUrl: restartUrlForRequest(request, settings.config, result.localUrl),
+      }, gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
     return;
   }
@@ -1452,13 +1586,39 @@ async function main(): Promise<void> {
   };
   for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
   const gateway = new PocketGateway(options);
+  let restartPocket: () => Promise<{ localUrl: string }>;
   const server = createServer((request, response) => {
-    handleRequest(request, response, gateway, auth, settings, options).catch((error) => {
+    handleRequest(request, response, gateway, auth, settings, options, () => restartPocket()).catch((error) => {
       if (!response.headersSent) sendJson(response, 500, { error: compact(error, 400) }, gateway);
       else response.end();
     });
   });
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    gateway.stop();
+    clearRuntimeInfo();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1_500).unref();
+  };
+  restartPocket = async () => {
+    if (shuttingDown) throw new Error("Pocket is already restarting");
+    await validateRestartTarget(settings.config, options);
+    await startRestartHandoff();
+    const localUrl = browserUrl(
+      settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
+      settings.config.port,
+    );
+    setTimeout(shutdown, 350).unref();
+    return { localUrl };
+  };
   server.listen(options.port, options.host, () => {
+    try {
+      writeRuntimeInfo(options);
+    } catch (error) {
+      console.warn(`Warning: could not write runtime metadata: ${compact(error, 240)}`);
+    }
     const displayHost = options.host.includes(":") ? `[${options.host}]` : options.host;
     console.log(`Codex Pocket: http://${displayHost}:${options.port}`);
     console.log(`Network: ${authRequired ? "LAN access enabled" : "localhost only"}; PIN protection ${authRequired ? "enabled" : "disabled"}`);
@@ -1467,10 +1627,7 @@ async function main(): Promise<void> {
       console.warn("Warning: LAN control uses plain HTTP; use it only on a trusted network.");
     }
   });
-  const shutdown = () => {
-    gateway.stop();
-    server.close(() => process.exit(0));
-  };
+  process.once("exit", clearRuntimeInfo);
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
   await gateway.start();

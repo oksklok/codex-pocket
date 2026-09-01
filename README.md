@@ -20,31 +20,37 @@ The browser never receives the raw app-server stream. The gateway keeps a small 
 
 No npm packages are required.
 
-## Run
+## Normal macOS use
 
-Start or connect a normal Codex TUI to the managed shared runtime:
+Double-click `Codex Pocket.app` in this repository.
+
+The launcher finds Node from `PATH` or the bundled ChatGPT/Codex runtime, starts the gateway in the background when needed, and opens Pocket in the default browser. Double-clicking it again opens the existing gateway instead of starting a duplicate. Keep the app bundle inside the project folder so it can locate `gateway.ts`. Closing the browser does not stop Pocket.
+
+For normal phone setup:
+
+1. Double-click `Codex Pocket.app`.
+2. Open **Settings**.
+3. Enable local-network access, choose the bind address and port, and enter a four-digit PIN.
+4. Save and click **Restart Pocket**.
+5. Open the phone URL shown in Settings and enter the PIN.
+
+Settings are stored locally in `.codex-pocket.local.json`, which is ignored by Git and created only after the first save. The restart action performs a one-shot background handoff and moves the browser to the new port when necessary. A malformed or unsafe config is ignored with a warning and the gateway falls back to `127.0.0.1:4173`.
+
+LAN mode uses plain HTTP and is intended only for a trusted home network. Remote or untrusted-network access should later go through an encrypted private network such as Tailscale rather than exposing this listener directly.
+
+## Development and troubleshooting
+
+Start or connect a normal Codex TUI to the managed shared runtime when needed:
 
 ```sh
 codex --remote unix://
 ```
 
-In this repository, start the gateway:
+The existing development command still works:
 
 ```sh
 npm start
 ```
-
-Then open [http://127.0.0.1:4173](http://127.0.0.1:4173).
-
-The gateway binds to `127.0.0.1` by default and does not require a PIN there. For normal phone setup:
-
-1. Run `npm start` and open Codex Pocket locally.
-2. Open **Settings**.
-3. Enable local-network access, choose the bind address and port, and enter a four-digit PIN.
-4. Save, stop Codex Pocket, and run `npm start` again.
-5. Open `http://YOUR_MAC_LAN_IP:PORT` on the phone and enter the PIN.
-
-Settings are stored locally in `.codex-pocket.local.json`, which is ignored by Git and created only after the first save. Network and PIN changes take effect after restarting Codex Pocket. A malformed or unsafe config is ignored with a warning and the gateway falls back to `127.0.0.1:4173`.
 
 For troubleshooting or one-off overrides, command-line host/port values and `CODEX_POCKET_PIN` take precedence over the saved file:
 
@@ -54,8 +60,6 @@ npm start -- --host 192.168.1.123 --port 4180
 ```
 
 Precedence is: safe defaults, then the saved local file, then explicit CLI `--host`/`--port` and the `CODEX_POCKET_PIN` environment variable. Successful LAN login creates a random HttpOnly, SameSite session cookie; the PIN is not placed in URLs. Repeated incorrect PIN attempts are temporarily throttled in memory.
-
-LAN mode uses plain HTTP and is intended only for a trusted home network. Remote or untrusted-network access should later go through an encrypted private network such as Tailscale rather than exposing this listener directly.
 
 Other optional arguments:
 

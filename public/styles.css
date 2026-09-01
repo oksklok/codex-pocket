@@ -528,7 +528,7 @@ h2 {
 }
 
 .field-help,
-.settings-restart {
+.settings-restart p {
   margin: 0;
   color: var(--subtle);
   font-size: 0.69rem;
@@ -536,11 +536,47 @@ h2 {
 }
 
 .settings-restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 10px 11px;
   border: 1px solid rgba(240, 195, 106, 0.25);
   border-radius: 9px;
   background: rgba(240, 195, 106, 0.08);
   color: var(--warning);
+}
+
+.settings-restart p {
+  color: var(--warning);
+}
+
+.settings-restart .primary-button {
+  flex: 0 0 auto;
+}
+
+.phone-urls {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 10px 11px;
+  border: 1px solid rgba(69, 200, 138, 0.22);
+  border-radius: 9px;
+  background: rgba(69, 200, 138, 0.07);
+}
+
+.phone-urls > span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.phone-urls a {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--accent);
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
 .settings-actions {
@@ -813,5 +849,10 @@ body.settings-open {
   .conversation {
     min-height: 300px;
     max-height: none;
+  }
+
+  .settings-restart {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

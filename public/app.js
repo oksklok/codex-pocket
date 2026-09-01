@@ -40,6 +40,9 @@ const elements = {
   settingsPin: document.querySelector("#settings-pin"),
   settingsPinState: document.querySelector("#settings-pin-state"),
   settingsRestart: document.querySelector("#settings-restart"),
+  restartPocket: document.querySelector("#restart-pocket"),
+  phoneUrls: document.querySelector("#phone-urls"),
+  phoneUrlList: document.querySelector("#phone-url-list"),
   settingsStatus: document.querySelector("#settings-status"),
 };
 
@@ -68,6 +71,7 @@ let composerError = "";
 let composerNotice = "";
 let settingsValue = null;
 let savingSettings = false;
+let restartingPocket = false;
 
 function showLogin(message = "") {
   source?.close();
@@ -103,6 +107,15 @@ function renderSettings(value) {
   elements.settingsPinState.textContent = value.pinConfigured
     ? "PIN configured. Enter a new PIN only to change it."
     : "No PIN configured.";
+  elements.phoneUrlList.replaceChildren();
+  const urls = Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
+  for (const url of urls) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.textContent = url;
+    elements.phoneUrlList.append(link);
+  }
+  elements.phoneUrls.hidden = urls.length === 0;
 }
 
 async function openSettings() {
@@ -116,6 +129,7 @@ async function openSettings() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Settings unavailable");
     renderSettings(result.settings);
+    elements.settingsRestart.hidden = !result.restartRequired;
     elements.settingsStatus.textContent = "";
     elements.settingsLanEnabled.focus();
   } catch (error) {
@@ -708,6 +722,26 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   } finally {
     savingSettings = false;
     elements.settingsSave.disabled = false;
+  }
+});
+
+elements.restartPocket.addEventListener("click", async () => {
+  if (restartingPocket) return;
+  restartingPocket = true;
+  elements.restartPocket.disabled = true;
+  elements.settingsStatus.textContent = "Preparing restart…";
+  elements.settingsStatus.classList.remove("error-text");
+  try {
+    const response = await apiFetch("/api/restart", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok || !result.restarting || !result.localUrl) throw new Error(result.error || "Could not restart Pocket");
+    elements.settingsStatus.textContent = "Restarting Pocket…";
+    setTimeout(() => location.assign(result.localUrl), 900);
+  } catch (error) {
+    restartingPocket = false;
+    elements.restartPocket.disabled = false;
+    elements.settingsStatus.textContent = error.message;
+    elements.settingsStatus.classList.add("error-text");
   }
 });
 
