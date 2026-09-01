@@ -13,6 +13,7 @@ type Pending = {
 
 type Options = {
   ws?: string;
+  ssh?: string;
   thread?: string;
   historyPages: number;
   historyLimit: number;
@@ -42,6 +43,7 @@ Use --ws only for a separately started loopback WebSocket listener.
 
 Options:
   --ws URL                 Connect directly to ws:// or wss:// instead of the daemon proxy
+  --ssh HOST               Launch the app-server proxy through normal SSH stdio
   --thread ID              Select a thread instead of the newest active/loaded thread
   --history-pages N        Paginated history pages to fetch (default: 1)
   --history-limit N        Turns per page (default: 5)
@@ -54,6 +56,7 @@ Options:
 
 Environment:
   CODEX_BIN                Codex executable to spawn (default: codex)
+  SSH_BIN                  SSH executable to spawn for --ssh (default: ssh)
 `);
   process.exit(0);
 }
@@ -85,6 +88,11 @@ function parseArgs(args: string[]): Options {
 
     if (flag === "--help" || flag === "-h") usage();
     else if (flag === "--ws") options.ws = next();
+    else if (flag === "--ssh") {
+      const host = next();
+      if (!host || host.startsWith("-")) throw new Error("--ssh expects an SSH host or configured alias");
+      options.ssh = host;
+    }
     else if (flag === "--thread") options.thread = next();
     else if (flag === "--history-pages") options.historyPages = parsePositiveInt(flag, next());
     else if (flag === "--history-limit") options.historyLimit = parsePositiveInt(flag, next());
@@ -266,10 +274,16 @@ function clientFrame(opcode: number, payload: Buffer): Buffer {
   return frame;
 }
 
-function connectProxy(onMessage: (message: JsonObject) => void): Promise<Wire> {
+function connectProxy(
+  onMessage: (message: JsonObject) => void,
+  onDisconnect: (error: Error) => void,
+  sshHost?: string,
+): Promise<Wire> {
   return new Promise((resolve, reject) => {
     const codexBin = process.env.CODEX_BIN || "codex";
-    const child: ChildProcessWithoutNullStreams = spawn(codexBin, ["app-server", "proxy"], {
+    const command = sshHost ? process.env.SSH_BIN || "ssh" : codexBin;
+    const args = sshHost ? ["-T", sshHost, "codex", "app-server", "proxy"] : ["app-server", "proxy"];
+    const child: ChildProcessWithoutNullStreams = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const websocketKey = randomBytes(16).toString("base64");
@@ -279,6 +293,7 @@ function connectProxy(onMessage: (message: JsonObject) => void): Promise<Wire> {
     let buffer = Buffer.alloc(0);
     let upgraded = false;
     let settled = false;
+    let closing = false;
     let fragmentedOpcode: number | null = null;
     let fragments: Buffer[] = [];
 
@@ -372,6 +387,7 @@ function connectProxy(onMessage: (message: JsonObject) => void): Promise<Wire> {
             sendFrame(0x1, Buffer.from(JSON.stringify(message), "utf8"));
           },
           close() {
+            closing = true;
             sendFrame(0x8, Buffer.alloc(0));
             child.stdin.end();
             child.kill("SIGTERM");
@@ -384,11 +400,15 @@ function connectProxy(onMessage: (message: JsonObject) => void): Promise<Wire> {
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       const text = compact(chunk, 400);
-      if (text) console.error(`proxy: ${text}`);
+      if (text) console.error(`${sshHost ? `ssh ${sshHost}` : "proxy"}: ${text}`);
     });
-    child.once("error", reject);
+    child.once("error", (error) => {
+      if (!settled) reject(error);
+      else if (!closing) onDisconnect(error);
+    });
     child.once("exit", (code, signal) => {
       if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code})`));
+      else if (!closing) onDisconnect(new Error(`app-server proxy disconnected (${signal ?? code})`));
     });
 
     child.once("spawn", () => {
@@ -430,10 +450,20 @@ class RpcClient {
   private wire!: Wire;
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  private closed = false;
 
-  async connect(ws?: string): Promise<void> {
+  async connect(onDisconnect: (error: Error) => void, ws?: string, sshHost?: string): Promise<void> {
     const receive = (message: JsonObject) => this.receive(message);
-    this.wire = ws ? await connectWebSocket(ws, receive) : await connectProxy(receive);
+    const disconnect = (error: Error) => {
+      this.closed = true;
+      for (const pending of this.pending.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(error);
+      }
+      this.pending.clear();
+      onDisconnect(error);
+    };
+    this.wire = ws ? await connectWebSocket(ws, receive) : await connectProxy(receive, disconnect, sshHost);
   }
 
   request(method: string, params: JsonObject = {}): Promise<any> {
@@ -453,6 +483,8 @@ class RpcClient {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.wire.close();
   }
 
@@ -475,6 +507,8 @@ class RpcClient {
   }
 }
 
+let activeRpc: RpcClient | undefined;
+
 function printThreadList(threads: any[], loadedIds: string[]): void {
   const loaded = new Set(loadedIds);
   console.log(`threads: ${threads.length}; loaded: ${loadedIds.length}`);
@@ -496,10 +530,6 @@ function printHistoryPage(page: any, pageNumber: number): string | null {
   return page?.nextCursor ?? null;
 }
 
-async function wait(milliseconds: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
-}
-
 function printStats(): void {
   const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
   const topMethods = [...methodCounts.entries()]
@@ -513,14 +543,29 @@ function printStats(): void {
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  if (options.ws && options.ssh) throw new Error("use either --ws or --ssh, not both");
   const rpc = new RpcClient();
-  await rpc.connect(options.ws);
+  let disconnectError: Error | undefined;
+  let signalDisconnect!: () => void;
+  const disconnected = new Promise<void>((resolve) => {
+    signalDisconnect = resolve;
+  });
+  await rpc.connect(
+    (error) => {
+      disconnectError = error;
+      signalDisconnect();
+    },
+    options.ws,
+    options.ssh,
+  );
+  activeRpc = rpc;
 
   let closed = false;
   const shutdown = () => {
     if (closed) return;
     closed = true;
     rpc.close();
+    activeRpc = undefined;
     printStats();
   };
   process.once("SIGINT", () => {
@@ -560,6 +605,7 @@ async function main(): Promise<void> {
       "no live thread is loaded in this app-server; start one with `codex --remote unix://` or pass --thread explicitly",
     );
   }
+  console.log(`selected thread id: ${targetId}`);
 
   const resumed = await rpc.request("thread/resume", { threadId: targetId, excludeTurns: true });
   console.log(
@@ -608,13 +654,26 @@ async function main(): Promise<void> {
   }
 
   if (options.monitorSeconds > 0) {
+    const monitorStartBytes = inboundBytes;
+    const monitorStartMessages = inboundMessages;
     console.log(`monitoring compact events for ${options.monitorSeconds}s…`);
-    await wait(options.monitorSeconds * 1000);
+    let monitorTimer!: NodeJS.Timeout;
+    const monitoring = new Promise<void>((resolve) => {
+      monitorTimer = setTimeout(resolve, options.monitorSeconds * 1000);
+    });
+    await Promise.race([monitoring, disconnected]);
+    clearTimeout(monitorTimer);
+    if (disconnectError) throw disconnectError;
+    console.log(
+      `monitor inbound: ${formatBytes(inboundBytes - monitorStartBytes)} in ${inboundMessages - monitorStartMessages} message(s)`,
+    );
   }
   shutdown();
 }
 
 main().catch((error) => {
+  activeRpc?.close();
+  activeRpc = undefined;
   console.error(`probe failed: ${error instanceof Error ? error.message : String(error)}`);
   printStats();
   process.exitCode = 1;

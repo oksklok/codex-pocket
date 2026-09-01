@@ -103,4 +103,13 @@ The disposable protocol probe remains available:
 npm run probe -- --list-only
 ```
 
+For a one-off SSH transport check against another machine, use an existing SSH host or alias:
+
+```sh
+npm run probe-remote -- g14 --list-only
+npm run probe-remote -- g14 --monitor-seconds 30
+```
+
+This launches `codex app-server proxy` on the remote host through normal SSH stdio, then speaks the same app-server protocol as the local probe. It uses the user's existing SSH configuration and credentials; Pocket stores none. The probe is intentionally disposable and does not reconnect automatically—run it again after an SSH disconnect.
+
 The completed macOS connectivity results are in [`SPIKE_REPORT.md`](./SPIKE_REPORT.md). The gateway reuses its supported WebSocket-over-`codex app-server proxy` transport and the paginated `thread/turns/list` API.

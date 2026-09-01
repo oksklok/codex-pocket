@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --experimental-strip-types gateway.ts",
     "gateway": "node --experimental-strip-types gateway.ts",
-    "probe": "node --experimental-strip-types probe.ts"
+    "probe": "node --experimental-strip-types probe.ts",
+    "probe-remote": "node --experimental-strip-types probe.ts --ssh"
   },
   "engines": {
     "node": ">=22.6"
