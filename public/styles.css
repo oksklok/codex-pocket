@@ -94,8 +94,12 @@ button {
 }
 
 .login-card input {
-  min-height: 42px;
-  padding: 9px 11px;
+  min-height: 56px;
+  padding: 9px 14px;
+  font-size: 1.55rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.42em;
+  text-align: center;
 }
 
 .login-card button,

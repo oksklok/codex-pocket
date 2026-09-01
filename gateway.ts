@@ -26,8 +26,9 @@ type Options = {
 };
 type AuthConfig = {
   required: boolean;
-  token: string | null;
+  pin: string | null;
   sessionId: string;
+  attempts: Map<string, { failures: number; lastFailureAt: number; blockedUntil: number }>;
 };
 type PocketMessage = {
   id: string;
@@ -98,6 +99,9 @@ const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_LIVE_MESSAGES = 16;
 const MAX_ACTIVITIES = 10;
 const ASSISTANT_FLUSH_MS = 120;
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_FAILURE_WINDOW_MS = 60_000;
+const LOGIN_BLOCK_MS = 8_000;
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 
 function usage(): never {
@@ -112,7 +116,7 @@ Options:
 
 Environment:
   CODEX_BIN      Codex executable to spawn (default: codex)
-  CODEX_POCKET_TOKEN Shared token required for non-loopback hosts
+  CODEX_POCKET_PIN Four-digit PIN required for non-loopback hosts
 `);
   process.exit(0);
 }
@@ -165,6 +169,28 @@ function isAuthenticated(request: IncomingMessage, auth: AuthConfig): boolean {
   if (!auth.required) return true;
   const session = cookieValue(request, "codex_pocket_session");
   return Boolean(session && secretMatches(session, auth.sessionId));
+}
+
+function loginClient(request: IncomingMessage): string {
+  return request.socket.remoteAddress ?? "unknown";
+}
+
+function loginRetryAfter(auth: AuthConfig, client: string, now = Date.now()): number {
+  const attempt = auth.attempts.get(client);
+  if (!attempt) return 0;
+  if (attempt.blockedUntil > now) return Math.ceil((attempt.blockedUntil - now) / 1000);
+  if (now - attempt.lastFailureAt > LOGIN_FAILURE_WINDOW_MS) auth.attempts.delete(client);
+  return 0;
+}
+
+function recordLoginFailure(auth: AuthConfig, client: string, now = Date.now()): void {
+  const previous = auth.attempts.get(client);
+  const failures = previous && now - previous.lastFailureAt <= LOGIN_FAILURE_WINDOW_MS ? previous.failures + 1 : 1;
+  auth.attempts.set(client, {
+    failures: failures >= LOGIN_FAILURE_LIMIT ? 0 : failures,
+    lastFailureAt: now,
+    blockedUntil: failures >= LOGIN_FAILURE_LIMIT ? now + LOGIN_BLOCK_MS : 0,
+  });
 }
 
 function compact(value: unknown, limit = 240): string {
@@ -1178,12 +1204,22 @@ async function handleRequest(
     return;
   }
   if (method === "POST" && url.pathname === "/api/login") {
-    const body = await readJsonBody(request);
-    const accepted = !auth.required || (typeof body.token === "string" && auth.token !== null && secretMatches(body.token, auth.token));
-    if (!accepted) {
-      sendJson(response, 401, { error: "Invalid access token" }, gateway);
+    const client = loginClient(request);
+    const retryAfter = auth.required ? loginRetryAfter(auth, client) : 0;
+    if (retryAfter > 0) {
+      sendJson(response, 429, { error: `Too many attempts. Try again in ${retryAfter} seconds.` }, gateway, {
+        "Retry-After": String(retryAfter),
+      });
       return;
     }
+    const body = await readJsonBody(request);
+    const accepted = !auth.required || (typeof body.pin === "string" && auth.pin !== null && secretMatches(body.pin, auth.pin));
+    if (!accepted) {
+      if (auth.required) recordLoginFailure(auth, client);
+      sendJson(response, 401, { error: "Invalid PIN" }, gateway);
+      return;
+    }
+    auth.attempts.delete(client);
     sendJson(response, 200, { authenticated: true }, gateway, {
       "Set-Cookie": `codex_pocket_session=${auth.sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`,
     });
@@ -1284,12 +1320,15 @@ async function handleRequest(
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const authRequired = !isLoopbackHost(options.host);
-  const token = process.env.CODEX_POCKET_TOKEN ?? "";
-  if (authRequired && !token) throw new Error("CODEX_POCKET_TOKEN is required when --host is not loopback");
+  const pin = process.env.CODEX_POCKET_PIN ?? "";
+  if (authRequired && !/^\d{4}$/.test(pin)) {
+    throw new Error("CODEX_POCKET_PIN must be exactly 4 numeric digits when --host is not loopback");
+  }
   const auth: AuthConfig = {
     required: authRequired,
-    token: authRequired ? token : null,
+    pin: authRequired ? pin : null,
     sessionId: randomBytes(32).toString("hex"),
+    attempts: new Map(),
   };
   for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
   const gateway = new PocketGateway(options);

@@ -36,14 +36,14 @@ npm start
 
 Then open [http://127.0.0.1:4173](http://127.0.0.1:4173).
 
-The gateway binds to `127.0.0.1` by default and does not require a token there. To make it available to a phone or another device on a trusted local network, configure a shared token and opt into LAN mode:
+The gateway binds to `127.0.0.1` by default and does not require a PIN there. To make it available to a phone or another device on a trusted local network, configure a four-digit PIN and opt into LAN mode:
 
 ```sh
 npm start
-CODEX_POCKET_TOKEN='choose-a-long-random-secret' npm start -- --host 0.0.0.0
+CODEX_POCKET_PIN=1234 npm start -- --host 0.0.0.0
 ```
 
-Then open `http://YOUR_MAC_LAN_IP:4173` on the other device and enter the same token. Successful login creates an HttpOnly, SameSite cookie; the token is not placed in URLs. You can also bind only to a specific local address with `--host 192.168.1.123`.
+Then open `http://YOUR_MAC_LAN_IP:4173` on the other device and enter the same PIN. Successful login creates the existing random HttpOnly, SameSite session cookie; the PIN is not placed in URLs. Repeated incorrect PIN attempts are temporarily throttled in memory. You can also bind only to a specific local address with `--host 192.168.1.123`.
 
 LAN mode uses plain HTTP and is intended only for a trusted home network. Remote or untrusted-network access should later go through an encrypted private network such as Tailscale rather than exposing this listener directly.
 
@@ -77,7 +77,7 @@ The low-bandwidth filtering remains internal. Optional byte counters are availab
 
 ## Read-only boundary
 
-Codex Pocket v0.1 cannot approve requests, answer structured input requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is available only through the explicit `--host` option and requires `CODEX_POCKET_TOKEN`.
+Codex Pocket v0.1 cannot approve requests, answer structured input requests, interrupt turns, create threads, browse files, show diffs, or open a terminal. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is available only through the explicit `--host` option and requires `CODEX_POCKET_PIN`.
 
 ## Protocol probe
 

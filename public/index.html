@@ -12,9 +12,9 @@
       <form class="login-card" id="login-form" method="post" action="/api/login">
         <p class="eyebrow">Trusted LAN access</p>
         <h1 id="login-title">Codex Pocket</h1>
-        <p class="login-copy">Enter the shared token configured on this Mac.</p>
-        <label for="login-token">Access token</label>
-        <input id="login-token" name="token" type="password" autocomplete="current-password" required>
+        <p class="login-copy">Enter the four-digit PIN shown in the gateway setup.</p>
+        <label for="login-pin">4-digit PIN</label>
+        <input id="login-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" required>
         <button type="submit">Unlock</button>
         <p class="form-status error-text" id="login-error" aria-live="polite"></p>
       </form>

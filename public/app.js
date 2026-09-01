@@ -2,7 +2,7 @@ const elements = {
   appShell: document.querySelector("#app-shell"),
   loginScreen: document.querySelector("#login-screen"),
   loginForm: document.querySelector("#login-form"),
-  loginToken: document.querySelector("#login-token"),
+  loginPin: document.querySelector("#login-pin"),
   loginError: document.querySelector("#login-error"),
   connection: document.querySelector("#connection"),
   connectionLabel: document.querySelector("#connection-label"),
@@ -60,13 +60,13 @@ function showLogin(message = "") {
   elements.appShell.hidden = true;
   elements.loginScreen.hidden = false;
   elements.loginError.textContent = message;
-  elements.loginToken.focus();
+  elements.loginPin.focus();
 }
 
 async function apiFetch(url, options) {
   const response = await fetch(url, options);
   if (response.status === 401) {
-    showLogin("Enter the shared token to continue.");
+    showLogin("Enter the four-digit PIN to continue.");
     throw new Error("Authentication required");
   }
   return response;
@@ -425,7 +425,7 @@ async function handleEventError() {
   try {
     const response = await fetch("/api/auth");
     const auth = await response.json();
-    if (auth.required && !auth.authenticated) showLogin("Your session expired. Enter the shared token again.");
+    if (auth.required && !auth.authenticated) showLogin("Your session expired. Enter the PIN again.");
   } catch {
     // The normal EventSource retry handles transient gateway outages.
   }
@@ -579,16 +579,21 @@ elements.loginForm.addEventListener("submit", async (event) => {
     const response = await fetch("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: elements.loginToken.value }),
+      body: JSON.stringify({ pin: elements.loginPin.value }),
     });
     const result = await response.json();
     if (!response.ok || !result.authenticated) throw new Error(result.error || "Could not sign in");
-    elements.loginToken.value = "";
+    elements.loginPin.value = "";
     location.reload();
   } catch (error) {
     elements.loginError.textContent = error.message;
     button.disabled = false;
   }
+});
+
+elements.loginPin.addEventListener("input", () => {
+  elements.loginPin.value = elements.loginPin.value.replace(/\D/g, "").slice(0, 4);
+  elements.loginError.textContent = "";
 });
 
 async function start() {
