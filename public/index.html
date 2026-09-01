@@ -36,6 +36,7 @@
         <div class="phase-row">
           <span class="phase-pill" id="phase-pill">Connecting</span>
           <span class="elapsed" id="elapsed">—</span>
+          <button class="stop-button" id="stop-turn" type="button" hidden>Stop</button>
         </div>
         <div class="runtime-controls">
           <label class="sr-only" for="model-select">Model</label>
@@ -65,8 +66,11 @@
           <div class="composer-zone">
             <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
             <div class="queue-banner" id="queue-banner" hidden>
-              <div><strong>Queued next</strong><span id="queue-text"></span></div>
-              <button class="text-button" id="cancel-queue" type="button">Cancel</button>
+              <div class="queue-copy"><strong>Queued next</strong><span id="queue-text"></span></div>
+              <span class="queue-actions">
+                <button class="text-button" id="send-queue" type="button" hidden>Send</button>
+                <button class="text-button" id="cancel-queue" type="button">Cancel</button>
+              </span>
             </div>
             <form class="composer" id="composer">
               <label class="sr-only" for="message-text">Message Codex</label>

@@ -8,6 +8,7 @@ const elements = {
   connectionLabel: document.querySelector("#connection-label"),
   phase: document.querySelector("#phase-pill"),
   elapsed: document.querySelector("#elapsed"),
+  stopTurn: document.querySelector("#stop-turn"),
   statusDetail: document.querySelector("#status-detail"),
   machine: document.querySelector("#machine"),
   machineSelect: document.querySelector("#machine-select"),
@@ -36,6 +37,7 @@ const elements = {
   attentionBanner: document.querySelector("#attention-banner"),
   queueBanner: document.querySelector("#queue-banner"),
   queueText: document.querySelector("#queue-text"),
+  sendQueue: document.querySelector("#send-queue"),
   cancelQueue: document.querySelector("#cancel-queue"),
   inspectorButton: document.querySelector("#inspector-button"),
   inspectorClose: document.querySelector("#inspector-close"),
@@ -89,6 +91,8 @@ let updatingAccess = false;
 let resolvingApproval = false;
 let submittingInputRequestId = null;
 const inputDrafts = new Map();
+let submittingInterrupt = false;
+let sendingQueuedMessage = false;
 let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
@@ -150,7 +154,7 @@ function renderMachineSelector() {
     option.selected = machine.id === selectedId;
     elements.machineSelect.append(option);
   }
-  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId;
+  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
 }
 
 async function refreshMachines() {
@@ -188,7 +192,7 @@ function renderThreadSelector() {
     option.selected = thread.id === selectedId;
     elements.threadSelect.append(option);
   }
-  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || !state?.connected;
+  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt || !state?.connected;
   elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
@@ -262,7 +266,8 @@ function renderModelControls() {
     && !updatingModel
     && !updatingAccess
     && !resolvingApproval
-    && !submittingInputRequestId;
+    && !submittingInputRequestId
+    && !submittingInterrupt;
   elements.modelSelect.disabled = !enabled;
   elements.effortSelect.disabled = !enabled || !efforts.length;
   elements.nextTurnLabel.hidden = state?.turn?.status !== "inProgress";
@@ -300,7 +305,8 @@ function renderAccessControl() {
     || switchingThread
     || updatingAccess
     || resolvingApproval
-    || submittingInputRequestId;
+    || submittingInputRequestId
+    || submittingInterrupt;
   elements.accessSelect.classList.toggle("full-access", access?.mode === "full");
   elements.accessSelect.title = access?.mode === "full"
     ? "Unrestricted access to files and network"
@@ -350,7 +356,11 @@ function renderQueue() {
   if (queued) {
     elements.queueText.textContent = queued.text;
     elements.queueText.title = queued.text;
-    elements.cancelQueue.disabled = cancellingQueue;
+    const canSend = state?.message?.mode === "start" && state?.turn?.status !== "inProgress";
+    elements.sendQueue.hidden = !canSend;
+    elements.sendQueue.disabled = sendingQueuedMessage || cancellingQueue || switchingMachine || switchingThread;
+    elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : "Send";
+    elements.cancelQueue.disabled = cancellingQueue || sendingQueuedMessage;
   }
 }
 
@@ -383,6 +393,7 @@ function renderStructuredInput(pending) {
     elements.attentionBanner.append(unsupported);
     return;
   }
+  const requestDisabled = Boolean(submittingInputRequestId || pending.resolving || state?.stoppingTurnId);
 
   const form = document.createElement("form");
   form.className = "structured-input-form";
@@ -407,7 +418,7 @@ function renderStructuredInput(pending) {
         radio.type = "radio";
         radio.name = `input-${questionIndex}`;
         radio.checked = draft.get()?.type === "option" && draft.get()?.optionIndex === optionIndex;
-        radio.disabled = Boolean(submittingInputRequestId || pending.resolving);
+        radio.disabled = requestDisabled;
         radio.addEventListener("change", () => {
           if (radio.checked) draft.set({ type: "option", optionIndex });
         });
@@ -430,7 +441,7 @@ function renderStructuredInput(pending) {
         radio.type = "radio";
         radio.name = `input-${questionIndex}`;
         radio.checked = draft.get()?.type === "other";
-        radio.disabled = Boolean(submittingInputRequestId || pending.resolving);
+        radio.disabled = requestDisabled;
         const copy = document.createElement("span");
         const label = document.createElement("strong");
         label.textContent = "Other";
@@ -440,7 +451,7 @@ function renderStructuredInput(pending) {
         other.autocomplete = "off";
         other.placeholder = "Type another answer";
         other.value = draft.get()?.type === "other" ? draft.get().value || "" : "";
-        other.disabled = Boolean(submittingInputRequestId || pending.resolving);
+        other.disabled = requestDisabled;
         const selectOther = () => {
           radio.checked = true;
           draft.set({ type: "other", value: other.value });
@@ -465,7 +476,7 @@ function renderStructuredInput(pending) {
       answer.maxLength = 4000;
       answer.placeholder = question.isSecret ? "Enter private answer" : "Type your answer";
       answer.value = draft.get()?.type === "text" ? draft.get().value || "" : "";
-      answer.disabled = Boolean(submittingInputRequestId || pending.resolving);
+      answer.disabled = requestDisabled;
       answer.addEventListener("input", () => draft.set({ type: "text", value: answer.value }));
       fieldset.append(answer);
     }
@@ -478,7 +489,7 @@ function renderStructuredInput(pending) {
   submit.type = "submit";
   submit.className = "approval-approve";
   submit.textContent = submittingInputRequestId === pending.id || pending.resolving ? "Sending…" : "Send answer";
-  submit.disabled = Boolean(submittingInputRequestId || pending.resolving);
+  submit.disabled = requestDisabled;
   actions.append(submit);
   form.append(actions);
   form.addEventListener("submit", (event) => {
@@ -536,13 +547,13 @@ function renderAttention() {
   deny.type = "button";
   deny.className = "approval-deny";
   deny.textContent = "Deny";
-  deny.disabled = resolvingApproval || pending.resolving;
+  deny.disabled = resolvingApproval || pending.resolving || Boolean(state?.stoppingTurnId);
   deny.addEventListener("click", () => resolveApproval(pending.id, "deny"));
   const approve = document.createElement("button");
   approve.type = "button";
   approve.className = "approval-approve";
   approve.textContent = pending.resolving ? "Sending…" : "Approve";
-  approve.disabled = resolvingApproval || pending.resolving;
+  approve.disabled = resolvingApproval || pending.resolving || Boolean(state?.stoppingTurnId);
   approve.addEventListener("click", () => resolveApproval(pending.id, "approve"));
   actions.append(deny, approve);
   elements.attentionBanner.append(actions);
@@ -550,13 +561,19 @@ function renderAttention() {
 
 function renderComposer() {
   const capability = state?.message;
+  const turnActive = state?.turn?.status === "inProgress" && Boolean(state?.turn?.id);
+  const stopping = submittingInterrupt || (turnActive && state?.stoppingTurnId === state?.turn?.id);
   const allowed = Boolean(capability?.allowed)
     && !switchingMachine
     && !switchingThread
     && !submittingMessage
     && !updatingAccess
     && !resolvingApproval
-    && !submittingInputRequestId;
+    && !submittingInputRequestId
+    && !stopping;
+  elements.stopTurn.hidden = !turnActive;
+  elements.stopTurn.disabled = stopping || switchingMachine || switchingThread;
+  elements.stopTurn.textContent = stopping ? "Stopping…" : "Stop";
   const active = capability?.mode === "steer";
   elements.messageText.disabled = !allowed;
   elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
@@ -565,6 +582,8 @@ function renderComposer() {
   elements.queueMessage.disabled = !allowed || !elements.messageText.value.trim();
   const status = submittingMessage
     ? "Sending…"
+    : stopping
+      ? "Stopping the active turn…"
     : resolvingApproval
       ? "Sending approval response…"
       : submittingInputRequestId
@@ -702,6 +721,8 @@ function resetConversationState() {
   historyRequest = null;
   shouldFollowConversation = true;
   submittingInputRequestId = null;
+  submittingInterrupt = false;
+  sendingQueuedMessage = false;
   inputDrafts.clear();
   elements.historyStatus.textContent = "";
 }
@@ -786,6 +807,7 @@ async function selectMachine(machineId) {
     pending: [],
     liveMessages: [],
     queuedMessage: null,
+    stoppingTurnId: null,
     model: "Not exposed",
     reasoningEffort: "Not exposed",
     models: [],
@@ -842,6 +864,7 @@ async function selectThread(threadId) {
     pending: [],
     liveMessages: [],
     queuedMessage: null,
+    stoppingTurnId: null,
     model: "Not exposed",
     reasoningEffort: "Not exposed",
     access: null,
@@ -921,6 +944,52 @@ async function cancelQueuedMessage() {
   } finally {
     cancellingQueue = false;
     renderComposer();
+  }
+}
+
+async function sendQueuedMessage() {
+  if (sendingQueuedMessage || !state?.queuedMessage || switchingMachine || switchingThread) return;
+  sendingQueuedMessage = true;
+  composerError = "";
+  composerNotice = "Sending queued message…";
+  renderState();
+  try {
+    const response = await apiFetch("/api/message/queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ machineId: state?.machineId }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.accepted) throw new Error(result.error || "Could not send the queued message");
+    mergeState({ queuedMessage: null });
+    composerNotice = "Queued message sent.";
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    sendingQueuedMessage = false;
+    renderState();
+  }
+}
+
+async function interruptTurn() {
+  if (submittingInterrupt || switchingMachine || switchingThread || state?.turn?.status !== "inProgress") return;
+  submittingInterrupt = true;
+  composerError = "";
+  composerNotice = "";
+  renderState();
+  try {
+    const response = await apiFetch("/api/turn/interrupt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ machineId: state?.machineId }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the stop request");
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    submittingInterrupt = false;
+    renderState();
   }
 }
 
@@ -1078,6 +1147,7 @@ function connectEvents() {
   source.addEventListener("thread", (event) => { if (!switchingThread) mergeState({ thread: parseEvent(event) }); });
   source.addEventListener("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  source.addEventListener("control", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("turn", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
@@ -1243,6 +1313,8 @@ elements.composer.addEventListener("submit", (event) => {
   submitMessage(state?.message?.mode === "steer" ? "steer" : "start");
 });
 elements.queueMessage.addEventListener("click", () => submitMessage("queue"));
+elements.stopTurn.addEventListener("click", interruptTurn);
+elements.sendQueue.addEventListener("click", sendQueuedMessage);
 elements.cancelQueue.addEventListener("click", cancelQueuedMessage);
 elements.messageText.addEventListener("input", () => {
   composerError = "";

@@ -87,6 +87,10 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .phase-pill.waiting_permission, .phase-pill.waiting_input { background: rgba(240,195,106,.13); color: var(--warning); }
 .phase-pill.failed { background: rgba(255,139,139,.13); color: var(--danger); }
 .elapsed { color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
+.stop-button {
+  min-height: 28px; padding: 4px 9px; border: 1px solid rgba(255,139,139,.42);
+  border-radius: 7px; background: rgba(255,139,139,.12); color: var(--danger); font-size: .68rem; font-weight: 800;
+}
 .runtime-controls { position: relative; gap: 6px; min-width: 0; }
 .runtime-controls #model-select { width: 138px; }
 .runtime-controls #effort-select { width: 96px; }
@@ -173,8 +177,9 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 }
 textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4; }
 .queue-banner { justify-content: space-between; gap: 10px; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
-.queue-banner div { min-width: 0; display: flex; gap: 8px; }
-.queue-banner span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-copy { min-width: 0; display: flex; gap: 8px; }
+.queue-copy #queue-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-actions { display: flex; flex: none; align-items: center; gap: 8px; }
 
 .inspector {
   min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr);
@@ -198,6 +203,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .plan-item::before, .activity-item::before { content: ""; position: absolute; left: 1px; top: .4em; width: 6px; height: 6px; border-radius: 50%; background: var(--subtle); }
 .plan-item.completed::before, .activity-item.completed::before { background: var(--accent-strong); }
 .plan-item.in_progress::before, .activity-item.running::before { background: var(--warning); }
+.activity-item.interrupted::before { background: var(--danger); }
 .activity-item { display: grid; gap: 2px; }
 .activity-kind { color: var(--subtle); font-size: .58rem; font-weight: 750; text-transform: uppercase; }
 .activity-detail { color: var(--subtle); font-size: .65rem; }
@@ -279,7 +285,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .composer-actions { flex-direction: column-reverse; }
   .composer button { min-height: 34px; min-width: 72px; padding: 5px 7px; font-size: .7rem; }
   .composer textarea { min-height: 56px; }
-  .queue-banner div { display: grid; gap: 2px; }
+  .queue-copy { display: grid; gap: 2px; }
   .attention-banner { padding: 8px; }
   .approval-actions button { flex: 1; }
   .settings-screen { padding: 0; place-items: stretch; }
