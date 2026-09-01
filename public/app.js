@@ -287,6 +287,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   const requestedThreadId = state?.thread?.id;
   if (!requestedThreadId || historyRequest?.epoch === epoch) return;
   const token = { epoch };
+  let automaticCursor = null;
   historyRequest = token;
   elements.historyStatus.textContent = cursor ? "Loading earlier…" : "Loading recent…";
   try {
@@ -307,12 +308,17 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     nextCursor = page.nextCursor;
     elements.historyStatus.textContent = nextCursor ? "Scroll up for earlier messages" : "Start of task";
     renderConversation({ preserveScroll, forceBottom });
+    const transcriptFits = elements.conversation.scrollHeight <= elements.conversation.clientHeight + 1;
+    if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {
     if (epoch !== historyEpoch || requestedThreadId !== state?.thread?.id) return;
     elements.historyStatus.textContent = "History unavailable";
     elements.statusDetail.textContent = error.message;
   } finally {
     if (historyRequest === token) historyRequest = null;
+  }
+  if (automaticCursor && epoch === historyEpoch && requestedThreadId === state?.thread?.id) {
+    await loadHistory(automaticCursor, epoch, forceBottom);
   }
 }
 
