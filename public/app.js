@@ -7,8 +7,10 @@ const elements = {
   machine: document.querySelector("#machine"),
   project: document.querySelector("#project"),
   thread: document.querySelector("#thread"),
+  threadSelect: document.querySelector("#thread-select"),
+  threadCount: document.querySelector("#thread-count"),
   model: document.querySelector("#model"),
-  loadOlder: document.querySelector("#load-older"),
+  historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
@@ -32,9 +34,14 @@ const phaseLabels = {
 let state = null;
 let historyMessages = new Map();
 let liveMessages = new Map();
+let loadedThreads = [];
 let nextCursor = null;
 let source = null;
 let shouldFollowConversation = true;
+let historyEpoch = 0;
+let historyRequest = null;
+let threadsRequest = null;
+let switchingThread = false;
 
 function formatBytes(value) {
   const bytes = Number(value || 0);
@@ -56,6 +63,54 @@ function projectName(cwd) {
   return parts.at(-1) || "—";
 }
 
+function threadLabel(thread) {
+  const project = thread.project || projectName(thread.cwd);
+  const name = thread.name || thread.preview || "Untitled task";
+  const label = project && project !== "—" && project !== name ? `${project} — ${name}` : name;
+  return thread.status && thread.status !== "unknown" ? `${label} (${thread.status})` : label;
+}
+
+function renderThreadSelector() {
+  const selectedId = state?.thread?.id || "";
+  elements.threadSelect.replaceChildren();
+  if (loadedThreads.length === 0) {
+    const option = document.createElement("option");
+    option.textContent = "No loaded tasks";
+    elements.threadSelect.append(option);
+    elements.threadSelect.disabled = true;
+    elements.threadCount.textContent = "No tasks are loaded in the shared runtime.";
+    return;
+  }
+  for (const thread of loadedThreads) {
+    const option = document.createElement("option");
+    option.value = thread.id;
+    option.textContent = threadLabel(thread);
+    option.title = thread.cwd || thread.id;
+    option.selected = thread.id === selectedId;
+    elements.threadSelect.append(option);
+  }
+  elements.threadSelect.disabled = switchingThread;
+  elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
+}
+
+async function refreshLoadedThreads() {
+  if (threadsRequest) return threadsRequest;
+  threadsRequest = (async () => {
+    const response = await fetch("/api/threads");
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error || "Loaded tasks unavailable");
+    loadedThreads = Array.isArray(value.threads) ? value.threads : [];
+    renderThreadSelector();
+  })();
+  try {
+    await threadsRequest;
+  } catch (error) {
+    elements.threadCount.textContent = error.message;
+  } finally {
+    threadsRequest = null;
+  }
+}
+
 function setConnection(connected, failed = false) {
   elements.connection.className = `connection ${connected ? "connected" : failed ? "failed" : ""}`;
   elements.connectionLabel.textContent = connected ? "Live" : failed ? "Disconnected" : "Connecting";
@@ -63,6 +118,13 @@ function setConnection(connected, failed = false) {
 
 function renderState() {
   if (!state) return;
+  const selectedThread = loadedThreads.find((thread) => thread.id === state.thread?.id);
+  if (selectedThread) {
+    selectedThread.name = state.thread?.name || selectedThread.name;
+    selectedThread.cwd = state.thread?.cwd || selectedThread.cwd;
+    selectedThread.project = projectName(selectedThread.cwd);
+    selectedThread.status = state.threadStatus || selectedThread.status;
+  }
   setConnection(Boolean(state.connected), state.phase === "failed");
   const phase = state.phase || "connecting";
   elements.phase.textContent = phaseLabels[phase] || phase;
@@ -83,6 +145,7 @@ function renderState() {
   renderPlan();
   renderActivities();
   renderMetrics();
+  renderThreadSelector();
 }
 
 function renderPlan() {
@@ -167,8 +230,7 @@ function messageNode(message) {
   return article;
 }
 
-function renderConversation() {
-  const wasNearBottom = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 80;
+function renderConversation({ preserveScroll = null, forceBottom = false } = {}) {
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
   const messages = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
@@ -181,41 +243,52 @@ function renderConversation() {
     return;
   }
   for (const message of messages) elements.conversation.append(messageNode(message));
-  if (shouldFollowConversation || wasNearBottom) {
-    elements.conversation.scrollTop = elements.conversation.scrollHeight;
+  if (preserveScroll) {
+    const addedHeight = elements.conversation.scrollHeight - preserveScroll.scrollHeight;
+    elements.conversation.scrollTop = preserveScroll.scrollTop + addedHeight;
     shouldFollowConversation = false;
+  } else if (forceBottom || shouldFollowConversation) {
+    elements.conversation.scrollTop = elements.conversation.scrollHeight;
+    shouldFollowConversation = true;
   }
 }
 
-function mergeState(next) {
+function mergeState(next, renderMessages = Array.isArray(next.liveMessages)) {
   state = { ...(state || {}), ...next };
   if (Array.isArray(next.liveMessages)) {
     for (const message of next.liveMessages) liveMessages.set(message.id, message);
   }
   renderState();
-  renderConversation();
+  if (renderMessages) renderConversation();
 }
 
-function applySnapshot(next) {
+function resetConversationState() {
+  historyEpoch += 1;
+  historyMessages.clear();
+  liveMessages.clear();
+  nextCursor = null;
+  historyRequest = null;
+  shouldFollowConversation = true;
+  elements.historyStatus.textContent = "";
+}
+
+function applySnapshot(next, loadChangedHistory = true) {
   const previousThreadId = state?.thread?.id;
   const nextThreadId = next?.thread?.id;
-  const threadChanged = Boolean(previousThreadId && nextThreadId && previousThreadId !== nextThreadId);
+  const threadChanged = previousThreadId !== nextThreadId && Boolean(previousThreadId || nextThreadId);
   if (threadChanged) {
-    historyMessages.clear();
-    liveMessages.clear();
-    nextCursor = null;
-    shouldFollowConversation = true;
-    elements.loadOlder.hidden = true;
-    elements.loadOlder.disabled = true;
+    resetConversationState();
   }
-  mergeState(next);
-  if (threadChanged) loadHistory();
+  mergeState(next, true);
+  if (threadChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
 }
 
-async function loadHistory(cursor = null) {
+async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = false) {
   const requestedThreadId = state?.thread?.id;
-  elements.loadOlder.disabled = true;
-  elements.loadOlder.textContent = cursor ? "Loading…" : "Load older";
+  if (!requestedThreadId || historyRequest?.epoch === epoch) return;
+  const token = { epoch };
+  historyRequest = token;
+  elements.historyStatus.textContent = cursor ? "Loading earlier…" : "Loading recent…";
   try {
     const url = new URL("/api/history", location.origin);
     url.searchParams.set("limit", "2");
@@ -223,21 +296,80 @@ async function loadHistory(cursor = null) {
     const response = await fetch(url);
     const page = await response.json();
     if (!response.ok) throw new Error(page.error || "History unavailable");
-    if (!requestedThreadId || requestedThreadId !== state?.thread?.id || page.threadId !== requestedThreadId) return;
+    if (epoch !== historyEpoch || requestedThreadId !== state?.thread?.id || page.threadId !== requestedThreadId) return;
+    const preserveScroll = cursor ? {
+      scrollHeight: elements.conversation.scrollHeight,
+      scrollTop: elements.conversation.scrollTop,
+    } : null;
     for (const turn of page.turns || []) {
       for (const message of turn.messages || []) historyMessages.set(message.id, message);
     }
     nextCursor = page.nextCursor;
-    elements.loadOlder.hidden = !nextCursor;
-    elements.loadOlder.disabled = !nextCursor;
-    elements.loadOlder.textContent = "Load older";
-    renderConversation();
+    elements.historyStatus.textContent = nextCursor ? "Scroll up for earlier messages" : "Start of task";
+    renderConversation({ preserveScroll, forceBottom });
   } catch (error) {
-    if (requestedThreadId !== state?.thread?.id) return;
-    elements.loadOlder.hidden = false;
-    elements.loadOlder.disabled = false;
-    elements.loadOlder.textContent = "Retry history";
+    if (epoch !== historyEpoch || requestedThreadId !== state?.thread?.id) return;
+    elements.historyStatus.textContent = "History unavailable";
     elements.statusDetail.textContent = error.message;
+  } finally {
+    if (historyRequest === token) historyRequest = null;
+  }
+}
+
+async function selectThread(threadId) {
+  if (!threadId || threadId === state?.thread?.id || switchingThread) return;
+  const selected = loadedThreads.find((thread) => thread.id === threadId);
+  switchingThread = true;
+  source?.close();
+  source = null;
+  resetConversationState();
+  state = {
+    ...(state || {}),
+    connectionError: null,
+    thread: {
+      id: threadId,
+      name: selected?.name || selected?.preview || "Switching task",
+      cwd: selected?.cwd || "",
+      source: "unknown",
+    },
+    threadStatus: selected?.status || "unknown",
+    phase: "connecting",
+    turn: null,
+    plan: [],
+    activities: [],
+    pending: [],
+    liveMessages: [],
+    model: "Not exposed",
+    reasoningEffort: "Not exposed",
+  };
+  renderState();
+  renderConversation({ forceBottom: true });
+  elements.statusDetail.textContent = "Switching loaded task…";
+  try {
+    const response = await fetch("/api/thread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId }),
+    });
+    const snapshot = await response.json();
+    if (!response.ok) throw new Error(snapshot.error || "Could not switch tasks");
+    applySnapshot(snapshot, false);
+    switchingThread = false;
+    renderThreadSelector();
+    connectEvents();
+    await loadHistory(null, historyEpoch, true);
+    await refreshLoadedThreads();
+  } catch (error) {
+    switchingThread = false;
+    elements.statusDetail.textContent = error.message;
+    try {
+      const response = await fetch("/api/state");
+      applySnapshot(await response.json(), true);
+    } catch {
+      setConnection(false, true);
+    }
+    renderThreadSelector();
+    connectEvents();
   }
 }
 
@@ -250,16 +382,28 @@ function connectEvents() {
   source = new EventSource("/events");
   source.addEventListener("open", () => setConnection(true));
   source.addEventListener("error", () => setConnection(false, true));
-  source.addEventListener("snapshot", (event) => applySnapshot(parseEvent(event)));
-  source.addEventListener("status", (event) => mergeState(parseEvent(event)));
-  source.addEventListener("thread", (event) => mergeState({ thread: parseEvent(event) }));
+  source.addEventListener("snapshot", (event) => {
+    if (!switchingThread) applySnapshot(parseEvent(event));
+  });
+  source.addEventListener("status", (event) => {
+    if (!switchingThread) mergeState(parseEvent(event));
+  });
+  source.addEventListener("thread", (event) => {
+    if (!switchingThread) mergeState({ thread: parseEvent(event) });
+  });
   source.addEventListener("turn", (event) => {
+    if (switchingThread) return;
     const value = parseEvent(event);
     mergeState(value);
   });
-  source.addEventListener("plan", (event) => mergeState({ plan: parseEvent(event) }));
-  source.addEventListener("request", (event) => mergeState(parseEvent(event)));
+  source.addEventListener("plan", (event) => {
+    if (!switchingThread) mergeState({ plan: parseEvent(event) });
+  });
+  source.addEventListener("request", (event) => {
+    if (!switchingThread) mergeState(parseEvent(event));
+  });
   source.addEventListener("activity", (event) => {
+    if (switchingThread) return;
     const activity = parseEvent(event);
     const activities = [...(state.activities || [])];
     const index = activities.findIndex((candidate) => candidate.id === activity.id);
@@ -268,11 +412,13 @@ function connectEvents() {
     mergeState({ activities: activities.slice(-10) });
   });
   source.addEventListener("message", (event) => {
+    if (switchingThread) return;
     const message = parseEvent(event);
     liveMessages.set(message.id, message);
     renderConversation();
   });
   source.addEventListener("assistant_delta", (event) => {
+    if (switchingThread) return;
     const value = parseEvent(event);
     const existing = liveMessages.get(value.id) || {
       id: value.id,
@@ -286,15 +432,24 @@ function connectEvents() {
     liveMessages.set(value.id, existing);
     renderConversation();
   });
-  source.addEventListener("metrics", (event) => mergeState({ metrics: parseEvent(event) }));
+  source.addEventListener("metrics", (event) => {
+    if (!switchingThread) mergeState({ metrics: parseEvent(event) });
+  });
 }
 
-elements.loadOlder.addEventListener("click", () => {
-  if (nextCursor) loadHistory(nextCursor);
+elements.threadSelect.addEventListener("change", () => {
+  selectThread(elements.threadSelect.value);
+});
+
+elements.threadSelect.addEventListener("focus", () => {
+  refreshLoadedThreads();
 });
 
 elements.conversation.addEventListener("scroll", () => {
   shouldFollowConversation = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 80;
+  if (!shouldFollowConversation && elements.conversation.scrollTop < 140 && nextCursor && !historyRequest) {
+    loadHistory(nextCursor, historyEpoch, false);
+  }
 });
 
 setInterval(() => {
@@ -305,13 +460,13 @@ setInterval(() => {
 
 async function start() {
   try {
-    const response = await fetch("/api/state");
-    mergeState(await response.json());
+    const [response] = await Promise.all([fetch("/api/state"), refreshLoadedThreads()]);
+    applySnapshot(await response.json(), false);
   } catch (error) {
     elements.statusDetail.textContent = error.message;
     setConnection(false, true);
   }
-  await loadHistory();
+  await loadHistory(null, historyEpoch, true);
   connectEvents();
 }
 

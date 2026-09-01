@@ -21,6 +21,13 @@
       </header>
 
       <section class="status-card" aria-labelledby="phase-label">
+        <div class="task-switcher">
+          <label for="thread-select">Loaded task</label>
+          <select id="thread-select" disabled>
+            <option>Loading tasks…</option>
+          </select>
+          <span id="thread-count">Checking the shared runtime.</span>
+        </div>
         <div>
           <p class="section-label" id="phase-label">Current state</p>
           <div class="phase-row">
@@ -56,7 +63,7 @@
               <p class="section-label">Live transcript</p>
               <h2 id="conversation-title">Recent conversation</h2>
             </div>
-            <button class="secondary-button" id="load-older" type="button" disabled>Load older</button>
+            <span class="history-status" id="history-status" aria-live="polite"></span>
           </div>
           <div class="conversation" id="conversation" aria-live="polite">
             <p class="empty-state">Loading recent messages…</p>

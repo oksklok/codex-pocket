@@ -4,7 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -42,6 +42,14 @@ type PocketRequest = {
   id: string;
   kind: "permission" | "input";
   label: string;
+};
+type LoadedThreadSummary = {
+  id: string;
+  name: string;
+  preview: string;
+  cwd: string;
+  project: string;
+  status: string;
 };
 type PocketState = {
   connected: boolean;
@@ -154,6 +162,19 @@ function statusText(status: any): string {
     ? `:${status.activeFlags.join(",")}`
     : "";
   return `${status.type ?? "unknown"}${flags}`;
+}
+
+function loadedThreadSummary(thread: any, id: string): LoadedThreadSummary {
+  const cwd = String(thread?.cwd ?? "");
+  const preview = compact(thread?.preview, 180);
+  return {
+    id,
+    name: compact(thread?.name, 180) || preview || "Untitled task",
+    preview,
+    cwd,
+    project: basename(cwd) || "Unknown project",
+    status: statusText(thread?.status),
+  };
 }
 
 function readText(value: any): string {
@@ -493,9 +514,11 @@ class PocketGateway {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private metricsDirty = false;
   private metricsTimer: NodeJS.Timeout | null = null;
+  private loadedThreads: LoadedThreadSummary[] = [];
   private options: Options;
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private selectionQueue: Promise<void> = Promise.resolve();
 
   constructor(options: Options) {
     this.options = options;
@@ -565,6 +588,19 @@ class PocketGateway {
     return { threadId, turns, nextCursor: page?.nextCursor ?? null };
   }
 
+  async listLoadedThreads(): Promise<LoadedThreadSummary[]> {
+    return JSON.parse(JSON.stringify(await this.refreshLoadedThreads()));
+  }
+
+  selectThread(threadId: string): Promise<PocketState> {
+    const selection = this.selectionQueue.then(
+      () => this.selectThreadNow(threadId),
+      () => this.selectThreadNow(threadId),
+    );
+    this.selectionQueue = selection.then(() => {}, () => {});
+    return selection;
+  }
+
   countBrowserPayload(payload: Buffer | string, markDirty = true): void {
     this.state.metrics.browserBytes += Buffer.byteLength(payload);
     this.state.metrics.browserMessages += 1;
@@ -614,36 +650,15 @@ class PocketGateway {
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.state.machine = initialized?.platformOs || initialized?.platformFamily || "local";
-      const listed = await rpc.request("thread/list", {
-        limit: 50,
-        sortKey: "recency_at",
-        sortDirection: "desc",
-      });
-      const loaded = await rpc.request("thread/loaded/list", { limit: 100 });
-      const threads = Array.isArray(listed?.data) ? listed.data : [];
-      const loadedIds: string[] = Array.isArray(loaded?.data) ? loaded.data.map(String) : [];
-      const loadedSet = new Set(loadedIds);
-      const active = threads.find((thread: any) => loadedSet.has(String(thread.id)) && thread.status?.type === "active");
-      const newestLoaded = threads.find((thread: any) => loadedSet.has(String(thread.id)));
-      const targetId = this.options.thread ?? active?.id ?? newestLoaded?.id ?? loadedIds[0];
+      const loadedThreads = await this.refreshLoadedThreads();
+      const active = loadedThreads.find((thread) => thread.status.startsWith("active"));
+      const targetId = this.options.thread ?? active?.id ?? loadedThreads[0]?.id;
       if (!targetId) throw new Error("no loaded Codex thread is available");
-      const resumed = await rpc.request("thread/resume", { threadId: String(targetId), excludeTurns: true });
-      const thread = resumed?.thread ?? threads.find((candidate: any) => candidate.id === targetId) ?? {};
-      const nextThreadId = String(thread.id ?? targetId);
-      if (this.state.thread && this.state.thread.id !== nextThreadId) this.resetThreadState();
-      this.state.thread = {
-        id: nextThreadId,
-        name: compact(thread.name ?? thread.preview, 180) || "Untitled task",
-        cwd: String(thread.cwd ?? ""),
-        source: String(thread.source ?? "unknown"),
-      };
-      this.state.threadStatus = statusText(thread.status);
-      this.updateModel(thread);
+      await this.attachLoadedThread(String(targetId), false);
       this.state.connected = true;
       this.state.connectionError = null;
       this.state.phase = this.computePhase();
       this.broadcast("snapshot", this.snapshot());
-      console.log(`attached to ${this.state.thread.id} (${this.state.thread.name})`);
     } catch (error) {
       rpc.onClose = () => {};
       rpc.close();
@@ -672,6 +687,76 @@ class PocketGateway {
       this.reconnectTimer = null;
       this.connect().catch((error) => console.error(error));
     }, 2_000);
+  }
+
+  private async refreshLoadedThreads(): Promise<LoadedThreadSummary[]> {
+    if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const [listed, loaded] = await Promise.all([
+      this.rpc.request("thread/list", {
+        limit: 100,
+        sortKey: "recency_at",
+        sortDirection: "desc",
+      }),
+      this.rpc.request("thread/loaded/list", { limit: 100 }),
+    ]);
+    const threads = Array.isArray(listed?.data) ? listed.data : [];
+    const byId = new Map(threads.map((thread: any) => [String(thread.id), thread]));
+    const loadedIds: string[] = Array.isArray(loaded?.data) ? loaded.data.map(String) : [];
+    this.loadedThreads = loadedIds
+      .map((id) => loadedThreadSummary(byId.get(id), id))
+      .sort((left, right) => {
+        const leftIndex = threads.findIndex((thread: any) => String(thread.id) === left.id);
+        const rightIndex = threads.findIndex((thread: any) => String(thread.id) === right.id);
+        return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+      });
+    return this.loadedThreads;
+  }
+
+  private async selectThreadNow(threadId: string): Promise<PocketState> {
+    const requestedId = String(threadId ?? "").trim();
+    if (!requestedId) throw new Error("threadId is required");
+    const loadedThreads = await this.refreshLoadedThreads();
+    if (!loadedThreads.some((thread) => thread.id === requestedId)) {
+      throw new Error("selected thread is not currently loaded");
+    }
+    if (this.state.thread?.id === requestedId) return this.snapshot();
+    await this.attachLoadedThread(requestedId, true);
+    this.options.thread = requestedId;
+    return this.snapshot();
+  }
+
+  private async attachLoadedThread(threadId: string, broadcastReset: boolean): Promise<void> {
+    if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const summary = this.loadedThreads.find((thread) => thread.id === threadId);
+    if (!summary) throw new Error("selected thread is not currently loaded");
+    const changed = this.state.thread?.id !== threadId;
+    if (changed) this.resetThreadState();
+    this.state.thread = {
+      id: summary.id,
+      name: summary.name,
+      cwd: summary.cwd,
+      source: "unknown",
+    };
+    this.state.threadStatus = summary.status;
+    this.state.connectionError = null;
+    this.state.phase = this.computePhase();
+    if (changed && broadcastReset) this.broadcast("snapshot", this.snapshot());
+
+    const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
+    const thread = resumed?.thread ?? {};
+    const resumedId = String(thread.id ?? threadId);
+    if (resumedId !== threadId) throw new Error("app-server resumed an unexpected thread");
+    this.state.thread = {
+      id: resumedId,
+      name: compact(thread.name ?? thread.preview, 180) || summary.name,
+      cwd: String(thread.cwd ?? summary.cwd),
+      source: String(thread.source ?? "unknown"),
+    };
+    this.state.threadStatus = statusText(thread.status ?? summary.status);
+    this.updateModel(thread);
+    this.state.phase = this.computePhase();
+    if (broadcastReset) this.broadcast("snapshot", this.snapshot());
+    console.log(`attached to ${this.state.thread.id} (${this.state.thread.name})`);
   }
 
   private handleServerRequest(message: JsonObject): void {
@@ -921,9 +1006,37 @@ function staticPath(pathname: string): string | null {
   return null;
 }
 
+async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    length += buffer.length;
+    if (length > 4_096) throw new Error("request body is too large");
+    chunks.push(buffer);
+  }
+  if (length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("request body must be valid JSON");
+  }
+}
+
 async function handleRequest(request: IncomingMessage, response: ServerResponse, gateway: PocketGateway): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (method === "POST" && url.pathname === "/api/thread") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await gateway.selectThread(String(body.threadId ?? "")), gateway);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message.includes("not currently loaded") || message.includes("required") ? 409 : 400;
+      sendJson(response, status, { error: message }, gateway);
+    }
+    return;
+  }
   if (method !== "GET" && method !== "HEAD") {
     sendJson(response, 405, { error: "read-only gateway" }, gateway);
     return;
@@ -934,6 +1047,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
   }
   if (url.pathname === "/api/state") {
     sendJson(response, 200, gateway.snapshot(), gateway);
+    return;
+  }
+  if (url.pathname === "/api/threads") {
+    try {
+      sendJson(response, 200, { threads: await gateway.listLoadedThreads() }, gateway);
+    } catch (error) {
+      sendJson(response, 503, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
     return;
   }
   if (url.pathname === "/api/history") {

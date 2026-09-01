@@ -1,6 +1,6 @@
 # Codex Pocket
 
-Codex Pocket v0.1 is a tiny read-only browser view for one live Codex app-server thread.
+Codex Pocket v0.1 is a tiny read-only browser view for loaded Codex app-server threads.
 
 ```text
 Codex app-server
@@ -54,11 +54,12 @@ On macOS with only the Codex Desktop bundled Node runtime available:
 ## Browser view
 
 - connection, machine/platform, project, task, model, and reasoning effort when exposed;
+- a compact selector for tasks currently loaded in the shared runtime;
 - Working, Waiting for input, Waiting for permission, Done, and Failed states;
 - elapsed current-turn time;
 - live coalesced assistant messages and user messages when exposed;
 - current plan and compact command/tool lifecycle summaries;
-- paginated older conversation history; and
+- recent conversation history with older pages loaded automatically when scrolling upward; and
 - raw app-server bytes versus filtered dynamic bytes emitted to browser clients.
 
 The bandwidth counters exclude the static HTML, CSS, and JavaScript assets. They count app-server JSON payload bytes received locally and filtered SSE/API payload bytes sent to browser clients.
