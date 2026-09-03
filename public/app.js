@@ -9,7 +9,6 @@ const elements = {
   connectionLabel: document.querySelector("#connection-label"),
   phase: document.querySelector("#phase-pill"),
   elapsed: document.querySelector("#elapsed"),
-  stopTurn: document.querySelector("#stop-turn"),
   statusDetail: document.querySelector("#status-detail"),
   machine: document.querySelector("#machine"),
   machineSelect: document.querySelector("#machine-select"),
@@ -22,7 +21,6 @@ const elements = {
   modelSelect: document.querySelector("#model-select"),
   effortSelect: document.querySelector("#effort-select"),
   accessSelect: document.querySelector("#access-select"),
-  nextTurnLabel: document.querySelector("#next-turn-label"),
   historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
   planList: document.querySelector("#plan-list"),
@@ -36,7 +34,7 @@ const elements = {
   composer: document.querySelector("#composer"),
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
-  queueMessage: document.querySelector("#queue-message"),
+  steerMessage: document.querySelector("#steer-message"),
   composerStatus: document.querySelector("#composer-status"),
   attentionBanner: document.querySelector("#attention-banner"),
   queueBanner: document.querySelector("#queue-banner"),
@@ -57,6 +55,7 @@ const elements = {
   settingsPort: document.querySelector("#settings-port"),
   settingsPin: document.querySelector("#settings-pin"),
   settingsPinState: document.querySelector("#settings-pin-state"),
+  settingsTheme: document.querySelector("#settings-theme"),
   settingsMachines: document.querySelector("#settings-machines"),
   machineAdd: document.querySelector("#machine-add"),
   settingsRestart: document.querySelector("#settings-restart"),
@@ -112,7 +111,24 @@ let quittingPocket = false;
 let intentionalQuit = false;
 
 const DISPLAY_STORAGE_KEY = "codex-pocket-info-display";
+const THEME_STORAGE_KEY = "codex-pocket-theme";
 const displayPreferences = loadDisplayPreferences();
+let selectedTheme = loadTheme();
+
+function loadTheme() {
+  try {
+    const value = localStorage.getItem(THEME_STORAGE_KEY);
+    return value === "light" || value === "dark" ? value : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function applyTheme(theme = selectedTheme) {
+  document.documentElement.dataset.theme = theme;
+}
+
+applyTheme();
 
 function loadDisplayPreferences() {
   const defaults = { commands: true, reasoning: true, collaboration: true, images: true, compaction: true };
@@ -133,6 +149,16 @@ function activityVisible(activity) {
   if (activity.kind === "image") return displayPreferences.images;
   if (activity.kind === "compaction") return displayPreferences.compaction;
   return displayPreferences.commands;
+}
+
+function effortLabel(value) {
+  const normalized = String(value || "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
+  const labels = { none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", "extra high": "Extra High", max: "Max", ultra: "Ultra" };
+  return labels[normalized] || normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Effort unavailable";
+}
+
+function accessLabel(access) {
+  return ({ ask: "Ask for approval", auto: "Approve for me", full: "Full access", custom: "Custom access", unavailable: "Unavailable" })[access?.mode] || "Unavailable";
 }
 
 function showLogin(message = "") {
@@ -297,14 +323,14 @@ function renderModelControls() {
   for (const effort of efforts) {
     const option = document.createElement("option");
     option.value = effort.reasoningEffort;
-    option.textContent = effort.reasoningEffort;
+    option.textContent = effortLabel(effort.reasoningEffort);
     option.title = effort.description || effort.reasoningEffort;
     option.selected = effort.reasoningEffort === state?.reasoningEffort;
     elements.effortSelect.append(option);
   }
   if (!efforts.length) {
     const option = document.createElement("option");
-    option.textContent = state?.reasoningEffort || "Effort unavailable";
+    option.textContent = effortLabel(state?.reasoningEffort);
     elements.effortSelect.append(option);
   }
   const enabled = Boolean(state?.connected && state?.thread && models.length)
@@ -316,7 +342,6 @@ function renderModelControls() {
     && !submittingInterrupt;
   elements.modelSelect.disabled = !enabled;
   elements.effortSelect.disabled = !enabled || !efforts.length;
-  elements.nextTurnLabel.hidden = state?.turn?.status !== "inProgress";
 }
 
 function renderAccessControl() {
@@ -594,6 +619,7 @@ function renderComposer() {
   const capability = state?.message;
   const turnActive = state?.turn?.status === "inProgress" && Boolean(state?.turn?.id);
   const stopping = submittingInterrupt || (turnActive && state?.stoppingTurnId === state?.turn?.id);
+  const hasText = Boolean(elements.messageText.value.trim());
   const allowed = Boolean(capability?.allowed)
     && !switchingMachine
     && !switchingThread
@@ -602,15 +628,25 @@ function renderComposer() {
     && !resolvingApproval
     && !submittingInputRequestId
     && !stopping;
-  elements.stopTurn.hidden = !turnActive;
-  elements.stopTurn.disabled = stopping || switchingMachine || switchingThread;
-  elements.stopTurn.textContent = stopping ? "Stopping…" : "Stop";
-  const active = capability?.mode === "steer";
-  elements.messageText.disabled = !allowed;
-  elements.sendMessage.disabled = !allowed || !elements.messageText.value.trim();
-  elements.sendMessage.textContent = active ? "Steer now" : "Send";
-  elements.queueMessage.hidden = !active;
-  elements.queueMessage.disabled = !allowed || !elements.messageText.value.trim();
+  elements.messageText.disabled = !state?.connected
+    || !state?.thread
+    || switchingMachine
+    || switchingThread
+    || submittingMessage
+    || stopping;
+  elements.steerMessage.hidden = !(turnActive && hasText);
+  elements.steerMessage.disabled = !allowed;
+  if (turnActive && !hasText) {
+    elements.sendMessage.dataset.action = "stop";
+    elements.sendMessage.textContent = stopping ? "Stopping…" : "Stop";
+    elements.sendMessage.classList.add("stop-action");
+    elements.sendMessage.disabled = stopping || switchingMachine || switchingThread;
+  } else {
+    elements.sendMessage.dataset.action = turnActive ? "queue" : "start";
+    elements.sendMessage.textContent = "Send";
+    elements.sendMessage.classList.remove("stop-action");
+    elements.sendMessage.disabled = !allowed || !hasText;
+  }
   const status = submittingMessage
     ? "Sending…"
     : stopping
@@ -624,11 +660,16 @@ function renderComposer() {
     : composerError
       || composerNotice
       || (switchingMachine ? "Switching machines…" : switchingThread ? "Switching tasks…" : capability?.reason)
-      || (active ? "Send immediately, or keep one message for the next turn." : "Start a new turn.");
+      || "";
   elements.composerStatus.textContent = status;
   elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
   renderAttention();
   renderQueue();
+}
+
+function resizeComposer() {
+  elements.messageText.style.height = "auto";
+  elements.messageText.style.height = `${Math.min(elements.messageText.scrollHeight, 112)}px`;
 }
 
 function renderState() {
@@ -659,11 +700,9 @@ function renderState() {
   elements.project.title = state.thread?.cwd || "";
   elements.thread.textContent = state.thread?.name || "—";
   elements.thread.title = state.thread?.id || "";
-  const effort = state.reasoningEffort && state.reasoningEffort !== "Not exposed" ? ` · ${state.reasoningEffort}` : "";
+  const effort = state.reasoningEffort && state.reasoningEffort !== "Not exposed" ? ` · ${effortLabel(state.reasoningEffort)}` : "";
   elements.model.textContent = `${state.model || "Not exposed"}${effort}`;
-  elements.accessProfile.textContent = state.access?.profileId
-    ? `${state.access.profileId} · ${state.access.reviewer || "unknown reviewer"}`
-    : "—";
+  elements.accessProfile.textContent = accessLabel(state.access);
   const pending = state.pending?.[0];
   elements.statusDetail.textContent = state.connectionError
     || pending?.label
@@ -995,7 +1034,8 @@ async function submitMessage(action) {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
     elements.messageText.value = "";
-    composerNotice = result.mode === "queue" ? "Saved for the next turn." : result.mode === "steer" ? "Steered the active turn." : "Message accepted.";
+    resizeComposer();
+    composerNotice = "";
     mergeState({
       ...(result.turn ? { turn: result.turn } : {}),
       ...(result.phase ? { phase: result.phase } : {}),
@@ -1355,6 +1395,7 @@ function renderMachineSettings(values) {
 
 function renderSettings(value) {
   settingsValue = value;
+  elements.settingsTheme.value = selectedTheme;
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";
   elements.settingsPort.value = String(value.port || 4173);
@@ -1399,19 +1440,21 @@ elements.threadSelect.addEventListener("change", () => selectThread(elements.thr
 elements.threadSelect.addEventListener("focus", refreshLoadedThreads);
 elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
-  submitMessage(state?.message?.mode === "steer" ? "steer" : "start");
+  const action = elements.sendMessage.dataset.action;
+  if (action === "stop") interruptTurn();
+  else submitMessage(action === "queue" ? "queue" : "start");
 });
-elements.queueMessage.addEventListener("click", () => submitMessage("queue"));
-elements.stopTurn.addEventListener("click", interruptTurn);
+elements.steerMessage.addEventListener("click", () => submitMessage("steer"));
 elements.sendQueue.addEventListener("click", sendQueuedMessage);
 elements.cancelQueue.addEventListener("click", cancelQueuedMessage);
 elements.messageText.addEventListener("input", () => {
   composerError = "";
   composerNotice = "";
+  resizeComposer();
   renderComposer();
 });
 elements.messageText.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && elements.messageText.value.trim()) {
     event.preventDefault();
     elements.composer.requestSubmit();
   }
@@ -1477,6 +1520,11 @@ elements.loginPin.addEventListener("input", () => {
 });
 
 elements.settingsButton.addEventListener("click", openSettings);
+elements.settingsTheme.addEventListener("change", () => {
+  selectedTheme = elements.settingsTheme.value;
+  try { localStorage.setItem(THEME_STORAGE_KEY, selectedTheme); } catch {}
+  applyTheme();
+});
 elements.settingsClose.addEventListener("click", closeSettings);
 elements.settingsCancel.addEventListener("click", closeSettings);
 elements.settingsScreen.addEventListener("click", (event) => { if (event.target === elements.settingsScreen) closeSettings(); });

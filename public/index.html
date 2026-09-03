@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="dark light">
     <title>Codex Pocket</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -44,7 +44,6 @@
         <div class="phase-row">
           <span class="phase-pill" id="phase-pill">Connecting</span>
           <span class="elapsed" id="elapsed">—</span>
-          <button class="stop-button" id="stop-turn" type="button" hidden>Stop</button>
         </div>
         <div class="runtime-controls">
           <label class="sr-only" for="model-select">Model</label>
@@ -53,7 +52,6 @@
           <select id="effort-select" aria-label="Reasoning effort" disabled><option>Effort</option></select>
           <label class="sr-only" for="access-select">Access</label>
           <select id="access-select" aria-label="Access" disabled><option>Access</option></select>
-          <span class="next-turn-label" id="next-turn-label" hidden>Next turn</span>
         </div>
         <div class="topbar-actions">
           <button class="secondary-button" id="inspector-button" type="button" aria-expanded="false">Info</button>
@@ -82,10 +80,10 @@
             </div>
             <form class="composer" id="composer">
               <label class="sr-only" for="message-text">Message Codex</label>
-              <textarea id="message-text" rows="2" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
+              <textarea id="message-text" rows="1" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
               <div class="composer-actions">
-                <button type="button" class="queue-button" id="queue-message" hidden>Queue next</button>
-                <button type="submit" id="send-message" disabled>Send</button>
+                <button type="button" class="secondary-composer-button" id="steer-message" hidden>Steer</button>
+                <button type="submit" id="send-message" data-action="start" disabled>Send</button>
               </div>
               <p class="form-status" id="composer-status" aria-live="polite"></p>
             </form>
@@ -105,7 +103,7 @@
               <div><dt>Project</dt><dd id="project">—</dd></div>
               <div><dt>Task</dt><dd id="thread">—</dd></div>
               <div><dt>Model</dt><dd id="model">—</dd></div>
-              <div><dt>Access profile</dt><dd id="access-profile">—</dd></div>
+              <div><dt>Access</dt><dd id="access-profile">—</dd></div>
             </dl>
             <section class="secondary-panel" id="plan-panel" aria-labelledby="plan-title">
               <div class="panel-heading"><h3 id="plan-title">Current plan</h3><span class="count-badge" id="plan-count">0/0</span></div>
@@ -139,6 +137,12 @@
           <legend>Access</legend>
           <label for="settings-pin">4-digit PIN</label><input id="settings-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="Leave blank to keep current PIN">
           <p class="field-help" id="settings-pin-state">No PIN configured.</p>
+        </fieldset>
+        <fieldset>
+          <legend>Appearance</legend>
+          <label for="settings-theme">Theme</label>
+          <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+          <p class="field-help">Stored in this browser only.</p>
         </fieldset>
         <fieldset>
           <legend>Machines</legend>
