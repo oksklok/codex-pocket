@@ -188,6 +188,32 @@ type PocketState = {
     startedAt: number;
   };
 };
+type PocketQuotaWindow = {
+  id: "primary" | "secondary";
+  label: string;
+  remainingPercent: number;
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+};
+type RuntimeQuota = {
+  accountId: string | null;
+  limitId: string | null;
+  limitName: string | null;
+  windows: PocketQuotaWindow[];
+  additionalLimitCount: number;
+  credits: JsonObject | null;
+  updatedAt: number;
+};
+type PocketQuota = {
+  available: boolean;
+  stale: boolean;
+  sourceMachineId: string | null;
+  sourceMachine: string | null;
+  limitName: string | null;
+  windows: PocketQuotaWindow[];
+  updatedAt: number | null;
+};
 
 const MAX_TEXT = 12_000;
 const MAX_MESSAGE_LENGTH = 12_000;
@@ -204,6 +230,7 @@ const ROOT_DIR = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(ROOT_DIR, "public");
 const CONFIG_PATH = join(ROOT_DIR, ".codex-pocket.local.json");
 const RUNTIME_PATH = join(ROOT_DIR, ".codex-pocket.runtime.json");
+const QUIT_PATH = join(ROOT_DIR, ".codex-pocket.quit");
 const LOG_PATH = join(ROOT_DIR, ".codex-pocket.log");
 const SAFE_CONFIG: LocalConfig = {
   lanEnabled: false,
@@ -344,6 +371,7 @@ function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin:
 
 function publicSettings(settings: LocalSettings, fallbackPin: string | null): JsonObject {
   return {
+    hostName: localMachineName(),
     lanEnabled: settings.config.lanEnabled,
     host: settings.config.host,
     port: settings.config.port,
@@ -388,14 +416,18 @@ function isPrivateIpv4(address: string): boolean {
 }
 
 function phoneUrls(config: LocalConfig): string[] {
-  if (!config.lanEnabled || isLoopbackHost(config.host)) return [];
-  const addresses = config.host !== "0.0.0.0" && isPrivateIpv4(config.host)
-    ? [config.host]
+  return config.lanEnabled ? phoneUrlsFor(config.host, config.port) : [];
+}
+
+function phoneUrlsFor(host: string, port: number): string[] {
+  if (isLoopbackHost(host)) return [];
+  const addresses = host !== "0.0.0.0" && isPrivateIpv4(host)
+    ? [host]
     : Object.values(networkInterfaces())
       .flatMap((entries) => entries ?? [])
       .filter((entry) => entry.family === "IPv4" && !entry.internal && isPrivateIpv4(entry.address))
       .map((entry) => entry.address);
-  return [...new Set(addresses)].sort().map((address) => `http://${address}:${config.port}`);
+  return [...new Set(addresses)].sort().map((address) => `http://${address}:${port}`);
 }
 
 function writeRuntimeInfo(options: Options): void {
@@ -414,6 +446,13 @@ function clearRuntimeInfo(): void {
   } catch {
     // Missing or stale runtime metadata is harmless.
   }
+}
+
+function markHostQuit(): void {
+  writeFileSync(QUIT_PATH, `${JSON.stringify({ pid: process.pid, requestedAt: Date.now() })}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 async function validateRestartTarget(config: LocalConfig, current: Options): Promise<void> {
@@ -475,6 +514,11 @@ function isLoopbackHost(host: string): boolean {
   if (normalized === "localhost" || normalized === "::1") return true;
   const ipv4 = normalized.match(/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   return Boolean(ipv4 && ipv4.slice(1).every((part) => Number(part) <= 255));
+}
+
+function isLoopbackRequest(request: IncomingMessage): boolean {
+  const address = String(request.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+  return isLoopbackHost(address);
 }
 
 function secretMatches(candidate: string, expected: string): boolean {
@@ -636,6 +680,50 @@ function numberTime(value: unknown, fallback = Date.now()): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+function quotaWindowLabel(durationMins: number | null, fallback: string): string {
+  if (!durationMins || durationMins <= 0) return fallback;
+  if (durationMins % 10_080 === 0) return `${durationMins / 10_080}w`;
+  if (durationMins % 1_440 === 0) return `${durationMins / 1_440}d`;
+  if (durationMins % 60 === 0) return `${durationMins / 60}h`;
+  return `${durationMins}m`;
+}
+
+function normalizeRateLimits(value: any): RuntimeQuota | null {
+  const rateLimits = value?.rateLimits;
+  if (!rateLimits || typeof rateLimits !== "object") return null;
+  const windows: PocketQuotaWindow[] = [];
+  for (const [id, raw, fallback] of [
+    ["primary", rateLimits.primary, "Primary"],
+    ["secondary", rateLimits.secondary, "Secondary"],
+  ] as const) {
+    if (!raw || typeof raw !== "object") continue;
+    const used = Number(raw.usedPercent);
+    if (!Number.isFinite(used)) continue;
+    const duration = Number(raw.windowDurationMins);
+    const windowDurationMins = Number.isFinite(duration) && duration > 0 ? duration : null;
+    const usedPercent = Math.min(100, Math.max(0, used));
+    windows.push({
+      id,
+      label: quotaWindowLabel(windowDurationMins, fallback),
+      remainingPercent: Math.min(100, Math.max(0, 100 - usedPercent)),
+      usedPercent,
+      windowDurationMins,
+      resetsAt: raw.resetsAt === null || raw.resetsAt === undefined ? null : numberTime(raw.resetsAt),
+    });
+  }
+  if (windows.length === 0) return null;
+  const byLimitId = value?.rateLimitsByLimitId;
+  return {
+    accountId: typeof value.accountId === "string" ? value.accountId : null,
+    limitId: typeof rateLimits.limitId === "string" ? rateLimits.limitId : null,
+    limitName: typeof rateLimits.limitName === "string" ? rateLimits.limitName : null,
+    windows,
+    additionalLimitCount: byLimitId && typeof byLimitId === "object" ? Math.max(0, Object.keys(byLimitId).length - 1) : 0,
+    credits: rateLimits.credits && typeof rateLimits.credits === "object" ? rateLimits.credits : null,
+    updatedAt: Date.now(),
+  };
 }
 
 function clientFrame(opcode: number, payload: Buffer): Buffer {
@@ -866,7 +954,7 @@ class RpcClient {
     }
   }
 
-  request(method: string, params: JsonObject = {}, timeoutMs = 20_000): Promise<any> {
+  request(method: string, params: JsonObject | undefined = {}, timeoutMs = 20_000): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -874,7 +962,7 @@ class RpcClient {
         reject(new Error(`${method} timed out`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.wire.send({ method, id, params });
+      this.wire.send(params === undefined ? { method, id } : { method, id, params });
     });
   }
 
@@ -1064,10 +1152,14 @@ class MachineRuntime {
   private settingsRevision = 0;
   private settingsWaiters = new Set<() => void>();
   private technicalConnectionError: string | null = null;
+  private quota: RuntimeQuota | null = null;
+  private quotaRefreshTimer: NodeJS.Timeout | null = null;
+  private onQuotaChange: () => void;
 
-  constructor(options: Options, definition: MachineDefinition) {
+  constructor(options: Options, definition: MachineDefinition, onQuotaChange: () => void) {
     this.options = options;
     this.definition = definition;
+    this.onQuotaChange = onQuotaChange;
     this.state = {
       connected: false,
       connectionError: null,
@@ -1108,6 +1200,8 @@ class MachineRuntime {
     this.shuttingDown = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.quotaRefreshTimer) clearTimeout(this.quotaRefreshTimer);
+    this.quotaRefreshTimer = null;
     for (const pending of this.assistantFlushes.values()) clearTimeout(pending.timer);
     this.assistantFlushes.clear();
     const rpc = this.rpc;
@@ -1126,9 +1220,9 @@ class MachineRuntime {
     this.subscribers.clear();
   }
 
-  addSubscriber(response: ServerResponse): void {
+  addSubscriber(response: ServerResponse, sendSnapshot = true): void {
     this.subscribers.add(response);
-    this.writeSse(response, "snapshot", this.snapshot());
+    if (sendSnapshot) this.writeSse(response, "snapshot", this.snapshot());
   }
 
   removeSubscriber(response: ServerResponse): void {
@@ -1181,6 +1275,10 @@ class MachineRuntime {
       loadedTaskCount: this.loadedThreads.length,
       selectedThreadId: this.state.thread?.id ?? null,
     };
+  }
+
+  quotaSnapshot(): RuntimeQuota | null {
+    return this.quota ? JSON.parse(JSON.stringify(this.quota)) : null;
   }
 
   selectThread(threadId: string): Promise<JsonObject> {
@@ -1313,6 +1411,7 @@ class MachineRuntime {
       const targetId = preferred ?? active?.id ?? loadedThreads[0]?.id;
       this.state.connected = true;
       this.state.connectionError = null;
+      await this.refreshQuota();
       if (!targetId) {
         this.resetThreadState();
         this.state.thread = null;
@@ -1342,6 +1441,7 @@ class MachineRuntime {
       this.state.thread = null;
       this.state.threadStatus = "disconnected";
       this.state.phase = "unavailable";
+      this.onQuotaChange();
       this.broadcast("snapshot", this.snapshot());
       console.error(`${this.definition.name} attach failed: ${technicalError}`);
       this.scheduleReconnect();
@@ -1361,6 +1461,7 @@ class MachineRuntime {
     this.state.thread = null;
     this.state.threadStatus = "disconnected";
     this.state.phase = "unavailable";
+    this.onQuotaChange();
     this.broadcast("snapshot", this.snapshot());
     this.scheduleReconnect();
   }
@@ -1371,6 +1472,28 @@ class MachineRuntime {
       this.reconnectTimer = null;
       this.connect().catch((error) => console.error(error));
     }, 5_000);
+  }
+
+  private async refreshQuota(): Promise<void> {
+    if (!this.rpc || !this.state.connected) return;
+    try {
+      const result = await this.rpc.request("account/rateLimits/read", undefined, 5_000);
+      const normalized = normalizeRateLimits(result);
+      if (!normalized) throw new Error("rate-limit response did not contain supported windows");
+      this.quota = normalized;
+      this.onQuotaChange();
+    } catch (error) {
+      console.warn(`${this.definition.name}: quota unavailable: ${compact(error, 180)}`);
+      this.onQuotaChange();
+    }
+  }
+
+  private scheduleQuotaRefresh(): void {
+    if (this.shuttingDown || this.quotaRefreshTimer) return;
+    this.quotaRefreshTimer = setTimeout(() => {
+      this.quotaRefreshTimer = null;
+      void this.refreshQuota();
+    }, 150);
   }
 
   private async refreshLoadedThreads(): Promise<LoadedThreadSummary[]> {
@@ -1984,6 +2107,10 @@ class MachineRuntime {
   private handleNotification(message: JsonObject): void {
     const method = String(message.method ?? "");
     const params = message.params ?? {};
+    if (method === "account/rateLimits/updated") {
+      this.scheduleQuotaRefresh();
+      return;
+    }
     if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
     switch (method) {
       case "thread/status/changed":
@@ -2295,6 +2422,18 @@ class PocketGateway {
   private selectedMachineId = "local";
   private subscribers = new Set<ServerResponse>();
   private operationQueue: Promise<void> = Promise.resolve();
+  private quota: PocketQuota = {
+    available: false,
+    stale: false,
+    sourceMachineId: null,
+    sourceMachine: null,
+    limitName: null,
+    windows: [],
+    updatedAt: null,
+  };
+  private lastGoodQuota: PocketQuota | null = null;
+  private warnedAccountMismatch = false;
+  private warnedShapeMismatch = false;
 
   constructor(options: Options) {
     const definitions: MachineDefinition[] = [
@@ -2307,7 +2446,7 @@ class PocketGateway {
         ws: definition.id === "local" ? options.ws : undefined,
         thread: definition.id === "local" ? options.thread : undefined,
       };
-      this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition));
+      this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition, () => this.refreshQuotaSource()));
     }
   }
 
@@ -2326,7 +2465,8 @@ class PocketGateway {
 
   addSubscriber(response: ServerResponse): void {
     this.subscribers.add(response);
-    this.selected().addSubscriber(response);
+    this.selected().addSubscriber(response, false);
+    this.writeSse(response, "snapshot", this.snapshot());
     response.on("close", () => {
       this.subscribers.delete(response);
       for (const runtime of this.runtimes.values()) runtime.removeSubscriber(response);
@@ -2334,7 +2474,17 @@ class PocketGateway {
   }
 
   snapshot(): JsonObject {
-    return this.selected().snapshot();
+    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota };
+  }
+
+  hostStatus(options: Options): JsonObject {
+    return {
+      running: true,
+      hostName: localMachineName(),
+      localUrl: browserUrl(options.host, options.port),
+      phoneUrls: phoneUrlsFor(options.host, options.port),
+      quota: this.quota,
+    };
   }
 
   diagnostics(): JsonObject {
@@ -2356,12 +2506,15 @@ class PocketGateway {
       const requestedId = String(machineId ?? "").trim();
       const next = this.runtimes.get(requestedId);
       if (!next) throw new Error("selected machine is not configured");
-      if (requestedId === this.selectedMachineId) return next.snapshot();
+      if (requestedId === this.selectedMachineId) return this.snapshot();
       const previous = this.selected();
       for (const response of this.subscribers) previous.removeSubscriber(response);
       this.selectedMachineId = requestedId;
-      for (const response of this.subscribers) next.addSubscriber(response);
-      return next.snapshot();
+      for (const response of this.subscribers) next.addSubscriber(response, false);
+      this.refreshQuotaSource();
+      const snapshot = this.snapshot();
+      for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
+      return snapshot;
     });
   }
 
@@ -2428,6 +2581,57 @@ class PocketGateway {
     const result = this.operationQueue.then(operation, operation);
     this.operationQueue = result.then(() => {}, () => {});
     return result;
+  }
+
+  private refreshQuotaSource(): void {
+    const connected = [...this.runtimes.entries()].filter(([, runtime]) => runtime.state.connected && runtime.quotaSnapshot());
+    const selected = connected.find(([id]) => id === this.selectedMachineId) ?? connected[0];
+    const accountIds = new Set(connected.map(([, runtime]) => runtime.quotaSnapshot()?.accountId).filter(Boolean));
+    if (accountIds.size > 1 && !this.warnedAccountMismatch) {
+      this.warnedAccountMismatch = true;
+      console.warn("Quota warning: connected runtimes report different accounts; using one source without aggregation.");
+    }
+    const shapes = new Set(connected.map(([, runtime]) => runtime.quotaSnapshot()?.windows.map((window) => window.windowDurationMins).join(",")));
+    if (shapes.size > 1 && !this.warnedShapeMismatch) {
+      this.warnedShapeMismatch = true;
+      console.warn("Quota warning: connected runtimes report incompatible limit windows; using one source without aggregation.");
+    }
+    let next: PocketQuota;
+    if (selected) {
+      const [machineId, runtime] = selected;
+      const value = runtime.quotaSnapshot()!;
+      next = {
+        available: true,
+        stale: false,
+        sourceMachineId: machineId,
+        sourceMachine: runtime.state.machine,
+        limitName: value.limitName,
+        windows: value.windows,
+        updatedAt: value.updatedAt,
+      };
+      this.lastGoodQuota = next;
+    } else if (this.lastGoodQuota) {
+      next = { ...this.lastGoodQuota, stale: true };
+    } else {
+      next = {
+        available: false,
+        stale: false,
+        sourceMachineId: null,
+        sourceMachine: null,
+        limitName: null,
+        windows: [],
+        updatedAt: null,
+      };
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.quota)) return;
+    this.quota = next;
+    for (const response of this.subscribers) this.writeSse(response, "quota", this.quota);
+  }
+
+  private writeSse(response: ServerResponse, event: string, data: unknown): void {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    response.write(payload);
+    this.countBrowserPayload(payload);
   }
 }
 
@@ -2507,6 +2711,14 @@ async function handleRequest(
     sendJson(response, 200, { required: auth.required, authenticated: isAuthenticated(request, auth) }, gateway);
     return;
   }
+  if (method === "GET" && url.pathname === "/api/host-status") {
+    if (!isLoopbackRequest(request)) {
+      sendJson(response, 403, { error: "loopback access only" }, gateway);
+      return;
+    }
+    sendJson(response, 200, gateway.hostStatus(options), gateway);
+    return;
+  }
   if (method === "POST" && url.pathname === "/api/login") {
     const client = loginClient(request);
     const retryAfter = auth.required ? loginRetryAfter(auth, client) : 0;
@@ -2529,7 +2741,10 @@ async function handleRequest(
     });
     return;
   }
-  if ((url.pathname.startsWith("/api/") || url.pathname === "/events") && !isAuthenticated(request, auth)) {
+  const loopbackHostShutdown = url.pathname === "/api/shutdown" && method === "POST" && isLoopbackRequest(request);
+  if ((url.pathname.startsWith("/api/") || url.pathname === "/events")
+    && !loopbackHostShutdown
+    && !isAuthenticated(request, auth)) {
     sendJson(response, 401, { error: "Authentication required" }, gateway);
     return;
   }
@@ -2818,6 +3033,7 @@ async function main(): Promise<void> {
   };
   quitPocket = () => {
     if (shuttingDown) throw new Error("Pocket is already stopping");
+    markHostQuit();
     shuttingDown = true;
     setTimeout(() => void shutdown(), 75).unref();
   };

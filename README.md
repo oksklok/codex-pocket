@@ -24,15 +24,17 @@ No npm packages are required.
 
 Double-click `Codex Pocket.app` in this repository.
 
-The launcher finds Node from `PATH` or the bundled ChatGPT/Codex runtime, starts the gateway in the background when needed, and opens Pocket in the default browser. Double-clicking it again opens the existing gateway instead of starting a duplicate. Keep the app bundle inside the project folder so it can locate `gateway.ts`. Closing the browser does not stop Pocket; use **Settings → Quit Pocket** to release its local and remote Codex connections and stop the gateway.
+The tiny native menu-bar host finds Node from common paths or the bundled ChatGPT/Codex runtime, starts or reuses the gateway, and then stays visible as a status icon without opening a browser tab. Choose **Open Pocket** from its menu when you want a local browser client. Double-clicking the app again is a no-op: it does not create another icon, gateway, or browser tab. Keep the app bundle inside the project folder so it can locate `gateway.ts`.
+
+Browser tabs are only clients. Closing every Pocket tab does not stop the gateway, and phone/laptop clients keep working while the menu-bar icon remains. **Quit Codex Pocket** from either the menu bar or authenticated web Settings gracefully releases Pocket's local and SSH connections, removes the status icon, and stops the host. **Restart Pocket** performs the existing gateway handoff without quitting the menu-bar host.
 
 For normal phone setup:
 
-1. Double-click `Codex Pocket.app`.
-2. Open **Settings**.
+1. Double-click `Codex Pocket.app`, then choose **Open Pocket** from the menu-bar icon.
+2. Open web **Settings**.
 3. Enable local-network access, choose the bind address and port, and enter a four-digit PIN.
 4. Save and click **Restart Pocket**.
-5. Open the phone URL shown in Settings and enter the PIN.
+5. Open the phone URL shown in Settings (or copy it from the menu bar) and enter the PIN.
 
 To add a development machine that already works through SSH:
 
@@ -48,6 +50,8 @@ The local entry uses the gateway computer's hostname. The top bar's **Machine** 
 The local shared runtime can be unavailable even while Codex Desktop itself is running. Pocket reports that as **Shared runtime unavailable** rather than calling the computer offline. Desktop-owned private stdio sessions are intentionally unsupported and remain available only in the full Codex client.
 
 Settings are stored locally in `.codex-pocket.local.json`, which is ignored by Git and created only after the first save. The restart action performs a one-shot background handoff and moves the browser to the new port when necessary. A malformed or unsafe config is ignored with a warning and the gateway falls back to `127.0.0.1:4173`.
+
+Pocket reads account-wide quota through the official `account/rateLimits/read` app-server method and follows `account/rateLimits/updated`. The web header and menu bar show the available windows as remaining percentages with local reset times. Quota may come from any connected compatible runtime, is cached as a last-known snapshot during short disconnects, and never affects task connectivity when unavailable.
 
 LAN mode uses plain HTTP and is intended only for a trusted home network. Remote or untrusted-network access should later go through an encrypted private network such as Tailscale rather than exposing this listener directly.
 
@@ -106,10 +110,16 @@ On macOS with only the Codex Desktop bundled Node runtime available:
   --experimental-strip-types gateway.ts
 ```
 
+To rebuild the small native app-bundle executable after changing its Swift source:
+
+```sh
+macos/build-app.sh
+```
+
 ## Browser view
 
 - a fixed-height chat client whose transcript is the only normally scrolling area;
-- compact Machine → Task selectors for saved sessions, plus state, model, human-readable reasoning effort, task info, and Settings;
+- compact Machine → Task selectors for saved sessions, plus state, account quota, model, human-readable reasoning effort, task info, and Settings;
 - an Access selector for Ask for approval, Approve for me, and Full access using each task's app-server permission profile;
 - a collapsible desktop inspector (phone drawer) for friendly machine/project/task/access details, the current plan, and browser-local activity display toggles;
 - Working, Waiting for input, Waiting for approval, Done, Stopped, Failed, and runtime-availability states;

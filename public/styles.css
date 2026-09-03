@@ -118,6 +118,11 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .phase-pill.unavailable { background: rgba(255,139,139,.13); color: var(--danger); }
 .phase-pill.failed { background: rgba(255,139,139,.13); color: var(--danger); }
 .elapsed { color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
+.quota-chip {
+  display: inline-flex; align-items: center; min-height: 26px; max-width: 150px; padding: 3px 8px;
+  overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px; color: var(--muted);
+  font-size: .67rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap;
+}
 .runtime-controls { position: relative; gap: 6px; min-width: 0; }
 .runtime-controls #model-select { width: 138px; }
 .runtime-controls #effort-select { width: 96px; }
@@ -317,6 +322,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 @media (max-width: 520px) {
   .phase-pill { max-width: 126px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .elapsed { display: none; }
+  .quota-chip { max-width: 108px; padding-inline: 7px; font-size: .64rem; }
   .runtime-controls { gap: 4px; }
   .runtime-controls select { min-height: 33px; font-size: .69rem; }
   .topbar-actions { gap: 4px; }

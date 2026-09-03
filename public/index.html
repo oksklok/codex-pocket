@@ -44,6 +44,7 @@
         <div class="phase-row">
           <span class="phase-pill" id="phase-pill">Connecting</span>
           <span class="elapsed" id="elapsed">—</span>
+          <span class="quota-chip" id="quota-chip" title="Quota unavailable">Quota —</span>
         </div>
         <div class="runtime-controls">
           <label class="sr-only" for="model-select">Model</label>
@@ -151,7 +152,7 @@
           <p class="field-help">Use an SSH alias that already works from this Mac. Pocket never stores SSH credentials.</p>
         </fieldset>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
-        <div class="settings-quit"><p>Close Pocket and release its local and remote connections.</p><button class="danger-button" id="quit-pocket" type="button">Quit Pocket</button></div>
+        <div class="settings-quit"><p>Stop the host app and release its local and remote connections.</p><button class="danger-button" id="quit-pocket" type="button">Quit Codex Pocket</button></div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
         <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save settings</button></div>
       </form>

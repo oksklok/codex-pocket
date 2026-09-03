@@ -9,6 +9,7 @@ const elements = {
   connectionLabel: document.querySelector("#connection-label"),
   phase: document.querySelector("#phase-pill"),
   elapsed: document.querySelector("#elapsed"),
+  quota: document.querySelector("#quota-chip"),
   statusDetail: document.querySelector("#status-detail"),
   machine: document.querySelector("#machine"),
   machineSelect: document.querySelector("#machine-select"),
@@ -202,6 +203,35 @@ function formatElapsed(milliseconds) {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function formatQuotaReset(value) {
+  const reset = new Date(value);
+  if (!Number.isFinite(reset.getTime())) return "unknown time";
+  const now = new Date();
+  const sameDay = reset.getFullYear() === now.getFullYear()
+    && reset.getMonth() === now.getMonth()
+    && reset.getDate() === now.getDate();
+  return reset.toLocaleString([], sameDay
+    ? { hour: "2-digit", minute: "2-digit" }
+    : { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function renderQuota() {
+  const quota = state?.quota;
+  const windows = quota?.available && Array.isArray(quota.windows) ? quota.windows : [];
+  if (windows.length === 0) {
+    elements.quota.textContent = "Quota —";
+    elements.quota.title = "Quota unavailable";
+    return;
+  }
+  elements.quota.textContent = windows.map((window) => `${Math.round(window.remainingPercent)}%`).join(" · ");
+  const source = quota.sourceMachine ? ` via ${quota.sourceMachine}` : "";
+  const stale = quota.stale ? " · last known" : "";
+  elements.quota.title = `${windows.map((window) => {
+    const reset = window.resetsAt ? ` · resets ${formatQuotaReset(window.resetsAt)}` : "";
+    return `${window.label}: ${Math.round(window.remainingPercent)}% left${reset}`;
+  }).join("\n")}${source}${stale}`;
 }
 
 function threadLabel(thread) {
@@ -729,6 +759,7 @@ function renderState() {
   renderAccessControl();
   renderPlan();
   renderDisplayControls();
+  renderQuota();
   renderComposer();
 }
 
@@ -1284,6 +1315,7 @@ function connectEvents() {
   source.addEventListener("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("control", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  source.addEventListener("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
   source.addEventListener("turn", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
@@ -1612,10 +1644,12 @@ elements.restartPocket.addEventListener("click", async () => {
 });
 elements.quitPocket.addEventListener("click", async () => {
   if (quittingPocket) return;
+  const hostName = settingsValue?.hostName || state?.hostName || "this Mac";
+  if (!window.confirm(`Quit Codex Pocket on ${hostName}?\n\nPocket will stop and you won't be able to reconnect until Codex Pocket.app is launched again on that Mac.`)) return;
   quittingPocket = true;
   elements.quitPocket.disabled = true;
-  elements.quitPocket.textContent = "Quitting Pocket…";
-  elements.settingsStatus.textContent = "Quitting Pocket…";
+  elements.quitPocket.textContent = "Quitting Codex Pocket…";
+  elements.settingsStatus.textContent = "Quitting Codex Pocket…";
   elements.settingsStatus.classList.remove("error-text");
   try {
     const response = await apiFetch("/api/shutdown", { method: "POST" });
@@ -1625,7 +1659,7 @@ elements.quitPocket.addEventListener("click", async () => {
   } catch (error) {
     quittingPocket = false;
     elements.quitPocket.disabled = false;
-    elements.quitPocket.textContent = "Quit Pocket";
+    elements.quitPocket.textContent = "Quit Codex Pocket";
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");
   }
