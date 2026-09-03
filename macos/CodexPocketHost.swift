@@ -5,6 +5,7 @@ import Foundation
 private struct RuntimeRecord: Decodable {
     let pid: Int32
     let localUrl: String
+    let controlUrl: String
 }
 
 private struct QuotaWindow: Decodable {
@@ -253,7 +254,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func fetchHostStatus() -> HostStatus? {
         guard let record = runtimeRecord(),
-              let url = URL(string: record.localUrl + "/api/host-status") else { return nil }
+              let url = URL(string: record.controlUrl + "/host-status") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 1
         let semaphore = DispatchSemaphore(value: 0)
@@ -269,7 +270,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func requestGatewayShutdown() -> Bool {
         guard let record = runtimeRecord(),
-              let url = URL(string: record.localUrl + "/api/shutdown") else { return false }
+              let url = URL(string: record.controlUrl + "/shutdown") else { return false }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 2

@@ -197,6 +197,7 @@ type PocketQuotaWindow = {
   resetsAt: number | null;
 };
 type RuntimeQuota = {
+  fresh: boolean;
   accountId: string | null;
   limitId: string | null;
   limitName: string | null;
@@ -430,12 +431,13 @@ function phoneUrlsFor(host: string, port: number): string[] {
   return [...new Set(addresses)].sort().map((address) => `http://${address}:${port}`);
 }
 
-function writeRuntimeInfo(options: Options): void {
+function writeRuntimeInfo(options: Options, controlUrl: string): void {
   writeFileSync(RUNTIME_PATH, `${JSON.stringify({
     pid: process.pid,
     host: options.host,
     port: options.port,
     localUrl: browserUrl(options.host, options.port),
+    controlUrl,
   }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
@@ -716,6 +718,7 @@ function normalizeRateLimits(value: any): RuntimeQuota | null {
   if (windows.length === 0) return null;
   const byLimitId = value?.rateLimitsByLimitId;
   return {
+    fresh: true,
     accountId: typeof value.accountId === "string" ? value.accountId : null,
     limitId: typeof rateLimits.limitId === "string" ? rateLimits.limitId : null,
     limitName: typeof rateLimits.limitName === "string" ? rateLimits.limitName : null,
@@ -1431,6 +1434,7 @@ class MachineRuntime {
       rpc.onClose = () => {};
       rpc.close();
       if (this.rpc === rpc) this.rpc = null;
+      if (this.quota) this.quota.fresh = false;
       const technicalError = error instanceof Error ? error.message : String(error);
       this.technicalConnectionError = technicalError;
       this.state.connectionError = this.definition.ssh
@@ -1451,6 +1455,7 @@ class MachineRuntime {
   private handleClose(error?: Error): void {
     if (this.shuttingDown) return;
     this.rpc = null;
+    if (this.quota) this.quota.fresh = false;
     this.state.connected = false;
     this.technicalConnectionError = error?.message ?? "app-server connection closed";
     this.state.connectionError = this.definition.ssh
@@ -1483,6 +1488,7 @@ class MachineRuntime {
       this.quota = normalized;
       this.onQuotaChange();
     } catch (error) {
+      if (this.quota) this.quota.fresh = false;
       console.warn(`${this.definition.name}: quota unavailable: ${compact(error, 180)}`);
       this.onQuotaChange();
     }
@@ -2584,7 +2590,10 @@ class PocketGateway {
   }
 
   private refreshQuotaSource(): void {
-    const connected = [...this.runtimes.entries()].filter(([, runtime]) => runtime.state.connected && runtime.quotaSnapshot());
+    const connected = [...this.runtimes.entries()].filter(([, runtime]) => {
+      const quota = runtime.quotaSnapshot();
+      return runtime.state.connected && quota?.fresh;
+    });
     const selected = connected.find(([id]) => id === this.selectedMachineId) ?? connected[0];
     const accountIds = new Set(connected.map(([, runtime]) => runtime.quotaSnapshot()?.accountId).filter(Boolean));
     if (accountIds.size > 1 && !this.warnedAccountMismatch) {
@@ -2668,6 +2677,46 @@ function sendJson(
     ...extraHeaders,
   });
   response.end(payload);
+}
+
+function sendControlJson(response: ServerResponse, statusCode: number, value: unknown): void {
+  const payload = Buffer.from(JSON.stringify(value));
+  response.writeHead(statusCode, {
+    ...securityHeaders(),
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Length": payload.length,
+  });
+  response.end(payload);
+}
+
+function handleControlRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gateway: PocketGateway,
+  options: Options,
+  quitPocket: () => void,
+): void {
+  if (!isLoopbackRequest(request)) {
+    sendControlJson(response, 403, { error: "loopback access only" });
+    return;
+  }
+  const method = request.method ?? "GET";
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (method === "GET" && url.pathname === "/host-status") {
+    sendControlJson(response, 200, gateway.hostStatus(options));
+    return;
+  }
+  if (method === "POST" && url.pathname === "/shutdown") {
+    try {
+      quitPocket();
+      sendControlJson(response, 202, { shuttingDown: true });
+    } catch (error) {
+      sendControlJson(response, 409, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  sendControlJson(response, 404, { error: "not found" });
 }
 
 function staticPath(pathname: string): string | null {
@@ -3004,6 +3053,9 @@ async function main(): Promise<void> {
       else response.end();
     });
   });
+  const controlServer = createServer((request, response) => {
+    handleControlRequest(request, response, gateway, options, () => quitPocket());
+  });
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
@@ -3013,7 +3065,10 @@ async function main(): Promise<void> {
     shutdownPromise = (async () => {
       await gateway.stop();
       clearRuntimeInfo();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await Promise.all([
+        new Promise<void>((resolve) => server.close(() => resolve())),
+        new Promise<void>((resolve) => controlServer.close(() => resolve())),
+      ]);
       clearTimeout(forceExit);
       process.exit(0);
     })();
@@ -3037,20 +3092,37 @@ async function main(): Promise<void> {
     shuttingDown = true;
     setTimeout(() => void shutdown(), 75).unref();
   };
-  server.listen(options.port, options.host, () => {
-    try {
-      writeRuntimeInfo(options);
-    } catch (error) {
-      console.warn(`Warning: could not write runtime metadata: ${compact(error, 240)}`);
-    }
+  await new Promise<void>((resolve, reject) => {
+    controlServer.once("error", reject);
+    controlServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const controlAddress = controlServer.address();
+  if (!controlAddress || typeof controlAddress === "string") throw new Error("could not create local control endpoint");
+  const controlUrl = `http://127.0.0.1:${controlAddress.port}`;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port, options.host, () => resolve());
+    });
+  } catch (error) {
+    await new Promise<void>((resolve) => controlServer.close(() => resolve()));
+    throw error;
+  }
+  try {
+    writeRuntimeInfo(options, controlUrl);
+  } catch (error) {
+    console.warn(`Warning: could not write runtime metadata: ${compact(error, 240)}`);
+  }
+  {
     const displayHost = options.host.includes(":") ? `[${options.host}]` : options.host;
     console.log(`Codex Pocket: http://${displayHost}:${options.port}`);
+    console.log(`Native control: ${controlUrl}`);
     console.log(`Network: ${authRequired ? "LAN access enabled" : "localhost only"}; PIN protection ${authRequired ? "enabled" : "disabled"}`);
     if (settings.loaded) console.log(`Config: ${settings.path}`);
     if (authRequired) {
       console.warn("Warning: LAN control uses plain HTTP; use it only on a trusted network.");
     }
-  });
+  }
   process.once("exit", clearRuntimeInfo);
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());
