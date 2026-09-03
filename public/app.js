@@ -28,8 +28,11 @@ const elements = {
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
   planEmpty: document.querySelector("#plan-empty"),
-  activityList: document.querySelector("#activity-list"),
-  activityEmpty: document.querySelector("#activity-empty"),
+  displayCommands: document.querySelector("#display-commands"),
+  displayReasoning: document.querySelector("#display-reasoning"),
+  displayCollaboration: document.querySelector("#display-collaboration"),
+  displayImages: document.querySelector("#display-images"),
+  displayCompaction: document.querySelector("#display-compaction"),
   composer: document.querySelector("#composer"),
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
@@ -78,6 +81,8 @@ const phaseLabels = {
 let state = null;
 let historyMessages = new Map();
 let liveMessages = new Map();
+let historyActivities = new Map();
+let liveActivities = new Map();
 let loadedThreads = [];
 let machines = [];
 let nextCursor = null;
@@ -105,6 +110,30 @@ let savingSettings = false;
 let restartingPocket = false;
 let quittingPocket = false;
 let intentionalQuit = false;
+
+const DISPLAY_STORAGE_KEY = "codex-pocket-info-display";
+const displayPreferences = loadDisplayPreferences();
+
+function loadDisplayPreferences() {
+  const defaults = { commands: true, reasoning: true, collaboration: true, images: true, compaction: true };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) || "{}") };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveDisplayPreferences() {
+  try { localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(displayPreferences)); } catch {}
+}
+
+function activityVisible(activity) {
+  if (activity.kind === "reasoning") return displayPreferences.reasoning;
+  if (activity.kind === "collaboration") return displayPreferences.collaboration;
+  if (activity.kind === "image") return displayPreferences.images;
+  if (activity.kind === "compaction") return displayPreferences.compaction;
+  return displayPreferences.commands;
+}
 
 function showLogin(message = "") {
   source?.close();
@@ -344,27 +373,12 @@ function renderPlan() {
   }
 }
 
-function renderActivities() {
-  const activities = [...(state?.activities || [])].reverse();
-  elements.activityList.replaceChildren();
-  elements.activityEmpty.hidden = activities.length > 0;
-  for (const activity of activities) {
-    const li = document.createElement("li");
-    li.className = `activity-item ${activity.status}`;
-    const kind = document.createElement("span");
-    kind.className = "activity-kind";
-    kind.textContent = `${activity.kind} · ${activity.status}`;
-    const label = document.createElement("span");
-    label.textContent = activity.label;
-    li.append(kind, label);
-    if (activity.detail) {
-      const detail = document.createElement("span");
-      detail.className = "activity-detail";
-      detail.textContent = activity.detail;
-      li.append(detail);
-    }
-    elements.activityList.append(li);
-  }
+function renderDisplayControls() {
+  elements.displayCommands.checked = displayPreferences.commands;
+  elements.displayReasoning.checked = displayPreferences.reasoning;
+  elements.displayCollaboration.checked = displayPreferences.collaboration;
+  elements.displayImages.checked = displayPreferences.images;
+  elements.displayCompaction.checked = displayPreferences.compaction;
 }
 
 function renderQueue() {
@@ -661,7 +675,7 @@ function renderState() {
   renderModelControls();
   renderAccessControl();
   renderPlan();
-  renderActivities();
+  renderDisplayControls();
   renderComposer();
 }
 
@@ -686,6 +700,36 @@ function messageNode(message) {
   return article;
 }
 
+function activityNode(activity) {
+  const article = document.createElement("article");
+  article.className = `timeline-activity ${activity.kind} ${activity.status}`;
+  article.dataset.activityId = activity.id;
+  const heading = document.createElement("div");
+  heading.className = "activity-heading";
+  const kind = document.createElement("span");
+  kind.className = "activity-kind";
+  const labels = {
+    command: "Command", tool: "Tool", search: "Search", files: "File changes",
+    reasoning: "Reasoning summary", collaboration: "Multi-agent", image: "Image", compaction: "Context",
+  };
+  kind.textContent = labels[activity.kind] || "Activity";
+  const activityStatus = document.createElement("span");
+  activityStatus.className = "activity-status";
+  activityStatus.textContent = activity.status;
+  heading.append(kind, activityStatus);
+  const label = document.createElement("div");
+  label.className = "activity-label";
+  label.textContent = activity.label;
+  article.append(heading, label);
+  if (activity.detail) {
+    const detail = document.createElement("div");
+    detail.className = "activity-detail";
+    detail.textContent = activity.detail;
+    article.append(detail);
+  }
+  return article;
+}
+
 function renderConversation({ preserveScroll = null, forceBottom = false } = {}) {
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
@@ -698,15 +742,31 @@ function renderConversation({ preserveScroll = null, forceBottom = false } = {})
     deduplicated.set(key, message);
   }
   const messages = [...deduplicated.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  const allActivities = new Map(historyActivities);
+  for (const [id, activity] of liveActivities) allActivities.set(id, activity);
+  const activityDeduplicated = new Map();
+  for (const activity of [...allActivities.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0))) {
+    if (!activityVisible(activity)) continue;
+    const key = activity.turnId
+      ? `${activity.turnId}\u0000${activity.kind}\u0000${activity.label}`
+      : `id\u0000${activity.id}`;
+    activityDeduplicated.set(key, activity);
+  }
+  const timeline = [
+    ...messages.map((value) => ({ type: "message", value })),
+    ...[...activityDeduplicated.values()].map((value) => ({ type: "activity", value })),
+  ].sort((left, right) => (left.value.createdAt || 0) - (right.value.createdAt || 0));
   elements.conversation.replaceChildren();
-  if (messages.length === 0) {
+  if (timeline.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
     empty.textContent = "No conversation history yet.";
     elements.conversation.append(empty);
     return;
   }
-  for (const message of messages) elements.conversation.append(messageNode(message));
+  for (const entry of timeline) {
+    elements.conversation.append(entry.type === "message" ? messageNode(entry.value) : activityNode(entry.value));
+  }
   if (preserveScroll) {
     const addedHeight = elements.conversation.scrollHeight - preserveScroll.scrollHeight;
     elements.conversation.scrollTop = preserveScroll.scrollTop + addedHeight;
@@ -717,7 +777,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false } = {})
   }
 }
 
-function mergeState(next, renderMessages = Array.isArray(next.liveMessages)) {
+function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities)) {
   if (next.message && !next.message.allowed) {
     composerError = "";
     composerNotice = "";
@@ -725,6 +785,9 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages)) {
   state = { ...(state || {}), ...next };
   if (Array.isArray(next.liveMessages)) {
     for (const message of next.liveMessages) liveMessages.set(message.id, message);
+  }
+  if (Array.isArray(next.activities)) {
+    for (const activity of next.activities) liveActivities.set(activity.id, activity);
   }
   renderState();
   if (renderMessages) renderConversation();
@@ -734,6 +797,8 @@ function resetConversationState() {
   historyEpoch += 1;
   historyMessages.clear();
   liveMessages.clear();
+  historyActivities.clear();
+  liveActivities.clear();
   nextCursor = null;
   historyRequest = null;
   shouldFollowConversation = true;
@@ -779,6 +844,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     const preserveScroll = cursor ? { scrollHeight: elements.conversation.scrollHeight, scrollTop: elements.conversation.scrollTop } : null;
     for (const turn of page.turns || []) {
       for (const message of turn.messages || []) historyMessages.set(message.id, message);
+      for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
     }
     nextCursor = page.nextCursor;
     elements.historyStatus.textContent = nextCursor ? "Scroll up for earlier messages" : "Start of task";
@@ -1186,7 +1252,7 @@ function connectEvents() {
     const index = activities.findIndex((candidate) => candidate.id === activity.id);
     if (index >= 0) activities[index] = activity;
     else activities.push(activity);
-    mergeState({ activities: activities.slice(-10) });
+    mergeState({ activities: activities.slice(-50) });
   });
   source.addEventListener("message", (event) => {
     if (switchingThread) return;
@@ -1367,6 +1433,19 @@ elements.conversation.addEventListener("scroll", () => {
 elements.inspectorButton.addEventListener("click", toggleInspector);
 elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
+for (const [element, key] of [
+  [elements.displayCommands, "commands"],
+  [elements.displayReasoning, "reasoning"],
+  [elements.displayCollaboration, "collaboration"],
+  [elements.displayImages, "images"],
+  [elements.displayCompaction, "compaction"],
+]) {
+  element.addEventListener("change", () => {
+    displayPreferences[key] = element.checked;
+    saveDisplayPreferences();
+    renderConversation();
+  });
+}
 
 setInterval(() => {
   const startedAt = state?.turn?.startedAt;

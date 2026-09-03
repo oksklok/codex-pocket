@@ -140,6 +140,18 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .message-body { color: var(--text); font-size: .88rem; line-height: 1.58; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message.user .message-body { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--surface-strong); }
 .message.streaming .message-body::after { content: ""; display: inline-block; width: 5px; height: 1em; margin-left: 3px; background: var(--accent); vertical-align: -.15em; animation: blink 1s infinite; }
+.timeline-activity {
+  width: min(94%, 720px); margin: 0 auto 12px; padding: 8px 10px;
+  border-left: 2px solid var(--line); border-radius: 0 8px 8px 0; background: rgba(27,34,44,.5);
+}
+.timeline-activity.running { border-left-color: var(--warning); }
+.timeline-activity.completed { border-left-color: rgba(69,200,138,.58); }
+.timeline-activity.failed, .timeline-activity.interrupted { border-left-color: var(--danger); }
+.activity-heading { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 3px; }
+.activity-kind, .activity-status { color: var(--subtle); font-size: .57rem; font-weight: 750; text-transform: uppercase; }
+.activity-label { color: var(--muted); font-size: .72rem; line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
+.timeline-activity.reasoning .activity-label { display: none; }
+.activity-detail { margin-top: 3px; color: var(--subtle); font-size: .66rem; line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
 @keyframes blink { 50% { opacity: .25; } }
 
 .composer-zone { border-top: 1px solid var(--line-soft); background: rgba(13,17,23,.98); padding: 8px max(12px, calc((100vw - 1050px) / 2)) max(8px, env(safe-area-inset-bottom)); }
@@ -210,6 +222,10 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .activity-item { display: grid; gap: 2px; }
 .activity-kind { color: var(--subtle); font-size: .58rem; font-weight: 750; text-transform: uppercase; }
 .activity-detail { color: var(--subtle); font-size: .65rem; }
+.display-panel { display: grid; gap: 8px; }
+.display-panel .panel-heading { margin-bottom: 2px; }
+.display-option { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .7rem; cursor: pointer; }
+.display-option input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent-strong); }
 .inspector-backdrop { display: none; }
 
 .settings-screen { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgba(4,7,11,.76); }

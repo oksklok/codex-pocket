@@ -64,10 +64,12 @@ type PocketMessage = {
 };
 type PocketActivity = {
   id: string;
+  turnId?: string;
   kind: string;
   label: string;
   status: "running" | "completed" | "failed" | "interrupted";
   detail?: string;
+  createdAt: number;
 };
 type PocketInputOption = {
   label: string;
@@ -191,7 +193,7 @@ const MAX_TEXT = 12_000;
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_INPUT_ANSWER_LENGTH = 4_000;
 const MAX_LIVE_MESSAGES = 16;
-const MAX_ACTIVITIES = 10;
+const MAX_ACTIVITIES = 50;
 const ASSISTANT_FLUSH_MS = 120;
 const ACCESS_SETTINGS_TIMEOUT_MS = 2_000;
 const THREAD_UNSUBSCRIBE_TIMEOUT_MS = 1_000;
@@ -926,33 +928,65 @@ function messageFromItem(item: any, turnId?: string, complete = true, fallbackTi
   };
 }
 
-function activityFromItem(item: any, phase: "start" | "done"): PocketActivity | null {
+function activityFromItem(
+  item: any,
+  phase: "start" | "done",
+  turnId?: string,
+  fallbackTime = Date.now(),
+): PocketActivity | null {
   if (!item || typeof item !== "object") return null;
   const id = String(item.id ?? `${item.type}-${randomBytes(4).toString("hex")}`);
-  const doneStatus = item.status === "failed" || item.status === "declined" ? "failed" : "completed";
+  const doneStatus = item.status === "interrupted"
+    ? "interrupted"
+    : item.status === "failed" || item.status === "declined"
+      ? "failed"
+      : "completed";
   const status = phase === "start" ? "running" : doneStatus;
+  const base = { id, turnId, status, createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime) };
   if (item.type === "commandExecution") {
     const outputBytes = Buffer.byteLength(String(item.aggregatedOutput ?? ""));
     const detail = phase === "done"
       ? `exit ${item.exitCode ?? "–"} · ${outputBytes.toLocaleString()} output bytes suppressed`
       : undefined;
-    return { id, kind: "command", label: safeSummary(item.command, 260), status, detail };
+    return { ...base, kind: "command", label: safeSummary(item.command, 260), detail };
   }
   if (item.type === "mcpToolCall") {
-    return { id, kind: "tool", label: compact(`${item.server ?? "tool"}/${item.tool ?? "unknown"}`), status };
+    return { ...base, kind: "tool", label: compact(`${item.server ?? "tool"}/${item.tool ?? "unknown"}`) };
   }
   if (item.type === "dynamicToolCall") {
-    return { id, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`), status };
+    return { ...base, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`) };
   }
-  if (item.type === "collabAgentToolCall") {
-    return { id, kind: "collaboration", label: compact(item.tool ?? "collaboration"), status };
+  if (item.type === "collabAgentToolCall" || item.type === "subAgentActivity") {
+    const agentCount = item.agents && typeof item.agents === "object" ? Object.keys(item.agents).length : 0;
+    return {
+      ...base,
+      kind: "collaboration",
+      label: compact(item.tool ?? "Agent activity"),
+      ...(agentCount ? { detail: `${agentCount} agent${agentCount === 1 ? "" : "s"}` } : {}),
+    };
   }
   if (item.type === "webSearch") {
-    return { id, kind: "search", label: compact(item.query, 260), status };
+    return { ...base, kind: "search", label: compact(item.query, 260) || "Web search" };
   }
   if (item.type === "fileChange") {
     const paths = Array.isArray(item.changes) ? item.changes.length : 0;
-    return { id, kind: "files", label: `${paths} changed path${paths === 1 ? "" : "s"} (diff suppressed)`, status };
+    return { ...base, kind: "files", label: `${paths} changed path${paths === 1 ? "" : "s"}`, detail: "Diff suppressed" };
+  }
+  if (item.type === "reasoning") {
+    const summary = Array.isArray(item.summary)
+      ? item.summary.map((part: unknown) => boundedText(part, 600)).filter(Boolean).join("\n")
+      : "";
+    if (!summary) return null;
+    return { ...base, kind: "reasoning", label: "Reasoning summary", detail: boundedText(summary, 1_200) };
+  }
+  if (item.type === "imageView") {
+    return { ...base, kind: "image", label: "Viewed image", detail: basename(String(item.path ?? "")) || undefined };
+  }
+  if (item.type === "imageGeneration") {
+    return { ...base, kind: "image", label: "Generated image" };
+  }
+  if (item.type === "contextCompaction") {
+    return { ...base, kind: "compaction", label: "Context compacted" };
   }
   return null;
 }
@@ -960,9 +994,11 @@ function activityFromItem(item: any, phase: "start" | "done"): PocketActivity | 
 function normalizeHistoryTurn(turn: any): JsonObject {
   const completedAt = turn?.completedAt ? numberTime(turn.completedAt, 0) : null;
   const createdAt = numberTime(turn?.createdAt ?? turn?.created_at, completedAt ?? 0);
-  const messages = Array.isArray(turn?.items)
-    ? turn.items.map((item: any) => messageFromItem(item, String(turn.id), true, createdAt)).filter(Boolean)
-    : [];
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const messages = items
+    .map((item: any, index: number) => messageFromItem(item, String(turn.id), true, createdAt + index)).filter(Boolean);
+  const activities = items
+    .map((item: any, index: number) => activityFromItem(item, "done", String(turn.id), createdAt + index)).filter(Boolean);
   return {
     id: String(turn?.id ?? ""),
     status: String(turn?.status ?? "unknown"),
@@ -970,6 +1006,7 @@ function normalizeHistoryTurn(turn: any): JsonObject {
     completedAt,
     error: compact(turn?.error?.message ?? turn?.error, 400) || null,
     messages,
+    activities,
   };
 }
 
@@ -2085,10 +2122,10 @@ class MachineRuntime {
       }
       return;
     }
-    const activity = activityFromItem(item, phase);
+    const activity = activityFromItem(item, phase, itemTurnId);
     if (!activity) return;
     const index = this.state.activities.findIndex((candidate) => candidate.id === activity.id);
-    if (index >= 0) this.state.activities[index] = activity;
+    if (index >= 0) this.state.activities[index] = { ...activity, createdAt: this.state.activities[index].createdAt };
     else this.state.activities.push(activity);
     this.state.activities = this.state.activities.slice(-MAX_ACTIVITIES);
     this.broadcast("activity", activity);

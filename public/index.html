@@ -111,9 +111,13 @@
               <div class="panel-heading"><h3 id="plan-title">Current plan</h3><span class="count-badge" id="plan-count">0/0</span></div>
               <ol class="plan-list" id="plan-list"></ol><p class="panel-empty" id="plan-empty">No active plan.</p>
             </section>
-            <section class="secondary-panel" id="activity-panel" aria-labelledby="activity-title">
-              <div class="panel-heading"><h3 id="activity-title">Current activity</h3></div>
-              <ul class="activity-list" id="activity-list"></ul><p class="panel-empty" id="activity-empty">No command or tool activity.</p>
+            <section class="secondary-panel display-panel" aria-labelledby="display-title">
+              <div class="panel-heading"><h3 id="display-title">Info display</h3></div>
+              <label class="display-option"><input id="display-commands" type="checkbox" checked><span>Commands &amp; tools</span></label>
+              <label class="display-option"><input id="display-reasoning" type="checkbox" checked><span>Reasoning summaries</span></label>
+              <label class="display-option"><input id="display-collaboration" type="checkbox" checked><span>Multi-agent</span></label>
+              <label class="display-option"><input id="display-images" type="checkbox" checked><span>Images</span></label>
+              <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context compaction</span></label>
             </section>
           </div>
         </aside>
