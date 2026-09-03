@@ -220,7 +220,7 @@ Options:
   --host ADDRESS Override saved browser bind address
   --port N       Override saved browser port
   --ws URL       Connect to an explicit app-server WebSocket
-  --thread ID    Select a specific loaded thread
+  --thread ID    Select a specific saved thread
   --help         Show this help
 
 Environment:
@@ -935,7 +935,8 @@ function activityFromItem(
   fallbackTime = Date.now(),
 ): PocketActivity | null {
   if (!item || typeof item !== "object") return null;
-  const id = String(item.id ?? `${item.type}-${randomBytes(4).toString("hex")}`);
+  if (item.id === undefined || item.id === null) return null;
+  const id = String(item.id);
   const doneStatus = item.status === "interrupted"
     ? "interrupted"
     : item.status === "failed" || item.status === "declined"
@@ -1319,7 +1320,7 @@ class MachineRuntime {
         this.state.connectionError = null;
         this.state.phase = "done";
         this.broadcast("snapshot", this.snapshot());
-        console.log(`${this.definition.name}: connected; no loaded tasks`);
+        console.log(`${this.definition.name}: connected; no saved tasks`);
         return;
       }
       await this.attachLoadedThread(String(targetId), false);
@@ -2128,7 +2129,8 @@ class MachineRuntime {
     if (index >= 0) this.state.activities[index] = { ...activity, createdAt: this.state.activities[index].createdAt };
     else this.state.activities.push(activity);
     this.state.activities = this.state.activities.slice(-MAX_ACTIVITIES);
-    this.broadcast("activity", activity);
+    const stored = this.state.activities.find((candidate) => candidate.id === activity.id);
+    if (stored) this.broadcast("activity", stored);
   }
 
   private queueAssistantDelta(itemId: string, turnId: string, delta: string): void {
@@ -2248,7 +2250,7 @@ class MachineRuntime {
 
   private messageCapability(): JsonObject {
     if (!this.state.connected || !this.rpc) return { allowed: false, mode: null, reason: "Codex is disconnected" };
-    if (!this.state.thread) return { allowed: false, mode: null, reason: "No loaded task is selected" };
+    if (!this.state.thread) return { allowed: false, mode: null, reason: "No task is selected" };
     if (this.state.stoppingTurnId) return { allowed: false, mode: null, reason: "Stopping the active turn…" };
     if (this.state.pending.some((request) => request.kind === "permission")) {
       return { allowed: false, mode: null, reason: "Resolve the pending permission request in Codex first" };
@@ -2258,7 +2260,7 @@ class MachineRuntime {
     }
     if (this.state.phase === "failed") return { allowed: false, mode: null, reason: "This task cannot accept a message while failed" };
     if (!this.canAcceptDirectInput) {
-      return { allowed: false, mode: null, reason: "This loaded task does not accept direct input" };
+      return { allowed: false, mode: null, reason: "This task does not accept direct input" };
     }
     if (this.state.turn?.status === "inProgress") return { allowed: true, mode: "steer", reason: null };
     if (this.state.threadStatus.startsWith("active")) {

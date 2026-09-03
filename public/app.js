@@ -254,10 +254,16 @@ function renderThreadSelector() {
   elements.threadSelect.replaceChildren();
   if (loadedThreads.length === 0) {
     const option = document.createElement("option");
-    option.textContent = state?.connected ? "No saved tasks" : "Machine unavailable";
+    option.textContent = state?.connected
+      ? "No saved tasks"
+      : state?.machineId === "local"
+        ? "Shared runtime unavailable"
+        : "Machine unavailable";
     elements.threadSelect.append(option);
     elements.threadSelect.disabled = true;
-    elements.threadCount.textContent = state?.connected ? "No saved tasks" : state?.connectionError || "Machine unavailable";
+    elements.threadCount.textContent = state?.connected
+      ? "No saved tasks"
+      : state?.connectionError || (state?.machineId === "local" ? "Shared runtime unavailable" : "Machine unavailable");
     return;
   }
   for (const thread of loadedThreads) {
@@ -712,7 +718,11 @@ function renderState() {
     || pending?.label
     || state.activities?.findLast((activity) => activity.status === "running")?.label
     || state.turn?.error
-    || (state.thread ? `${state.thread.name} · ${state.threadStatus}` : state.connected ? "No saved tasks on this machine." : "Machine unavailable.");
+    || (state.thread
+      ? `${state.thread.name} · ${state.threadStatus}`
+      : state.connected
+        ? "No saved tasks on this machine."
+        : state.machineId === "local" ? "Shared runtime unavailable." : "Machine unavailable.");
   renderMachineSelector();
   renderThreadSelector();
   renderModelControls();
@@ -787,17 +797,10 @@ function renderConversation({ preserveScroll = null, forceBottom = false } = {})
   const messages = [...deduplicated.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
   const allActivities = new Map(historyActivities);
   for (const [id, activity] of liveActivities) allActivities.set(id, activity);
-  const activityDeduplicated = new Map();
-  for (const activity of [...allActivities.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0))) {
-    if (!activityVisible(activity)) continue;
-    const key = activity.turnId
-      ? `${activity.turnId}\u0000${activity.kind}\u0000${activity.label}`
-      : `id\u0000${activity.id}`;
-    activityDeduplicated.set(key, activity);
-  }
+  const activities = [...allActivities.values()].filter(activityVisible);
   const timeline = [
     ...messages.map((value) => ({ type: "message", value })),
-    ...[...activityDeduplicated.values()].map((value) => ({ type: "activity", value })),
+    ...activities.map((value) => ({ type: "activity", value })),
   ].sort((left, right) => (left.value.createdAt || 0) - (right.value.createdAt || 0));
   elements.conversation.replaceChildren();
   if (timeline.length === 0) {
@@ -1356,7 +1359,7 @@ function renderMachineSettings(values) {
   if (!configured.length) {
     const empty = document.createElement("p");
     empty.className = "machine-settings-empty";
-    empty.textContent = "Only This Mac is configured.";
+    empty.textContent = "No remote machines configured.";
     elements.settingsMachines.append(empty);
     return;
   }
