@@ -165,6 +165,7 @@ private final class MessageMenuView: NSView {
 }
 
 final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private static let keepAwakeDefaultsKey = "keepMacAwake"
     private let fileManager = FileManager.default
     private lazy var projectURL = Bundle.main.bundleURL.deletingLastPathComponent()
     private lazy var runtimeURL = projectURL.appendingPathComponent(".codex-pocket.runtime.json")
@@ -179,7 +180,9 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let quotaUnavailableItem = NSMenuItem()
     private var openItem: NSMenuItem!
     private var copyItem: NSMenuItem!
+    private var keepAwakeItem: NSMenuItem!
     private var quitItem: NSMenuItem!
+    private var sleepActivity: NSObjectProtocol?
     private var timer: Timer?
     private var status: HostStatus?
     private var gatewayProcess: Process?
@@ -198,6 +201,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         try? fileManager.removeItem(at: quitMarkerURL)
         installStatusItem()
+        restoreKeepAwakePreference()
         ensureGateway()
         timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshStatus()
@@ -207,6 +211,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        releaseKeepAwakeActivity()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -236,8 +241,10 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         openItem = actionItem("Open Pocket", #selector(openPocket), enabled: false)
         copyItem = actionItem("Copy Phone URL", #selector(copyPhoneURL), enabled: false)
+        keepAwakeItem = actionItem("Keep Mac Awake", #selector(toggleKeepAwake), enabled: true)
         menu.addItem(openItem)
         menu.addItem(copyItem)
+        menu.addItem(keepAwakeItem)
         menu.addItem(.separator())
         quitItem = actionItem("Quit Codex Pocket", #selector(quitPocket), enabled: true)
         menu.addItem(quitItem)
@@ -269,6 +276,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         openItem.isEnabled = status != nil
         copyItem.isEnabled = !(status?.phoneUrls.isEmpty ?? true)
+        keepAwakeItem.state = sleepActivity == nil ? .off : .on
         quitItem.isEnabled = !quitting
         menu.update()
     }
@@ -298,6 +306,47 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let phoneURL = status?.phoneUrls.first else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(phoneURL, forType: .string)
+    }
+
+    @objc private func toggleKeepAwake() {
+        if sleepActivity == nil {
+            guard beginKeepAwakeActivity() else {
+                UserDefaults.standard.set(false, forKey: Self.keepAwakeDefaultsKey)
+                updateMenu()
+                showError("Codex Pocket could not keep this Mac awake.")
+                return
+            }
+            UserDefaults.standard.set(true, forKey: Self.keepAwakeDefaultsKey)
+        } else {
+            releaseKeepAwakeActivity()
+            UserDefaults.standard.set(false, forKey: Self.keepAwakeDefaultsKey)
+        }
+        updateMenu()
+    }
+
+    private func restoreKeepAwakePreference() {
+        guard UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey) else { return }
+        if !beginKeepAwakeActivity() {
+            UserDefaults.standard.set(false, forKey: Self.keepAwakeDefaultsKey)
+        }
+        updateMenu()
+    }
+
+    @discardableResult
+    private func beginKeepAwakeActivity() -> Bool {
+        guard sleepActivity == nil else { return true }
+        let activity = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled],
+            reason: "Codex Pocket remote access"
+        )
+        sleepActivity = activity
+        return sleepActivity != nil
+    }
+
+    private func releaseKeepAwakeActivity() {
+        guard let activity = sleepActivity else { return }
+        ProcessInfo.processInfo.endActivity(activity)
+        sleepActivity = nil
     }
 
     @objc private func quitPocket() {
