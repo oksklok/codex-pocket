@@ -71,7 +71,7 @@ const phaseLabels = {
   unavailable: "Unavailable",
   working: "Working",
   waiting_input: "Waiting for input",
-  waiting_permission: "Waiting for permission",
+  waiting_permission: "Waiting for approval",
   done: "Done",
   stopped: "Stopped",
   failed: "Failed",
@@ -158,7 +158,7 @@ function effortLabel(value) {
 }
 
 function accessLabel(access) {
-  return ({ ask: "Ask for approval", auto: "Approve for me", full: "Full access", custom: "Custom access", unavailable: "Unavailable" })[access?.mode] || "Unavailable";
+  return ({ ask: "Ask for approval", auto: "Approve for me", full: "Full access", custom: "Custom access", unavailable: "Access unavailable" })[access?.mode] || "Access unavailable";
 }
 
 function showLogin(message = "") {
@@ -221,7 +221,11 @@ function renderMachineSelector() {
   for (const machine of machines) {
     const option = document.createElement("option");
     option.value = machine.id;
-    option.textContent = machine.connected ? machine.name : `${machine.name} · Offline`;
+    option.textContent = machine.connected
+      ? machine.name
+      : machine.id === "local"
+        ? `${machine.name} · Runtime unavailable`
+        : `${machine.name} · Offline`;
     option.title = machine.ssh ? `SSH · ${machine.ssh}` : "Local Codex runtime";
     option.selected = machine.id === selectedId;
     elements.machineSelect.append(option);

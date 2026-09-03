@@ -1390,8 +1390,8 @@ class MachineRuntime {
       .filter(isUserFacingThread)
       .map((thread: any) => loadedThreadSummary(thread, String(thread.id), loadedIds.has(String(thread.id))))
       .sort((left, right) => {
-        const leftPriority = left.loaded || left.status.startsWith("active") ? 1 : 0;
-        const rightPriority = right.loaded || right.status.startsWith("active") ? 1 : 0;
+        const leftPriority = left.status.startsWith("active") ? 2 : left.loaded ? 1 : 0;
+        const rightPriority = right.status.startsWith("active") ? 2 : right.loaded ? 1 : 0;
         return rightPriority - leftPriority || right.updatedAt - left.updatedAt;
       });
     return this.loadedThreads;
@@ -2223,7 +2223,7 @@ class MachineRuntime {
 
   private upsertLiveMessage(message: PocketMessage): void {
     const index = this.state.liveMessages.findIndex((candidate) => candidate.id === message.id);
-    if (index >= 0) this.state.liveMessages[index] = message;
+    if (index >= 0) this.state.liveMessages[index] = { ...message, createdAt: this.state.liveMessages[index].createdAt };
     else this.state.liveMessages.push(message);
     this.state.liveMessages = this.state.liveMessages.slice(-MAX_LIVE_MESSAGES);
   }
