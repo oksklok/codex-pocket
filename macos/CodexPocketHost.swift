@@ -18,6 +18,7 @@ private struct QuotaStatus: Decodable {
     let available: Bool
     let stale: Bool
     let windows: [QuotaWindow]
+    let updatedAt: Double?
 }
 
 private struct HostStatus: Decodable {
@@ -28,6 +29,141 @@ private struct HostStatus: Decodable {
     let quota: QuotaStatus
 }
 
+private final class StatusMenuView: NSView {
+    private let statusLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        let title = NSTextField(labelWithString: "Codex Pocket")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.textColor = .secondaryLabelColor
+        title.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(title)
+        addSubview(statusLabel)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 260),
+            heightAnchor.constraint(equalToConstant: 32),
+            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor),
+            statusLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            statusLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        update(running: false)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func update(running: Bool) {
+        let dot = NSAttributedString(string: "● ", attributes: [.foregroundColor: running ? NSColor.systemGreen : NSColor.systemOrange])
+        let text = NSAttributedString(string: running ? "Running" : "Starting…", attributes: [.foregroundColor: NSColor.secondaryLabelColor])
+        let value = NSMutableAttributedString()
+        value.append(dot)
+        value.append(text)
+        statusLabel.attributedStringValue = value
+    }
+}
+
+private final class SectionMenuView: NSView {
+    init(title: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 260),
+            heightAnchor.constraint(equalToConstant: 24),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
+private final class QuotaMenuView: NSView {
+    private let windowLabel = NSTextField(labelWithString: "")
+    private let percentLabel = NSTextField(labelWithString: "")
+    private let progress = NSProgressIndicator()
+    private let resetLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        windowLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        percentLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        percentLabel.alignment = .right
+        resetLabel.font = .systemFont(ofSize: 10)
+        resetLabel.textColor = .secondaryLabelColor
+        progress.style = .bar
+        progress.isIndeterminate = false
+        progress.minValue = 0
+        progress.maxValue = 100
+        for view in [windowLabel, percentLabel, progress, resetLabel] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 260),
+            heightAnchor.constraint(equalToConstant: 52),
+            windowLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            windowLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            percentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            percentLabel.centerYAnchor.constraint(equalTo: windowLabel.centerYAnchor),
+            progress.leadingAnchor.constraint(equalTo: windowLabel.leadingAnchor),
+            progress.trailingAnchor.constraint(equalTo: percentLabel.trailingAnchor),
+            progress.topAnchor.constraint(equalTo: windowLabel.bottomAnchor, constant: 5),
+            progress.heightAnchor.constraint(equalToConstant: 4),
+            resetLabel.leadingAnchor.constraint(equalTo: windowLabel.leadingAnchor),
+            resetLabel.trailingAnchor.constraint(equalTo: percentLabel.trailingAnchor),
+            resetLabel.topAnchor.constraint(equalTo: progress.bottomAnchor, constant: 4),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func update(window: QuotaWindow, stale: Bool, reset: String?, updated: String?) {
+        let percent = min(100, max(0, Int(window.remainingPercent.rounded())))
+        windowLabel.stringValue = window.label
+        percentLabel.stringValue = "\(percent)% left"
+        progress.doubleValue = Double(percent)
+        if stale {
+            resetLabel.stringValue = updated.map { "Last known · updated \($0)" } ?? "Last known"
+            toolTip = reset.map { "Resets \($0)" }
+        } else {
+            resetLabel.stringValue = reset.map { "Resets \($0)" } ?? "Reset time unavailable"
+            toolTip = nil
+        }
+    }
+}
+
+private final class MessageMenuView: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    init(message: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        label.stringValue = message
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 260),
+            heightAnchor.constraint(equalToConstant: 28),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
 final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let fileManager = FileManager.default
     private lazy var projectURL = Bundle.main.bundleURL.deletingLastPathComponent()
@@ -36,6 +172,14 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var gatewayURL = projectURL.appendingPathComponent("gateway.ts")
     private lazy var logURL = projectURL.appendingPathComponent(".codex-pocket.log")
     private var statusItem: NSStatusItem!
+    private let menu = NSMenu()
+    private let headerView = StatusMenuView()
+    private let quotaViews = [QuotaMenuView(), QuotaMenuView()]
+    private let quotaItems = [NSMenuItem(), NSMenuItem()]
+    private let quotaUnavailableItem = NSMenuItem()
+    private var openItem: NSMenuItem!
+    private var copyItem: NSMenuItem!
+    private var quitItem: NSMenuItem!
     private var timer: Timer?
     private var status: HostStatus?
     private var gatewayProcess: Process?
@@ -55,9 +199,10 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? fileManager.removeItem(at: quitMarkerURL)
         installStatusItem()
         ensureGateway()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshStatus()
         }
+        RunLoop.main.add(timer!, forMode: .common)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -73,39 +218,59 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Codex Pocket")
         statusItem.button?.image?.isTemplate = true
         statusItem.button?.toolTip = "Codex Pocket"
-        rebuildMenu()
-    }
-
-    private func rebuildMenu() {
-        let menu = NSMenu()
         menu.delegate = self
         menu.autoenablesItems = false
-        menu.addItem(disabledItem("Codex Pocket"))
-        menu.addItem(disabledItem(status == nil ? "Starting…" : "Running"))
+        let headerItem = NSMenuItem()
+        headerItem.view = headerView
+        menu.addItem(headerItem)
         menu.addItem(.separator())
-        menu.addItem(disabledItem("Quota"))
-        if let quota = status?.quota, quota.available, !quota.windows.isEmpty {
-            for window in quota.windows {
-                let percent = Int(window.remainingPercent.rounded())
-                let reset = window.resetsAt.map { " · resets \(formatReset($0))" } ?? ""
-                menu.addItem(disabledItem("\(window.label)    \(percent)% left\(reset)"))
-            }
-            if quota.stale { menu.addItem(disabledItem("Last known values")) }
-        } else {
-            menu.addItem(disabledItem("Quota unavailable"))
+        let quotaHeadingItem = NSMenuItem()
+        quotaHeadingItem.view = SectionMenuView(title: "Quota")
+        menu.addItem(quotaHeadingItem)
+        for (item, view) in zip(quotaItems, quotaViews) {
+            item.view = view
+            menu.addItem(item)
         }
+        quotaUnavailableItem.view = MessageMenuView(message: "Quota unavailable")
+        menu.addItem(quotaUnavailableItem)
         menu.addItem(.separator())
-        menu.addItem(actionItem("Open Pocket", #selector(openPocket), enabled: status != nil))
-        menu.addItem(actionItem("Copy Phone URL", #selector(copyPhoneURL), enabled: !(status?.phoneUrls.isEmpty ?? true)))
+        openItem = actionItem("Open Pocket", #selector(openPocket), enabled: false)
+        copyItem = actionItem("Copy Phone URL", #selector(copyPhoneURL), enabled: false)
+        menu.addItem(openItem)
+        menu.addItem(copyItem)
         menu.addItem(.separator())
-        menu.addItem(actionItem("Quit Codex Pocket", #selector(quitPocket), enabled: !quitting))
+        quitItem = actionItem("Quit Codex Pocket", #selector(quitPocket), enabled: true)
+        menu.addItem(quitItem)
         statusItem.menu = menu
+        updateMenu()
     }
 
-    private func disabledItem(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
+    private func updateMenu() {
+        headerView.update(running: status != nil)
+        if let quota = status?.quota, quota.available, !quota.windows.isEmpty {
+            for (index, view) in quotaViews.enumerated() {
+                guard index < quota.windows.count else {
+                    quotaItems[index].isHidden = true
+                    continue
+                }
+                let window = quota.windows[index]
+                view.update(
+                    window: window,
+                    stale: quota.stale,
+                    reset: window.resetsAt.map(formatReset),
+                    updated: quota.updatedAt.map(formatReset)
+                )
+                quotaItems[index].isHidden = false
+            }
+            quotaUnavailableItem.isHidden = true
+        } else {
+            for item in quotaItems { item.isHidden = true }
+            quotaUnavailableItem.isHidden = false
+        }
+        openItem.isEnabled = status != nil
+        copyItem.isEnabled = !(status?.phoneUrls.isEmpty ?? true)
+        quitItem.isEnabled = !quitting
+        menu.update()
     }
 
     private func actionItem(_ title: String, _ action: Selector, enabled: Bool) -> NSMenuItem {
@@ -138,7 +303,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func quitPocket() {
         guard !quitting else { return }
         quitting = true
-        rebuildMenu()
+        updateMenu()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let accepted = self.requestGatewayShutdown()
@@ -149,7 +314,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 DispatchQueue.main.async {
                     self.quitting = false
-                    self.rebuildMenu()
+                    self.updateMenu()
                     self.showError("Codex Pocket could not stop its gateway. Check \(self.logURL.path) for details.")
                 }
             }
@@ -207,7 +372,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         NSApp.terminate(nil)
                     } else {
                         self.status = nil
-                        self.rebuildMenu()
+                        self.updateMenu()
                     }
                 }
             }
@@ -229,7 +394,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard value.running else { return }
         status = value
         consecutiveFailures = 0
-        rebuildMenu()
+        updateMenu()
     }
 
     private func failStartup(_ message: String) {

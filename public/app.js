@@ -10,23 +10,18 @@ const elements = {
   phase: document.querySelector("#phase-pill"),
   elapsed: document.querySelector("#elapsed"),
   quota: document.querySelector("#quota-chip"),
-  statusDetail: document.querySelector("#status-detail"),
   machine: document.querySelector("#machine"),
   machineSelect: document.querySelector("#machine-select"),
   project: document.querySelector("#project"),
-  thread: document.querySelector("#thread"),
   threadSelect: document.querySelector("#thread-select"),
-  threadCount: document.querySelector("#thread-count"),
-  model: document.querySelector("#model"),
-  accessProfile: document.querySelector("#access-profile"),
   modelSelect: document.querySelector("#model-select"),
   effortSelect: document.querySelector("#effort-select"),
   accessSelect: document.querySelector("#access-select"),
   historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
+  planPanel: document.querySelector("#plan-panel"),
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
-  planEmpty: document.querySelector("#plan-empty"),
   displayCommands: document.querySelector("#display-commands"),
   displayReasoning: document.querySelector("#display-reasoning"),
   displayCollaboration: document.querySelector("#display-collaboration"),
@@ -186,7 +181,7 @@ function showStopped() {
 async function apiFetch(url, options) {
   const response = await fetch(url, options);
   if (response.status === 401) {
-    showLogin("Enter the four-digit PIN to continue.");
+    showLogin("Session expired. Enter PIN.");
     throw new Error("Authentication required");
   }
   return response;
@@ -195,6 +190,20 @@ async function apiFetch(url, options) {
 function projectName(cwd) {
   const parts = String(cwd || "").split(/[\\/]/).filter(Boolean);
   return parts.at(-1) || "—";
+}
+
+function platformLabel(value) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized.includes("windows")) return "Windows";
+  if (normalized.includes("macos") || normalized.includes("darwin")) return "macOS";
+  if (normalized.includes("linux")) return "Linux";
+  const first = normalized.split(/[\/·]/).map((part) => part.trim()).find(Boolean);
+  return first ? first.replace(/\b\w/g, (letter) => letter.toUpperCase()) : "";
+}
+
+function setHistoryStatus(message = "") {
+  elements.historyStatus.textContent = message;
+  elements.historyStatus.hidden = !message;
 }
 
 function formatElapsed(milliseconds) {
@@ -221,17 +230,42 @@ function renderQuota() {
   const quota = state?.quota;
   const windows = quota?.available && Array.isArray(quota.windows) ? quota.windows : [];
   if (windows.length === 0) {
+    elements.quota.replaceChildren();
     elements.quota.textContent = "Quota —";
     elements.quota.title = "Quota unavailable";
+    elements.quota.setAttribute("aria-label", "Quota unavailable");
+    elements.quota.classList.remove("multiple", "stale");
     return;
   }
-  elements.quota.textContent = windows.map((window) => `${Math.round(window.remainingPercent)}%`).join(" · ");
+  elements.quota.replaceChildren();
+  elements.quota.classList.toggle("multiple", windows.length > 1);
+  elements.quota.classList.toggle("stale", Boolean(quota.stale));
+  for (const window of windows) {
+    const value = Math.min(100, Math.max(0, Math.round(window.remainingPercent)));
+    const item = document.createElement("span");
+    item.className = "quota-window";
+    const label = document.createElement("span");
+    label.className = "quota-label";
+    label.textContent = window.label;
+    const percent = document.createElement("span");
+    percent.className = "quota-percent";
+    percent.textContent = `${value}%`;
+    const track = document.createElement("span");
+    track.className = "quota-track";
+    const fill = document.createElement("span");
+    fill.className = "quota-fill";
+    fill.style.width = `${value}%`;
+    track.append(fill);
+    item.append(label, percent, track);
+    elements.quota.append(item);
+  }
   const source = quota.sourceMachine ? ` via ${quota.sourceMachine}` : "";
   const stale = quota.stale ? " · last known" : "";
   elements.quota.title = `${windows.map((window) => {
     const reset = window.resetsAt ? ` · resets ${formatQuotaReset(window.resetsAt)}` : "";
     return `${window.label}: ${Math.round(window.remainingPercent)}% left${reset}`;
   }).join("\n")}${source}${stale}`;
+  elements.quota.setAttribute("aria-label", elements.quota.title.replaceAll("\n", "; "));
 }
 
 function threadLabel(thread) {
@@ -256,7 +290,7 @@ function renderMachineSelector() {
       : machine.id === "local"
         ? `${machine.name} · Runtime unavailable`
         : `${machine.name} · Offline`;
-    option.title = machine.ssh ? `SSH · ${machine.ssh}` : "Local Codex runtime";
+    option.title = [machine.name, platformLabel(machine.platform)].filter(Boolean).join(" · ") || machine.name;
     option.selected = machine.id === selectedId;
     elements.machineSelect.append(option);
   }
@@ -291,9 +325,6 @@ function renderThreadSelector() {
         : "Machine unavailable";
     elements.threadSelect.append(option);
     elements.threadSelect.disabled = true;
-    elements.threadCount.textContent = state?.connected
-      ? "No saved tasks"
-      : state?.connectionError || (state?.machineId === "local" ? "Shared runtime unavailable" : "Machine unavailable");
     return;
   }
   for (const thread of loadedThreads) {
@@ -305,7 +336,6 @@ function renderThreadSelector() {
     elements.threadSelect.append(option);
   }
   elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt || !state?.connected;
-  elements.threadCount.textContent = `${loadedThreads.length} saved task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
 async function refreshLoadedThreads() {
@@ -329,7 +359,7 @@ async function refreshLoadedThreads() {
     if (requestedMachineId === state?.machineId) {
       loadedThreads = [];
       renderThreadSelector();
-      elements.threadCount.textContent = error.message;
+      setHistoryStatus(error.message);
     }
   } finally {
     if (threadsRequest === token) threadsRequest = null;
@@ -427,9 +457,9 @@ function renderAccessControl() {
 function renderPlan() {
   const plan = state?.plan || [];
   const complete = plan.filter((item) => item.status === "completed").length;
+  elements.planPanel.hidden = plan.length === 0;
   elements.planCount.textContent = `${complete}/${plan.length}`;
   elements.planList.replaceChildren();
-  elements.planEmpty.hidden = plan.length > 0;
   for (const item of plan) {
     const li = document.createElement("li");
     li.className = `plan-item ${item.status}`;
@@ -735,24 +765,9 @@ function renderState() {
   const startedAt = state.turn?.startedAt;
   const completedAt = state.turn?.completedAt;
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
-  elements.machine.textContent = [state.machine, state.transport, state.platform].filter(Boolean).join(" · ") || "—";
-  elements.project.textContent = projectName(state.thread?.cwd);
+  elements.machine.textContent = [state.machine, platformLabel(state.platform)].filter(Boolean).join(" · ") || "—";
+  elements.project.textContent = state.thread?.cwd || "—";
   elements.project.title = state.thread?.cwd || "";
-  elements.thread.textContent = state.thread?.name || "—";
-  elements.thread.title = state.thread?.id || "";
-  const effort = state.reasoningEffort && state.reasoningEffort !== "Not exposed" ? ` · ${effortLabel(state.reasoningEffort)}` : "";
-  elements.model.textContent = `${state.model || "Not exposed"}${effort}`;
-  elements.accessProfile.textContent = accessLabel(state.access);
-  const pending = state.pending?.[0];
-  elements.statusDetail.textContent = state.connectionError
-    || pending?.label
-    || state.activities?.findLast((activity) => activity.status === "running")?.label
-    || state.turn?.error
-    || (state.thread
-      ? `${state.thread.name} · ${state.threadStatus}`
-      : state.connected
-        ? "No saved tasks on this machine."
-        : state.machineId === "local" ? "Shared runtime unavailable." : "Machine unavailable.");
   renderMachineSelector();
   renderThreadSelector();
   renderModelControls();
@@ -883,7 +898,7 @@ function resetConversationState() {
   submittingInterrupt = false;
   sendingQueuedMessage = false;
   inputDrafts.clear();
-  elements.historyStatus.textContent = "";
+  setHistoryStatus();
 }
 
 function applySnapshot(next, loadChangedHistory = true) {
@@ -904,7 +919,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   const token = { epoch };
   let automaticCursor = null;
   historyRequest = token;
-  elements.historyStatus.textContent = cursor ? "Loading earlier…" : "Loading recent…";
+  setHistoryStatus(cursor ? "Loading earlier…" : "Loading recent…");
   try {
     const url = new URL("/api/history", location.origin);
     url.searchParams.set("limit", "2");
@@ -924,14 +939,13 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
       for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
     }
     nextCursor = page.nextCursor;
-    elements.historyStatus.textContent = nextCursor ? "Scroll up for earlier messages" : "Start of task";
+    setHistoryStatus();
     renderConversation({ preserveScroll, forceBottom });
     const transcriptFits = elements.conversation.scrollHeight <= elements.conversation.clientHeight + 1;
     if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {
     if (epoch !== historyEpoch || requestedMachineId !== state?.machineId || requestedThreadId !== state?.thread?.id) return;
-    elements.historyStatus.textContent = "History unavailable";
-    elements.statusDetail.textContent = error.message;
+    setHistoryStatus(error.message || "History unavailable");
   } finally {
     if (historyRequest === token) historyRequest = null;
   }
@@ -975,7 +989,7 @@ async function selectMachine(machineId) {
   };
   renderState();
   renderConversation({ forceBottom: true });
-  elements.statusDetail.textContent = `Switching to ${selected?.name || "machine"}…`;
+  setHistoryStatus(`Switching to ${selected?.name || "machine"}…`);
   try {
     const response = await apiFetch("/api/machine", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId }),
@@ -990,7 +1004,7 @@ async function selectMachine(machineId) {
     await loadHistory(null, historyEpoch, true);
   } catch (error) {
     switchingMachine = false;
-    elements.statusDetail.textContent = error.message;
+    setHistoryStatus(error.message);
     try {
       const response = await apiFetch("/api/state");
       applySnapshot(await response.json(), true);
@@ -1031,7 +1045,7 @@ async function selectThread(threadId) {
   };
   renderState();
   renderConversation({ forceBottom: true });
-  elements.statusDetail.textContent = selected?.loaded ? "Switching task…" : "Opening saved task…";
+  setHistoryStatus(selected?.loaded ? "Switching task…" : "Opening saved task…");
   try {
     const response = await apiFetch("/api/thread", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, threadId }),
@@ -1046,7 +1060,7 @@ async function selectThread(threadId) {
     await refreshLoadedThreads();
   } catch (error) {
     switchingThread = false;
-    elements.statusDetail.textContent = error.message;
+    setHistoryStatus(error.message);
     try {
       const response = await apiFetch("/api/state");
       applySnapshot(await response.json(), true);
@@ -1351,6 +1365,13 @@ function connectEvents() {
 }
 
 function isMobileInspector() { return matchMedia("(max-width: 860px)").matches; }
+function updateInspectorButtonState() {
+  const open = isMobileInspector()
+    ? elements.appShell.classList.contains("inspector-open")
+    : !elements.appShell.classList.contains("inspector-closed");
+  elements.inspectorButton.setAttribute("aria-expanded", String(open));
+  elements.inspectorButton.classList.toggle("active", open);
+}
 function openInspector() {
   if (isMobileInspector()) {
     elements.appShell.classList.add("inspector-open");
@@ -1358,13 +1379,13 @@ function openInspector() {
   } else {
     elements.appShell.classList.remove("inspector-closed");
   }
-  elements.inspectorButton.setAttribute("aria-expanded", "true");
+  updateInspectorButtonState();
 }
 function closeInspector() {
   elements.appShell.classList.remove("inspector-open");
   elements.inspectorBackdrop.hidden = true;
   if (!isMobileInspector()) elements.appShell.classList.add("inspector-closed");
-  elements.inspectorButton.setAttribute("aria-expanded", "false");
+  updateInspectorButtonState();
 }
 function toggleInspector() {
   const open = isMobileInspector()
@@ -1515,6 +1536,7 @@ elements.conversation.addEventListener("scroll", () => {
 elements.inspectorButton.addEventListener("click", toggleInspector);
 elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
+window.addEventListener("resize", updateInspectorButtonState);
 for (const [element, key] of [
   [elements.displayCommands, "commands"],
   [elements.displayReasoning, "reasoning"],
@@ -1669,12 +1691,13 @@ async function startApp() {
   elements.loginScreen.hidden = true;
   elements.stoppedScreen.hidden = true;
   elements.appShell.hidden = false;
+  if (isMobileInspector()) closeInspector(); else openInspector();
   try {
     const response = await apiFetch("/api/state");
     applySnapshot(await response.json(), false);
     await Promise.all([refreshMachines(), refreshLoadedThreads()]);
   } catch (error) {
-    elements.statusDetail.textContent = error.message;
+    setHistoryStatus(error.message);
     setConnection(false, true);
   }
   await loadHistory(null, historyEpoch, true);

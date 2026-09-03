@@ -74,7 +74,8 @@ h3 { margin: 0; font-size: .82rem; }
   width: min(100%, 390px); padding: 22px; border: 1px solid var(--line);
   border-radius: var(--radius); background: var(--surface); box-shadow: 0 18px 50px rgba(0,0,0,.3);
 }
-.login-copy, .stopped-card p:last-child { margin-bottom: 18px; color: var(--muted); font-size: .84rem; line-height: 1.5; }
+.login-prompt { margin: 7px 0 15px; color: var(--muted); font-size: .88rem; }
+.stopped-card p:last-child { margin-bottom: 18px; color: var(--muted); font-size: .84rem; line-height: 1.5; }
 .login-card label, .settings-card label { display: block; margin-bottom: 7px; color: var(--muted); font-size: .72rem; font-weight: 700; }
 .login-card input, .settings-card input, .composer textarea, select {
   width: 100%; border: 1px solid var(--line); border-radius: 9px;
@@ -102,7 +103,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .selection-controls { min-width: 0; display: grid; grid-template-columns: minmax(96px,.34fr) minmax(150px,1fr); gap: 7px; }
 .machine-control, .task-control { min-width: 0; }
 .machine-control select, .task-control select, .runtime-controls select {
-  min-height: 36px; padding: 6px 28px 6px 9px; font-size: .76rem; text-overflow: ellipsis;
+  min-height: 36px; padding: 6px 22px 6px 9px; font-size: .76rem; text-overflow: ellipsis;
 }
 .phase-row, .runtime-controls, .topbar-actions, .connection, .panel-heading, .inspector-heading, .settings-heading, .settings-actions, .composer-actions, .queue-banner {
   display: flex; align-items: center;
@@ -119,14 +120,22 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .phase-pill.failed { background: rgba(255,139,139,.13); color: var(--danger); }
 .elapsed { color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
 .quota-chip {
-  display: inline-flex; align-items: center; min-height: 26px; max-width: 150px; padding: 3px 8px;
+  display: inline-flex; align-items: center; width: 76px; min-height: 28px; padding: 3px 7px;
   overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px; color: var(--muted);
-  font-size: .67rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap;
+  font-size: .62rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap;
 }
+.quota-chip.multiple { width: 144px; }
+.quota-chip.stale { opacity: .72; }
+.quota-window { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1px 4px; }
+.quota-window + .quota-window { margin-left: 6px; padding-left: 6px; border-left: 1px solid var(--line-soft); }
+.quota-label { overflow: hidden; text-overflow: ellipsis; }
+.quota-percent { color: var(--text); font-weight: 750; }
+.quota-track { grid-column: 1 / -1; height: 2px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.quota-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent-strong); }
 .runtime-controls { position: relative; gap: 6px; min-width: 0; }
-.runtime-controls #model-select { width: 138px; }
-.runtime-controls #effort-select { width: 96px; }
-.runtime-controls #access-select { width: 130px; }
+.runtime-controls #model-select { width: auto; max-width: 128px; }
+.runtime-controls #effort-select { width: auto; max-width: 88px; }
+.runtime-controls #access-select { width: auto; max-width: 124px; }
 .runtime-controls #access-select.full-access {
   border-color: rgba(255,139,139,.48); background: rgba(255,139,139,.12); color: var(--danger); font-weight: 750;
 }
@@ -144,21 +153,25 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .primary-button { min-height: 36px; padding: 7px 12px; border-color: rgba(69,200,138,.4); background: rgba(69,200,138,.17); color: var(--accent); font-size: .78rem; }
 .danger-button { min-height: 36px; padding: 7px 12px; border-color: rgba(255,139,139,.35); color: var(--danger); background: rgba(255,139,139,.08); font-size: .78rem; }
 .icon-button { width: 34px; height: 34px; font-size: 1.2rem; }
+.details-toggle { display: grid; place-items: center; padding: 0; }
+.details-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.details-toggle.active { border-color: rgba(69,200,138,.42); background: rgba(69,200,138,.13); color: var(--accent); }
 .text-button { padding: 5px 8px; background: transparent; color: var(--muted); font-size: .7rem; }
 
 .workspace { min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) 310px; overflow: hidden; }
 .shell.inspector-closed .workspace { grid-template-columns: minmax(0,1fr) 0; }
-.chat-panel { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; background: var(--bg); }
-.transcript-head {
-  display: flex; justify-content: space-between; gap: 12px; min-height: 27px; padding: 7px 16px 5px;
-  color: var(--subtle); font-size: .63rem; white-space: nowrap; overflow: hidden;
+.chat-panel { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0,1fr) auto; background: var(--bg); }
+.history-status {
+  position: absolute; z-index: 2; top: 8px; left: 50%; max-width: calc(100% - 32px); padding: 5px 9px;
+  transform: translateX(-50%); overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px;
+  background: var(--surface); color: var(--muted); font-size: .63rem; text-overflow: ellipsis; white-space: nowrap;
 }
-.transcript-head span { overflow: hidden; text-overflow: ellipsis; }
-.history-status { text-align: right; }
 .conversation {
   min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
   padding: 10px max(16px, calc((100vw - 1050px) / 2)) 20px; scroll-behavior: auto;
+  scrollbar-width: none;
 }
+.conversation::-webkit-scrollbar { display: none; }
 .empty-state, .panel-empty { margin: 18px 0; color: var(--subtle); font-size: .76rem; text-align: center; }
 .message { width: min(100%, 760px); margin: 0 auto 16px; }
 .message.user { width: min(88%, 650px); margin-right: max(0px, calc((100% - 760px) / 2)); }
@@ -232,8 +245,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .inspector-heading { justify-content: space-between; min-height: 57px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); }
 .inspector-heading .icon-button { display: none; }
 .inspector-scroll { min-height: 0; overflow-y: auto; padding: 12px; }
-.status-detail { margin: 0 0 12px; color: var(--muted); font-size: .75rem; line-height: 1.45; overflow-wrap: anywhere; }
-.metadata { display: grid; gap: 7px; margin: 0 0 14px; }
+.metadata { display: grid; gap: 7px; margin: 0 0 10px; }
 .metadata div { min-width: 0; padding: 8px 9px; border-radius: 8px; background: var(--surface-strong); }
 .metadata dt { color: var(--subtle); font-size: .58rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 .metadata dd { margin: 3px 0 0; overflow: hidden; color: var(--text); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -288,9 +300,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .runtime-controls { grid-column: 2; grid-row: 2; }
   .topbar-actions { grid-column: 3; grid-row: 2; }
   .connection span:last-child { display: none; }
-  .runtime-controls #model-select { width: 112px; }
-  .runtime-controls #effort-select { width: 80px; }
-  .runtime-controls #access-select { width: 116px; }
   .topbar-actions .secondary-button { padding: 5px 8px; }
   .workspace { display: block; position: relative; }
   .chat-panel { height: 100%; }
@@ -322,12 +331,12 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 @media (max-width: 520px) {
   .phase-pill { max-width: 126px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .elapsed { display: none; }
-  .quota-chip { max-width: 108px; padding-inline: 7px; font-size: .64rem; }
+  .quota-chip { width: 72px; padding-inline: 6px; font-size: .6rem; }
+  .quota-chip.multiple { width: 126px; }
   .runtime-controls { gap: 4px; }
   .runtime-controls select { min-height: 33px; font-size: .69rem; }
   .topbar-actions { gap: 4px; }
   .connection { display: none; }
-  .transcript-head { padding-inline: 10px; }
   .message { margin-bottom: 14px; }
   .message.user { width: 94%; }
   .message-body { font-size: .84rem; line-height: 1.53; }
