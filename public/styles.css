@@ -86,6 +86,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .phase-pill.working { background: rgba(69,200,138,.12); color: var(--accent); }
 .phase-pill.waiting_permission, .phase-pill.waiting_input { background: rgba(240,195,106,.13); color: var(--warning); }
 .phase-pill.stopped { background: rgba(240,195,106,.13); color: var(--warning); }
+.phase-pill.unavailable { background: rgba(255,139,139,.13); color: var(--danger); }
 .phase-pill.failed { background: rgba(255,139,139,.13); color: var(--danger); }
 .elapsed { color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
 .stop-button {

@@ -66,6 +66,7 @@ const elements = {
 
 const phaseLabels = {
   connecting: "Connecting",
+  unavailable: "Unavailable",
   working: "Working",
   waiting_input: "Waiting for input",
   waiting_permission: "Waiting for permission",
@@ -194,22 +195,22 @@ function renderThreadSelector() {
   elements.threadSelect.replaceChildren();
   if (loadedThreads.length === 0) {
     const option = document.createElement("option");
-    option.textContent = state?.connected ? "No loaded tasks" : "Machine unavailable";
+    option.textContent = state?.connected ? "No saved tasks" : "Machine unavailable";
     elements.threadSelect.append(option);
     elements.threadSelect.disabled = true;
-    elements.threadCount.textContent = state?.connected ? "No loaded tasks" : state?.connectionError || "Machine unavailable";
+    elements.threadCount.textContent = state?.connected ? "No saved tasks" : state?.connectionError || "Machine unavailable";
     return;
   }
   for (const thread of loadedThreads) {
     const option = document.createElement("option");
     option.value = thread.id;
-    option.textContent = threadLabel(thread);
+    option.textContent = `${threadLabel(thread)}${thread.loaded ? "" : " · Recent"}`;
     option.title = thread.cwd || thread.id;
     option.selected = thread.id === selectedId;
     elements.threadSelect.append(option);
   }
   elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt || !state?.connected;
-  elements.threadCount.textContent = `${loadedThreads.length} loaded task${loadedThreads.length === 1 ? "" : "s"}`;
+  elements.threadCount.textContent = `${loadedThreads.length} saved task${loadedThreads.length === 1 ? "" : "s"}`;
 }
 
 async function refreshLoadedThreads() {
@@ -221,7 +222,7 @@ async function refreshLoadedThreads() {
     url.searchParams.set("machineId", requestedMachineId);
     const response = await apiFetch(url);
     const value = await response.json();
-    if (!response.ok) throw new Error(value.error || "Loaded tasks unavailable");
+    if (!response.ok) throw new Error(value.error || "Saved tasks unavailable");
     if (requestedMachineId !== state?.machineId) return;
     loadedThreads = Array.isArray(value.threads) ? value.threads : [];
     renderThreadSelector();
@@ -632,7 +633,7 @@ function renderState() {
     selectedThread.project = projectName(selectedThread.cwd);
     selectedThread.status = state.threadStatus || selectedThread.status;
   }
-  setConnection(Boolean(state.connected), state.phase === "failed");
+  setConnection(Boolean(state.connected), state.phase === "failed" || state.phase === "unavailable");
   const phase = state.phase || "connecting";
   elements.phase.textContent = phaseLabels[phase] || phase;
   elements.phase.className = `phase-pill ${phase}`;
@@ -654,7 +655,7 @@ function renderState() {
     || pending?.label
     || state.activities?.findLast((activity) => activity.status === "running")?.label
     || state.turn?.error
-    || (state.thread ? `${state.thread.name} · ${state.threadStatus}` : state.connected ? "No loaded tasks on this machine." : "Machine unavailable.");
+    || (state.thread ? `${state.thread.name} · ${state.threadStatus}` : state.connected ? "No saved tasks on this machine." : "Machine unavailable.");
   renderMachineSelector();
   renderThreadSelector();
   renderModelControls();
@@ -887,7 +888,7 @@ async function selectThread(threadId) {
   };
   renderState();
   renderConversation({ forceBottom: true });
-  elements.statusDetail.textContent = "Switching loaded task…";
+  elements.statusDetail.textContent = selected?.loaded ? "Switching task…" : "Opening saved task…";
   try {
     const response = await apiFetch("/api/thread", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, threadId }),

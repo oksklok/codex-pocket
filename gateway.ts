@@ -5,7 +5,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer, isIP } from "node:net";
-import { networkInterfaces } from "node:os";
+import { hostname, networkInterfaces } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -128,6 +128,8 @@ type LoadedThreadSummary = {
   cwd: string;
   project: string;
   status: string;
+  loaded: boolean;
+  updatedAt: number;
 };
 type PocketModel = {
   id: string;
@@ -164,7 +166,7 @@ type PocketState = {
   queuedMessage: QueuedMessage | null;
   stoppingTurnId: string | null;
   threadStatus: string;
-  phase: "connecting" | "working" | "waiting_input" | "waiting_permission" | "done" | "stopped" | "failed";
+  phase: "connecting" | "unavailable" | "working" | "waiting_input" | "waiting_permission" | "done" | "stopped" | "failed";
   turn: null | {
     id: string;
     status: string;
@@ -586,17 +588,31 @@ function statusText(status: any): string {
   return `${status.type ?? "unknown"}${flags}`;
 }
 
-function loadedThreadSummary(thread: any, id: string): LoadedThreadSummary {
+function loadedThreadSummary(thread: any, id: string, loaded: boolean): LoadedThreadSummary {
   const cwd = String(thread?.cwd ?? "");
   const preview = compact(thread?.preview, 180);
+  const project = cwd.split(/[\\/]/).filter(Boolean).at(-1) || "Unknown project";
   return {
     id,
     name: compact(thread?.name, 180) || preview || "Untitled task",
     preview,
     cwd,
-    project: basename(cwd) || "Unknown project",
+    project,
     status: statusText(thread?.status),
+    loaded,
+    updatedAt: numberTime(thread?.recencyAt ?? thread?.updatedAt ?? thread?.createdAt, 0),
   };
+}
+
+function isUserFacingThread(thread: any): boolean {
+  if (!thread || typeof thread !== "object" || thread.ephemeral === true || thread.parentThreadId) return false;
+  if (thread.source && typeof thread.source === "object" && "subAgent" in thread.source) return false;
+  const sourceKind = String(thread.threadSource ?? thread.source ?? "unknown");
+  return !sourceKind.toLowerCase().includes("subagent");
+}
+
+function localMachineName(): string {
+  return compact(hostname().replace(/\.local$/i, ""), 80) || "Local machine";
 }
 
 function readText(value: any): string {
@@ -1009,6 +1025,7 @@ class MachineRuntime {
   private pendingServerRequests = new Map<string, PendingServerRequest>();
   private settingsRevision = 0;
   private settingsWaiters = new Set<() => void>();
+  private technicalConnectionError: string | null = null;
 
   constructor(options: Options, definition: MachineDefinition) {
     this.options = options;
@@ -1090,6 +1107,7 @@ class MachineRuntime {
   diagnostics(): JsonObject {
     return JSON.parse(JSON.stringify({
       ...this.state.metrics,
+      technicalConnectionError: this.technicalConnectionError,
       access: this.state.access,
       permissionProfiles: this.permissionProfiles,
     }));
@@ -1247,6 +1265,7 @@ class MachineRuntime {
       rpc.notify("initialized");
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
+      this.technicalConnectionError = null;
       await Promise.all([this.loadModels(), this.loadAccessConstraints()]);
       const loadedThreads = await this.refreshLoadedThreads();
       const active = loadedThreads.find((thread) => thread.status.startsWith("active"));
@@ -1276,14 +1295,15 @@ class MachineRuntime {
       rpc.close();
       if (this.rpc === rpc) this.rpc = null;
       const technicalError = error instanceof Error ? error.message : String(error);
+      this.technicalConnectionError = technicalError;
       this.state.connectionError = this.definition.ssh
         ? `Could not connect to ${this.definition.name}. Make sure “ssh ${this.definition.ssh}” works from this Mac.`
-        : technicalError;
+        : "Shared Codex runtime unavailable. Pocket will retry automatically.";
       this.loadedThreads = [];
       this.resetThreadState();
       this.state.thread = null;
       this.state.threadStatus = "disconnected";
-      this.state.phase = "failed";
+      this.state.phase = "unavailable";
       this.broadcast("snapshot", this.snapshot());
       console.error(`${this.definition.name} attach failed: ${technicalError}`);
       this.scheduleReconnect();
@@ -1294,14 +1314,15 @@ class MachineRuntime {
     if (this.shuttingDown) return;
     this.rpc = null;
     this.state.connected = false;
+    this.technicalConnectionError = error?.message ?? "app-server connection closed";
     this.state.connectionError = this.definition.ssh
       ? `Connection to ${this.definition.name} dropped. Pocket will retry automatically.`
-      : error?.message ?? "app-server connection closed";
+      : "Shared Codex runtime unavailable. Pocket will retry automatically.";
     this.loadedThreads = [];
     this.resetThreadState();
     this.state.thread = null;
     this.state.threadStatus = "disconnected";
-    this.state.phase = "failed";
+    this.state.phase = "unavailable";
     this.broadcast("snapshot", this.snapshot());
     this.scheduleReconnect();
   }
@@ -1325,14 +1346,16 @@ class MachineRuntime {
       this.rpc.request("thread/loaded/list", { limit: 100 }),
     ]);
     const threads = Array.isArray(listed?.data) ? listed.data : [];
-    const byId = new Map(threads.map((thread: any) => [String(thread.id), thread]));
-    const loadedIds: string[] = Array.isArray(loaded?.data) ? loaded.data.map(String) : [];
-    this.loadedThreads = loadedIds
-      .map((id) => loadedThreadSummary(byId.get(id), id))
+    const loadedIds = new Set<string>(Array.isArray(loaded?.data)
+      ? loaded.data.map((value: any) => String(value?.id ?? value))
+      : []);
+    this.loadedThreads = threads
+      .filter(isUserFacingThread)
+      .map((thread: any) => loadedThreadSummary(thread, String(thread.id), loadedIds.has(String(thread.id))))
       .sort((left, right) => {
-        const leftIndex = threads.findIndex((thread: any) => String(thread.id) === left.id);
-        const rightIndex = threads.findIndex((thread: any) => String(thread.id) === right.id);
-        return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+        const leftPriority = left.loaded || left.status.startsWith("active") ? 1 : 0;
+        const rightPriority = right.loaded || right.status.startsWith("active") ? 1 : 0;
+        return rightPriority - leftPriority || right.updatedAt - left.updatedAt;
       });
     return this.loadedThreads;
   }
@@ -1398,9 +1421,9 @@ class MachineRuntime {
   private async selectThreadNow(threadId: string): Promise<JsonObject> {
     const requestedId = String(threadId ?? "").trim();
     if (!requestedId) throw new Error("threadId is required");
-    const loadedThreads = await this.refreshLoadedThreads();
-    if (!loadedThreads.some((thread) => thread.id === requestedId)) {
-      throw new Error("selected thread is not currently loaded");
+    const availableThreads = await this.refreshLoadedThreads();
+    if (!availableThreads.some((thread) => thread.id === requestedId)) {
+      throw new Error("selected task is not available in this Codex runtime");
     }
     if (this.state.thread?.id === requestedId) return this.snapshot();
     await this.attachLoadedThread(requestedId, true);
@@ -1736,8 +1759,16 @@ class MachineRuntime {
   private async attachLoadedThread(threadId: string, broadcastReset: boolean): Promise<void> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const summary = this.loadedThreads.find((thread) => thread.id === threadId);
-    if (!summary) throw new Error("selected thread is not currently loaded");
+    if (!summary) throw new Error("selected task is not available in this Codex runtime");
     const changed = this.state.thread?.id !== threadId;
+    const previousThreadId = changed ? this.state.thread?.id : null;
+    if (previousThreadId) {
+      try {
+        await this.rpc.request("thread/unsubscribe", { threadId: previousThreadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS);
+      } catch (error) {
+        console.warn(`${this.definition.name}: previous task unsubscribe skipped: ${compact(error, 180)}`);
+      }
+    }
     if (changed) this.resetThreadState();
     this.state.thread = {
       id: summary.id,
@@ -2169,7 +2200,7 @@ class MachineRuntime {
   }
 
   private computePhase(): PocketState["phase"] {
-    if (this.state.connectionError && !this.state.connected) return "failed";
+    if (this.state.connectionError && !this.state.connected) return "unavailable";
     if (this.state.pending.some((request) => request.kind === "permission")) return "waiting_permission";
     if (this.state.pending.some((request) => request.kind === "input" && request.blocking !== false)) return "waiting_input";
     if (this.state.turn?.error || this.state.turn?.status === "failed") return "failed";
@@ -2228,7 +2259,7 @@ class PocketGateway {
 
   constructor(options: Options) {
     const definitions: MachineDefinition[] = [
-      { id: "local", name: "This Mac", ssh: null },
+      { id: "local", name: localMachineName(), ssh: null },
       ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh })),
     ];
     for (const definition of definitions) {
