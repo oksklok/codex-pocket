@@ -952,8 +952,14 @@ async function loadActivityDetail(activity, force = false) {
 
 function refreshExpandedDetailOnTerminal(previous, activity) {
   const detail = activityDetails.get(activity.id);
-  if (previous?.status !== "running" || !["completed", "failed", "interrupted"].includes(activity.status)
-    || !detail?.expanded || terminalDetailRefreshes.has(activity.id)) return;
+  if (previous?.status !== "running" || !["completed", "failed", "interrupted"].includes(activity.status) || !detail) return;
+  if (!detail.expanded) {
+    activityDetailVersions.set(activity.id, (activityDetailVersions.get(activity.id) || 0) + 1);
+    activityDetailRequests.delete(activity.id);
+    activityDetails.delete(activity.id);
+    return;
+  }
+  if (terminalDetailRefreshes.has(activity.id)) return;
   terminalDetailRefreshes.add(activity.id);
   loadActivityDetail(activity, true);
 }
