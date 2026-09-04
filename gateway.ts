@@ -1569,6 +1569,7 @@ class MachineRuntime {
       name: this.definition.name,
       ssh: this.definition.ssh,
       transport: this.state.transport,
+      platform: this.state.platform,
       connected: this.state.connected,
       connectionError: this.state.connectionError,
       loadedTaskCount: this.loadedThreads.length,
@@ -2848,6 +2849,80 @@ class PocketGateway {
     }));
   }
 
+  async navigationCatalog(): Promise<JsonObject> {
+    const machines = await Promise.all([...this.runtimes.entries()].map(async ([id, runtime]) => {
+      const summary = runtime.machineSummary();
+      let tasks: LoadedThreadSummary[] = [];
+      if (summary.connected) {
+        try {
+          tasks = await runtime.listLoadedThreads();
+        } catch {
+          // A reconnect can race this on-demand refresh. Keep the machine visible as unavailable.
+        }
+      }
+      return {
+        id,
+        name: summary.name,
+        platform: summary.platform,
+        connected: Boolean(runtime.state.connected),
+        selected: id === this.selectedMachineId,
+        tasks: tasks.map((task) => {
+          const attached = task.id === runtime.state.thread?.id;
+          return {
+            id: task.id,
+            name: task.name,
+            preview: task.preview,
+            cwd: task.cwd,
+            project: task.project,
+            loaded: task.loaded,
+            status: attached ? runtime.state.threadStatus : task.status,
+            phase: attached ? runtime.state.phase : null,
+            updatedAt: task.updatedAt,
+            selected: id === this.selectedMachineId && task.id === runtime.state.thread?.id,
+          };
+        }),
+      };
+    }));
+    return {
+      selectedMachineId: this.selectedMachineId,
+      selectedThreadId: this.state.thread?.id ?? null,
+      machines,
+    };
+  }
+
+  selectDestination(
+    machineId: unknown,
+    threadId: unknown,
+    expectedMachineId: unknown,
+    expectedThreadId: unknown,
+  ): Promise<JsonObject> {
+    return this.enqueue(async () => {
+      const requestedMachineId = String(machineId ?? "").trim();
+      const requestedThreadId = String(threadId ?? "").trim();
+      const expectedMachine = String(expectedMachineId ?? "").trim();
+      const expectedThread = String(expectedThreadId ?? "").trim();
+      if (!requestedMachineId || !requestedThreadId) throw new Error("machineId and threadId are required");
+      if (expectedMachine !== this.selectedMachineId || expectedThread !== String(this.state.thread?.id ?? "")) {
+        throw new Error("selected task changed; refresh and try again");
+      }
+      const next = this.runtimes.get(requestedMachineId);
+      if (!next) throw new Error("selected machine is not configured");
+      if (!next.state.connected) throw new Error("selected machine is unavailable");
+
+      await next.selectThread(requestedThreadId);
+      if (requestedMachineId !== this.selectedMachineId) {
+        const previous = this.selected();
+        for (const response of this.subscribers) previous.removeSubscriber(response);
+        this.selectedMachineId = requestedMachineId;
+        for (const response of this.subscribers) next.addSubscriber(response, false);
+        this.refreshQuotaSource();
+        const snapshot = this.snapshot();
+        for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
+      }
+      return this.snapshot();
+    });
+  }
+
   selectMachine(machineId: unknown): Promise<JsonObject> {
     return this.enqueue(async () => {
       const requestedId = String(machineId ?? "").trim();
@@ -3325,6 +3400,20 @@ async function handleRequest(
     }
     return;
   }
+  if (method === "POST" && url.pathname === "/api/navigation/select") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await gateway.selectDestination(
+        body.machineId,
+        body.threadId,
+        body.expectedMachineId,
+        body.expectedThreadId,
+      ), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
   if (method === "POST" && url.pathname === "/api/machine") {
     try {
       const body = await readJsonBody(request);
@@ -3361,6 +3450,10 @@ async function handleRequest(
   }
   if (url.pathname === "/api/machines") {
     sendJson(response, 200, { machines: gateway.listMachines() }, gateway);
+    return;
+  }
+  if (url.pathname === "/api/navigation") {
+    sendJson(response, 200, await gateway.navigationCatalog(), gateway);
     return;
   }
   if (url.pathname === "/api/history") {

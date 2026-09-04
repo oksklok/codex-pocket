@@ -11,9 +11,14 @@ const elements = {
   elapsed: document.querySelector("#elapsed"),
   quota: document.querySelector("#quota-chip"),
   machine: document.querySelector("#machine"),
-  machineSelect: document.querySelector("#machine-select"),
   project: document.querySelector("#project"),
-  threadSelect: document.querySelector("#thread-select"),
+  destinationButton: document.querySelector("#destination-button"),
+  destinationLabel: document.querySelector("#destination-label"),
+  destinationSwitcher: document.querySelector("#destination-switcher"),
+  destinationBackdrop: document.querySelector("#destination-backdrop"),
+  destinationSearch: document.querySelector("#destination-search"),
+  destinationClose: document.querySelector("#destination-close"),
+  destinationList: document.querySelector("#destination-list"),
   modelSelect: document.querySelector("#model-select"),
   effortSelect: document.querySelector("#effort-select"),
   accessSelect: document.querySelector("#access-select"),
@@ -107,6 +112,10 @@ let historyEpoch = 0;
 let historyRequest = null;
 let threadsRequest = null;
 let machinesRequest = null;
+let navigationCatalog = null;
+let navigationRequest = null;
+let destinationSelection = null;
+let destinationError = "";
 let switchingThread = false;
 let switchingMachine = false;
 let submittingMessage = false;
@@ -311,22 +320,15 @@ function setConnection(connected, failed = false) {
   elements.connectionLabel.textContent = connected ? "Live" : failed ? "Disconnected" : "Connecting";
 }
 
-function renderMachineSelector() {
-  const selectedId = state?.machineId || "local";
-  elements.machineSelect.replaceChildren();
-  for (const machine of machines) {
-    const option = document.createElement("option");
-    option.value = machine.id;
-    option.textContent = machine.connected
-      ? machine.name
-      : machine.id === "local"
-        ? `${machine.name} · Runtime unavailable`
-        : `${machine.name} · Offline`;
-    option.title = [machine.name, platformLabel(machine.platform)].filter(Boolean).join(" · ") || machine.name;
-    option.selected = machine.id === selectedId;
-    elements.machineSelect.append(option);
-  }
-  elements.machineSelect.disabled = machines.length < 2 || switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
+function renderDestinationButton() {
+  const machine = machines.find((candidate) => candidate.id === state?.machineId);
+  const machineName = machine?.name || state?.machine || "Machine";
+  const selectedThread = loadedThreads.find((thread) => thread.id === state?.thread?.id) || state?.thread;
+  const taskName = selectedThread ? threadLabel(selectedThread) : state?.connected ? "No saved task" : "Unavailable";
+  elements.destinationLabel.textContent = `${machineName} / ${taskName}`;
+  elements.destinationButton.title = `${machineName} / ${taskName}`;
+  elements.destinationButton.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel
+    || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
 }
 
 async function refreshMachines() {
@@ -336,7 +338,7 @@ async function refreshMachines() {
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || "Machines unavailable");
     machines = Array.isArray(value.machines) ? value.machines : [];
-    renderMachineSelector();
+    renderDestinationButton();
   })();
   try {
     await machinesRequest;
@@ -345,29 +347,93 @@ async function refreshMachines() {
   }
 }
 
-function renderThreadSelector() {
-  const selectedId = state?.thread?.id || "";
-  elements.threadSelect.replaceChildren();
-  if (loadedThreads.length === 0) {
-    const option = document.createElement("option");
-    option.textContent = state?.connected
-      ? "No saved tasks"
-      : state?.machineId === "local"
-        ? "Shared runtime unavailable"
-        : "Machine unavailable";
-    elements.threadSelect.append(option);
-    elements.threadSelect.disabled = true;
+function destinationTaskStatus(machine, task) {
+  const current = machine.id === state?.machineId && task.id === state?.thread?.id;
+  const phase = current ? state?.phase : task.phase;
+  if (phase === "waiting_permission" || phase === "waiting_input") return "Waiting";
+  if (phase === "failed" || /failed|error/i.test(String(task.status || ""))) return "Failed";
+  if (phase === "working" || String(task.status || "").startsWith("active")) return "Working";
+  return "";
+}
+
+function renderDestinationSwitcher() {
+  if (elements.destinationSwitcher.hidden) return;
+  elements.destinationList.replaceChildren();
+  const query = elements.destinationSearch.value.trim().toLowerCase();
+  const catalogMachines = Array.isArray(navigationCatalog?.machines) ? navigationCatalog.machines : [];
+  if (navigationRequest && !catalogMachines.length) {
+    const loading = document.createElement("p");
+    loading.className = "destination-empty";
+    loading.textContent = "Loading tasks…";
+    elements.destinationList.append(loading);
     return;
   }
-  for (const thread of loadedThreads) {
-    const option = document.createElement("option");
-    option.value = thread.id;
-    option.textContent = `${threadLabel(thread)}${thread.loaded ? "" : " · Recent"}`;
-    option.title = thread.cwd || thread.id;
-    option.selected = thread.id === selectedId;
-    elements.threadSelect.append(option);
+  for (const machine of catalogMachines) {
+    const machineMatches = `${machine.name || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
+    const tasks = (Array.isArray(machine.tasks) ? machine.tasks : []).filter((task) => {
+      if (!query || machineMatches) return true;
+      return `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
+    });
+    if (query && !machineMatches && !tasks.length) continue;
+
+    const group = document.createElement("section");
+    group.className = `destination-group ${machine.connected ? "" : "offline"}`;
+    const heading = document.createElement("div");
+    heading.className = "destination-group-heading";
+    const name = document.createElement("strong");
+    name.textContent = machine.name || "Machine";
+    heading.append(name);
+    if (!machine.connected) {
+      const offline = document.createElement("span");
+      offline.textContent = "Offline";
+      heading.append(offline);
+    }
+    group.append(heading);
+
+    for (const task of tasks) {
+      const selected = machine.id === state?.machineId && task.id === state?.thread?.id;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `destination-task ${selected ? "selected" : ""}`;
+      row.disabled = !machine.connected || Boolean(destinationSelection);
+      if (selected) row.setAttribute("aria-current", "true");
+      row.title = task.cwd || task.id;
+      const check = document.createElement("span");
+      check.className = "destination-check";
+      check.textContent = selected ? "✓" : "";
+      const label = document.createElement("span");
+      label.className = "destination-task-label";
+      label.textContent = threadLabel(task);
+      const status = document.createElement("span");
+      status.className = "destination-task-status";
+      status.textContent = destinationSelection?.machineId === machine.id && destinationSelection?.threadId === task.id
+        ? "Opening…"
+        : destinationTaskStatus(machine, task);
+      row.append(check, label, status);
+      row.addEventListener("click", () => selectDestination(machine.id, task.id));
+      group.append(row);
+    }
+
+    if (!tasks.length) {
+      const empty = document.createElement("p");
+      empty.className = "destination-group-empty";
+      empty.textContent = machine.connected ? (query ? "No matching saved tasks" : "No saved tasks") : "Machine unavailable";
+      group.append(empty);
+    }
+    elements.destinationList.append(group);
   }
-  elements.threadSelect.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt || !state?.connected;
+  if (!catalogMachines.length || (query && !elements.destinationList.childElementCount)) {
+    const empty = document.createElement("p");
+    empty.className = "destination-empty";
+    empty.textContent = query ? "No matching tasks" : "Task catalog unavailable";
+    elements.destinationList.append(empty);
+  }
+  if (destinationError) {
+    const error = document.createElement("p");
+    error.className = "destination-error";
+    error.textContent = destinationError;
+    elements.destinationList.prepend(error);
+  }
 }
 
 async function refreshLoadedThreads() {
@@ -382,7 +448,7 @@ async function refreshLoadedThreads() {
     if (!response.ok) throw new Error(value.error || "Saved tasks unavailable");
     if (requestedMachineId !== state?.machineId) return;
     loadedThreads = Array.isArray(value.threads) ? value.threads : [];
-    renderThreadSelector();
+    renderDestinationButton();
   })();
   threadsRequest = token;
   try {
@@ -390,12 +456,52 @@ async function refreshLoadedThreads() {
   } catch (error) {
     if (requestedMachineId === state?.machineId) {
       loadedThreads = [];
-      renderThreadSelector();
+      renderDestinationButton();
       setHistoryStatus(error.message);
     }
   } finally {
     if (threadsRequest === token) threadsRequest = null;
   }
+}
+
+async function refreshNavigationCatalog() {
+  if (navigationRequest) return navigationRequest;
+  navigationRequest = (async () => {
+    const response = await apiFetch("/api/navigation");
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error || "Task catalog unavailable");
+    navigationCatalog = value;
+    destinationError = "";
+  })();
+  try {
+    await navigationRequest;
+  } catch (error) {
+    destinationError = error.message || "Task catalog unavailable";
+  } finally {
+    navigationRequest = null;
+    renderDestinationSwitcher();
+  }
+}
+
+function closeDestinationSwitcher() {
+  if (destinationSelection) return;
+  elements.destinationSwitcher.hidden = true;
+  elements.destinationBackdrop.hidden = true;
+  elements.destinationButton.setAttribute("aria-expanded", "false");
+  document.body.classList.remove("destination-open");
+  elements.destinationSearch.value = "";
+  destinationError = "";
+}
+
+function openDestinationSwitcher() {
+  if (switchingMachine || switchingThread) return;
+  elements.destinationSwitcher.hidden = false;
+  elements.destinationBackdrop.hidden = false;
+  elements.destinationButton.setAttribute("aria-expanded", "true");
+  document.body.classList.add("destination-open");
+  refreshNavigationCatalog();
+  renderDestinationSwitcher();
+  elements.destinationSearch.focus();
 }
 
 function currentCatalogModel(modelName = state?.model) {
@@ -802,8 +908,8 @@ function renderState() {
   elements.machine.textContent = [state.machine, platformLabel(state.platform)].filter(Boolean).join(" · ") || "—";
   elements.project.textContent = state.thread?.cwd || "—";
   elements.project.title = state.thread?.cwd || "";
-  renderMachineSelector();
-  renderThreadSelector();
+  renderDestinationButton();
+  renderDestinationSwitcher();
   renderModelControls();
   renderAccessControl();
   renderPlan();
@@ -1199,121 +1305,58 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   }
 }
 
-async function selectMachine(machineId) {
-  if (!machineId || machineId === state?.machineId || switchingMachine || switchingThread) return;
-  const selected = machines.find((machine) => machine.id === machineId);
-  switchingMachine = true;
-  composerError = "";
-  composerNotice = "";
-  source?.close();
-  source = null;
-  resetConversationState();
-  loadedThreads = [];
-  threadsRequest = null;
-  state = {
-    ...(state || {}),
-    machineId,
-    machine: selected?.name || "Switching machine",
-    transport: selected?.transport || (selected?.ssh ? `SSH · ${selected.ssh}` : "Local"),
-    connected: false,
-    connectionError: null,
-    thread: null,
-    threadStatus: "connecting",
-    phase: "connecting",
-    turn: null,
-    plan: [],
-    activities: [],
-    pending: [],
-    liveMessages: [],
-    queuedMessage: null,
-    stoppingTurnId: null,
-    model: "Not exposed",
-    reasoningEffort: "Not exposed",
-    models: [],
-    access: null,
-  };
-  renderState();
-  renderConversation({ forceBottom: true });
-  setHistoryStatus(`Switching to ${selected?.name || "machine"}…`);
-  try {
-    const response = await apiFetch("/api/machine", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId }),
-    });
-    const snapshot = await response.json();
-    if (!response.ok) throw new Error(snapshot.error || "Could not switch machines");
-    applySnapshot(snapshot, false);
-    switchingMachine = false;
-    await Promise.all([refreshMachines(), refreshLoadedThreads()]);
-    renderState();
-    connectEvents();
-    await loadHistory(null, historyEpoch, true);
-  } catch (error) {
-    switchingMachine = false;
-    setHistoryStatus(error.message);
-    try {
-      const response = await apiFetch("/api/state");
-      applySnapshot(await response.json(), true);
-      await Promise.all([refreshMachines(), refreshLoadedThreads()]);
-    } catch {
-      setConnection(false, true);
-    }
-    renderState();
-    connectEvents();
+async function selectDestination(machineId, threadId) {
+  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection) return;
+  if (machineId === state?.machineId && threadId === state?.thread?.id) {
+    closeDestinationSwitcher();
+    return;
   }
-}
-
-async function selectThread(threadId) {
-  if (!threadId || threadId === state?.thread?.id || switchingMachine || switchingThread) return;
-  const selected = loadedThreads.find((thread) => thread.id === threadId);
+  const expectedMachineId = state?.machineId || "";
+  const expectedThreadId = state?.thread?.id || "";
+  const token = { machineId, threadId, expectedMachineId, expectedThreadId };
+  destinationSelection = token;
+  switchingMachine = machineId !== expectedMachineId;
   switchingThread = true;
   composerError = "";
   composerNotice = "";
-  source?.close();
-  source = null;
-  resetConversationState();
-  state = {
-    ...(state || {}),
-    connectionError: null,
-    thread: { id: threadId, name: selected?.name || selected?.preview || "Switching task", cwd: selected?.cwd || "", source: "unknown" },
-    threadStatus: selected?.status || "unknown",
-    phase: "connecting",
-    turn: null,
-    plan: [],
-    activities: [],
-    pending: [],
-    liveMessages: [],
-    queuedMessage: null,
-    stoppingTurnId: null,
-    model: "Not exposed",
-    reasoningEffort: "Not exposed",
-    access: null,
-  };
   renderState();
-  renderConversation({ forceBottom: true });
-  setHistoryStatus(selected?.loaded ? "Switching task…" : "Opening saved task…");
+  renderDestinationSwitcher();
   try {
-    const response = await apiFetch("/api/thread", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, threadId }),
+    const response = await apiFetch("/api/navigation/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ machineId, threadId, expectedMachineId, expectedThreadId }),
     });
     const snapshot = await response.json();
     if (!response.ok) throw new Error(snapshot.error || "Could not switch tasks");
+    if (destinationSelection !== token || snapshot.machineId !== machineId || snapshot.thread?.id !== threadId) return;
+    loadedThreads = [];
+    threadsRequest = null;
     applySnapshot(snapshot, false);
+    switchingMachine = false;
     switchingThread = false;
+    destinationSelection = null;
+    closeDestinationSwitcher();
     renderState();
-    connectEvents();
     await loadHistory(null, historyEpoch, true);
-    await refreshLoadedThreads();
+    await Promise.all([refreshMachines(), refreshLoadedThreads()]);
+    refreshNavigationCatalog();
   } catch (error) {
+    if (destinationSelection !== token) return;
+    const message = error.message || "Could not switch tasks";
+    switchingMachine = false;
     switchingThread = false;
-    setHistoryStatus(error.message);
+    destinationSelection = null;
     try {
       const response = await apiFetch("/api/state");
-      applySnapshot(await response.json(), true);
+      if (response.ok) applySnapshot(await response.json(), true);
     } catch {
       setConnection(false, true);
     }
     renderState();
-    connectEvents();
+    await Promise.all([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
+    destinationError = message;
+    renderDestinationSwitcher();
   }
 }
 
@@ -1742,10 +1785,20 @@ async function openSettings() {
   }
 }
 
-elements.machineSelect.addEventListener("change", () => selectMachine(elements.machineSelect.value));
-elements.machineSelect.addEventListener("focus", refreshMachines);
-elements.threadSelect.addEventListener("change", () => selectThread(elements.threadSelect.value));
-elements.threadSelect.addEventListener("focus", refreshLoadedThreads);
+elements.destinationButton.addEventListener("click", () => {
+  if (elements.destinationSwitcher.hidden) openDestinationSwitcher();
+  else closeDestinationSwitcher();
+});
+elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
+elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
+elements.destinationSearch.addEventListener("input", renderDestinationSwitcher);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.destinationSwitcher.hidden) {
+    event.preventDefault();
+    closeDestinationSwitcher();
+    elements.destinationButton.focus();
+  }
+});
 elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   const action = elements.sendMessage.dataset.action;

@@ -33,15 +33,20 @@
         <div class="brand" aria-label="Codex Pocket">
           <svg aria-hidden="true" viewBox="0 0 64 64"><path d="M12 17h40v21c0 11-8 18-20 18s-20-7-20-18z"/><path d="m21 29 8 7-8 7M35 43h9"/></svg>
         </div>
-        <div class="selection-controls">
-          <div class="machine-control">
-            <label class="sr-only" for="machine-select">Machine</label>
-            <select id="machine-select" disabled><option>Local machine</option></select>
-          </div>
-          <div class="task-control">
-            <label class="sr-only" for="thread-select">Saved task</label>
-            <select id="thread-select" disabled><option>Loading tasks…</option></select>
-          </div>
+        <div class="destination-control">
+          <button class="destination-button" id="destination-button" type="button" aria-haspopup="dialog" aria-expanded="false">
+            <span id="destination-label">Connecting…</span>
+            <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg>
+          </button>
+          <button class="destination-backdrop" id="destination-backdrop" type="button" aria-label="Close task switcher" hidden></button>
+          <section class="destination-switcher" id="destination-switcher" role="dialog" aria-label="Choose a task" hidden>
+            <div class="destination-switcher-head">
+              <label class="sr-only" for="destination-search">Search tasks</label>
+              <input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…">
+              <button class="icon-button destination-close" id="destination-close" type="button" aria-label="Close task switcher" title="Close">×</button>
+            </div>
+            <div class="destination-list" id="destination-list" aria-live="polite"></div>
+          </section>
         </div>
         <div class="phase-row">
           <span class="phase-pill" id="phase-pill">Connecting</span>

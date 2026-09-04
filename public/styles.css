@@ -94,7 +94,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .shell { height: 100dvh; display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; }
 .topbar {
   position: relative; z-index: 4; display: grid;
-  grid-template-columns: auto minmax(280px,767px) minmax(12px,1fr) auto auto;
+  grid-template-columns: auto minmax(240px,560px) minmax(12px,1fr) auto auto;
   align-items: center; gap: 10px; min-height: 58px; padding: 8px 12px;
   border-bottom: 1px solid var(--line-soft); background: var(--topbar);
 }
@@ -103,11 +103,45 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   background: rgba(69,200,138,.13); color: var(--accent);
 }
 .brand svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
-.selection-controls { min-width: 0; display: grid; grid-template-columns: minmax(120px,200px) minmax(160px,560px); gap: 7px; }
-.machine-control, .task-control { min-width: 0; }
-.machine-control select, .task-control select, .runtime-controls select {
-  min-height: 36px; padding: 6px 22px 6px 9px; font-size: .76rem; text-overflow: ellipsis;
+.destination-control { position: relative; min-width: 0; }
+.destination-button {
+  position: relative; z-index: 10; width: 100%; min-height: 36px; display: grid;
+  grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 6px 9px 6px 11px;
+  overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong);
+  color: var(--text); cursor: pointer; font-size: .76rem; font-weight: 700; text-align: left;
 }
+.destination-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.destination-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.destination-button[aria-expanded="true"] { border-color: rgba(69,200,138,.44); background: rgba(69,200,138,.12); }
+.destination-backdrop { position: fixed; z-index: 8; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
+.destination-switcher {
+  position: absolute; z-index: 9; top: calc(100% + 7px); left: 0; width: min(560px, calc(100vw - 24px));
+  max-height: min(70dvh, 620px); overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr);
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 18px 55px rgba(0,0,0,.42);
+}
+.destination-switcher-head { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; padding: 10px; border-bottom: 1px solid var(--line-soft); }
+.destination-switcher-head input { min-width: 0; min-height: 38px; padding: 7px 10px; }
+.destination-close { display: grid; place-items: center; padding: 0; font-size: 1.2rem; }
+.destination-list { min-height: 80px; overflow-y: auto; overscroll-behavior: contain; padding: 7px; }
+.destination-group { display: grid; gap: 2px; padding: 4px 0 8px; }
+.destination-group + .destination-group { border-top: 1px solid var(--line-soft); padding-top: 9px; }
+.destination-group-heading { min-height: 26px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 7px; }
+.destination-group-heading strong { color: var(--text); font-size: .7rem; }
+.destination-group-heading span { color: var(--danger); font-size: .62rem; font-weight: 700; }
+.destination-group.offline { opacity: .62; }
+.destination-task {
+  width: 100%; min-width: 0; min-height: 38px; display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
+  align-items: center; gap: 7px; padding: 7px; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--muted); cursor: pointer; text-align: left; font-size: .72rem;
+}
+.destination-task:hover:not(:disabled), .destination-task:focus-visible { background: var(--surface-strong); color: var(--text); }
+.destination-task.selected { border-color: rgba(69,200,138,.28); background: rgba(69,200,138,.09); color: var(--text); }
+.destination-check { color: var(--accent); font-weight: 850; text-align: center; }
+.destination-task-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.destination-task-status { color: var(--accent); font-size: .62rem; font-weight: 750; }
+.destination-group-empty, .destination-empty, .destination-error { margin: 0; padding: 8px 7px; color: var(--subtle); font-size: .68rem; }
+.destination-error { margin-bottom: 5px; border-radius: 7px; background: rgba(255,139,139,.09); color: var(--danger); }
+.runtime-controls select { min-height: 36px; padding: 6px 22px 6px 9px; font-size: .76rem; text-overflow: ellipsis; }
 .phase-row, .topbar-actions, .connection, .panel-heading, .inspector-heading, .settings-heading, .settings-actions, .composer-actions, .queue-banner {
   display: flex; align-items: center;
 }
@@ -352,7 +386,13 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 @media (max-width: 860px) {
   .topbar { grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; padding: 7px 9px; }
   .brand { display: none; }
-  .selection-controls { grid-column: 1 / 4; grid-row: 1; grid-template-columns: minmax(88px,.34fr) minmax(0,1fr); }
+  .destination-control { grid-column: 1 / 4; grid-row: 1; }
+  .destination-switcher {
+    position: fixed; top: auto; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); left: 12px;
+    width: auto; max-height: min(78dvh, 680px); border-radius: 14px;
+  }
+  .destination-backdrop { background: rgba(4,7,11,.62); }
+  .destination-list { padding-bottom: 12px; }
   .phase-row { grid-column: 1; grid-row: 2; }
   .topbar-actions { grid-column: 2 / 4; grid-row: 2; }
   .topbar-actions .secondary-button { padding: 5px 8px; }
@@ -375,7 +415,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 
 @media (max-width: 620px) {
   .topbar { grid-template-columns: minmax(0,1fr) auto; }
-  .selection-controls { grid-column: 1 / 3; }
+  .destination-control { grid-column: 1 / 3; }
   .phase-row { grid-column: 1; grid-row: 2; }
   .topbar-actions { grid-column: 2; grid-row: 2; }
 }
