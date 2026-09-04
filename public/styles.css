@@ -248,7 +248,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .timeline-activity.reasoning .activity-label { display: none; }
 .activity-detail { margin-top: 3px; color: var(--subtle); font-size: .66rem; line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
 .activity-rich-detail {
-  display: grid; gap: 9px; margin: 9px 0 0 12px; padding: 9px 10px;
+  display: grid; gap: 9px; margin: 9px 12px 0; padding: 9px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--soft-surface);
   color: var(--muted); font-size: .7rem; line-height: 1.45;
 }
@@ -266,7 +266,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .detail-note { color: var(--subtle); font-size: .64rem; }
 @keyframes blink { 50% { opacity: .25; } }
 
-.composer-zone { position: relative; border-top: 1px solid var(--line-soft); background: var(--composer-bg); padding: 8px max(12px, calc((100vw - 1050px) / 2)) max(8px, env(safe-area-inset-bottom)); }
+.composer-zone { position: relative; border-top: 1px solid var(--line-soft); background: var(--composer-bg); padding: 8px max(12px, calc((100vw - 1050px) / 2)); }
 .jump-latest {
   position: absolute; z-index: 3; top: -43px; right: max(16px, calc((100vw - 1050px) / 2));
   display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
@@ -414,7 +414,10 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .conversation { padding-inline: 12px; }
   .composer-zone { padding-inline: 9px; }
   .jump-latest { right: 13px; }
-  .activity-rich-detail { margin-left: 7px; padding: 8px; }
+  .activity-rich-detail { margin-inline: 7px; padding: 8px; }
+  .detail-code { overflow-wrap: anywhere; }
+  .detail-diff { overflow-x: hidden; }
+  .diff-line { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 
 @media (max-width: 620px) {
