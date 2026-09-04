@@ -2853,18 +2853,19 @@ class PocketGateway {
     const machines = await Promise.all([...this.runtimes.entries()].map(async ([id, runtime]) => {
       const summary = runtime.machineSummary();
       let tasks: LoadedThreadSummary[] = [];
-      if (summary.connected) {
+      let catalogAvailable = Boolean(summary.connected);
+      if (catalogAvailable) {
         try {
           tasks = await runtime.listLoadedThreads();
         } catch {
-          // A reconnect can race this on-demand refresh. Keep the machine visible as unavailable.
+          catalogAvailable = false;
         }
       }
       return {
         id,
         name: summary.name,
         platform: summary.platform,
-        connected: Boolean(runtime.state.connected),
+        connected: catalogAvailable && Boolean(runtime.state.connected),
         selected: id === this.selectedMachineId,
         tasks: tasks.map((task) => {
           const attached = task.id === runtime.state.thread?.id;

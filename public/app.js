@@ -484,13 +484,14 @@ async function refreshNavigationCatalog() {
 }
 
 function closeDestinationSwitcher() {
-  if (destinationSelection) return;
+  if (destinationSelection) return false;
   elements.destinationSwitcher.hidden = true;
   elements.destinationBackdrop.hidden = true;
   elements.destinationButton.setAttribute("aria-expanded", "false");
   document.body.classList.remove("destination-open");
   elements.destinationSearch.value = "";
   destinationError = "";
+  return true;
 }
 
 function openDestinationSwitcher() {
@@ -1329,7 +1330,10 @@ async function selectDestination(machineId, threadId) {
     });
     const snapshot = await response.json();
     if (!response.ok) throw new Error(snapshot.error || "Could not switch tasks");
-    if (destinationSelection !== token || snapshot.machineId !== machineId || snapshot.thread?.id !== threadId) return;
+    if (destinationSelection !== token) return;
+    if (snapshot.machineId !== machineId || snapshot.thread?.id !== threadId) {
+      throw new Error("Task selection response did not match the requested destination");
+    }
     loadedThreads = [];
     threadsRequest = null;
     applySnapshot(snapshot, false);
@@ -1339,7 +1343,7 @@ async function selectDestination(machineId, threadId) {
     closeDestinationSwitcher();
     renderState();
     await loadHistory(null, historyEpoch, true);
-    await Promise.all([refreshMachines(), refreshLoadedThreads()]);
+    await Promise.allSettled([refreshMachines(), refreshLoadedThreads()]);
     refreshNavigationCatalog();
   } catch (error) {
     if (destinationSelection !== token) return;
@@ -1347,14 +1351,27 @@ async function selectDestination(machineId, threadId) {
     switchingMachine = false;
     switchingThread = false;
     destinationSelection = null;
+    let accepted = false;
     try {
       const response = await apiFetch("/api/state");
-      if (response.ok) applySnapshot(await response.json(), true);
+      if (response.ok) {
+        const snapshot = await response.json();
+        accepted = snapshot.machineId === machineId && snapshot.thread?.id === threadId;
+        if (accepted) {
+          loadedThreads = [];
+          threadsRequest = null;
+        }
+        applySnapshot(snapshot, true);
+      }
     } catch {
       setConnection(false, true);
     }
     renderState();
-    await Promise.all([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
+    await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
+    if (accepted) {
+      closeDestinationSwitcher();
+      return;
+    }
     destinationError = message;
     renderDestinationSwitcher();
   }
@@ -1795,8 +1812,7 @@ elements.destinationSearch.addEventListener("input", renderDestinationSwitcher);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !elements.destinationSwitcher.hidden) {
     event.preventDefault();
-    closeDestinationSwitcher();
-    elements.destinationButton.focus();
+    if (closeDestinationSwitcher()) elements.destinationButton.focus();
   }
 });
 elements.composer.addEventListener("submit", (event) => {
