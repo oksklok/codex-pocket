@@ -1,4 +1,9 @@
-import { destinationTaskStatus, preserveMessageCreatedAt, shouldShowWorkingFallback } from "./pocket-logic.js";
+import {
+  destinationTaskStatus,
+  orderTranscriptEntries,
+  preserveMessageCreatedAt,
+  shouldShowWorkingFallback,
+} from "./pocket-logic.js";
 
 const elements = {
   appShell: document.querySelector("#app-shell"),
@@ -44,6 +49,7 @@ const elements = {
   composerStatus: document.querySelector("#composer-status"),
   attentionBanner: document.querySelector("#attention-banner"),
   queueBanner: document.querySelector("#queue-banner"),
+  workingFallback: document.querySelector("#working-fallback"),
   queueText: document.querySelector("#queue-text"),
   sendQueue: document.querySelector("#send-queue"),
   cancelQueue: document.querySelector("#cancel-queue"),
@@ -916,6 +922,7 @@ function renderState() {
   renderDisplayControls();
   renderQuota();
   renderComposer();
+  renderWorkingFallback();
 }
 
 function messageNode(message) {
@@ -1148,18 +1155,14 @@ function activityNode(activity) {
   return article;
 }
 
-function workingFallbackNode() {
-  const row = document.createElement("div");
-  row.className = "working-fallback";
-  row.setAttribute("role", "status");
-  row.setAttribute("aria-label", "Codex is working");
-  const indicator = document.createElement("span");
-  indicator.className = "working-indicator";
-  indicator.setAttribute("aria-hidden", "true");
-  const label = document.createElement("span");
-  label.textContent = "Working…";
-  row.append(indicator, label);
-  return row;
+function renderWorkingFallback(visibleActivities = null) {
+  let activities = visibleActivities;
+  if (!activities) {
+    const allActivities = new Map(historyActivities);
+    for (const [id, activity] of liveActivities) allActivities.set(id, activity);
+    activities = [...allActivities.values()].filter(activityVisible);
+  }
+  elements.workingFallback.hidden = !shouldShowWorkingFallback(state?.phase, activities, state?.turn?.id);
 }
 
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
@@ -1169,13 +1172,13 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   const allActivities = new Map(historyActivities);
   for (const [id, activity] of liveActivities) allActivities.set(id, activity);
   const activities = [...allActivities.values()].filter(activityVisible);
-  const showWorkingFallback = shouldShowWorkingFallback(state?.phase, activities, state?.turn?.id);
-  const timeline = [
+  renderWorkingFallback(activities);
+  const timeline = orderTranscriptEntries([
     ...messages.map((value) => ({ type: "message", value })),
     ...activities.map((value) => ({ type: "activity", value })),
-  ].sort((left, right) => (left.value.createdAt || 0) - (right.value.createdAt || 0));
+  ]);
   elements.conversation.replaceChildren();
-  if (timeline.length === 0 && !showWorkingFallback) {
+  if (timeline.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
     empty.textContent = "No conversation history yet.";
@@ -1186,7 +1189,6 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   for (const entry of timeline) {
     elements.conversation.append(entry.type === "message" ? messageNode(entry.value) : activityNode(entry.value));
   }
-  if (showWorkingFallback) elements.conversation.append(workingFallbackNode());
   if (restoreScrollTop !== null) {
     elements.conversation.scrollTop = restoreScrollTop;
   } else if (preserveScroll) {

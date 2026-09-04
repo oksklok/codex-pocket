@@ -29,6 +29,42 @@ export function shouldShowWorkingFallback(phase, visibleActivities, activeTurnId
     && (!activeTurnId || !activity.turnId || activity.turnId === activeTurnId));
 }
 
+export function orderTranscriptEntries(entries) {
+  const chronological = entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((left, right) => {
+      const timeDifference = (left.entry.value.createdAt || 0) - (right.entry.value.createdAt || 0);
+      return timeDifference || left.index - right.index;
+    });
+  const groups = [];
+  const groupsByTurn = new Map();
+  for (const item of chronological) {
+    const turnId = item.entry.value.turnId;
+    if (!turnId) {
+      groups.push([item]);
+      continue;
+    }
+    let group = groupsByTurn.get(turnId);
+    if (!group) {
+      group = [];
+      groupsByTurn.set(turnId, group);
+      groups.push(group);
+    }
+    group.push(item);
+  }
+  return groups.flatMap((group) => {
+    const ordinary = [];
+    const finalAnswers = [];
+    for (const item of group) {
+      const isFinalAnswer = item.entry.type === "message"
+        && item.entry.value.role === "assistant"
+        && item.entry.value.phase === "final_answer";
+      (isFinalAnswer ? finalAnswers : ordinary).push(item.entry);
+    }
+    return [...ordinary, ...finalAnswers];
+  });
+}
+
 export function isUnsupportedMethodError(message) {
   return /(?:method[^\n]*not found|unsupported[^\n]*method|-32601)/i.test(String(message || ""));
 }

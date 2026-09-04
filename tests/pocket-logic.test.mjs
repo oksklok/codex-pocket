@@ -5,6 +5,7 @@ import {
   destinationTaskStatus,
   historyTurnTimestamp,
   isUnsupportedMethodError,
+  orderTranscriptEntries,
   pocketPhase,
   preserveMessageCreatedAt,
   shouldShowWorkingFallback,
@@ -59,7 +60,31 @@ test("working fallback appears only when no visible current activity is running"
   assert.equal(shouldShowWorkingFallback("working", [], "turn-1"), true);
   assert.equal(shouldShowWorkingFallback("working", [{ status: "running", turnId: "turn-1" }], "turn-1"), false);
   assert.equal(shouldShowWorkingFallback("working", [{ status: "running", turnId: "turn-old" }], "turn-1"), true);
-  assert.equal(shouldShowWorkingFallback("done", [], "turn-1"), false);
+  for (const phase of ["done", "failed", "stopped", "waiting_input", "waiting_permission"]) {
+    assert.equal(shouldShowWorkingFallback(phase, [], "turn-1"), false);
+  }
+});
+
+test("a final answer closes only its own turn after late activity completion", () => {
+  const entries = [
+    { type: "message", value: { id: "user-1", turnId: "turn-1", role: "user", phase: null, createdAt: 100 } },
+    { type: "message", value: { id: "commentary-1", turnId: "turn-1", role: "assistant", phase: "commentary", createdAt: 200 } },
+    { type: "activity", value: { id: "reasoning-1", turnId: "turn-1", status: "running", createdAt: 300 } },
+    { type: "message", value: { id: "final-1", turnId: "turn-1", role: "assistant", phase: "final_answer", createdAt: 400 } },
+    { type: "message", value: { id: "user-2", turnId: "turn-2", role: "user", phase: null, createdAt: 500 } },
+  ];
+  assert.deepEqual(orderTranscriptEntries(entries).map((entry) => entry.value.id), [
+    "user-1", "commentary-1", "reasoning-1", "final-1", "user-2",
+  ]);
+
+  const afterLateCompletion = entries.map((entry) => entry.value.id === "reasoning-1"
+    ? { type: "activity", value: { ...entry.value, status: "completed", createdAt: 600 } }
+    : entry);
+  const ordered = orderTranscriptEntries(afterLateCompletion);
+  assert.deepEqual(ordered.map((entry) => entry.value.id), [
+    "user-1", "commentary-1", "reasoning-1", "final-1", "user-2",
+  ]);
+  assert.equal(ordered.filter((entry) => entry.value.id === "reasoning-1").length, 1);
 });
 
 test("legacy item history fallback recognizes only unsupported-method errors", () => {
