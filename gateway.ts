@@ -6,7 +6,7 @@ import { createReadStream, readFileSync, renameSync, statSync, unlinkSync, write
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer, isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
-import { basename, dirname, extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -1088,6 +1088,27 @@ function readableCommandSummary(value: unknown): string {
   return safeSummary(text, 260);
 }
 
+function commandActionSummary(actions: unknown): string {
+  if (!Array.isArray(actions) || actions.length !== 1) return "";
+  const action: any = actions[0];
+  if (!action || typeof action !== "object") return "";
+  if (action.type === "read") return `Read ${safeSummary(action.name || String(action.path ?? "").split(/[\\/]/).at(-1), 180) || "file"}`;
+  if (action.type === "listFiles") return action.path ? `List files in ${safeSummary(action.path, 180)}` : "List files";
+  if (action.type === "search") return action.query ? `Search for ${safeSummary(action.query, 180)}` : "Search files";
+  if (action.type === "run" && action.name) return `Run ${safeSummary(action.name, 180)}`;
+  return "";
+}
+
+function pluginCommandSummary(pluginIdValue: unknown, scriptPathValue: unknown): string {
+  const rawPluginId = String(pluginIdValue ?? "").trim();
+  const pluginId = safeSummary(rawPluginId.replace(/@[^/@]+$/, ""), 120);
+  const scriptName = safeSummary(String(scriptPathValue ?? "").split(/[\\/]/).filter(Boolean).at(-1), 120);
+  if (pluginId && scriptName) return `Run ${pluginId} / ${scriptName}`;
+  if (pluginId) return `Run ${pluginId}`;
+  if (scriptName) return `Run ${scriptName}`;
+  return "";
+}
+
 function activityFromItem(
   item: any,
   phase: "start" | "done",
@@ -1105,11 +1126,11 @@ function activityFromItem(
   const status = phase === "start" ? "running" : doneStatus;
   const base = { id, turnId, status, createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime) };
   if (item.type === "commandExecution") {
-    const action = Array.isArray(item.commandActions) && item.commandActions.length === 1 ? item.commandActions[0] : null;
-    let label = readableCommandSummary(item.command) || "Run command";
-    if (action?.type === "read") label = `Read ${safeSummary(action.name || basename(String(action.path ?? "")), 180) || "file"}`;
-    else if (action?.type === "listFiles") label = action.path ? `List files in ${safeSummary(action.path, 180)}` : "List files";
-    else if (action?.type === "search") label = action.query ? `Search for ${safeSummary(action.query, 180)}` : "Search files";
+    const label = commandActionSummary(item.commandActions)
+      || pluginCommandSummary(item.pluginId, item.scriptPath)
+      || readableCommandSummary(item.command)
+      || safeSummary(item.command, 260)
+      || "Run command";
     const failedExit = status === "failed" && Number.isInteger(item.exitCode) ? `exit ${item.exitCode}` : undefined;
     return { ...base, kind: "command", label, ...(failedExit ? { detail: failedExit } : {}), expandable: true };
   }
@@ -2853,19 +2874,22 @@ class PocketGateway {
     const machines = await Promise.all([...this.runtimes.entries()].map(async ([id, runtime]) => {
       const summary = runtime.machineSummary();
       let tasks: LoadedThreadSummary[] = [];
-      let catalogAvailable = Boolean(summary.connected);
-      if (catalogAvailable) {
+      let catalogAvailable = false;
+      if (summary.connected) {
         try {
           tasks = await runtime.listLoadedThreads();
+          catalogAvailable = true;
         } catch {
-          catalogAvailable = false;
+          // The normal switcher stays concise; diagnostics/logs retain technical failures.
         }
       }
       return {
         id,
         name: summary.name,
         platform: summary.platform,
-        connected: catalogAvailable && Boolean(runtime.state.connected),
+        local: id === "local",
+        connected: Boolean(runtime.state.connected),
+        catalogAvailable,
         selected: id === this.selectedMachineId,
         tasks: tasks.map((task) => {
           const attached = task.id === runtime.state.thread?.id;

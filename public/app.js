@@ -376,17 +376,23 @@ function renderDestinationSwitcher() {
     });
     if (query && !machineMatches && !tasks.length) continue;
 
+    const catalogAvailable = machine.catalogAvailable !== false;
+    const availability = !machine.connected
+      ? (machine.local ? "Runtime unavailable" : "Offline")
+      : !catalogAvailable
+        ? "Tasks unavailable"
+        : "";
     const group = document.createElement("section");
-    group.className = `destination-group ${machine.connected ? "" : "offline"}`;
+    group.className = `destination-group ${!machine.connected ? "offline" : !catalogAvailable ? "unavailable" : ""}`;
     const heading = document.createElement("div");
     heading.className = "destination-group-heading";
     const name = document.createElement("strong");
     name.textContent = machine.name || "Machine";
     heading.append(name);
-    if (!machine.connected) {
-      const offline = document.createElement("span");
-      offline.textContent = "Offline";
-      heading.append(offline);
+    if (availability) {
+      const availabilityStatus = document.createElement("span");
+      availabilityStatus.textContent = availability;
+      heading.append(availabilityStatus);
     }
     group.append(heading);
 
@@ -395,7 +401,7 @@ function renderDestinationSwitcher() {
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
-      row.disabled = !machine.connected || Boolean(destinationSelection);
+      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection);
       if (selected) row.setAttribute("aria-current", "true");
       row.title = task.cwd || task.id;
       const check = document.createElement("span");
@@ -414,10 +420,10 @@ function renderDestinationSwitcher() {
       group.append(row);
     }
 
-    if (!tasks.length) {
+    if (!tasks.length && !availability) {
       const empty = document.createElement("p");
       empty.className = "destination-group-empty";
-      empty.textContent = machine.connected ? (query ? "No matching saved tasks" : "No saved tasks") : "Machine unavailable";
+      empty.textContent = query ? "No matching saved tasks" : "No saved tasks";
       group.append(empty);
     }
     elements.destinationList.append(group);
@@ -502,7 +508,7 @@ function openDestinationSwitcher() {
   document.body.classList.add("destination-open");
   refreshNavigationCatalog();
   renderDestinationSwitcher();
-  elements.destinationSearch.focus();
+  if (!matchMedia("(max-width: 860px)").matches) elements.destinationSearch.focus();
 }
 
 function currentCatalogModel(modelName = state?.model) {
@@ -1681,6 +1687,7 @@ function updateInspectorButtonState() {
 }
 function openInspector() {
   if (isMobileInspector()) {
+    elements.appShell.classList.remove("inspector-closed");
     elements.appShell.classList.add("inspector-open");
     elements.inspectorBackdrop.hidden = false;
   } else {
