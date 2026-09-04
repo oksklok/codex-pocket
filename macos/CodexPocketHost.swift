@@ -30,39 +30,41 @@ private struct HostStatus: Decodable {
 }
 
 private final class StatusMenuView: NSView {
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let powerSwitch = NSSwitch()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
         let title = NSTextField(labelWithString: "Codex Pocket")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        statusLabel.font = .systemFont(ofSize: 12)
-        statusLabel.textColor = .secondaryLabelColor
         title.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        powerSwitch.translatesAutoresizingMaskIntoConstraints = false
+        powerSwitch.controlSize = .small
+        powerSwitch.setAccessibilityLabel("Pocket On")
         addSubview(title)
-        addSubview(statusLabel)
+        addSubview(powerSwitch)
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: 260),
             heightAnchor.constraint(equalToConstant: 32),
             title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             title.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statusLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            statusLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            powerSwitch.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            powerSwitch.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
-        update(running: false)
+        update(isOn: true, enabled: true)
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func update(running: Bool) {
-        let dot = NSAttributedString(string: "● ", attributes: [.foregroundColor: running ? NSColor.systemGreen : NSColor.systemOrange])
-        let text = NSAttributedString(string: running ? "Running" : "Starting…", attributes: [.foregroundColor: NSColor.secondaryLabelColor])
-        let value = NSMutableAttributedString()
-        value.append(dot)
-        value.append(text)
-        statusLabel.attributedStringValue = value
+    func configure(target: AnyObject, action: Selector) {
+        powerSwitch.target = target
+        powerSwitch.action = action
+    }
+
+    func update(isOn: Bool, enabled: Bool) {
+        powerSwitch.state = isOn ? .on : .off
+        powerSwitch.isEnabled = enabled
+        powerSwitch.setAccessibilityValue(isOn ? "On" : "Off")
     }
 }
 
@@ -164,6 +166,44 @@ private final class MessageMenuView: NSView {
     required init?(coder: NSCoder) { nil }
 }
 
+private final class SwitchMenuView: NSView {
+    private let toggle = NSSwitch()
+
+    init(title: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        toggle.translatesAutoresizingMaskIntoConstraints = false
+        toggle.controlSize = .small
+        toggle.setAccessibilityLabel(title)
+        addSubview(label)
+        addSubview(toggle)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 260),
+            heightAnchor.constraint(equalToConstant: 34),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            toggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            toggle.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(target: AnyObject, action: Selector) {
+        toggle.target = target
+        toggle.action = action
+    }
+
+    func update(isOn: Bool, enabled: Bool) {
+        toggle.state = isOn ? .on : .off
+        toggle.isEnabled = enabled
+        toggle.setAccessibilityValue(isOn ? "On" : "Off")
+    }
+}
+
 final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let keepAwakeDefaultsKey = "keepMacAwake"
     private let fileManager = FileManager.default
@@ -175,12 +215,12 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
     private let headerView = StatusMenuView()
+    private let keepAwakeView = SwitchMenuView(title: "Keep Mac Awake")
     private let quotaViews = [QuotaMenuView(), QuotaMenuView()]
     private let quotaItems = [NSMenuItem(), NSMenuItem()]
     private let quotaUnavailableItem = NSMenuItem()
     private var openItem: NSMenuItem!
     private var copyItem: NSMenuItem!
-    private var keepAwakeItem: NSMenuItem!
     private var quitItem: NSMenuItem!
     private var sleepActivity: NSObjectProtocol?
     private var timer: Timer?
@@ -189,6 +229,8 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var healthCheckRunning = false
     private var consecutiveFailures = 0
     private var quitting = false
+    private var pocketEnabled = true
+    private var powerTransition = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "local.codex-pocket.launcher")
@@ -202,7 +244,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? fileManager.removeItem(at: quitMarkerURL)
         installStatusItem()
         restoreKeepAwakePreference()
-        ensureGateway()
+        ensureGateway(fatal: true)
         timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshStatus()
         }
@@ -215,7 +257,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        refreshStatus()
+        if pocketEnabled { refreshStatus() }
     }
 
     private func installStatusItem() {
@@ -223,6 +265,8 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Codex Pocket")
         statusItem.button?.image?.isTemplate = true
         statusItem.button?.toolTip = "Codex Pocket"
+        headerView.configure(target: self, action: #selector(togglePocketPower))
+        keepAwakeView.configure(target: self, action: #selector(toggleKeepAwake))
         menu.delegate = self
         menu.autoenablesItems = false
         let headerItem = NSMenuItem()
@@ -241,9 +285,10 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         openItem = actionItem("Open Pocket", #selector(openPocket), enabled: false)
         copyItem = actionItem("Copy Phone URL", #selector(copyPhoneURL), enabled: false)
-        keepAwakeItem = actionItem("Keep Mac Awake", #selector(toggleKeepAwake), enabled: true)
         menu.addItem(openItem)
         menu.addItem(copyItem)
+        let keepAwakeItem = NSMenuItem()
+        keepAwakeItem.view = keepAwakeView
         menu.addItem(keepAwakeItem)
         menu.addItem(.separator())
         quitItem = actionItem("Quit Codex Pocket", #selector(quitPocket), enabled: true)
@@ -253,7 +298,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateMenu() {
-        headerView.update(running: status != nil)
+        headerView.update(isOn: pocketEnabled, enabled: !quitting && !powerTransition)
         if let quota = status?.quota, quota.available, !quota.windows.isEmpty {
             for (index, view) in quotaViews.enumerated() {
                 guard index < quota.windows.count else {
@@ -263,7 +308,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let window = quota.windows[index]
                 view.update(
                     window: window,
-                    stale: quota.stale,
+                    stale: quota.stale || !pocketEnabled,
                     reset: window.resetsAt.map(formatReset),
                     updated: quota.updatedAt.map(formatReset)
                 )
@@ -274,9 +319,12 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
             for item in quotaItems { item.isHidden = true }
             quotaUnavailableItem.isHidden = false
         }
-        openItem.isEnabled = status != nil
-        copyItem.isEnabled = !(status?.phoneUrls.isEmpty ?? true)
-        keepAwakeItem.state = sleepActivity == nil ? .off : .on
+        openItem.isEnabled = pocketEnabled && !powerTransition && status != nil
+        copyItem.isEnabled = pocketEnabled && !powerTransition && !(status?.phoneUrls.isEmpty ?? true)
+        keepAwakeView.update(
+            isOn: UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey),
+            enabled: !quitting && !powerTransition
+        )
         quitItem.isEnabled = !quitting
         menu.update()
     }
@@ -308,28 +356,55 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.setString(phoneURL, forType: .string)
     }
 
-    @objc private func toggleKeepAwake() {
-        if sleepActivity == nil {
-            guard beginKeepAwakeActivity() else {
-                UserDefaults.standard.set(false, forKey: Self.keepAwakeDefaultsKey)
-                updateMenu()
-                showError("Codex Pocket could not keep this Mac awake.")
-                return
+    @objc private func togglePocketPower() {
+        guard !quitting, !powerTransition else { return }
+        powerTransition = true
+        updateMenu()
+        if pocketEnabled {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                let stopped = self.runtimeRecord() == nil || self.requestGatewayStop()
+                if stopped { self.waitForGatewayExit() }
+                DispatchQueue.main.async {
+                    self.powerTransition = false
+                    guard stopped else {
+                        self.updateMenu()
+                        self.showError("Codex Pocket could not stop its gateway. Check \(self.logURL.path) for details.")
+                        return
+                    }
+                    self.pocketEnabled = false
+                    self.consecutiveFailures = 0
+                    self.reconcileKeepAwakeActivity()
+                    self.updateMenu()
+                }
             }
-            UserDefaults.standard.set(true, forKey: Self.keepAwakeDefaultsKey)
         } else {
-            releaseKeepAwakeActivity()
-            UserDefaults.standard.set(false, forKey: Self.keepAwakeDefaultsKey)
+            pocketEnabled = true
+            reconcileKeepAwakeActivity()
+            updateMenu()
+            ensureGateway(fatal: false)
         }
+    }
+
+    @objc private func toggleKeepAwake() {
+        let enabled = !UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey)
+        UserDefaults.standard.set(enabled, forKey: Self.keepAwakeDefaultsKey)
+        reconcileKeepAwakeActivity()
         updateMenu()
     }
 
     private func restoreKeepAwakePreference() {
-        guard UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey) else { return }
-        if !beginKeepAwakeActivity() {
-            UserDefaults.standard.set(false, forKey: Self.keepAwakeDefaultsKey)
-        }
+        reconcileKeepAwakeActivity()
         updateMenu()
+    }
+
+    private func reconcileKeepAwakeActivity() {
+        let shouldPreventSleep = pocketEnabled && UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey)
+        if shouldPreventSleep && !beginKeepAwakeActivity() {
+            UserDefaults.standard.set(false, forKey: Self.keepAwakeDefaultsKey)
+        } else if !shouldPreventSleep {
+            releaseKeepAwakeActivity()
+        }
     }
 
     @discardableResult
@@ -353,6 +428,10 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !quitting else { return }
         quitting = true
         updateMenu()
+        if !pocketEnabled || runtimeRecord() == nil {
+            NSApp.terminate(nil)
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let accepted = self.requestGatewayShutdown()
@@ -370,7 +449,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func ensureGateway() {
+    private func ensureGateway(fatal: Bool) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             if let current = self.fetchHostStatus() {
@@ -378,17 +457,17 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             guard self.fileManager.fileExists(atPath: self.gatewayURL.path) else {
-                DispatchQueue.main.async { self.failStartup("Could not find gateway.ts beside Codex Pocket.app.") }
+                DispatchQueue.main.async { self.gatewayStartFailed("Could not find gateway.ts beside Codex Pocket.app.", fatal: fatal) }
                 return
             }
             guard let node = self.findNode() else {
-                DispatchQueue.main.async { self.failStartup("No usable Node.js runtime was found. Install Node.js 22.6 or newer, or keep ChatGPT/Codex installed.") }
+                DispatchQueue.main.async { self.gatewayStartFailed("No usable Node.js runtime was found. Install Node.js 22.6 or newer, or keep ChatGPT/Codex installed.", fatal: fatal) }
                 return
             }
             do {
                 try self.startGateway(node: node)
             } catch {
-                DispatchQueue.main.async { self.failStartup("Codex Pocket could not start: \(error.localizedDescription)") }
+                DispatchQueue.main.async { self.gatewayStartFailed("Codex Pocket could not start: \(error.localizedDescription)", fatal: fatal) }
                 return
             }
             for _ in 0..<80 {
@@ -398,12 +477,12 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 usleep(100_000)
             }
-            DispatchQueue.main.async { self.failStartup("Codex Pocket could not start. Check \(self.logURL.path) for details.") }
+            DispatchQueue.main.async { self.gatewayStartFailed("Codex Pocket could not start. Check \(self.logURL.path) for details.", fatal: fatal) }
         }
     }
 
     private func refreshStatus() {
-        guard !healthCheckRunning, !quitting else { return }
+        guard pocketEnabled, !powerTransition, !healthCheckRunning, !quitting else { return }
         healthCheckRunning = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
@@ -443,7 +522,21 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard value.running else { return }
         status = value
         consecutiveFailures = 0
+        powerTransition = false
+        reconcileKeepAwakeActivity()
         updateMenu()
+    }
+
+    private func gatewayStartFailed(_ message: String, fatal: Bool) {
+        powerTransition = false
+        if fatal {
+            failStartup(message)
+            return
+        }
+        pocketEnabled = false
+        reconcileKeepAwakeActivity()
+        updateMenu()
+        showError(message)
     }
 
     private func failStartup(_ message: String) {
@@ -483,8 +576,16 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func requestGatewayShutdown() -> Bool {
+        requestGatewayControl(path: "/shutdown")
+    }
+
+    private func requestGatewayStop() -> Bool {
+        requestGatewayControl(path: "/stop")
+    }
+
+    private func requestGatewayControl(path: String) -> Bool {
         guard let record = runtimeRecord(),
-              let url = URL(string: record.controlUrl + "/shutdown") else { return false }
+              let url = URL(string: record.controlUrl + path) else { return false }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 2
@@ -541,6 +642,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "/opt/homebrew/bin/node",
             "/usr/local/bin/node",
             "\(NSHomeDirectory())/.local/bin/node",
+            "\(NSHomeDirectory())/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node",
             "/usr/bin/node",
             "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node",
             "/Applications/Codex.app/Contents/Resources/cua_node/bin/node",

@@ -25,6 +25,7 @@ type Options = {
   port: number;
   ws?: string;
   thread?: string;
+  localName: string;
   machines: MachineConfig[];
 };
 type MachineConfig = {
@@ -41,6 +42,7 @@ type LocalConfig = {
   host: string;
   port: number;
   pin: string | null;
+  localName: string;
   machines: MachineConfig[];
 };
 type LocalSettings = {
@@ -69,6 +71,7 @@ type PocketActivity = {
   label: string;
   status: "running" | "completed" | "failed" | "interrupted";
   detail?: string;
+  expandable?: boolean;
   createdAt: number;
 };
 type PocketInputOption = {
@@ -221,6 +224,11 @@ const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_INPUT_ANSWER_LENGTH = 4_000;
 const MAX_LIVE_MESSAGES = 16;
 const MAX_ACTIVITIES = 50;
+const MAX_DETAIL_ITEMS = 200;
+const MAX_DETAIL_TEXT = 96_000;
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const DETAIL_ITEMS_PAGE_LIMIT = 100;
+const DETAIL_ITEMS_MAX_PAGES = 20;
 const ASSISTANT_FLUSH_MS = 120;
 const ACCESS_SETTINGS_TIMEOUT_MS = 2_000;
 const THREAD_UNSUBSCRIBE_TIMEOUT_MS = 1_000;
@@ -238,6 +246,7 @@ const SAFE_CONFIG: LocalConfig = {
   host: "127.0.0.1",
   port: 4173,
   pin: null,
+  localName: "",
   machines: [],
 };
 
@@ -324,11 +333,16 @@ function validateLocalConfig(value: unknown): LocalConfig {
   if (candidate.lanEnabled && !/^\d{4}$/.test(candidate.pin ?? "")) {
     throw new Error("LAN access requires a four-digit PIN");
   }
+  const localName = candidate.localName === undefined ? "" : candidate.localName;
+  if (typeof localName !== "string" || localName.trim().length > 80) {
+    throw new Error("localName must be 80 characters or fewer");
+  }
   return {
     lanEnabled: candidate.lanEnabled,
     host: candidate.host,
     port: candidate.port,
     pin: candidate.pin,
+    localName: localName.trim(),
     machines: validateMachines(candidate.machines),
   };
 }
@@ -360,6 +374,7 @@ function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin:
     host: candidate.host,
     port: candidate.port,
     pin,
+    localName: candidate.localName ?? settings.config.localName,
     machines: candidate.machines ?? settings.config.machines,
   });
   const temporaryPath = `${settings.path}.tmp`;
@@ -377,6 +392,7 @@ function publicSettings(settings: LocalSettings, fallbackPin: string | null): Js
     host: settings.config.host,
     port: settings.config.port,
     pinConfigured: /^\d{4}$/.test(settings.config.pin ?? fallbackPin ?? ""),
+    localName: settings.config.localName,
     phoneUrls: phoneUrls(settings.config),
     machines: settings.config.machines.map((machine) => ({ ...machine })),
   };
@@ -387,6 +403,7 @@ function settingsNeedRestart(settings: LocalSettings, options: Options, auth: Au
   const desiredPin = settings.config.pin;
   return desiredHost !== options.host
     || settings.config.port !== options.port
+    || settings.config.localName !== options.localName
     || !secretMatches(desiredPin ?? "", auth.pin ?? "")
     || JSON.stringify(settings.config.machines) !== JSON.stringify(options.machines);
 }
@@ -575,15 +592,39 @@ function compact(value: unknown, limit = 240): string {
   return `${text.slice(0, Math.max(0, limit - 1))}…`;
 }
 
-function safeSummary(value: unknown, limit = 240): string {
+function redactSecrets(value: unknown): string {
   let text = Array.isArray(value) ? value.map(String).join(" ") : String(value ?? "");
   const secretName = String.raw`(?:[a-z0-9]+[_-])*(?:api[_-]?key|token|password|passwd|secret(?:[_-]?(?:key|access[_-]?key))?|client[_-]?secret|access[_-]?token|auth[_-]?token)`;
   const valuePattern = String.raw`(?:"[^"]*"|'[^']*'|[^\s;|&'"]+)`;
-  text = text.replace(new RegExp(String.raw`\b(${secretName}\s*=\s*)${valuePattern}`, "gi"), "$1[REDACTED]");
+  // Assignment syntax is especially varied on PowerShell, where nested quoting can
+  // double quote marks. Redact the rest of that shell segment instead of risking a
+  // partial value leak when a credential assignment cannot be parsed perfectly.
+  text = text.replace(new RegExp(String.raw`\b(${secretName}\s*=\s*)[^;|&\r\n]+`, "gi"), "$1[REDACTED]");
   text = text.replace(new RegExp(String.raw`(^|\s)(--${secretName}(?:\s*=\s*|\s+))${valuePattern}`, "gi"), "$1$2[REDACTED]");
   text = text.replace(/\b(authorization\s*:\s*(?:bearer|basic)\s+)(?:"[^"]*"|'[^']*'|[^\s;|&'"]+)/gi, "$1[REDACTED]");
   text = text.replace(/([?&](?:api[_-]?key|apikey|key|token|access[_-]?token|auth|password|secret|signature|sig|x-(?:amz|goog)-signature)=)[^&#\s'"]+/gi, "$1[REDACTED]");
-  return compact(text, limit);
+  return text;
+}
+
+function safeSummary(value: unknown, limit = 240): string {
+  return compact(redactSecrets(value), limit);
+}
+
+function boundedDetail(value: unknown, limit = MAX_DETAIL_TEXT): { text: string; truncated: boolean } {
+  const text = redactSecrets(value).replace(/\r\n/g, "\n");
+  if (text.length <= limit) return { text, truncated: false };
+  return { text: text.slice(0, limit), truncated: true };
+}
+
+function boundedJson(value: unknown, limit = MAX_DETAIL_TEXT): { text: string; truncated: boolean } {
+  if (value === null || value === undefined) return { text: "", truncated: false };
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value, null, 2);
+  } catch {
+    serialized = String(value ?? "");
+  }
+  return boundedDetail(serialized, limit);
 }
 
 function approvalPolicyText(value: unknown): string {
@@ -1036,33 +1077,44 @@ function activityFromItem(
   const status = phase === "start" ? "running" : doneStatus;
   const base = { id, turnId, status, createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime) };
   if (item.type === "commandExecution") {
-    const outputBytes = Buffer.byteLength(String(item.aggregatedOutput ?? ""));
-    const detail = phase === "done"
-      ? `exit ${item.exitCode ?? "–"} · ${outputBytes.toLocaleString()} output bytes suppressed`
-      : undefined;
-    return { ...base, kind: "command", label: safeSummary(item.command, 260), detail };
+    const action = Array.isArray(item.commandActions) && item.commandActions.length === 1 ? item.commandActions[0] : null;
+    let label = safeSummary(item.command, 260) || "Run command";
+    if (action?.type === "read") label = `Read ${safeSummary(action.name || basename(String(action.path ?? "")), 180) || "file"}`;
+    else if (action?.type === "listFiles") label = action.path ? `List files in ${safeSummary(action.path, 180)}` : "List files";
+    else if (action?.type === "search") label = action.query ? `Search for ${safeSummary(action.query, 180)}` : "Search files";
+    const failedExit = status === "failed" && Number.isInteger(item.exitCode) ? `exit ${item.exitCode}` : undefined;
+    return { ...base, kind: "command", label, ...(failedExit ? { detail: failedExit } : {}), expandable: true };
   }
   if (item.type === "mcpToolCall") {
-    return { ...base, kind: "tool", label: compact(`${item.server ?? "tool"}/${item.tool ?? "unknown"}`) };
+    return { ...base, kind: "tool", label: compact(`${item.server ?? "tool"}/${item.tool ?? "unknown"}`), expandable: true };
   }
   if (item.type === "dynamicToolCall") {
-    return { ...base, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`) };
+    return { ...base, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`), expandable: true };
   }
   if (item.type === "collabAgentToolCall" || item.type === "subAgentActivity") {
-    const agentCount = item.agents && typeof item.agents === "object" ? Object.keys(item.agents).length : 0;
+    const states = item.agentsStates && typeof item.agentsStates === "object" ? item.agentsStates : null;
+    const agentCount = states ? Object.keys(states).length : Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.length : 0;
+    const subagentName = String(item.agentPath ?? "").split("/").filter(Boolean).at(-1);
+    const labels: Record<string, string> = {
+      started: `Started subagent${subagentName ? ` ${subagentName}` : ""}`,
+      interacted: `Interacted with subagent${subagentName ? ` ${subagentName}` : ""}`,
+      interrupted: `Interrupted subagent${subagentName ? ` ${subagentName}` : ""}`,
+      completed: `Completed subagent${subagentName ? ` ${subagentName}` : ""}`,
+    };
     return {
       ...base,
       kind: "collaboration",
-      label: compact(item.tool ?? "Agent activity"),
-      ...(agentCount ? { detail: `${agentCount} agent${agentCount === 1 ? "" : "s"}` } : {}),
+      label: labels[item.kind] ?? compact(item.tool ?? "Subagent activity"),
+      ...(agentCount ? { detail: `${agentCount} subagent${agentCount === 1 ? "" : "s"}` } : {}),
+      expandable: item.type === "collabAgentToolCall",
     };
   }
   if (item.type === "webSearch") {
-    return { ...base, kind: "search", label: compact(item.query, 260) || "Web search" };
+    return { ...base, kind: "search", label: safeSummary(item.query, 260) || "Web search", expandable: true };
   }
   if (item.type === "fileChange") {
     const paths = Array.isArray(item.changes) ? item.changes.length : 0;
-    return { ...base, kind: "files", label: `${paths} changed path${paths === 1 ? "" : "s"}`, detail: "Diff suppressed" };
+    return { ...base, kind: "files", label: `Edited ${paths} file${paths === 1 ? "" : "s"}`, expandable: true };
   }
   if (item.type === "reasoning") {
     const summary = Array.isArray(item.summary)
@@ -1072,13 +1124,20 @@ function activityFromItem(
     return { ...base, kind: "reasoning", label: "Reasoning summary", detail: boundedText(summary, 1_200) };
   }
   if (item.type === "imageView") {
-    return { ...base, kind: "image", label: "Viewed image", detail: basename(String(item.path ?? "")) || undefined };
+    const name = String(item.path ?? "").split(/[\\/]/).filter(Boolean).at(-1) || "image";
+    return { ...base, kind: "image", label: `Viewed ${name}`, expandable: true };
   }
   if (item.type === "imageGeneration") {
-    return { ...base, kind: "image", label: "Generated image" };
+    return { ...base, kind: "image", label: phase === "start" ? "Generating image" : "Generated image", expandable: true };
   }
   if (item.type === "contextCompaction") {
-    return { ...base, kind: "compaction", label: "Context compacted" };
+    return { ...base, kind: "compaction", label: phase === "start" ? "Compacting context" : "Context compacted" };
+  }
+  if (item.type === "enteredReviewMode") {
+    return { ...base, kind: "review", label: `Entered review mode${item.review ? `: ${safeSummary(item.review, 220)}` : ""}` };
+  }
+  if (item.type === "exitedReviewMode") {
+    return { ...base, kind: "review", label: `Exited review mode${item.review ? `: ${safeSummary(item.review, 220)}` : ""}` };
   }
   return null;
 }
@@ -1100,6 +1159,175 @@ function normalizeHistoryTurn(turn: any): JsonObject {
     messages,
     activities,
   };
+}
+
+function durationLabel(milliseconds: unknown): string | null {
+  const value = Number(milliseconds);
+  if (!Number.isFinite(value) || value < 0) return null;
+  if (value < 1_000) return `${Math.round(value)} ms`;
+  if (value < 60_000) return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`;
+  return `${Math.floor(value / 60_000)}m ${Math.round((value % 60_000) / 1_000)}s`;
+}
+
+function changeKind(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const record = value as JsonObject;
+    if (typeof record.type === "string") return record.type;
+    return Object.keys(record)[0] ?? "modified";
+  }
+  return "modified";
+}
+
+function activityDetailFromItem(item: any): JsonObject | null {
+  if (!item || typeof item !== "object") return null;
+  if (item.type === "commandExecution") {
+    const command = boundedDetail(item.command, 12_000);
+    const output = boundedDetail(item.aggregatedOutput ?? "", MAX_DETAIL_TEXT);
+    return {
+      type: "commandExecution",
+      command: command.text,
+      cwd: boundedDetail(item.cwd ?? "", 4_000).text,
+      output: output.text,
+      outputTruncated: output.truncated,
+      status: String(item.status ?? "completed"),
+      exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null,
+      duration: durationLabel(item.durationMs),
+    };
+  }
+  if (item.type === "fileChange") {
+    let remaining = MAX_DETAIL_TEXT;
+    let truncated = false;
+    const changes = (Array.isArray(item.changes) ? item.changes : []).slice(0, 100).map((change: any) => {
+      const value = boundedDetail(change?.diff ?? "", Math.max(0, remaining));
+      remaining = Math.max(0, remaining - value.text.length);
+      truncated ||= value.truncated;
+      return {
+        path: boundedDetail(change?.path ?? "Unknown file", 4_000).text,
+        kind: changeKind(change?.kind),
+        diff: value.text,
+      };
+    });
+    if (Array.isArray(item.changes) && item.changes.length > changes.length) truncated = true;
+    return { type: "fileChange", status: String(item.status ?? "completed"), changes, truncated };
+  }
+  if (item.type === "mcpToolCall") {
+    const argumentsValue = boundedJson(item.arguments);
+    const resultValue = boundedJson(item.result);
+    return {
+      type: "mcpToolCall",
+      server: safeSummary(item.server, 240),
+      tool: safeSummary(item.tool, 240),
+      arguments: argumentsValue.text,
+      result: resultValue.text,
+      error: boundedDetail(item.error?.message ?? "", 8_000).text,
+      truncated: argumentsValue.truncated || resultValue.truncated,
+      duration: durationLabel(item.durationMs),
+    };
+  }
+  if (item.type === "dynamicToolCall") {
+    const argumentsValue = boundedJson(item.arguments);
+    const resultValue = boundedJson(item.contentItems);
+    return {
+      type: "dynamicToolCall",
+      namespace: safeSummary(item.namespace, 240),
+      tool: safeSummary(item.tool, 240),
+      arguments: argumentsValue.text,
+      result: resultValue.text,
+      success: typeof item.success === "boolean" ? item.success : null,
+      truncated: argumentsValue.truncated || resultValue.truncated,
+      duration: durationLabel(item.durationMs),
+    };
+  }
+  if (item.type === "webSearch") {
+    const action = boundedJson(item.action, 24_000);
+    const results = boundedJson(item.results, MAX_DETAIL_TEXT - action.text.length);
+    return {
+      type: "webSearch",
+      query: boundedDetail(item.query ?? "", 8_000).text,
+      action: action.text,
+      results: results.text,
+      truncated: action.truncated || results.truncated,
+    };
+  }
+  if (item.type === "collabAgentToolCall") {
+    const states = item.agentsStates && typeof item.agentsStates === "object"
+      ? Object.values(item.agentsStates).map((agent: any) => ({ status: agent?.status ?? agent?.state ?? "unknown" }))
+      : [];
+    return {
+      type: "collabAgentToolCall",
+      tool: safeSummary(item.tool, 240),
+      prompt: boundedDetail(item.prompt ?? "", 24_000).text,
+      model: safeSummary(item.model, 240),
+      reasoningEffort: safeSummary(item.reasoningEffort, 120),
+      subagents: states,
+    };
+  }
+  if (item.type === "imageView" || item.type === "imageGeneration") {
+    return {
+      type: item.type,
+      name: String(item.path ?? item.savedPath ?? "").split(/[\\/]/).filter(Boolean).at(-1) || "Image",
+      revisedPrompt: boundedDetail(item.revisedPrompt ?? "", 24_000).text,
+      imageAvailable: Boolean(item.path || item.savedPath || item.result),
+      failure: boundedJson(item.failure, 8_000).text,
+    };
+  }
+  return null;
+}
+
+const IMAGE_TYPES = new Map([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+]);
+
+function imageTypeForPath(path: string): string | null {
+  return IMAGE_TYPES.get(extname(path).toLowerCase()) ?? null;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function readRemoteImage(sshAlias: string, remotePath: string, windows: boolean): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const command = process.env.SSH_BIN || "ssh";
+    const encodedPath = Buffer.from(remotePath, "utf8").toString("base64");
+    const windowsScript = `$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}'));$b=[IO.File]::ReadAllBytes($p);[Console]::OpenStandardOutput().Write($b,0,$b.Length)`;
+    const remoteCommand = windows
+      ? `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(windowsScript, "utf16le").toString("base64")}`
+      : `cat -- ${shellQuote(remotePath)}`;
+    const child = spawn(command, ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshAlias, remoteCommand], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const chunks: Buffer[] = [];
+    let length = 0;
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(Buffer.concat(chunks));
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish(new Error("Image unavailable"));
+    }, 15_000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      length += chunk.length;
+      if (length > MAX_IMAGE_BYTES) {
+        child.kill("SIGTERM");
+        finish(new Error("Image unavailable"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.once("error", () => finish(new Error("Image unavailable")));
+    child.once("exit", (code) => finish(code === 0 && length > 0 ? undefined : new Error("Image unavailable")));
+  });
 }
 
 function normalizeInputQuestions(params: JsonObject): PocketInputQuestion[] | null {
@@ -1152,6 +1380,8 @@ class MachineRuntime {
   private permissionProfiles: PermissionProfileSummary[] = [];
   private allowedReviewers: string[] | null = null;
   private pendingServerRequests = new Map<string, PendingServerRequest>();
+  private itemCache = new Map<string, { turnId: string; item: JsonObject }>();
+  private itemTurns = new Map<string, string>();
   private settingsRevision = 0;
   private settingsWaiters = new Set<() => void>();
   private technicalConnectionError: string | null = null;
@@ -1259,7 +1489,45 @@ class MachineRuntime {
       itemsView: "summary",
     });
     const turns = Array.isArray(page?.data) ? page.data.map(normalizeHistoryTurn).reverse() : [];
+    for (const turn of turns) {
+      for (const activity of Array.isArray(turn.activities) ? turn.activities : []) {
+        this.itemTurns.set(String(activity.id), String(turn.id));
+      }
+    }
     return { machineId: this.definition.id, threadId, turns, nextCursor: page?.nextCursor ?? null };
+  }
+
+  async activityDetail(threadIdValue: unknown, itemIdValue: unknown): Promise<JsonObject> {
+    const { threadId, itemId, item } = await this.resolveActivityItem(threadIdValue, itemIdValue);
+    const detail = activityDetailFromItem(item);
+    if (!detail) throw new Error("No details are available for this activity");
+    return { machineId: this.definition.id, threadId, itemId, detail };
+  }
+
+  async activityImage(threadIdValue: unknown, itemIdValue: unknown): Promise<{ mimeType: string; data: Buffer }> {
+    const { item } = await this.resolveActivityItem(threadIdValue, itemIdValue);
+    if (item.type !== "imageView" && item.type !== "imageGeneration") throw new Error("Image unavailable");
+    if (item.type === "imageGeneration" && typeof item.result === "string" && item.result.length > 0) {
+      if (item.result.length > Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 16 || !/^[A-Za-z0-9+/=\r\n]+$/.test(item.result)) {
+        throw new Error("Image unavailable");
+      }
+      const data = Buffer.from(item.result, "base64");
+      if (data.length < 1 || data.length > MAX_IMAGE_BYTES) throw new Error("Image unavailable");
+      return { mimeType: "image/png", data };
+    }
+    const surfacedPath = String(item.type === "imageView" ? item.path ?? "" : item.savedPath ?? "");
+    const mimeType = imageTypeForPath(surfacedPath);
+    if (!surfacedPath || !mimeType) throw new Error("Image unavailable");
+    let data: Buffer;
+    if (this.definition.ssh) {
+      data = await readRemoteImage(this.definition.ssh, surfacedPath, /windows/i.test(this.state.platform));
+    } else {
+      const stat = statSync(surfacedPath);
+      if (!stat.isFile() || stat.size < 1 || stat.size > MAX_IMAGE_BYTES) throw new Error("Image unavailable");
+      data = readFileSync(surfacedPath);
+    }
+    if (data.length < 1 || data.length > MAX_IMAGE_BYTES) throw new Error("Image unavailable");
+    return { mimeType, data };
   }
 
   async listLoadedThreads(): Promise<LoadedThreadSummary[]> {
@@ -2235,6 +2503,48 @@ class MachineRuntime {
     }
   }
 
+  private rememberItem(item: any, turnId: string): void {
+    if (!item || typeof item !== "object" || item.id === undefined || item.id === null) return;
+    const itemId = String(item.id);
+    this.itemCache.delete(itemId);
+    this.itemCache.set(itemId, { turnId, item });
+    this.itemTurns.set(itemId, turnId);
+    while (this.itemCache.size > MAX_DETAIL_ITEMS) {
+      const oldest = this.itemCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.itemCache.delete(oldest);
+    }
+  }
+
+  private async resolveActivityItem(threadIdValue: unknown, itemIdValue: unknown): Promise<{ threadId: string; itemId: string; item: JsonObject }> {
+    if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const threadId = String(threadIdValue ?? "");
+    const itemId = String(itemIdValue ?? "");
+    if (!threadId || threadId !== this.state.thread.id) throw new Error("The selected task changed; close this detail and try again");
+    if (!itemId || itemId.length > 512) throw new Error("Invalid activity");
+    const cached = this.itemCache.get(itemId);
+    if (cached) return { threadId, itemId, item: cached.item };
+    const knownTurnId = this.itemTurns.get(itemId);
+    let cursor: string | null = null;
+    for (let pageIndex = 0; pageIndex < DETAIL_ITEMS_MAX_PAGES; pageIndex += 1) {
+      const page = await this.rpc.request("thread/items/list", {
+        threadId,
+        ...(knownTurnId ? { turnId: knownTurnId } : {}),
+        cursor,
+        limit: DETAIL_ITEMS_PAGE_LIMIT,
+        sortDirection: "desc",
+      });
+      for (const entry of Array.isArray(page?.data) ? page.data : []) {
+        const turnId = String(entry?.turnId ?? knownTurnId ?? "");
+        this.rememberItem(entry?.item, turnId);
+        if (String(entry?.item?.id ?? "") === itemId) return { threadId, itemId, item: entry.item };
+      }
+      cursor = page?.nextCursor ? String(page.nextCursor) : null;
+      if (!cursor) break;
+    }
+    throw new Error("Activity details are unavailable");
+  }
+
   private handleItem(item: any, turnId: unknown, phase: "start" | "done"): void {
     const itemTurnId = String(turnId ?? this.state.turn?.id ?? "");
     if (item?.type === "agentMessage" && phase === "done") {
@@ -2256,6 +2566,7 @@ class MachineRuntime {
       }
       return;
     }
+    this.rememberItem(item, itemTurnId);
     const activity = activityFromItem(item, phase, itemTurnId);
     if (!activity) return;
     const index = this.state.activities.findIndex((candidate) => candidate.id === activity.id);
@@ -2303,6 +2614,8 @@ class MachineRuntime {
     this.state.activities = [];
     this.state.pending = [];
     this.pendingServerRequests.clear();
+    this.itemCache.clear();
+    this.itemTurns.clear();
     this.state.liveMessages = [];
     this.state.model = "Not exposed";
     this.state.reasoningEffort = "Not exposed";
@@ -2443,7 +2756,7 @@ class PocketGateway {
 
   constructor(options: Options) {
     const definitions: MachineDefinition[] = [
-      { id: "local", name: localMachineName(), ssh: null },
+      { id: "local", name: options.localName || localMachineName(), ssh: null },
       ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh })),
     ];
     for (const definition of definitions) {
@@ -2526,6 +2839,14 @@ class PocketGateway {
 
   async history(cursor: string | null, limit: number, machineId?: unknown): Promise<JsonObject> {
     return this.requireSelected(machineId).history(cursor, limit);
+  }
+
+  async activityDetail(machineId: unknown, threadId: unknown, itemId: unknown): Promise<JsonObject> {
+    return this.requireSelected(machineId).activityDetail(threadId, itemId);
+  }
+
+  async activityImage(machineId: unknown, threadId: unknown, itemId: unknown): Promise<{ mimeType: string; data: Buffer }> {
+    return this.requireSelected(machineId).activityImage(threadId, itemId);
   }
 
   async listLoadedThreads(machineId?: unknown): Promise<LoadedThreadSummary[]> {
@@ -2690,11 +3011,23 @@ function sendControlJson(response: ServerResponse, statusCode: number, value: un
   response.end(payload);
 }
 
+function sendImage(response: ServerResponse, value: { mimeType: string; data: Buffer }, gateway: PocketGateway): void {
+  gateway.countBrowserPayload(value.data);
+  response.writeHead(200, {
+    ...securityHeaders(),
+    "Content-Type": value.mimeType,
+    "Cache-Control": "private, no-store",
+    "Content-Length": value.data.length,
+  });
+  response.end(value.data);
+}
+
 function handleControlRequest(
   request: IncomingMessage,
   response: ServerResponse,
   gateway: PocketGateway,
   options: Options,
+  stopPocket: () => void,
   quitPocket: () => void,
 ): void {
   if (!isLoopbackRequest(request)) {
@@ -2716,6 +3049,15 @@ function handleControlRequest(
     }
     return;
   }
+  if (method === "POST" && url.pathname === "/stop") {
+    try {
+      stopPocket();
+      sendControlJson(response, 202, { stopping: true });
+    } catch (error) {
+      sendControlJson(response, 409, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
   sendControlJson(response, 404, { error: "not found" });
 }
 
@@ -2723,6 +3065,7 @@ function staticPath(pathname: string): string | null {
   if (pathname === "/") return join(PUBLIC_DIR, "index.html");
   if (pathname === "/app.js") return join(PUBLIC_DIR, "app.js");
   if (pathname === "/styles.css") return join(PUBLIC_DIR, "styles.css");
+  if (pathname === "/vendor/markdown-it.min.js") return join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js");
   return null;
 }
 
@@ -2808,6 +3151,30 @@ async function handleRequest(
   }
   if (isShuttingDown() && (url.pathname.startsWith("/api/") || url.pathname === "/events")) {
     sendJson(response, 503, { error: "Codex Pocket is stopping" }, gateway);
+    return;
+  }
+  if (url.pathname === "/api/activity/detail" && method === "GET") {
+    try {
+      sendJson(response, 200, await gateway.activityDetail(
+        url.searchParams.get("machineId"),
+        url.searchParams.get("threadId"),
+        url.searchParams.get("itemId"),
+      ), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (url.pathname === "/api/activity/image" && method === "GET") {
+    try {
+      sendImage(response, await gateway.activityImage(
+        url.searchParams.get("machineId"),
+        url.searchParams.get("threadId"),
+        url.searchParams.get("itemId"),
+      ), gateway);
+    } catch {
+      sendJson(response, 404, { error: "Image unavailable" }, gateway);
+    }
     return;
   }
   if (url.pathname === "/api/settings" && method === "GET") {
@@ -3017,6 +3384,7 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2), {
     host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
     port: settings.config.port,
+    localName: settings.config.localName,
     machines: settings.config.machines,
   });
   const authRequired = !isLoopbackHost(options.host);
@@ -3033,8 +3401,10 @@ async function main(): Promise<void> {
     attempts: new Map(),
   };
   for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
+  readFileSync(join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js"));
   const gateway = new PocketGateway(options);
   let restartPocket: () => Promise<{ localUrl: string }>;
+  let stopPocket: () => void;
   let quitPocket: () => void;
   let shuttingDown = false;
   const server = createServer((request, response) => {
@@ -3054,7 +3424,7 @@ async function main(): Promise<void> {
     });
   });
   const controlServer = createServer((request, response) => {
-    handleControlRequest(request, response, gateway, options, () => quitPocket());
+    handleControlRequest(request, response, gateway, options, () => stopPocket(), () => quitPocket());
   });
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (): Promise<void> => {
@@ -3085,6 +3455,11 @@ async function main(): Promise<void> {
     shuttingDown = true;
     setTimeout(() => void shutdown(), 350).unref();
     return { localUrl };
+  };
+  stopPocket = () => {
+    if (shuttingDown) throw new Error("Pocket is already stopping");
+    shuttingDown = true;
+    setTimeout(() => void shutdown(), 75).unref();
   };
   quitPocket = () => {
     if (shuttingDown) throw new Error("Pocket is already stopping");

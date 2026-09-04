@@ -45,21 +45,13 @@
           <span class="elapsed" id="elapsed">—</span>
           <span class="quota-chip" id="quota-chip" title="Quota unavailable">Quota —</span>
         </div>
-        <div class="runtime-controls">
-          <label class="sr-only" for="model-select">Model</label>
-          <select id="model-select" aria-label="Model" disabled><option>Model</option></select>
-          <label class="sr-only" for="effort-select">Reasoning effort</label>
-          <select id="effort-select" aria-label="Reasoning effort" disabled><option>Effort</option></select>
-          <label class="sr-only" for="access-select">Access</label>
-          <select id="access-select" aria-label="Access" disabled><option>Access</option></select>
-        </div>
         <div class="topbar-actions">
           <button class="secondary-button icon-button details-toggle" id="inspector-button" type="button" aria-expanded="false" aria-label="Toggle task details" title="Toggle task details">
             <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3.5 3.5h13v13h-13zM12 3.5v13"/></svg>
           </button>
           <button class="secondary-button" id="settings-button" type="button">Settings</button>
           <div class="connection" id="connection" aria-live="polite" title="Gateway connection">
-            <span class="connection-dot"></span><span id="connection-label">Connecting</span>
+            <span class="connection-dot"></span><span class="sr-only" id="connection-label">Connecting</span>
           </div>
         </div>
       </header>
@@ -100,15 +92,24 @@
               <div><dt>Machine</dt><dd id="machine">—</dd></div>
               <div><dt>Working path</dt><dd id="project">—</dd></div>
             </dl>
+            <section class="secondary-panel runtime-panel" aria-labelledby="runtime-title">
+              <div class="panel-heading"><h3 id="runtime-title">Runtime</h3></div>
+              <label for="model-select">Model</label>
+              <select id="model-select" aria-label="Model" disabled><option>Model</option></select>
+              <label for="effort-select">Reasoning effort</label>
+              <select id="effort-select" aria-label="Reasoning effort" disabled><option>Effort</option></select>
+              <label for="access-select">Access</label>
+              <select id="access-select" aria-label="Access" disabled><option>Access</option></select>
+            </section>
             <section class="secondary-panel" id="plan-panel" aria-labelledby="plan-title" hidden>
               <div class="panel-heading"><h3 id="plan-title">Current plan</h3><span class="count-badge" id="plan-count">0/0</span></div>
               <ol class="plan-list" id="plan-list"></ol>
             </section>
             <section class="secondary-panel display-panel" aria-labelledby="display-title">
               <div class="panel-heading"><h3 id="display-title">Display</h3></div>
-              <label class="display-option"><input id="display-commands" type="checkbox" checked><span>Commands &amp; tools</span></label>
-              <label class="display-option"><input id="display-reasoning" type="checkbox" checked><span>Reasoning summaries</span></label>
-              <label class="display-option"><input id="display-collaboration" type="checkbox" checked><span>Multi-agent</span></label>
+              <label class="display-option"><input id="display-commands" type="checkbox" checked><span>Tool calls</span></label>
+              <label class="display-option"><input id="display-reasoning" type="checkbox" checked><span>Reasoning</span></label>
+              <label class="display-option"><input id="display-collaboration" type="checkbox" checked><span>Subagents</span></label>
               <label class="display-option"><input id="display-images" type="checkbox" checked><span>Images</span></label>
               <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context compaction</span></label>
             </section>
@@ -119,38 +120,45 @@
 
     <section class="settings-screen" id="settings-screen" hidden role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <form class="settings-card" id="settings-form">
-        <div class="settings-heading"><div><p class="eyebrow">Local configuration</p><h2 id="settings-title">Settings</h2></div><button class="icon-button" id="settings-close" type="button" aria-label="Close settings">×</button></div>
-        <fieldset>
-          <legend>Network</legend>
+        <div class="settings-heading"><h2 id="settings-title">Settings</h2><button class="icon-button" id="settings-close" type="button" aria-label="Close settings">×</button></div>
+        <section class="settings-section" aria-labelledby="settings-network-title">
+          <h3 id="settings-network-title">Network</h3>
           <label class="checkbox-row" for="settings-lan-enabled"><input id="settings-lan-enabled" type="checkbox"><span>Enable access from local network</span></label>
-          <label for="settings-host">Bind address</label><input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required>
+          <div class="network-fields">
+            <div><label for="settings-host">Bind address</label><input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required></div>
+            <div><label for="settings-port">Port</label><input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required></div>
+          </div>
           <p class="field-help">Use 0.0.0.0 for all local-network interfaces.</p>
-          <label for="settings-port">Port</label><input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required>
           <div class="phone-urls" id="phone-urls" hidden><span>Open on your phone</span><div id="phone-url-list"></div></div>
-        </fieldset>
-        <fieldset>
-          <legend>Access</legend>
+        </section>
+        <section class="settings-section" aria-labelledby="settings-security-title">
+          <h3 id="settings-security-title">Security</h3>
           <label for="settings-pin">4-digit PIN</label><input id="settings-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="Leave blank to keep current PIN">
           <p class="field-help" id="settings-pin-state">No PIN configured.</p>
-        </fieldset>
-        <fieldset>
-          <legend>Appearance</legend>
+        </section>
+        <section class="settings-section" aria-labelledby="settings-appearance-title">
+          <h3 id="settings-appearance-title">Appearance</h3>
           <label for="settings-theme">Theme</label>
           <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
           <p class="field-help">Stored in this browser only.</p>
-        </fieldset>
-        <fieldset>
-          <legend>Machines</legend>
+        </section>
+        <section class="settings-section" aria-labelledby="settings-machines-title">
+          <h3 id="settings-machines-title">Machines</h3>
+          <label for="settings-local-name">Local machine display name</label>
+          <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname">
+          <p class="field-help">Optional. This changes only the name shown in Pocket.</p>
+          <h4>SSH machines</h4>
           <div class="settings-machines" id="settings-machines"></div>
           <button class="secondary-button machine-add" id="machine-add" type="button">Add machine</button>
           <p class="field-help">Use an SSH alias that already works from this Mac. Pocket never stores SSH credentials.</p>
-        </fieldset>
+        </section>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
         <div class="settings-quit"><p>Stop the host app and release its local and remote connections.</p><button class="danger-button" id="quit-pocket" type="button">Quit Codex Pocket</button></div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
         <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save settings</button></div>
       </form>
     </section>
+    <script src="/vendor/markdown-it.min.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

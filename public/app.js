@@ -52,6 +52,7 @@ const elements = {
   settingsPin: document.querySelector("#settings-pin"),
   settingsPinState: document.querySelector("#settings-pin-state"),
   settingsTheme: document.querySelector("#settings-theme"),
+  settingsLocalName: document.querySelector("#settings-local-name"),
   settingsMachines: document.querySelector("#settings-machines"),
   machineAdd: document.querySelector("#machine-add"),
   settingsRestart: document.querySelector("#settings-restart"),
@@ -61,6 +62,22 @@ const elements = {
   phoneUrlList: document.querySelector("#phone-url-list"),
   settingsStatus: document.querySelector("#settings-status"),
 };
+
+const markdown = window.markdownit({ html: false, linkify: false, breaks: true, typographer: false });
+const defaultLinkOpen = markdown.renderer.rules.link_open
+  || ((tokens, index, options, environment, renderer) => renderer.renderToken(tokens, index, options));
+markdown.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
+  const href = tokens[index].attrGet("href") || "";
+  if (!/^(?:https?:|mailto:)/i.test(href)) tokens[index].attrSet("href", "#");
+  tokens[index].attrSet("target", "_blank");
+  tokens[index].attrSet("rel", "noopener noreferrer");
+  return defaultLinkOpen(tokens, index, options, environment, renderer);
+};
+
+function renderMarkdownInto(element, value) {
+  element.classList.add("markdown");
+  element.innerHTML = markdown.render(String(value || ""));
+}
 
 const phaseLabels = {
   connecting: "Connecting",
@@ -105,6 +122,8 @@ let savingSettings = false;
 let restartingPocket = false;
 let quittingPocket = false;
 let intentionalQuit = false;
+const activityDetails = new Map();
+const activityDetailRequests = new Map();
 
 const DISPLAY_STORAGE_KEY = "codex-pocket-info-display";
 const THEME_STORAGE_KEY = "codex-pocket-theme";
@@ -794,42 +813,195 @@ function messageNode(message) {
   meta.append(role, time);
   const body = document.createElement("div");
   body.className = "message-body";
-  body.textContent = message.text;
+  renderMarkdownInto(body, message.text);
   article.append(meta, body);
   return article;
 }
 
+function detailField(label, value, className = "detail-code") {
+  if (value === null || value === undefined || value === "") return null;
+  const field = document.createElement("div");
+  field.className = "detail-field";
+  const heading = document.createElement("strong");
+  heading.textContent = label;
+  const content = document.createElement(className === "detail-code" ? "pre" : "div");
+  content.className = className;
+  content.textContent = String(value);
+  field.append(heading, content);
+  return field;
+}
+
+function diffNode(value) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "detail-diff";
+  for (const text of String(value || "").split("\n")) {
+    const line = document.createElement("span");
+    line.className = `diff-line ${text.startsWith("+") && !text.startsWith("+++") ? "add" : text.startsWith("-") && !text.startsWith("---") ? "remove" : "context"}`;
+    line.textContent = text || " ";
+    wrapper.append(line);
+  }
+  return wrapper;
+}
+
+function renderRichActivityDetail(container, activity, value) {
+  container.replaceChildren();
+  if (!value) return;
+  if (value.loading) {
+    container.append(Object.assign(document.createElement("span"), { className: "detail-note", textContent: "Loading details…" }));
+    return;
+  }
+  if (value.error) {
+    container.append(Object.assign(document.createElement("span"), { className: "detail-note", textContent: value.error }));
+    return;
+  }
+  const detail = value.detail || {};
+  const append = (node) => { if (node) container.append(node); };
+  if (detail.type === "commandExecution") {
+    append(detailField("Command", detail.command));
+    append(detailField("Working directory", detail.cwd));
+    const facts = [detail.duration, detail.exitCode !== null && detail.exitCode !== 0 ? `exit ${detail.exitCode}` : ""].filter(Boolean).join(" · ");
+    append(detailField("Result", facts, "detail-note"));
+    append(detailField("Output", detail.output));
+    if (detail.outputTruncated) append(detailField("", "Output truncated", "detail-note"));
+  } else if (detail.type === "fileChange") {
+    for (const change of detail.changes || []) {
+      const field = document.createElement("div");
+      field.className = "detail-field";
+      const heading = document.createElement("strong");
+      heading.textContent = `${change.kind || "modified"} · ${change.path || "Unknown file"}`;
+      field.append(heading, diffNode(change.diff));
+      container.append(field);
+    }
+    if (detail.truncated) append(detailField("", "Output truncated", "detail-note"));
+  } else if (detail.type === "mcpToolCall" || detail.type === "dynamicToolCall") {
+    append(detailField("Tool", [detail.server || detail.namespace, detail.tool].filter(Boolean).join(" / ")));
+    append(detailField("Arguments", detail.arguments));
+    append(detailField("Result", detail.result));
+    append(detailField("Error", detail.error));
+    append(detailField("Duration", detail.duration, "detail-note"));
+    if (detail.truncated) append(detailField("", "Output truncated", "detail-note"));
+  } else if (detail.type === "webSearch") {
+    append(detailField("Query", detail.query));
+    append(detailField("Action", detail.action));
+    append(detailField("Results", detail.results));
+    if (detail.truncated) append(detailField("", "Output truncated", "detail-note"));
+  } else if (detail.type === "collabAgentToolCall") {
+    append(detailField("Action", detail.tool));
+    append(detailField("Prompt", detail.prompt));
+    append(detailField("Runtime", [detail.model, detail.reasoningEffort].filter(Boolean).join(" · "), "detail-note"));
+    append(detailField("Subagents", detail.subagents?.length ? `${detail.subagents.length}` : "", "detail-note"));
+  } else if (detail.type === "imageView" || detail.type === "imageGeneration") {
+    append(detailField("Image", detail.name, "detail-note"));
+    append(detailField("Revised prompt", detail.revisedPrompt));
+    append(detailField("Failure", detail.failure));
+    if (detail.imageAvailable) {
+      const image = document.createElement("img");
+      const url = new URL("/api/activity/image", location.origin);
+      url.searchParams.set("machineId", state.machineId);
+      url.searchParams.set("threadId", state.thread.id);
+      url.searchParams.set("itemId", activity.id);
+      image.className = "detail-image";
+      image.alt = detail.name || "Codex image";
+      image.loading = "lazy";
+      image.addEventListener("error", () => {
+        image.replaceWith(Object.assign(document.createElement("span"), { className: "detail-note", textContent: "Image unavailable" }));
+      }, { once: true });
+      image.src = url.toString();
+      container.append(image);
+    } else {
+      append(detailField("", "Image unavailable", "detail-note"));
+    }
+  }
+}
+
+async function loadActivityDetail(activity) {
+  const epoch = historyEpoch;
+  const machineId = state?.machineId;
+  const threadId = state?.thread?.id;
+  if (!machineId || !threadId || activityDetailRequests.has(activity.id)) return;
+  const request = { epoch, machineId, threadId };
+  activityDetailRequests.set(activity.id, request);
+  activityDetails.set(activity.id, { expanded: true, loading: true });
+  const scrollTop = elements.conversation.scrollTop;
+  renderConversation({ restoreScrollTop: scrollTop });
+  try {
+    const url = new URL("/api/activity/detail", location.origin);
+    url.searchParams.set("machineId", machineId);
+    url.searchParams.set("threadId", threadId);
+    url.searchParams.set("itemId", activity.id);
+    const response = await apiFetch(url);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Details unavailable");
+    if (epoch !== historyEpoch || state?.machineId !== machineId || state?.thread?.id !== threadId
+      || result.machineId !== machineId || result.threadId !== threadId || result.itemId !== activity.id) return;
+    activityDetails.set(activity.id, { expanded: true, detail: result.detail });
+  } catch (error) {
+    if (epoch !== historyEpoch || state?.machineId !== machineId || state?.thread?.id !== threadId) return;
+    activityDetails.set(activity.id, { expanded: true, error: error.message || "Details unavailable" });
+  } finally {
+    if (activityDetailRequests.get(activity.id) === request) activityDetailRequests.delete(activity.id);
+  }
+  renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+}
+
 function activityNode(activity) {
   const article = document.createElement("article");
-  article.className = `timeline-activity ${activity.kind} ${activity.status}`;
+  const detailState = activityDetails.get(activity.id);
+  article.className = `timeline-activity ${activity.kind} ${activity.status} ${activity.expandable ? "expandable" : ""} ${detailState?.expanded ? "expanded" : ""}`;
   article.dataset.activityId = activity.id;
+  const summary = document.createElement(activity.expandable ? "button" : "div");
+  summary.className = "activity-summary";
+  if (activity.expandable) {
+    summary.type = "button";
+    summary.setAttribute("aria-expanded", String(Boolean(detailState?.expanded)));
+    summary.addEventListener("click", () => {
+      const current = activityDetails.get(activity.id);
+      if (current?.expanded) {
+        activityDetails.set(activity.id, { ...current, expanded: false });
+        renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+      } else if (current?.detail || current?.error) {
+        activityDetails.set(activity.id, { ...current, expanded: true });
+        renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+      } else {
+        loadActivityDetail(activity);
+      }
+    });
+  }
   const heading = document.createElement("div");
   heading.className = "activity-heading";
   const kind = document.createElement("span");
   kind.className = "activity-kind";
   const labels = {
     command: "Command", tool: "Tool", search: "Search", files: "File changes",
-    reasoning: "Reasoning summary", collaboration: "Multi-agent", image: "Image", compaction: "Context",
+    reasoning: "Reasoning", collaboration: "Subagents", image: "Image", compaction: "Context", review: "Review",
   };
   kind.textContent = labels[activity.kind] || "Activity";
   const activityStatus = document.createElement("span");
   activityStatus.className = "activity-status";
-  activityStatus.textContent = activity.status;
+  activityStatus.textContent = activity.status === "interrupted" ? "Stopped" : `${activity.status.charAt(0).toUpperCase()}${activity.status.slice(1)}`;
   heading.append(kind, activityStatus);
   const label = document.createElement("div");
   label.className = "activity-label";
   label.textContent = activity.label;
-  article.append(heading, label);
+  summary.append(heading, label);
+  article.append(summary);
   if (activity.detail) {
     const detail = document.createElement("div");
     detail.className = "activity-detail";
-    detail.textContent = activity.detail;
+    if (activity.kind === "reasoning") renderMarkdownInto(detail, activity.detail);
+    else detail.textContent = activity.detail;
     article.append(detail);
+  }
+  if (activity.expandable && detailState?.expanded) {
+    const rich = document.createElement("div");
+    rich.className = "activity-rich-detail";
+    renderRichActivityDetail(rich, activity, detailState);
+    article.append(rich);
   }
   return article;
 }
 
-function renderConversation({ preserveScroll = null, forceBottom = false } = {}) {
+function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
   const ordered = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
@@ -859,7 +1031,9 @@ function renderConversation({ preserveScroll = null, forceBottom = false } = {})
   for (const entry of timeline) {
     elements.conversation.append(entry.type === "message" ? messageNode(entry.value) : activityNode(entry.value));
   }
-  if (preserveScroll) {
+  if (restoreScrollTop !== null) {
+    elements.conversation.scrollTop = restoreScrollTop;
+  } else if (preserveScroll) {
     const addedHeight = elements.conversation.scrollHeight - preserveScroll.scrollHeight;
     elements.conversation.scrollTop = preserveScroll.scrollTop + addedHeight;
     shouldFollowConversation = false;
@@ -891,6 +1065,8 @@ function resetConversationState() {
   liveMessages.clear();
   historyActivities.clear();
   liveActivities.clear();
+  activityDetails.clear();
+  activityDetailRequests.clear();
   nextCursor = null;
   historyRequest = null;
   shouldFollowConversation = true;
@@ -1459,6 +1635,7 @@ function renderSettings(value) {
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";
   elements.settingsPort.value = String(value.port || 4173);
+  elements.settingsLocalName.value = value.localName || "";
   elements.settingsPin.value = "";
   elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
   elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured. Enter a new PIN only to change it." : "No PIN configured.";
@@ -1629,6 +1806,7 @@ elements.settingsForm.addEventListener("submit", async (event) => {
         host: elements.settingsHost.value.trim(),
         port: Number(elements.settingsPort.value),
         pin,
+        localName: elements.settingsLocalName.value.trim(),
         machines: machineSettingsValue(),
       }),
     });

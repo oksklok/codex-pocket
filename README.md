@@ -10,15 +10,16 @@ localhost Node gateway
 responsive browser UI
 ```
 
-The browser never receives the raw app-server stream. The gateway keeps a small in-memory state, coalesces assistant text deltas, and forwards only compact thread, turn, message, plan, activity, request, and completion updates. Raw reasoning, response events, command output, diffs, and file contents stay local and are suppressed.
+The browser never receives the raw app-server stream. The gateway keeps a small in-memory state, coalesces assistant text deltas, and forwards only compact thread, turn, message, plan, activity, request, and completion updates. Raw reasoning and response events stay local; bounded command output, diffs, tool results, and surfaced images are fetched only when an activity is expanded.
 
 ## Requirements
 
 - Codex CLI with `app-server proxy` support
 - Node.js 22.6 or newer
 - a supported shared/managed Codex app-server runtime
+- `npm install` once after cloning or updating dependencies
 
-No npm packages are required.
+Pocket uses one local browser dependency for safe Markdown rendering. It never loads scripts from a CDN.
 
 ## Normal macOS use
 
@@ -26,7 +27,7 @@ Double-click `Codex Pocket.app` in this repository.
 
 The tiny native menu-bar host finds Node from common paths or the bundled ChatGPT/Codex runtime, starts or reuses the gateway, and then stays visible as a status icon without opening a browser tab. Choose **Open Pocket** from its menu when you want a local browser client. Double-clicking the app again is a no-op: it does not create another icon, gateway, or browser tab. Keep the app bundle inside the project folder so it can locate `gateway.ts`.
 
-Browser tabs are only clients. Closing every Pocket tab does not stop the gateway, and phone/laptop clients keep working while the menu-bar icon remains. **Quit Codex Pocket** from either the menu bar or authenticated web Settings gracefully releases Pocket's local and SSH connections, removes the status icon, and stops the host. **Restart Pocket** performs the existing gateway handoff without quitting the menu-bar host.
+Browser tabs are only clients. Closing every Pocket tab does not stop the gateway, and phone/laptop clients keep working while the menu-bar icon remains. The menu header switch can turn only the Pocket gateway off and back on while leaving the native host alive. **Keep Mac Awake** is a separate persisted switch; it prevents idle system sleep only while Pocket is on and still allows display sleep. **Quit Codex Pocket** from either the menu bar or authenticated web Settings gracefully releases Pocket's local and SSH connections, removes the status icon, and stops the host. **Restart Pocket** performs the existing gateway handoff without quitting the menu-bar host.
 
 For normal phone setup:
 
@@ -45,7 +46,7 @@ SSH alias: g14
 Save → Restart Pocket
 ```
 
-The local entry uses the gateway computer's hostname. The top bar's **Machine** selector chooses its shared local runtime or a configured SSH runtime. **Task** shows normal saved sessions from `thread/list`: active sessions first, then other loaded sessions, then recent inactive sessions. Selecting an inactive session resumes it with the official `thread/resume` API before Pocket loads its paginated history.
+The local entry uses the gateway computer's hostname unless an optional display name is set under **Settings → Machines**. The top bar's **Machine** selector chooses its shared local runtime or a configured SSH runtime. **Task** shows normal saved sessions from `thread/list`: active sessions first, then other loaded sessions, then recent inactive sessions. Selecting an inactive session resumes it with the official `thread/resume` API before Pocket loads its paginated history.
 
 The local shared runtime can be unavailable even while Codex Desktop itself is running. Pocket reports that as **Shared runtime unavailable** rather than calling the computer offline. Desktop-owned private stdio sessions are intentionally unsupported and remain available only in the full Codex client.
 
