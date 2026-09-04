@@ -6,6 +6,8 @@
   <string>Codex Pocket</string>
   <key>CFBundleExecutable</key>
   <string>Codex Pocket</string>
+  <key>CFBundleIconFile</key>
+  <string>CodexPocket</string>
   <key>CFBundleIdentifier</key>
   <string>local.codex-pocket.launcher</string>
   <key>CFBundleInfoDictionaryVersion</key>

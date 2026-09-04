@@ -1065,6 +1065,29 @@ function messageFromItem(item: any, turnId?: string, complete = true, fallbackTi
   };
 }
 
+function readableCommandSummary(value: unknown): string {
+  let text = String(value ?? "").trim();
+  if (!text) return "";
+  const powerShell = text.match(/^(?:"[^"]*[\\/]|'[^']*[\\/]|[^\s"']*[\\/])?(?:powershell|pwsh)(?:\.exe)?["']?\s+([\s\S]+)$/i);
+  if (powerShell) {
+    const argumentsText = powerShell[1];
+    if (/(?:^|\s)-(?:encodedcommand|enc)\b/i.test(argumentsText)) return "PowerShell command";
+    const marker = /(?:^|\s)-(?:command|c)\s+/i.exec(argumentsText);
+    if (marker) text = argumentsText.slice(marker.index + marker[0].length);
+  } else {
+    const cmd = text.match(/^(?:"[^"]*[\\/]?)?cmd(?:\.exe)?"?\s+\/(?:[a-z]*c|c)\s+([\s\S]+)$/i);
+    const shell = text.match(/^(?:\/usr\/bin\/env\s+)?(?:[^\s"']*[\/])?(?:ba|z|da)?sh\s+(?:-[a-z]+\s+)*([\s\S]+)$/i);
+    if (cmd) text = cmd[1];
+    else if (shell) text = shell[1];
+  }
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    text = text.slice(1, -1).trim();
+  }
+  const guardedBody = /\btry\s*\{([\s\S]*?)\}\s*finally\s*\{/i.exec(text);
+  if (guardedBody?.[1]) text = guardedBody[1].trim();
+  return safeSummary(text, 260);
+}
+
 function activityFromItem(
   item: any,
   phase: "start" | "done",
@@ -1083,7 +1106,7 @@ function activityFromItem(
   const base = { id, turnId, status, createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime) };
   if (item.type === "commandExecution") {
     const action = Array.isArray(item.commandActions) && item.commandActions.length === 1 ? item.commandActions[0] : null;
-    let label = safeSummary(item.command, 260) || "Run command";
+    let label = readableCommandSummary(item.command) || "Run command";
     if (action?.type === "read") label = `Read ${safeSummary(action.name || basename(String(action.path ?? "")), 180) || "file"}`;
     else if (action?.type === "listFiles") label = action.path ? `List files in ${safeSummary(action.path, 180)}` : "List files";
     else if (action?.type === "search") label = action.query ? `Search for ${safeSummary(action.query, 180)}` : "Search files";
@@ -3070,6 +3093,7 @@ function staticPath(pathname: string): string | null {
   if (pathname === "/") return join(PUBLIC_DIR, "index.html");
   if (pathname === "/app.js") return join(PUBLIC_DIR, "app.js");
   if (pathname === "/styles.css") return join(PUBLIC_DIR, "styles.css");
+  if (pathname === "/pocket-mark.svg") return join(PUBLIC_DIR, "pocket-mark.svg");
   if (pathname === "/vendor/markdown-it.min.js") return join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js");
   return null;
 }
@@ -3405,7 +3429,9 @@ async function main(): Promise<void> {
     sessionId: randomBytes(32).toString("hex"),
     attempts: new Map(),
   };
-  for (const required of ["index.html", "styles.css", "app.js"]) readFileSync(join(PUBLIC_DIR, required));
+  for (const required of ["index.html", "styles.css", "app.js", "pocket-mark.svg"]) {
+    readFileSync(join(PUBLIC_DIR, required));
+  }
   readFileSync(join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js"));
   const gateway = new PocketGateway(options);
   let restartPocket: () => Promise<{ localUrl: string }>;

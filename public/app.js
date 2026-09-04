@@ -19,6 +19,7 @@ const elements = {
   accessSelect: document.querySelector("#access-select"),
   historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
+  jumpLatest: document.querySelector("#jump-latest"),
   planPanel: document.querySelector("#plan-panel"),
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
@@ -27,6 +28,8 @@ const elements = {
   displayCollaboration: document.querySelector("#display-collaboration"),
   displayImages: document.querySelector("#display-images"),
   displayCompaction: document.querySelector("#display-compaction"),
+  expandCommands: document.querySelector("#expand-commands"),
+  expandFiles: document.querySelector("#expand-files"),
   composer: document.querySelector("#composer"),
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
@@ -148,7 +151,10 @@ function applyTheme(theme = selectedTheme) {
 applyTheme();
 
 function loadDisplayPreferences() {
-  const defaults = { commands: true, reasoning: true, collaboration: true, images: true, compaction: true };
+  const defaults = {
+    commands: true, reasoning: true, collaboration: true, images: true, compaction: true,
+    expandCommands: false, expandFiles: false,
+  };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) || "{}") };
   } catch {
@@ -166,6 +172,11 @@ function activityVisible(activity) {
   if (activity.kind === "image") return displayPreferences.images;
   if (activity.kind === "compaction") return displayPreferences.compaction;
   return displayPreferences.commands;
+}
+
+function activityExpandsByDefault(activity) {
+  return (activity.kind === "command" && displayPreferences.expandCommands)
+    || (activity.kind === "files" && displayPreferences.expandFiles);
 }
 
 function effortLabel(value) {
@@ -495,6 +506,8 @@ function renderDisplayControls() {
   elements.displayCollaboration.checked = displayPreferences.collaboration;
   elements.displayImages.checked = displayPreferences.images;
   elements.displayCompaction.checked = displayPreferences.compaction;
+  elements.expandCommands.checked = displayPreferences.expandCommands;
+  elements.expandFiles.checked = displayPreferences.expandFiles;
 }
 
 function renderQueue() {
@@ -861,16 +874,21 @@ function renderRichActivityDetail(container, activity, value) {
   if (detail.type === "commandExecution") {
     append(detailField("Command", detail.command));
     append(detailField("Working directory", detail.cwd));
-    const facts = [detail.duration, detail.exitCode !== null && detail.exitCode !== 0 ? `exit ${detail.exitCode}` : ""].filter(Boolean).join(" · ");
-    append(detailField("Result", facts, "detail-note"));
+    append(detailField("Duration", detail.duration, "detail-note"));
+    if (detail.exitCode !== null && detail.exitCode !== 0) append(detailField("Exit code", detail.exitCode, "detail-note"));
     append(detailField("Output", detail.output));
     if (detail.outputTruncated) append(detailField("", "Output truncated", "detail-note"));
   } else if (detail.type === "fileChange") {
     for (const change of detail.changes || []) {
       const field = document.createElement("div");
       field.className = "detail-field";
-      const heading = document.createElement("strong");
-      heading.textContent = `${change.kind || "modified"} · ${change.path || "Unknown file"}`;
+      const heading = document.createElement("div");
+      heading.className = "detail-change-heading";
+      const kind = document.createElement("strong");
+      kind.textContent = change.kind || "modified";
+      const path = document.createElement("code");
+      path.textContent = change.path || "Unknown file";
+      heading.append(kind, path);
       field.append(heading, diffNode(change.diff));
       container.append(field);
     }
@@ -975,6 +993,9 @@ function activityNode(activity) {
     summary.type = "button";
     summary.setAttribute("aria-expanded", String(Boolean(detailState?.expanded)));
     summary.addEventListener("click", () => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed
+        && summary.contains(selection.anchorNode) && summary.contains(selection.focusNode)) return;
       const current = activityDetails.get(activity.id);
       if (current?.expanded) {
         activityDetails.set(activity.id, { ...current, expanded: false });
@@ -1046,6 +1067,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
     empty.className = "empty-state";
     empty.textContent = "No conversation history yet.";
     elements.conversation.append(empty);
+    updateJumpLatest();
     return;
   }
   for (const entry of timeline) {
@@ -1061,6 +1083,21 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
     elements.conversation.scrollTop = elements.conversation.scrollHeight;
     shouldFollowConversation = true;
   }
+  updateJumpLatest();
+}
+
+function updateJumpLatest() {
+  const distance = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight;
+  elements.jumpLatest.hidden = distance < 200;
+}
+
+function jumpToLatest() {
+  shouldFollowConversation = true;
+  elements.conversation.scrollTo({
+    top: elements.conversation.scrollHeight,
+    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+  });
+  updateJumpLatest();
 }
 
 function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities)) {
@@ -1551,9 +1588,11 @@ function connectEvents() {
     const activity = parseEvent(event);
     const activities = [...(state.activities || [])];
     const index = activities.findIndex((candidate) => candidate.id === activity.id);
+    const expandByDefault = index < 0 && activity.expandable && activityVisible(activity) && activityExpandsByDefault(activity);
     if (index >= 0) activities[index] = activity;
     else activities.push(activity);
     mergeState({ activities: activities.slice(-50) });
+    if (expandByDefault && !activityDetails.has(activity.id)) loadActivityDetail(activity);
   });
   source.addEventListener("message", (event) => {
     if (switchingThread) return;
@@ -1740,8 +1779,10 @@ elements.effortSelect.addEventListener("change", () => updateThreadSettings(elem
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 elements.conversation.addEventListener("scroll", () => {
   shouldFollowConversation = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 80;
+  updateJumpLatest();
   if (!shouldFollowConversation && elements.conversation.scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 });
+elements.jumpLatest.addEventListener("click", jumpToLatest);
 elements.inspectorButton.addEventListener("click", toggleInspector);
 elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
@@ -1752,6 +1793,8 @@ for (const [element, key] of [
   [elements.displayCollaboration, "collaboration"],
   [elements.displayImages, "images"],
   [elements.displayCompaction, "compaction"],
+  [elements.expandCommands, "expandCommands"],
+  [elements.expandFiles, "expandFiles"],
 ]) {
   element.addEventListener("change", () => {
     displayPreferences[key] = element.checked;

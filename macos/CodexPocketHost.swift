@@ -29,6 +29,36 @@ private struct HostStatus: Decodable {
     let quota: QuotaStatus
 }
 
+private func pocketStatusImage() -> NSImage {
+    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+        NSColor.black.setStroke()
+        let pocket = NSBezierPath()
+        pocket.lineWidth = 1.55
+        pocket.lineCapStyle = .round
+        pocket.lineJoinStyle = .round
+        pocket.move(to: NSPoint(x: 3, y: 15))
+        pocket.line(to: NSPoint(x: 15, y: 15))
+        pocket.line(to: NSPoint(x: 15, y: 8))
+        pocket.curve(to: NSPoint(x: 9, y: 2), controlPoint1: NSPoint(x: 15, y: 4.2), controlPoint2: NSPoint(x: 12.6, y: 2))
+        pocket.curve(to: NSPoint(x: 3, y: 8), controlPoint1: NSPoint(x: 5.4, y: 2), controlPoint2: NSPoint(x: 3, y: 4.2))
+        pocket.close()
+        pocket.stroke()
+        let prompt = NSBezierPath()
+        prompt.lineWidth = 1.55
+        prompt.lineCapStyle = .round
+        prompt.lineJoinStyle = .round
+        prompt.move(to: NSPoint(x: 5.7, y: 11.2))
+        prompt.line(to: NSPoint(x: 8.3, y: 8.8))
+        prompt.line(to: NSPoint(x: 5.7, y: 6.4))
+        prompt.move(to: NSPoint(x: 10.1, y: 6.4))
+        prompt.line(to: NSPoint(x: 13.2, y: 6.4))
+        prompt.stroke()
+        return true
+    }
+    image.isTemplate = true
+    return image
+}
+
 private final class StatusMenuView: NSView {
     private let powerSwitch = NSSwitch()
 
@@ -262,8 +292,8 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func installStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Codex Pocket")
-        statusItem.button?.image?.isTemplate = true
+        statusItem.button?.image = pocketStatusImage()
+        statusItem.button?.image?.accessibilityDescription = "Codex Pocket"
         statusItem.button?.toolTip = "Codex Pocket"
         headerView.configure(target: self, action: #selector(togglePocketPower))
         keepAwakeView.configure(target: self, action: #selector(toggleKeepAwake))

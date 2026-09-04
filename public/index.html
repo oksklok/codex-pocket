@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="dark light">
     <title>Codex Pocket</title>
+    <link rel="icon" href="/pocket-mark.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
@@ -29,7 +30,9 @@
 
     <main class="shell" id="app-shell" hidden>
       <header class="topbar">
-        <div class="brand" aria-label="Codex Pocket">CP</div>
+        <div class="brand" aria-label="Codex Pocket">
+          <svg aria-hidden="true" viewBox="0 0 64 64"><path d="M12 17h40v21c0 11-8 18-20 18s-20-7-20-18z"/><path d="m21 29 8 7-8 7M35 43h9"/></svg>
+        </div>
         <div class="selection-controls">
           <div class="machine-control">
             <label class="sr-only" for="machine-select">Machine</label>
@@ -46,13 +49,15 @@
           <span class="quota-chip" id="quota-chip" title="Quota unavailable">Quota —</span>
         </div>
         <div class="topbar-actions">
+          <div class="connection" id="connection" aria-live="polite" title="Gateway connection">
+            <span class="sr-only" id="connection-label">Connecting</span>
+          </div>
+          <button class="secondary-button icon-button settings-button" id="settings-button" type="button" aria-label="Settings" title="Settings">
+            <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 7.25A2.75 2.75 0 1 0 10 12.75 2.75 2.75 0 0 0 10 7.25Z"/><path d="M16.15 11.2a6.9 6.9 0 0 0 0-2.4l1.35-1.05-1.5-2.6-1.58.65a6.6 6.6 0 0 0-2.08-1.2L12.1 2.9h-3l-.24 1.7A6.6 6.6 0 0 0 6.78 5.8L5.2 5.15l-1.5 2.6L5.05 8.8a6.9 6.9 0 0 0 0 2.4L3.7 12.25l1.5 2.6 1.58-.65a6.6 6.6 0 0 0 2.08 1.2l.24 1.7h3l.24-1.7a6.6 6.6 0 0 0 2.08-1.2l1.58.65 1.5-2.6z"/></svg>
+          </button>
           <button class="secondary-button icon-button details-toggle" id="inspector-button" type="button" aria-expanded="false" aria-label="Toggle task details" title="Toggle task details">
             <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3.5 3.5h13v13h-13zM12 3.5v13"/></svg>
           </button>
-          <button class="secondary-button" id="settings-button" type="button">Settings</button>
-          <div class="connection" id="connection" aria-live="polite" title="Gateway connection">
-            <span class="connection-dot"></span><span class="sr-only" id="connection-label">Connecting</span>
-          </div>
         </div>
       </header>
 
@@ -61,6 +66,9 @@
           <div class="history-status" id="history-status" aria-live="polite" hidden></div>
           <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state">Loading recent messages…</p></div>
           <div class="composer-zone">
+            <button class="jump-latest" id="jump-latest" type="button" aria-label="Jump to latest" title="Jump to latest" hidden>
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></svg>
+            </button>
             <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
             <div class="queue-banner" id="queue-banner" hidden>
               <div class="queue-copy"><strong>Queued next</strong><span id="queue-text"></span></div>
@@ -112,6 +120,9 @@
               <label class="display-option"><input id="display-collaboration" type="checkbox" checked><span>Subagents</span></label>
               <label class="display-option"><input id="display-images" type="checkbox" checked><span>Images</span></label>
               <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context compaction</span></label>
+              <div class="display-divider" role="separator"></div>
+              <label class="display-option"><input id="expand-commands" type="checkbox"><span>Expand commands by default</span></label>
+              <label class="display-option"><input id="expand-files" type="checkbox"><span>Expand file changes by default</span></label>
             </section>
           </div>
         </aside>
@@ -148,6 +159,7 @@
           <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname">
           <p class="field-help">Optional. This changes only the name shown in Pocket.</p>
           <h4>SSH machines</h4>
+          <div class="machine-settings-head" aria-hidden="true"><span>Name</span><span>SSH alias</span><span></span></div>
           <div class="settings-machines" id="settings-machines"></div>
           <button class="secondary-button machine-add" id="machine-add" type="button">Add machine</button>
           <p class="field-help">Use an SSH alias that already works from this Mac. Pocket never stores SSH credentials.</p>
