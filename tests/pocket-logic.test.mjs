@@ -78,13 +78,22 @@ test("a final answer closes only its own turn after late activity completion", (
   ]);
 
   const afterLateCompletion = entries.map((entry) => entry.value.id === "reasoning-1"
-    ? { type: "activity", value: { ...entry.value, status: "completed", createdAt: 600 } }
+    ? { type: "activity", value: { ...entry.value, status: "completed" } }
     : entry);
   const ordered = orderTranscriptEntries(afterLateCompletion);
   assert.deepEqual(ordered.map((entry) => entry.value.id), [
     "user-1", "commentary-1", "reasoning-1", "final-1", "user-2",
   ]);
   assert.equal(ordered.filter((entry) => entry.value.id === "reasoning-1").length, 1);
+});
+
+test("interleaved timestamps are not regrouped across turns", () => {
+  const ordered = orderTranscriptEntries([
+    { type: "message", value: { id: "final-1", turnId: "turn-1", role: "assistant", phase: "final_answer", createdAt: 400 } },
+    { type: "message", value: { id: "user-2", turnId: "turn-2", role: "user", phase: null, createdAt: 500 } },
+    { type: "activity", value: { id: "late-1", turnId: "turn-1", status: "completed", createdAt: 600 } },
+  ]);
+  assert.deepEqual(ordered.map((entry) => entry.value.id), ["final-1", "user-2", "late-1"]);
 });
 
 test("legacy item history fallback recognizes only unsupported-method errors", () => {

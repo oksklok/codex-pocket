@@ -37,25 +37,16 @@ export function orderTranscriptEntries(entries) {
       return timeDifference || left.index - right.index;
     });
   const groups = [];
-  const groupsByTurn = new Map();
   for (const item of chronological) {
     const turnId = item.entry.value.turnId;
-    if (!turnId) {
-      groups.push([item]);
-      continue;
-    }
-    let group = groupsByTurn.get(turnId);
-    if (!group) {
-      group = [];
-      groupsByTurn.set(turnId, group);
-      groups.push(group);
-    }
-    group.push(item);
+    const previousGroup = groups.at(-1);
+    if (turnId && previousGroup?.turnId === turnId) previousGroup.items.push(item);
+    else groups.push({ turnId: turnId || null, items: [item] });
   }
   return groups.flatMap((group) => {
     const ordinary = [];
     const finalAnswers = [];
-    for (const item of group) {
+    for (const item of group.items) {
       const isFinalAnswer = item.entry.type === "message"
         && item.entry.value.role === "assistant"
         && item.entry.value.phase === "final_answer";
