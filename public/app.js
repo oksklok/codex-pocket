@@ -1,3 +1,5 @@
+import { destinationTaskStatus, focusedViewportHeight, preserveMessageCreatedAt } from "./pocket-logic.js";
+
 const elements = {
   appShell: document.querySelector("#app-shell"),
   loginScreen: document.querySelector("#login-screen"),
@@ -347,15 +349,6 @@ async function refreshMachines() {
   }
 }
 
-function destinationTaskStatus(machine, task) {
-  const current = machine.id === state?.machineId && task.id === state?.thread?.id;
-  const phase = current ? state?.phase : task.phase;
-  if (phase === "waiting_permission" || phase === "waiting_input") return "Waiting";
-  if (phase === "failed" || /failed|error/i.test(String(task.status || ""))) return "Failed";
-  if (phase === "working" || String(task.status || "").startsWith("active")) return "Working";
-  return "";
-}
-
 function renderDestinationSwitcher() {
   if (elements.destinationSwitcher.hidden) return;
   elements.destinationList.replaceChildren();
@@ -414,7 +407,7 @@ function renderDestinationSwitcher() {
       status.className = "destination-task-status";
       status.textContent = destinationSelection?.machineId === machine.id && destinationSelection?.threadId === task.id
         ? "Opening…"
-        : destinationTaskStatus(machine, task);
+        : destinationTaskStatus(machine, task, state);
       row.append(check, label, status);
       row.addEventListener("click", () => selectDestination(machine.id, task.id));
       group.append(row);
@@ -1229,7 +1222,10 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
   }
   state = { ...(state || {}), ...next };
   if (Array.isArray(next.liveMessages)) {
-    for (const message of next.liveMessages) liveMessages.set(message.id, message);
+    for (const message of next.liveMessages) {
+      const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
+      liveMessages.set(message.id, preserveMessageCreatedAt(existing, message));
+    }
   }
   if (Array.isArray(next.activities)) {
     for (const activity of next.activities) liveActivities.set(activity.id, activity);
@@ -1293,7 +1289,10 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
       || page.threadId !== requestedThreadId) return;
     const preserveScroll = cursor ? { scrollHeight: elements.conversation.scrollHeight, scrollTop: elements.conversation.scrollTop } : null;
     for (const turn of page.turns || []) {
-      for (const message of turn.messages || []) historyMessages.set(message.id, message);
+      for (const message of turn.messages || []) {
+        const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
+        historyMessages.set(message.id, preserveMessageCreatedAt(existing, message));
+      }
       for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
     }
     nextCursor = page.nextCursor;
@@ -1663,18 +1662,36 @@ function connectEvents() {
   source.addEventListener("message", (event) => {
     if (switchingThread) return;
     const message = parseEvent(event);
-    liveMessages.set(message.id, message);
+    const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
+    liveMessages.set(message.id, preserveMessageCreatedAt(existing, message));
     renderConversation();
   });
   source.addEventListener("assistant_delta", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
-    const existing = liveMessages.get(value.id) || { id: value.id, role: "assistant", text: "", createdAt: Date.now(), complete: false };
-    existing.text += value.delta;
-    existing.complete = false;
-    liveMessages.set(value.id, existing);
+    const known = liveMessages.get(value.id) || historyMessages.get(value.id);
+    const message = known
+      ? { ...known }
+      : { id: value.id, role: "assistant", text: "", createdAt: Date.now(), complete: false };
+    message.text += value.delta;
+    message.complete = false;
+    liveMessages.set(value.id, message);
     renderConversation();
   });
+}
+
+function syncComposerViewport() {
+  const visual = window.visualViewport;
+  const constrainedHeight = focusedViewportHeight(
+    document.activeElement === elements.messageText,
+    document.documentElement.clientHeight,
+    visual?.height,
+    visual?.offsetTop,
+  );
+  const constrained = constrainedHeight !== null;
+  elements.appShell.classList.toggle("keyboard-viewport", constrained);
+  if (constrained) elements.appShell.style.setProperty("--pocket-viewport-height", `${constrainedHeight}px`);
+  else elements.appShell.style.removeProperty("--pocket-viewport-height");
 }
 
 function isMobileInspector() { return matchMedia("(max-width: 860px)").matches; }
@@ -1837,6 +1854,10 @@ elements.messageText.addEventListener("input", () => {
   resizeComposer();
   renderComposer();
 });
+elements.messageText.addEventListener("focus", syncComposerViewport);
+elements.messageText.addEventListener("blur", syncComposerViewport);
+window.visualViewport?.addEventListener("resize", syncComposerViewport);
+window.visualViewport?.addEventListener("scroll", syncComposerViewport);
 elements.messageText.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing && elements.messageText.value.trim()) {
     event.preventDefault();
@@ -1862,7 +1883,10 @@ elements.jumpLatest.addEventListener("click", jumpToLatest);
 elements.inspectorButton.addEventListener("click", toggleInspector);
 elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
-window.addEventListener("resize", updateInspectorButtonState);
+window.addEventListener("resize", () => {
+  updateInspectorButtonState();
+  syncComposerViewport();
+});
 for (const [element, key] of [
   [elements.displayCommands, "commands"],
   [elements.displayReasoning, "reasoning"],

@@ -9,6 +9,7 @@ import { hostname, networkInterfaces } from "node:os";
 import { dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { historyTurnTimestamp, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
 type PendingRpc = {
@@ -1193,7 +1194,7 @@ function activityFromItem(
 
 function normalizeHistoryTurn(turn: any): JsonObject {
   const completedAt = turn?.completedAt ? numberTime(turn.completedAt, 0) : null;
-  const createdAt = numberTime(turn?.createdAt ?? turn?.created_at, completedAt ?? 0);
+  const createdAt = numberTime(historyTurnTimestamp(turn, completedAt ?? 0), completedAt ?? 0);
   const items = Array.isArray(turn?.items) ? turn.items : [];
   const messages = items
     .map((item: any, index: number) => messageFromItem(item, String(turn.id), true, createdAt + index)).filter(Boolean);
@@ -2603,16 +2604,16 @@ class MachineRuntime {
       const message = messageFromItem(item, itemTurnId, true) ?? existing;
       if (message) {
         message.complete = true;
-        this.upsertLiveMessage(message);
-        this.broadcast("message", message);
+        const stored = this.upsertLiveMessage(message);
+        this.broadcast("message", stored);
       }
       return;
     }
     if (item?.type === "userMessage") {
       const message = messageFromItem(item, itemTurnId, phase === "done");
       if (message) {
-        this.upsertLiveMessage(message);
-        this.broadcast("message", message);
+        const stored = this.upsertLiveMessage(message);
+        this.broadcast("message", stored);
       }
       return;
     }
@@ -2719,11 +2720,13 @@ class MachineRuntime {
     }
   }
 
-  private upsertLiveMessage(message: PocketMessage): void {
+  private upsertLiveMessage(message: PocketMessage): PocketMessage {
     const index = this.state.liveMessages.findIndex((candidate) => candidate.id === message.id);
-    if (index >= 0) this.state.liveMessages[index] = { ...message, createdAt: this.state.liveMessages[index].createdAt };
-    else this.state.liveMessages.push(message);
+    const stored = preserveMessageCreatedAt(index >= 0 ? this.state.liveMessages[index] : null, message) as PocketMessage;
+    if (index >= 0) this.state.liveMessages[index] = stored;
+    else this.state.liveMessages.push(stored);
     this.state.liveMessages = this.state.liveMessages.slice(-MAX_LIVE_MESSAGES);
+    return stored;
   }
 
   private updateModel(value: any): void {
@@ -2735,13 +2738,7 @@ class MachineRuntime {
   }
 
   private computePhase(): PocketState["phase"] {
-    if (this.state.connectionError && !this.state.connected) return "unavailable";
-    if (this.state.pending.some((request) => request.kind === "permission")) return "waiting_permission";
-    if (this.state.pending.some((request) => request.kind === "input" && request.blocking !== false)) return "waiting_input";
-    if (this.state.turn?.error || this.state.turn?.status === "failed") return "failed";
-    if (this.state.turn?.status === "interrupted") return "stopped";
-    if (this.state.turn?.status === "inProgress" || this.state.threadStatus.startsWith("active")) return "working";
-    return this.state.connected ? "done" : "connecting";
+    return pocketPhase(this.state) as PocketState["phase"];
   }
 
   private messageCapability(): JsonObject {
@@ -3192,6 +3189,7 @@ function handleControlRequest(
 function staticPath(pathname: string): string | null {
   if (pathname === "/") return join(PUBLIC_DIR, "index.html");
   if (pathname === "/app.js") return join(PUBLIC_DIR, "app.js");
+  if (pathname === "/pocket-logic.js") return join(PUBLIC_DIR, "pocket-logic.js");
   if (pathname === "/styles.css") return join(PUBLIC_DIR, "styles.css");
   if (pathname === "/pocket-mark.svg") return join(PUBLIC_DIR, "pocket-mark.svg");
   if (pathname === "/vendor/markdown-it.min.js") return join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js");
@@ -3547,7 +3545,7 @@ async function main(): Promise<void> {
     sessionId: randomBytes(32).toString("hex"),
     attempts: new Map(),
   };
-  for (const required of ["index.html", "styles.css", "app.js", "pocket-mark.svg"]) {
+  for (const required of ["index.html", "styles.css", "app.js", "pocket-logic.js", "pocket-mark.svg"]) {
     readFileSync(join(PUBLIC_DIR, required));
   }
   readFileSync(join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js"));
