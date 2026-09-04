@@ -596,6 +596,7 @@ function redactSecrets(value: unknown): string {
   let text = Array.isArray(value) ? value.map(String).join(" ") : String(value ?? "");
   const secretName = String.raw`(?:[a-z0-9]+[_-])*(?:api[_-]?key|token|password|passwd|secret(?:[_-]?(?:key|access[_-]?key))?|client[_-]?secret|access[_-]?token|auth[_-]?token)`;
   const valuePattern = String.raw`(?:"[^"]*"|'[^']*'|[^\s;|&'"]+)`;
+  const structuredValuePattern = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|null|true|false|-?\d+(?:\.\d+)?|[^\s,}\]\r\n#]+)`;
   // Assignment syntax is especially varied on PowerShell, where nested quoting can
   // double quote marks. Redact the rest of that shell segment instead of risking a
   // partial value leak when a credential assignment cannot be parsed perfectly.
@@ -603,6 +604,10 @@ function redactSecrets(value: unknown): string {
   text = text.replace(new RegExp(String.raw`(^|\s)(--${secretName}(?:\s*=\s*|\s+))${valuePattern}`, "gi"), "$1$2[REDACTED]");
   text = text.replace(/\b(authorization\s*:\s*(?:bearer|basic)\s+)(?:"[^"]*"|'[^']*'|[^\s;|&'"]+)/gi, "$1[REDACTED]");
   text = text.replace(/([?&](?:api[_-]?key|apikey|key|token|access[_-]?token|auth|password|secret|signature|sig|x-(?:amz|goog)-signature)=)[^&#\s'"]+/gi, "$1[REDACTED]");
+  text = text.replace(
+    new RegExp(String.raw`(^|[\s,{\[])(["']?)(${secretName})\2(\s*:\s*)${structuredValuePattern}`, "gi"),
+    '$1$2$3$2$4"[REDACTED]"',
+  );
   return text;
 }
 

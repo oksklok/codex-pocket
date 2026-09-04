@@ -124,6 +124,8 @@ let quittingPocket = false;
 let intentionalQuit = false;
 const activityDetails = new Map();
 const activityDetailRequests = new Map();
+const activityDetailVersions = new Map();
+const terminalDetailRefreshes = new Set();
 
 const DISPLAY_STORAGE_KEY = "codex-pocket-info-display";
 const THEME_STORAGE_KEY = "codex-pocket-theme";
@@ -914,12 +916,14 @@ function renderRichActivityDetail(container, activity, value) {
   }
 }
 
-async function loadActivityDetail(activity) {
+async function loadActivityDetail(activity, force = false) {
   const epoch = historyEpoch;
   const machineId = state?.machineId;
   const threadId = state?.thread?.id;
-  if (!machineId || !threadId || activityDetailRequests.has(activity.id)) return;
-  const request = { epoch, machineId, threadId };
+  if (!machineId || !threadId || (!force && activityDetailRequests.has(activity.id))) return;
+  const version = (activityDetailVersions.get(activity.id) || 0) + 1;
+  activityDetailVersions.set(activity.id, version);
+  const request = { epoch, machineId, threadId, version };
   activityDetailRequests.set(activity.id, request);
   activityDetails.set(activity.id, { expanded: true, loading: true });
   const scrollTop = elements.conversation.scrollTop;
@@ -932,16 +936,26 @@ async function loadActivityDetail(activity) {
     const response = await apiFetch(url);
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Details unavailable");
-    if (epoch !== historyEpoch || state?.machineId !== machineId || state?.thread?.id !== threadId
+    if (activityDetailVersions.get(activity.id) !== version || activityDetailRequests.get(activity.id) !== request
+      || epoch !== historyEpoch || state?.machineId !== machineId || state?.thread?.id !== threadId
       || result.machineId !== machineId || result.threadId !== threadId || result.itemId !== activity.id) return;
     activityDetails.set(activity.id, { expanded: true, detail: result.detail });
   } catch (error) {
-    if (epoch !== historyEpoch || state?.machineId !== machineId || state?.thread?.id !== threadId) return;
+    if (activityDetailVersions.get(activity.id) !== version || activityDetailRequests.get(activity.id) !== request
+      || epoch !== historyEpoch || state?.machineId !== machineId || state?.thread?.id !== threadId) return;
     activityDetails.set(activity.id, { expanded: true, error: error.message || "Details unavailable" });
   } finally {
     if (activityDetailRequests.get(activity.id) === request) activityDetailRequests.delete(activity.id);
   }
   renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+}
+
+function refreshExpandedDetailOnTerminal(previous, activity) {
+  const detail = activityDetails.get(activity.id);
+  if (previous?.status !== "running" || !["completed", "failed", "interrupted"].includes(activity.status)
+    || !detail?.expanded || terminalDetailRefreshes.has(activity.id)) return;
+  terminalDetailRefreshes.add(activity.id);
+  loadActivityDetail(activity, true);
 }
 
 function activityNode(activity) {
@@ -1044,6 +1058,15 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
 }
 
 function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities)) {
+  const terminalTransitions = [];
+  if (Array.isArray(next.activities)) {
+    for (const activity of next.activities) {
+      const previous = liveActivities.get(activity.id) || state?.activities?.find((candidate) => candidate.id === activity.id);
+      if (previous?.status === "running" && ["completed", "failed", "interrupted"].includes(activity.status)) {
+        terminalTransitions.push([previous, activity]);
+      }
+    }
+  }
   if (next.message && !next.message.allowed) {
     composerError = "";
     composerNotice = "";
@@ -1057,6 +1080,7 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
   }
   renderState();
   if (renderMessages) renderConversation();
+  for (const [previous, activity] of terminalTransitions) refreshExpandedDetailOnTerminal(previous, activity);
 }
 
 function resetConversationState() {
@@ -1067,6 +1091,8 @@ function resetConversationState() {
   liveActivities.clear();
   activityDetails.clear();
   activityDetailRequests.clear();
+  activityDetailVersions.clear();
+  terminalDetailRefreshes.clear();
   nextCursor = null;
   historyRequest = null;
   shouldFollowConversation = true;
