@@ -102,7 +102,7 @@ h3 { margin: 0; font-size: .82rem; }
 .login-card button { width: 100%; margin-top: 12px; }
 button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: .52; }
 
-.shell { height: var(--pocket-viewport-height, 100dvh); display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; }
+.shell { height: 100dvh; display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; }
 .topbar {
   position: relative; z-index: 4; display: grid;
   grid-template-columns: auto minmax(240px,560px) minmax(12px,1fr) auto auto;
@@ -256,6 +256,10 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .timeline-activity.compaction, .timeline-activity.review { --activity-color: var(--activity-neutral); }
 .timeline-activity.failed, .timeline-activity.interrupted { --activity-color: var(--danger); }
 .timeline-activity.running .activity-status { color: var(--warning); }
+.timeline-activity.running .activity-status::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 5px;
+  border-radius: 50%; background: currentColor; vertical-align: .04em; animation: working-pulse 1.35s ease-in-out infinite;
+}
 .timeline-activity.failed .activity-status, .timeline-activity.interrupted .activity-status { color: var(--danger); }
 .activity-summary { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .timeline-activity:not(.expandable) .activity-summary { cursor: default; }
@@ -287,9 +291,18 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .detail-image { display: block; max-width: 100%; max-height: min(70vh,720px); margin: 0 auto; border-radius: 7px; object-fit: contain; }
 .detail-note { color: var(--subtle); font-size: .64rem; }
 @keyframes blink { 50% { opacity: .25; } }
+@keyframes working-pulse { 50% { opacity: .35; transform: scale(.78); } }
+
+.working-fallback {
+  width: min(94%, 720px); min-height: 34px; margin: 0 auto 12px; display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; color: var(--muted); font-size: .72rem; font-weight: 650;
+}
+.working-indicator {
+  width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent-strong);
+  animation: working-pulse 1.35s ease-in-out infinite;
+}
 
 .composer-zone { position: relative; border-top: 1px solid var(--line-soft); background: var(--composer-bg); padding: 8px max(12px, calc((100vw - 1050px) / 2)); }
-.shell.keyboard-viewport .composer-zone { padding-bottom: 0; }
 .jump-latest {
   position: absolute; z-index: 3; top: -43px; right: max(16px, calc((100vw - 1050px) / 2));
   display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
@@ -481,4 +494,5 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 
 @media (prefers-reduced-motion: reduce) {
   .inspector, .expandable .activity-label::after { transition: none; }
+  .timeline-activity.running .activity-status::before, .working-indicator { animation: none; }
 }

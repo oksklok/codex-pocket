@@ -9,7 +9,7 @@ import { hostname, networkInterfaces } from "node:os";
 import { dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { historyTurnTimestamp, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
+import { historyTurnTimestamp, isUnsupportedMethodError, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
 type PendingRpc = {
@@ -62,6 +62,7 @@ type PocketMessage = {
   turnId?: string;
   role: "user" | "assistant";
   text: string;
+  phase?: string | null;
   createdAt: number;
   complete: boolean;
 };
@@ -225,6 +226,7 @@ const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_INPUT_ANSWER_LENGTH = 4_000;
 const MAX_LIVE_MESSAGES = 16;
 const MAX_ACTIVITIES = 50;
+const MAX_HISTORY_ACTIVITIES_PER_TURN = 100;
 const MAX_DETAIL_ITEMS = 200;
 const MAX_DETAIL_TEXT = 96_000;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
@@ -1061,6 +1063,7 @@ function messageFromItem(item: any, turnId?: string, complete = true, fallbackTi
     turnId,
     role: item.type === "userMessage" ? "user" : "assistant",
     text,
+    ...(item.type === "agentMessage" ? { phase: item.phase == null ? null : String(item.phase) } : {}),
     createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime),
     complete,
   };
@@ -1192,14 +1195,19 @@ function activityFromItem(
   return null;
 }
 
-function normalizeHistoryTurn(turn: any): JsonObject {
+function normalizeHistoryTurn(turn: any, hydratedItems?: any[]): JsonObject {
   const completedAt = turn?.completedAt ? numberTime(turn.completedAt, 0) : null;
   const createdAt = numberTime(historyTurnTimestamp(turn, completedAt ?? 0), completedAt ?? 0);
-  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const items = hydratedItems ?? (Array.isArray(turn?.items) ? turn.items : []);
   const messages = items
     .map((item: any, index: number) => messageFromItem(item, String(turn.id), true, createdAt + index)).filter(Boolean);
   const activities = items
-    .map((item: any, index: number) => activityFromItem(item, "done", String(turn.id), createdAt + index)).filter(Boolean);
+    .map((item: any, index: number) => activityFromItem(
+      item,
+      item?.status === "inProgress" ? "start" : "done",
+      String(turn.id),
+      createdAt + index,
+    )).filter(Boolean).slice(-MAX_HISTORY_ACTIVITIES_PER_TURN);
   return {
     id: String(turn?.id ?? ""),
     status: String(turn?.status ?? "unknown"),
@@ -1432,6 +1440,7 @@ class MachineRuntime {
   private pendingServerRequests = new Map<string, PendingServerRequest>();
   private itemCache = new Map<string, { turnId: string; item: JsonObject }>();
   private itemTurns = new Map<string, string>();
+  private historyItemsSupported: boolean | null = null;
   private settingsRevision = 0;
   private settingsWaiters = new Set<() => void>();
   private technicalConnectionError: string | null = null;
@@ -1530,21 +1539,78 @@ class MachineRuntime {
 
   async history(cursor: string | null, limit: number): Promise<JsonObject> {
     if (!this.rpc || !this.state.thread) throw new Error("gateway is not attached to a thread");
+    const rpc = this.rpc;
     const threadId = this.state.thread.id;
-    const page = await this.rpc.request("thread/turns/list", {
+    const page = await rpc.request("thread/turns/list", {
       threadId,
       cursor,
       limit,
       sortDirection: "desc",
       itemsView: "summary",
     });
-    const turns = Array.isArray(page?.data) ? page.data.map(normalizeHistoryTurn).reverse() : [];
+    const rawTurns = Array.isArray(page?.data) ? page.data : [];
+    const turns = (await this.hydrateHistoryTurns(rpc, threadId, rawTurns)).reverse();
     for (const turn of turns) {
       for (const activity of Array.isArray(turn.activities) ? turn.activities : []) {
         this.itemTurns.set(String(activity.id), String(turn.id));
       }
     }
     return { machineId: this.definition.id, threadId, turns, nextCursor: page?.nextCursor ?? null };
+  }
+
+  private async hydrateHistoryTurns(rpc: RpcClient, threadId: string, rawTurns: any[]): Promise<JsonObject[]> {
+    if (this.historyItemsSupported === false) {
+      return rawTurns.map((turn) => normalizeHistoryTurn(turn));
+    }
+    const hydrated: JsonObject[] = [];
+    try {
+      for (const turn of rawTurns) {
+        const turnId = String(turn?.id ?? "");
+        if (!turnId) {
+          hydrated.push(normalizeHistoryTurn(turn));
+          continue;
+        }
+        const items: any[] = [];
+        const itemIds = new Set<string>();
+        const seenCursors = new Set<string>();
+        let cursor: string | null = null;
+        do {
+          const itemPage = await rpc.request("thread/items/list", {
+            threadId,
+            turnId,
+            cursor,
+            limit: DETAIL_ITEMS_PAGE_LIMIT,
+            sortDirection: "asc",
+          });
+          this.historyItemsSupported = true;
+          for (const entry of Array.isArray(itemPage?.data) ? itemPage.data : []) {
+            const item = entry?.item;
+            const itemId = item?.id == null ? "" : String(item.id);
+            if (!itemId || itemIds.has(itemId)) continue;
+            itemIds.add(itemId);
+            items.push(item);
+            this.rememberItem(item, String(entry?.turnId ?? turnId));
+          }
+          const nextCursor = itemPage?.nextCursor ? String(itemPage.nextCursor) : null;
+          if (!nextCursor || seenCursors.has(nextCursor)) {
+            cursor = null;
+          } else {
+            seenCursors.add(nextCursor);
+            cursor = nextCursor;
+          }
+        } while (cursor);
+        hydrated.push(normalizeHistoryTurn(turn, items));
+      }
+      return hydrated;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isUnsupportedMethodError(message)) throw error;
+      if (this.historyItemsSupported !== false) {
+        console.warn(`${this.definition.name}: thread/items/list unavailable; using summary history`);
+      }
+      this.historyItemsSupported = false;
+      return rawTurns.map((turn) => normalizeHistoryTurn(turn));
+    }
   }
 
   async activityDetail(threadIdValue: unknown, itemIdValue: unknown): Promise<JsonObject> {

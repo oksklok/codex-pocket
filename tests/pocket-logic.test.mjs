@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 
 import {
   destinationTaskStatus,
-  focusedViewportHeight,
   historyTurnTimestamp,
+  isUnsupportedMethodError,
   pocketPhase,
   preserveMessageCreatedAt,
+  shouldShowWorkingFallback,
 } from "../public/pocket-logic.js";
 
 const machine = { id: "local" };
@@ -54,9 +55,16 @@ test("history messages fall back to turn start instead of turn completion", () =
   assert.equal(historyTurnTimestamp({}, 900), 900);
 });
 
-test("visual viewport fallback activates only for a focused constrained viewport", () => {
-  assert.equal(focusedViewportHeight(false, 800, 480, 0), null);
-  assert.equal(focusedViewportHeight(true, 800, 800, 0), null);
-  assert.equal(focusedViewportHeight(true, 800, 480, 0), 480);
-  assert.equal(focusedViewportHeight(true, 800, 470, 10), 480);
+test("working fallback appears only when no visible current activity is running", () => {
+  assert.equal(shouldShowWorkingFallback("working", [], "turn-1"), true);
+  assert.equal(shouldShowWorkingFallback("working", [{ status: "running", turnId: "turn-1" }], "turn-1"), false);
+  assert.equal(shouldShowWorkingFallback("working", [{ status: "running", turnId: "turn-old" }], "turn-1"), true);
+  assert.equal(shouldShowWorkingFallback("done", [], "turn-1"), false);
+});
+
+test("legacy item history fallback recognizes only unsupported-method errors", () => {
+  assert.equal(isUnsupportedMethodError("Method not found (-32601)"), true);
+  assert.equal(isUnsupportedMethodError("unsupported app-server method"), true);
+  assert.equal(isUnsupportedMethodError("thread/items/list timed out"), false);
+  assert.equal(isUnsupportedMethodError("connection closed"), false);
 });

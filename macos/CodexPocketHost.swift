@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import ServiceManagement
 
 private struct RuntimeRecord: Decodable {
     let pid: Int32
@@ -246,11 +247,13 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let menu = NSMenu()
     private let headerView = StatusMenuView()
     private let keepAwakeView = SwitchMenuView(title: "Keep Mac Awake")
+    private let launchAtLoginView = SwitchMenuView(title: "Launch at Login")
     private let quotaViews = [QuotaMenuView(), QuotaMenuView()]
     private let quotaItems = [NSMenuItem(), NSMenuItem()]
     private let quotaUnavailableItem = NSMenuItem()
     private var openItem: NSMenuItem!
     private var copyItem: NSMenuItem!
+    private var restartItem: NSMenuItem!
     private var quitItem: NSMenuItem!
     private var sleepActivity: NSObjectProtocol?
     private var timer: Timer?
@@ -297,12 +300,12 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.toolTip = "Codex Pocket"
         headerView.configure(target: self, action: #selector(togglePocketPower))
         keepAwakeView.configure(target: self, action: #selector(toggleKeepAwake))
+        launchAtLoginView.configure(target: self, action: #selector(toggleLaunchAtLogin))
         menu.delegate = self
         menu.autoenablesItems = false
         let headerItem = NSMenuItem()
         headerItem.view = headerView
         menu.addItem(headerItem)
-        menu.addItem(.separator())
         let quotaHeadingItem = NSMenuItem()
         quotaHeadingItem.view = SectionMenuView(title: "Quota")
         menu.addItem(quotaHeadingItem)
@@ -314,12 +317,18 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quotaUnavailableItem)
         menu.addItem(.separator())
         openItem = actionItem("Open Pocket", #selector(openPocket), enabled: false)
-        copyItem = actionItem("Copy Phone URL", #selector(copyPhoneURL), enabled: false)
+        copyItem = actionItem("Copy Pocket URL", #selector(copyPhoneURL), enabled: false)
+        restartItem = actionItem("Restart Pocket", #selector(restartPocket), enabled: false)
         menu.addItem(openItem)
         menu.addItem(copyItem)
+        menu.addItem(restartItem)
+        menu.addItem(.separator())
         let keepAwakeItem = NSMenuItem()
         keepAwakeItem.view = keepAwakeView
         menu.addItem(keepAwakeItem)
+        let launchAtLoginItem = NSMenuItem()
+        launchAtLoginItem.view = launchAtLoginView
+        menu.addItem(launchAtLoginItem)
         menu.addItem(.separator())
         quitItem = actionItem("Quit Codex Pocket", #selector(quitPocket), enabled: true)
         menu.addItem(quitItem)
@@ -351,9 +360,14 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         openItem.isEnabled = pocketEnabled && !powerTransition && status != nil
         copyItem.isEnabled = pocketEnabled && !powerTransition && !(status?.phoneUrls.isEmpty ?? true)
+        restartItem.isEnabled = pocketEnabled && !powerTransition && status != nil
         keepAwakeView.update(
             isOn: UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey),
             enabled: !quitting && !powerTransition
+        )
+        launchAtLoginView.update(
+            isOn: launchAtLoginEnabled(),
+            enabled: launchAtLoginAvailable() && !quitting && !powerTransition
         )
         quitItem.isEnabled = !quitting
         menu.update()
@@ -423,6 +437,36 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateMenu()
     }
 
+    @objc private func toggleLaunchAtLogin() {
+        guard !quitting, !powerTransition else { return }
+        guard #available(macOS 13.0, *) else { return }
+        do {
+            let service = SMAppService.mainApp
+            if service.status == .enabled || service.status == .requiresApproval {
+                try service.unregister()
+            } else {
+                try service.register()
+            }
+            updateMenu()
+        } catch {
+            updateMenu()
+            showError("Launch at Login could not be changed: \(error.localizedDescription)")
+        }
+    }
+
+    private func launchAtLoginAvailable() -> Bool {
+        if #available(macOS 13.0, *) { return true }
+        return false
+    }
+
+    private func launchAtLoginEnabled() -> Bool {
+        if #available(macOS 13.0, *) {
+            let status = SMAppService.mainApp.status
+            return status == .enabled || status == .requiresApproval
+        }
+        return false
+    }
+
     private func restoreKeepAwakePreference() {
         reconcileKeepAwakeActivity()
         updateMenu()
@@ -452,6 +496,29 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let activity = sleepActivity else { return }
         ProcessInfo.processInfo.endActivity(activity)
         sleepActivity = nil
+    }
+
+    @objc private func restartPocket() {
+        guard pocketEnabled, !quitting, !powerTransition else { return }
+        powerTransition = true
+        updateMenu()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let stopped = self.runtimeRecord() == nil || self.requestGatewayStop()
+            if stopped { self.waitForGatewayExit() }
+            DispatchQueue.main.async {
+                guard stopped else {
+                    self.powerTransition = false
+                    self.updateMenu()
+                    self.showError("Codex Pocket could not restart its gateway. Check \(self.logURL.path) for details.")
+                    return
+                }
+                self.status = nil
+                self.consecutiveFailures = 0
+                self.updateMenu()
+                self.ensureGateway(fatal: false)
+            }
+        }
     }
 
     @objc private func quitPocket() {

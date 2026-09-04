@@ -23,6 +23,16 @@ export function historyTurnTimestamp(turn, fallback) {
   return turn?.createdAt ?? turn?.created_at ?? turn?.startedAt ?? turn?.started_at ?? fallback;
 }
 
+export function shouldShowWorkingFallback(phase, visibleActivities, activeTurnId) {
+  if (phase !== "working") return false;
+  return !visibleActivities.some((activity) => activity.status === "running"
+    && (!activeTurnId || !activity.turnId || activity.turnId === activeTurnId));
+}
+
+export function isUnsupportedMethodError(message) {
+  return /(?:method[^\n]*not found|unsupported[^\n]*method|-32601)/i.test(String(message || ""));
+}
+
 export function pocketPhase({ connectionError, connected, pending, turn, threadStatus }) {
   if (connectionError && !connected) return "unavailable";
   if (pending.some((request) => request.kind === "permission")) return "waiting_permission";
@@ -31,10 +41,4 @@ export function pocketPhase({ connectionError, connected, pending, turn, threadS
   if (turn?.error || turn?.status === "failed") return "failed";
   if (turn?.status === "interrupted") return "stopped";
   return connected ? "done" : "connecting";
-}
-
-export function focusedViewportHeight(focused, layoutHeight, visualHeight, visualOffsetTop = 0) {
-  if (!focused || !Number.isFinite(layoutHeight) || !Number.isFinite(visualHeight)) return null;
-  const visualBottom = visualHeight + (Number.isFinite(visualOffsetTop) ? visualOffsetTop : 0);
-  return visualBottom + 1 < layoutHeight ? visualBottom : null;
 }

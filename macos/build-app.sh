@@ -14,7 +14,7 @@ if [[ -d "$compatible_sdk" ]]; then
   sdk_args=(-sdk "$compatible_sdk")
 fi
 
-xcrun swiftc -swift-version 5 "${sdk_args[@]}" -O -framework AppKit -framework Foundation "$source_path" -o "$executable_path"
+xcrun swiftc -swift-version 5 "${sdk_args[@]}" -O -framework AppKit -framework Foundation -framework ServiceManagement "$source_path" -o "$executable_path"
 mkdir -p "$resources_dir"
 icon_work_dir="$(mktemp -d)"
 trap 'rm -rf "$icon_work_dir"' EXIT

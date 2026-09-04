@@ -1,4 +1,4 @@
-import { destinationTaskStatus, focusedViewportHeight, preserveMessageCreatedAt } from "./pocket-logic.js";
+import { destinationTaskStatus, preserveMessageCreatedAt, shouldShowWorkingFallback } from "./pocket-logic.js";
 
 const elements = {
   appShell: document.querySelector("#app-shell"),
@@ -1148,27 +1148,34 @@ function activityNode(activity) {
   return article;
 }
 
+function workingFallbackNode() {
+  const row = document.createElement("div");
+  row.className = "working-fallback";
+  row.setAttribute("role", "status");
+  row.setAttribute("aria-label", "Codex is working");
+  const indicator = document.createElement("span");
+  indicator.className = "working-indicator";
+  indicator.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.textContent = "Working…";
+  row.append(indicator, label);
+  return row;
+}
+
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
-  const ordered = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
-  const deduplicated = new Map();
-  for (const message of ordered) {
-    const key = message.turnId
-      ? `${message.turnId}\u0000${message.role}\u0000${message.text}`
-      : `id\u0000${message.id}`;
-    deduplicated.set(key, message);
-  }
-  const messages = [...deduplicated.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  const messages = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
   const allActivities = new Map(historyActivities);
   for (const [id, activity] of liveActivities) allActivities.set(id, activity);
   const activities = [...allActivities.values()].filter(activityVisible);
+  const showWorkingFallback = shouldShowWorkingFallback(state?.phase, activities, state?.turn?.id);
   const timeline = [
     ...messages.map((value) => ({ type: "message", value })),
     ...activities.map((value) => ({ type: "activity", value })),
   ].sort((left, right) => (left.value.createdAt || 0) - (right.value.createdAt || 0));
   elements.conversation.replaceChildren();
-  if (timeline.length === 0) {
+  if (timeline.length === 0 && !showWorkingFallback) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
     empty.textContent = "No conversation history yet.";
@@ -1179,6 +1186,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   for (const entry of timeline) {
     elements.conversation.append(entry.type === "message" ? messageNode(entry.value) : activityNode(entry.value));
   }
+  if (showWorkingFallback) elements.conversation.append(workingFallbackNode());
   if (restoreScrollTop !== null) {
     elements.conversation.scrollTop = restoreScrollTop;
   } else if (preserveScroll) {
@@ -1680,20 +1688,6 @@ function connectEvents() {
   });
 }
 
-function syncComposerViewport() {
-  const visual = window.visualViewport;
-  const constrainedHeight = focusedViewportHeight(
-    document.activeElement === elements.messageText,
-    document.documentElement.clientHeight,
-    visual?.height,
-    visual?.offsetTop,
-  );
-  const constrained = constrainedHeight !== null;
-  elements.appShell.classList.toggle("keyboard-viewport", constrained);
-  if (constrained) elements.appShell.style.setProperty("--pocket-viewport-height", `${constrainedHeight}px`);
-  else elements.appShell.style.removeProperty("--pocket-viewport-height");
-}
-
 function isMobileInspector() { return matchMedia("(max-width: 860px)").matches; }
 function updateInspectorButtonState() {
   const open = isMobileInspector()
@@ -1854,10 +1848,6 @@ elements.messageText.addEventListener("input", () => {
   resizeComposer();
   renderComposer();
 });
-elements.messageText.addEventListener("focus", syncComposerViewport);
-elements.messageText.addEventListener("blur", syncComposerViewport);
-window.visualViewport?.addEventListener("resize", syncComposerViewport);
-window.visualViewport?.addEventListener("scroll", syncComposerViewport);
 elements.messageText.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing && elements.messageText.value.trim()) {
     event.preventDefault();
@@ -1885,7 +1875,6 @@ elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
 window.addEventListener("resize", () => {
   updateInspectorButtonState();
-  syncComposerViewport();
 });
 for (const [element, key] of [
   [elements.displayCommands, "commands"],
@@ -2048,6 +2037,7 @@ async function startApp() {
   try {
     const response = await apiFetch("/api/state");
     applySnapshot(await response.json(), false);
+    refreshNavigationCatalog();
     await Promise.all([refreshMachines(), refreshLoadedThreads()]);
   } catch (error) {
     setHistoryStatus(error.message);
