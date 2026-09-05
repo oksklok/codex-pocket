@@ -308,7 +308,7 @@ test("async answers steer the original active turn, retain failure state, and st
   assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Anything else?", "Please check mobile"));
 });
 
-test("context uses latest total tokens, ignores unrelated threads, and replays during resume", async () => {
+test("bounded resume leaves context unavailable until replay or a later authoritative update", async () => {
   const usage = { total: { totalTokens: 900000 }, last: { totalTokens: 27000 }, modelContextWindow: 100000 };
   assert.deepEqual(contextSnapshot(usage), { usedTokens: 27000, contextWindow: 100000, remainingPercent: 73 });
   assert.equal(contextSnapshot({ ...usage, modelContextWindow: null }), null);
@@ -319,14 +319,35 @@ test("context uses latest total tokens, ignores unrelated threads, and replays d
   update("unrelated"); assert.equal(runtime.snapshot().context, null);
   update("thread-1"); assert.equal(runtime.snapshot().context.remainingPercent, 73);
   runtime.loadedThreads = [{ id: "thread-2", name: "Other", cwd: "/tmp", status: "idle" }];
-  runtime.rpc = { request: async (method) => method === "thread/resume" ? { thread: { id: "thread-2", status: "idle" } } : { data: [] } };
-  await runtime.attachLoadedThread("thread-2", false);
-  assert.equal(runtime.snapshot().context, null);
+  const resumes = [];
   runtime.rpc = { request: async (method, params) => {
-    if (method === "thread/resume") { assert.equal(params.excludeTurns, undefined); update("thread-2"); return { thread: { id: "thread-2", status: "idle" } }; }
+    if (method === "thread/resume") {
+      resumes.push(params);
+      return { thread: { id: "thread-2", status: "idle" } };
+    }
     return { data: [] };
   } };
   await runtime.attachLoadedThread("thread-2", false);
+  assert.deepEqual(resumes, [{ threadId: "thread-2", excludeTurns: true }]);
+  assert.equal(runtime.snapshot().context, null);
+  update("thread-1"); assert.equal(runtime.snapshot().context, null);
+  update("thread-2");
+  assert.deepEqual(runtime.snapshot().context, contextSnapshot(usage));
+  runtime.loadedThreads.push({ id: "thread-3", name: "Replay", cwd: "/tmp", status: "idle" });
+  runtime.rpc = { request: async (method, params) => {
+    if (method === "thread/resume") {
+      resumes.push(params);
+      assert.equal(runtime.snapshot().context, null);
+      update("thread-3");
+      return { thread: { id: "thread-3", status: "idle" } };
+    }
+    return { data: [] };
+  } };
+  await runtime.attachLoadedThread("thread-3", false);
+  assert.deepEqual(resumes, [
+    { threadId: "thread-2", excludeTurns: true },
+    { threadId: "thread-3", excludeTurns: true },
+  ]);
   assert.deepEqual(runtime.snapshot().context, contextSnapshot(usage));
 });
 

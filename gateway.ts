@@ -2511,9 +2511,7 @@ export class MachineRuntime {
     this.state.phase = this.computePhase();
     if (changed && broadcastReset) this.broadcast("snapshot", this.snapshot());
 
-    // CLI 0.153.4 only replays restored token usage when turns are included.
-    // Transcript rendering and activity details still use the paginated history APIs.
-    const resumed = await this.rpc.request("thread/resume", { threadId });
+    const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
     const thread = resumed?.thread ?? {};
     const resumedId = String(thread.id ?? threadId);
     if (resumedId !== threadId) throw new Error("app-server resumed an unexpected thread");
