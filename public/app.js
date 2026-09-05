@@ -4,10 +4,19 @@ import {
   orderTranscriptEntries,
   preserveMessageCreatedAt,
   reconcileSubmission,
+  imageInputs, MAX_INPUT_IMAGES, MAX_INPUT_IMAGE_BYTES,
   resolvedAsyncAnswer,
 } from "./pocket-logic.js";
 
 const elements = {
+  context: document.querySelector("#context-chip"),
+  contextPercent: document.querySelector("#context-percent"),
+  contextFill: document.querySelector("#context-fill"),
+  runtimeReason: document.querySelector("#runtime-reason"),
+  imagePicker: document.querySelector("#image-picker"),
+  attachImage: document.querySelector("#attach-image"),
+  composerImages: document.querySelector("#composer-images"),
+  queueImages: document.querySelector("#queue-images"),
   appShell: document.querySelector("#app-shell"),
   loginScreen: document.querySelector("#login-screen"),
   stoppedScreen: document.querySelector("#stopped-screen"),
@@ -175,6 +184,9 @@ let sendingQueuedMessage = false;
 let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
+let selectedImages = [];
+let readingImages = false;
+let imageDeliveryUnknown = false;
 let enterSends = true;
 try { enterSends = localStorage.getItem("codex-pocket-enter-sends") !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
@@ -316,7 +328,7 @@ async function apiFetch(url, options) {
 async function postMessageAction(url, body) {
   const submissionId = `${state?.submissionEpoch}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
   const requested = { ...body, threadId: state?.thread?.id, turnId: state?.turn?.id,
-    text: body.text ?? state?.queuedMessage?.text, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
+    text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
   let response, result;
   try {
     response = await apiFetch(url, {
@@ -509,6 +521,7 @@ function renderDestinationSwitcher() {
       heading.append(availabilityStatus);
     }
     group.append(heading);
+    if (machine.local && machine.connectionError) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: machine.connectionError }));
 
     for (const task of tasks) {
       const selected = machine.id === state?.machineId && task.id === state?.thread?.id;
@@ -740,8 +753,9 @@ function renderDisplayControls() {
 function renderQueue() {
   const queued = state?.queuedMessage;
   elements.queueBanner.hidden = !queued;
+  renderImageThumbnails(elements.queueImages, queued?.images || []);
   if (queued) {
-    elements.queueText.textContent = queued.text;
+    elements.queueText.textContent = queued.text || `${queued.images?.length || 0} image(s)`;
     elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
@@ -950,7 +964,7 @@ function renderComposer() {
   const capability = state?.message;
   const turnActive = state?.turn?.status === "inProgress" && Boolean(state?.turn?.id);
   const stopping = submittingInterrupt || (turnActive && state?.stoppingTurnId === state?.turn?.id);
-  const hasText = Boolean(elements.messageText.value.trim());
+  const hasText = Boolean(elements.messageText.value.trim()) || selectedImages.length > 0;
   const allowed = Boolean(capability?.allowed)
     && !switchingMachine
     && !switchingThread
@@ -958,13 +972,16 @@ function renderComposer() {
     && !updatingAccess
     && !resolvingApproval
     && !submittingInputRequestId
-    && !stopping;
+    && !stopping
+    && !readingImages
+    && !imageDeliveryUnknown;
   elements.messageText.disabled = !state?.connected
     || !state?.thread
     || switchingMachine
     || switchingThread
     || submittingMessage
     || stopping;
+  elements.attachImage.disabled = elements.messageText.disabled || readingImages || Boolean(state?.queuedMessage) || imageDeliveryUnknown;
   if (turnActive && !hasText) {
     elements.sendMessage.dataset.action = "stop";
     elements.sendMessage.textContent = stopping ? "Stopping…" : "Stop";
@@ -994,6 +1011,63 @@ function renderComposer() {
   elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
   renderAttention();
   renderQueue();
+  renderImageThumbnails(elements.composerImages, selectedImages, true);
+}
+
+function renderImageThumbnails(container, images, removable = false) {
+  container.hidden = !images.length;
+  container.replaceChildren();
+  images.forEach((image, index) => {
+    const thumb = document.createElement("span");
+    thumb.className = "composer-thumbnail";
+    const img = document.createElement("img");
+    img.src = image.url;
+    img.alt = `Image ${index + 1}`;
+    thumb.append(img);
+    if (removable) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Remove image ${index + 1}`);
+      remove.disabled = submittingMessage || readingImages;
+      remove.addEventListener("click", () => {
+        selectedImages = selectedImages.filter((_, candidate) => candidate !== index);
+        if (!selectedImages.length) imageDeliveryUnknown = false;
+        renderComposer();
+      });
+      thumb.append(remove);
+    }
+    container.append(thumb);
+  });
+}
+
+async function addImages(files) {
+  if (elements.attachImage.disabled || !files.length) return;
+  readingImages = true;
+  composerError = "";
+  renderComposer();
+  try {
+    if (selectedImages.length + files.length > MAX_INPUT_IMAGES) throw new Error("Choose up to 4 images");
+    const images = [];
+    for (const file of files) {
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) throw new Error("Use PNG, JPEG, GIF, or WebP images");
+      if (file.size > MAX_INPUT_IMAGE_BYTES) throw new Error("Each image must be 4 MB or smaller");
+      const url = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("Could not read this image"));
+        reader.readAsDataURL(file);
+      });
+      images.push({ type: "image", url });
+    }
+    selectedImages = imageInputs([...selectedImages, ...images]);
+  } catch (error) {
+    composerError = error.message;
+  } finally {
+    readingImages = false;
+    elements.imagePicker.value = "";
+    renderComposer();
+  }
 }
 
 function resizeComposer() {
@@ -1044,6 +1118,12 @@ function renderState() {
   renderPlan();
   renderDisplayControls();
   renderQuota();
+  const context = state.context;
+  elements.contextPercent.textContent = context ? `${context.remainingPercent}%` : "—";
+  elements.contextFill.style.width = `${context?.remainingPercent ?? 0}%`;
+  elements.context.title = context ? `${context.remainingPercent}% context remaining · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
+  elements.runtimeReason.textContent = state.machineId === "local" ? state.connectionError || "" : "";
+  elements.runtimeReason.hidden = !elements.runtimeReason.textContent;
   renderComposer();
 }
 
@@ -1064,6 +1144,7 @@ function messageNode(message) {
   const body = document.createElement("div");
   body.className = "message-body";
   renderMarkdownInto(body, message.text, message);
+  if (message.imageCount) body.append(Object.assign(document.createElement("p"), { className: "image-note", textContent: `${message.imageCount} image${message.imageCount === 1 ? "" : "s"} attached` }));
   if (message.delivery === "async" && message.questions?.length) {
     // Upstream also repeats questions/options in Markdown. Remove only exact duplicate blocks.
     const repeated = new Set(message.questions.flatMap((question) => [question.title, ...question.options]));
@@ -1086,9 +1167,11 @@ function asyncQuestionNode(message, question, index) {
   if (answer !== null) { draft.error = ""; draft.uncertain = false; }
   const form = document.createElement("form");
   form.className = "async-answer";
-  const fields = document.createElement("fieldset");
-  fields.disabled = answer !== null || draft.sending || draft.uncertain || !state?.message?.allowed;
-  const title = document.createElement("legend");
+  const fields = document.createElement("div");
+  fields.className = "async-question";
+  const disabled = answer !== null || draft.sending || draft.uncertain || !state?.message?.allowed;
+  const title = document.createElement("p");
+  title.className = "async-title";
   title.textContent = question.title;
   fields.append(title);
   if (answer !== null) {
@@ -1102,6 +1185,7 @@ function asyncQuestionNode(message, question, index) {
     for (const option of question.options) {
       const choice = document.createElement("button");
       choice.type = "button";
+      choice.disabled = disabled;
       choice.textContent = option;
       choice.classList.toggle("selected", draft.text === option);
       choice.addEventListener("click", () => { draft.text = option; submitAsyncAnswer(message, index, draft); });
@@ -1109,6 +1193,7 @@ function asyncQuestionNode(message, question, index) {
     }
     const input = document.createElement("textarea");
     input.rows = 2;
+    input.disabled = disabled;
     input.maxLength = 8000;
     input.placeholder = "Or write your answer…";
     input.setAttribute("aria-label", `Your answer: ${question.title}`);
@@ -1117,7 +1202,28 @@ function asyncQuestionNode(message, question, index) {
     const send = document.createElement("button");
     send.type = "submit";
     send.textContent = draft.sending ? "Sending…" : "Answer";
-    fields.append(options, input, send);
+    send.disabled = disabled;
+    const freeText = document.createElement("div");
+    freeText.className = "async-free-text";
+    freeText.hidden = question.options.length > 0 && !draft.otherOpen;
+    freeText.append(input, send);
+    fields.append(options);
+    if (question.options.length) {
+      const other = document.createElement("button");
+      other.type = "button";
+      other.className = "other-answer";
+      other.textContent = "Other answer…";
+      other.disabled = disabled;
+      other.setAttribute("aria-expanded", String(!freeText.hidden));
+      other.addEventListener("click", () => {
+        draft.otherOpen = !draft.otherOpen;
+        freeText.hidden = !draft.otherOpen;
+        other.setAttribute("aria-expanded", String(draft.otherOpen));
+        if (draft.otherOpen) input.focus();
+      });
+      fields.append(other);
+    }
+    fields.append(freeText);
   }
   const status = document.createElement("p");
   status.className = "form-status error-text";
@@ -1601,11 +1707,12 @@ async function selectDestination(machineId, threadId) {
 
 async function submitMessage(action) {
   const text = elements.messageText.value;
-  if (!text.trim() || submittingMessage || switchingMachine || switchingThread || state?.queuedMessage) return;
+  const images = selectedImages;
+  if ((!text.trim() && !images.length) || readingImages || imageDeliveryUnknown || submittingMessage || switchingMachine || switchingThread || state?.queuedMessage) return;
   submittingMessage = true;
   composerError = "";
   composerNotice = "";
-  const optimisticQueue = action === "queue" ? { threadId: state?.thread?.id, text, createdAt: Date.now() } : null;
+  const optimisticQueue = action === "queue" ? { threadId: state?.thread?.id, text, images, createdAt: Date.now() } : null;
   if (optimisticQueue) {
     elements.messageText.value = "";
     resizeComposer();
@@ -1613,7 +1720,9 @@ async function submitMessage(action) {
   }
   renderState();
   try {
-    const result = await postMessageAction("/api/message", { machineId: state?.machineId, text, action });
+    const result = await postMessageAction("/api/message", { machineId: state?.machineId, text, action, images });
+    selectedImages = [];
+    imageDeliveryUnknown = false;
     elements.messageText.value = "";
     resizeComposer();
     composerNotice = "";
@@ -1627,7 +1736,8 @@ async function submitMessage(action) {
     });
   } catch (error) {
     if (error.deliveryUnknown) {
-      elements.messageText.value = "";
+      imageDeliveryUnknown = images.length > 0;
+      elements.messageText.value = images.length ? text : "";
       queueDeliveryUnknown = action === "queue";
       resizeComposer();
     } else if (optimisticQueue) {
@@ -1866,6 +1976,7 @@ function connectEvents() {
   source.addEventListener("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("control", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  source.addEventListener("context", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("answers", (event) => { if (!switchingThread) mergeState(parseEvent(event), true); });
   source.addEventListener("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
   source.addEventListener("turn", (event) => {
@@ -2054,6 +2165,12 @@ document.addEventListener("keydown", (event) => {
     if (closeDestinationSwitcher()) elements.destinationButton.focus();
   }
 });
+elements.attachImage.addEventListener("click", () => elements.imagePicker.click());
+elements.imagePicker.addEventListener("change", () => addImages([...elements.imagePicker.files]));
+elements.messageText.addEventListener("paste", (event) => {
+  const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
+  if (files.length) { event.preventDefault(); addImages(files); }
+});
 elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
 window.visualViewport?.addEventListener("resize", fitExpandedComposer);
@@ -2092,7 +2209,7 @@ elements.messageText.addEventListener("input", () => {
 });
 elements.messageText.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229
-    && (enterSends || event.ctrlKey || event.metaKey) && elements.messageText.value.trim()) {
+    && (enterSends || event.ctrlKey || event.metaKey) && (elements.messageText.value.trim() || selectedImages.length)) {
     event.preventDefault();
     elements.composer.requestSubmit();
   }

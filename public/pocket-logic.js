@@ -19,6 +19,45 @@ export function preserveMessageCreatedAt(existing, incoming) {
   return { ...incoming, createdAt: existing.createdAt };
 }
 
+export function contextSnapshot(usage) {
+  const used = usage?.last?.totalTokens, window = usage?.modelContextWindow;
+  if (!Number.isFinite(used) || used < 0 || !Number.isFinite(window) || window <= 0) return null;
+  return { usedTokens: used, contextWindow: window, remainingPercent: Math.round(100 * (1 - Math.min(used, window) / window)) };
+}
+
+export const MAX_INPUT_IMAGES = 4;
+export const MAX_INPUT_IMAGE_BYTES = 4 * 1024 * 1024;
+export const MAX_INPUT_IMAGES_BYTES = 8 * 1024 * 1024;
+
+export function imageInputs(images = []) {
+  if (!Array.isArray(images) || images.length > MAX_INPUT_IMAGES) throw new Error("Choose up to 4 images");
+  let total = 0;
+  return images.map((image) => {
+    const url = image?.url;
+    if (typeof url !== "string" || url.length > Math.ceil(MAX_INPUT_IMAGE_BYTES * 4 / 3) + 40) throw new Error("Each image must be 4 MB or smaller");
+    const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(url);
+    if (!match || match[2].length % 4) throw new Error("Use PNG, JPEG, GIF, or WebP images");
+    const bytes = match[2].length * 3 / 4 - (match[2].endsWith("==") ? 2 : match[2].endsWith("=") ? 1 : 0);
+    total += bytes;
+    if (bytes > MAX_INPUT_IMAGE_BYTES || total > MAX_INPUT_IMAGES_BYTES) throw new Error("Images must be at most 4 MB each and 8 MB together");
+    const header = atob(match[2].slice(0, 32));
+    const valid = match[1] === "image/png" ? header.startsWith("\x89PNG\r\n\x1a\n")
+      : match[1] === "image/jpeg" ? header.startsWith("\xff\xd8\xff")
+      : match[1] === "image/gif" ? /^GIF8[79]a/.test(header)
+      : header.startsWith("RIFF") && header.slice(8, 12) === "WEBP";
+    if (!valid) throw new Error("Image content does not match its type");
+    return { type: "image", url };
+  });
+}
+
+export function messageInputs(text, images = []) {
+  const input = imageInputs(images);
+  if (typeof text !== "string" || text.length > 12000) throw new Error("Message text must be at most 12,000 characters");
+  if (text.trim()) input.unshift({ type: "text", text: text.replace(/\r\n/g, "\n"), text_elements: [] });
+  if (!input.length) throw new Error("Enter a message or choose an image");
+  return input;
+}
+
 export function normalizeAsyncQuestions(questions) {
   if (!Array.isArray(questions)) return [];
   // The protocol uses string titles and nullable arrays of string options.
@@ -53,8 +92,12 @@ export function reconcileSubmission(submissionId, snapshot, requested = {}) {
     return snapshot.asyncAnswers?.[question.messageId]?.[question.index] === question.answer.trim() ? "accepted" : "unknown";
   }
   const text = requested.text?.replace(/\r\n/g, "\n");
-  if (!text) return "unknown";
-  if (requested.action === "queue" && snapshot.queuedMessage?.threadId === requested.threadId && snapshot.queuedMessage.text === text) return "accepted";
+  const images = requested.images || [];
+  if (!text && !images.length) return "unknown";
+  if (requested.action === "queue" && snapshot.queuedMessage?.threadId === requested.threadId && snapshot.queuedMessage.text === text
+    && JSON.stringify((snapshot.queuedMessage.images || []).map((image) => image.url)) === JSON.stringify(images.map((image) => image.url))) return "accepted";
+  // Text alone cannot prove that an image submission landed. Use the receipt or exact queue.
+  if (images.length) return "unknown";
   const previousIds = new Set(requested.previousMessageIds || []);
   const landed = (snapshot.liveMessages || []).some((message) => message.role === "user" && message.text === text
     && !previousIds.has(message.id) && message.turnId

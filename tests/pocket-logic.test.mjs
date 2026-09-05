@@ -10,6 +10,9 @@ import {
   pocketPhase,
   preserveMessageCreatedAt,
   asyncAnswerText,
+  contextSnapshot,
+  imageInputs,
+  messageInputs,
   normalizeAsyncQuestions,
   reconcileSubmission,
   resolvedAsyncAnswer,
@@ -303,4 +306,74 @@ test("async answers steer the original active turn, retain failure state, and st
   await runtime.answerAsyncQuestion({ ...question, index: 1, answer: "Please check mobile" });
   assert.equal(calls.at(-1).method, "turn/start");
   assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Anything else?", "Please check mobile"));
+});
+
+test("context uses latest total tokens, ignores unrelated threads, and replays during resume", async () => {
+  const usage = { total: { totalTokens: 900000 }, last: { totalTokens: 27000 }, modelContextWindow: 100000 };
+  assert.deepEqual(contextSnapshot(usage), { usedTokens: 27000, contextWindow: 100000, remainingPercent: 73 });
+  assert.equal(contextSnapshot({ ...usage, modelContextWindow: null }), null);
+  assert.equal(contextSnapshot({ ...usage, last: { totalTokens: -1 } }), null);
+  assert.equal(contextSnapshot({ ...usage, last: { totalTokens: 200000 } }).remainingPercent, 0);
+  const runtime = activeRuntime();
+  const update = (threadId) => runtime.handleNotification({ method: "thread/tokenUsage/updated", params: { threadId, tokenUsage: usage } });
+  update("unrelated"); assert.equal(runtime.snapshot().context, null);
+  update("thread-1"); assert.equal(runtime.snapshot().context.remainingPercent, 73);
+  runtime.loadedThreads = [{ id: "thread-2", name: "Other", cwd: "/tmp", status: "idle" }];
+  runtime.rpc = { request: async (method) => method === "thread/resume" ? { thread: { id: "thread-2", status: "idle" } } : { data: [] } };
+  await runtime.attachLoadedThread("thread-2", false);
+  assert.equal(runtime.snapshot().context, null);
+  runtime.rpc = { request: async (method, params) => {
+    if (method === "thread/resume") { assert.equal(params.excludeTurns, undefined); update("thread-2"); return { thread: { id: "thread-2", status: "idle" } }; }
+    return { data: [] };
+  } };
+  await runtime.attachLoadedThread("thread-2", false);
+  assert.deepEqual(runtime.snapshot().context, contextSnapshot(usage));
+});
+
+const png = { type: "image", url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==" };
+
+test("bounded native image input supports image-only, queue, steer, and automatic next turn", async () => {
+  assert.deepEqual(messageInputs("", [png]), [png]);
+  assert.equal(messageInputs("Look", [png])[0].text, "Look");
+  assert.throws(() => imageInputs(Array(5).fill(png)), /up to 4/);
+  assert.throws(() => imageInputs([{ url: "file:///etc/passwd" }]), /PNG/);
+  assert.throws(() => imageInputs([{ url: "data:image/png;base64,bm90YW5pbWFnZQ==" }]), /content/);
+  assert.throws(() => imageInputs([{ url: "data:image/png;base64," + "A".repeat(5600000) }]), /4 MB/);
+  const runtime = activeRuntime();
+  const calls = [];
+  let fail = true;
+  runtime.rpc = { request: async (method, params) => {
+    calls.push({ method, params });
+    if (fail) throw new Error("Rejected image turn");
+    return { turn: { id: "turn-2", status: "inProgress" } };
+  } };
+  await runtime.sendMessage("", "queue", [png]);
+  const queued = runtime.state.queuedMessage;
+  assert.deepEqual(queued.images, [png]);
+  await assert.rejects(runtime.sendQueuedMessage("steer"), /Rejected/);
+  assert.equal(runtime.state.queuedMessage, queued);
+  fail = false;
+  await runtime.sendQueuedMessage("steer");
+  assert.deepEqual(calls.at(-1).params.input, [png]);
+  assert.equal(runtime.state.queuedMessage, null);
+  await runtime.sendMessage("Describe this", "queue", [png]);
+  await runtime.startQueuedMessage("thread-1");
+  assert.equal(calls.at(-1).method, "turn/start");
+  assert.deepEqual(calls.at(-1).params.input, messageInputs("Describe this", [png]));
+});
+
+test("image submission recovery matches exact images and never repeats accepted input", async () => {
+  const receipts = new MessageSubmissions();
+  const id = `${receipts.epoch}-image`;
+  let sends = 0;
+  const operation = async () => { sends++; return { accepted: true }; };
+  await receipts.run(id, operation);
+  assert.equal(reconcileSubmission(id, { submission: await receipts.recover(id) }), "accepted");
+  await receipts.run(id, operation);
+  assert.equal(sends, 1);
+  const requested = { machineId: "local", threadId: "thread-1", turnId: "turn-1", action: "queue", text: "", images: [png] };
+  const snapshot = { machineId: "local", thread: { id: "thread-1" }, queuedMessage: { threadId: "thread-1", text: "", images: [png] } };
+  assert.equal(reconcileSubmission(id, snapshot, requested), "accepted");
+  assert.equal(reconcileSubmission(id, { ...snapshot, queuedMessage: { ...snapshot.queuedMessage, images: [] } }, requested), "unknown");
+  assert.equal(reconcileSubmission(id, { ...snapshot, queuedMessage: null, liveMessages: [{ id: "new", turnId: "turn-2", role: "user", text: "Look" }], turn: { id: "turn-2" } }, { ...requested, text: "Look", action: "start" }), "unknown");
 });

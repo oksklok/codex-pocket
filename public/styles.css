@@ -254,13 +254,15 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .image-viewer::backdrop { background: rgba(0,0,0,.85); }
 .image-viewer img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .image-viewer button { position: absolute; right: 12px; top: 12px; min-height: 40px; padding: 8px 14px; background: var(--surface-strong); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
-.async-answer { margin: 10px 0; }
-.async-answer fieldset { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
-.async-answer legend { max-width: 100%; padding: 0 4px; font-weight: 650; font-size: .82rem; }
+.async-answer { margin: 12px 0; }
+.async-question { min-width: 0; }
+.async-title { margin: 0 0 8px; font-weight: 600; }
 .async-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .async-answer button { min-height: 40px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: .76rem; text-align: left; }
 .async-answer button.selected { border-color: var(--blue); }
-.async-answer textarea { width: 100%; margin-bottom: 6px; padding: 8px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: 16px; }
+.async-answer textarea { display: block; width: 100%; height: 62px; min-height: 62px; margin-bottom: 6px; padding: 8px; line-height: 22px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: 16px; }
+.async-free-text { margin-top: 8px; }
+.async-answer .other-answer { min-height: 32px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); }
 .answer-resolved { margin: 0; color: var(--muted); font-size: .8rem; }
 .timeline-activity {
   --activity-color: var(--activity-neutral);
@@ -331,6 +333,15 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .composer-actions { align-self: end; gap: 6px; }
 .composer button { height: 40px; min-height: 40px; min-width: 66px; padding: 7px 10px; }
 .composer .stop-action { border-color: rgba(255,139,139,.42); background: rgba(255,139,139,.12); color: var(--danger); }
+.composer .attach-image { min-width: 32px; width: 32px; padding: 7px; border-color: transparent; background: transparent; color: var(--muted); }
+.attach-image svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.composer-images { display: flex; gap: 8px; flex-wrap: wrap; width: min(100%, 780px); margin: 0 auto 8px; }
+.composer-thumbnail { position: relative; display: inline-flex; }
+.composer-thumbnail img { width: 54px; height: 54px; object-fit: cover; border: 1px solid var(--line); border-radius: 6px; }
+.composer-thumbnail button { position: absolute; top: -4px; right: -4px; width: 24px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--text); }
+.queue-banner .composer-images { order: 1; flex-basis: 100%; margin: 0; }
+.queue-banner .composer-thumbnail img { width: 36px; height: 36px; }
+.image-note { margin: 4px 0 0; color: var(--muted); font-size: .76rem; }
 .composer .expand-composer { position: absolute; top: 4px; right: 4px; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 7px; border: 0; background: var(--surface-strong); color: var(--muted); }
 .expand-composer svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .expand-composer .fullscreen-exit, .expanded-composer .fullscreen-enter { display: none; }
@@ -377,8 +388,8 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   border-radius: 7px; background: var(--surface-strong); color: var(--text); font-size: .7rem;
 }
 textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4; }
-.queue-banner { justify-content: space-between; gap: 10px; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
-.queue-copy { min-width: 0; display: flex; gap: 8px; }
+.queue-banner { flex-wrap: wrap; justify-content: space-between; gap: 10px; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
+.queue-copy { flex: 1; min-width: 0; display: flex; gap: 8px; }
 .queue-copy #queue-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-actions { display: flex; flex: none; align-items: center; gap: 8px; }
 .queue-actions button { min-height: 40px; }
@@ -493,6 +504,9 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 @media (max-width: 520px) {
+  .phase-row { gap: 4px; }
+  .context-chip { flex: 0 0 58px; }
+  .phase-pill.working { flex-shrink: 0; padding-inline: 6px; }
   .phase-pill { max-width: 126px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .elapsed { display: none; }
   .quota-chip { width: 72px; padding-inline: 6px; font-size: .6rem; }

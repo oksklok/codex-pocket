@@ -10,7 +10,7 @@ import { dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
-import { asyncAnswerText, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
+import { asyncAnswerText, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
 type PendingRpc = {
@@ -66,6 +66,7 @@ type PocketMessage = {
   phase?: string | null;
   delivery?: "async" | null;
   questions?: Array<{ title: string; options: string[] }>;
+  imageCount?: number;
   createdAt: number;
   complete: boolean;
 };
@@ -152,6 +153,7 @@ type PocketModel = {
 type QueuedMessage = {
   threadId: string;
   text: string;
+  images?: Array<{ type: string; url: string }>;
   createdAt: number;
   error?: string;
 };
@@ -174,6 +176,7 @@ type PocketState = {
   models: PocketModel[];
   access: PocketAccess;
   queuedMessage: QueuedMessage | null;
+  context: null | { usedTokens: number; contextWindow: number; remainingPercent: number };
   stoppingTurnId: string | null;
   threadStatus: string;
   phase: "connecting" | "unavailable" | "working" | "waiting_input" | "waiting_permission" | "done" | "stopped" | "failed";
@@ -804,6 +807,13 @@ function clientFrame(opcode: number, payload: Buffer): Buffer {
   return frame;
 }
 
+function localRuntimeReason(error: string): string {
+  if (/active writer/i.test(error)) return "This task is open in another Codex runtime. Choose another task.";
+  if (/failed to connect to socket/i.test(error) && /No such file/i.test(error)) return "Local Codex app-server is not running (shared socket missing).";
+  if (/spawn .*ENOENT|executable.*not found/i.test(error)) return "Codex executable not found.";
+  return compact(error.replace(/^Error:\s*/, ""), 180);
+}
+
 function connectProxy(
   onPayload: (payload: Buffer) => void,
   onClose: (error?: Error) => void,
@@ -824,6 +834,7 @@ function connectProxy(
       .update(`${websocketKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
       .digest("base64");
     let buffer = Buffer.alloc(0);
+    let stderr = "";
     let upgraded = false;
     let settled = false;
     let closing = false;
@@ -923,7 +934,8 @@ function connectProxy(
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
-      const text = compact(chunk, 400);
+      stderr = (stderr + chunk).slice(-4000);
+      const text = sshAlias ? compact(chunk, 400) : chunk.trim();
       if (text) console.error(`${sshAlias ? `${sshAlias} SSH proxy` : "app-server proxy"}: ${text}`);
     });
     child.once("error", (error) => {
@@ -931,7 +943,7 @@ function connectProxy(
       else if (!closing) onClose(error);
     });
     child.once("exit", (code, signal) => {
-      if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code})`));
+      if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code}): ${compact(stderr, 600)}`));
       else if (!closing) onClose(new Error(`app-server proxy closed (${signal ?? code})`));
     });
     child.once("spawn", () => {
@@ -1060,12 +1072,14 @@ class RpcClient {
 function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
   if (!item || (item.type !== "userMessage" && item.type !== "agentMessage")) return null;
   const text = boundedText(readText(item));
-  if (!text && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
+  const imageCount = item.type === "userMessage" && Array.isArray(item.content) ? item.content.filter((input: any) => input.type === "image" || input.type === "localImage").length : 0;
+  if (!text && !imageCount && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
   return {
     id: String(item.id ?? `${item.type}-${randomBytes(6).toString("hex")}`),
     turnId,
     role: item.type === "userMessage" ? "user" : "assistant",
     text,
+    ...(imageCount ? { imageCount } : {}),
     ...(item.type === "agentMessage" ? { phase: item.phase == null ? null : String(item.phase) } : {}),
     ...(item.type === "agentMessage" ? { delivery: item.delivery === "async" ? "async" : null, questions: normalizeAsyncQuestions(item.questions) } : {}),
     createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime),
@@ -1391,7 +1405,8 @@ export class MessageSubmissions {
     try {
       const result = await operation();
       receipt.status = "accepted";
-      receipt.result = result;
+      receipt.result = { ...result };
+      if (result.queuedMessage?.images?.length) delete receipt.result.queuedMessage;
       return result;
     } catch (error) {
       receipt.error = compact(error instanceof Error ? error.message : String(error), 300);
@@ -1554,6 +1569,7 @@ export class MachineRuntime {
       models: [],
       access: emptyAccess(),
       queuedMessage: null,
+      context: null,
       stoppingTurnId: null,
       threadStatus: "connecting",
       phase: "connecting",
@@ -1782,10 +1798,10 @@ export class MachineRuntime {
     return selection;
   }
 
-  sendMessage(text: unknown, action: unknown): Promise<JsonObject> {
+  sendMessage(text: unknown, action: unknown, images: unknown = []): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.sendMessageNow(text, action),
-      () => this.sendMessageNow(text, action),
+      () => this.sendMessageNow(text, action, images),
+      () => this.sendMessageNow(text, action, images),
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
@@ -1935,7 +1951,22 @@ export class MachineRuntime {
         console.log(`${this.definition.name}: connected; no saved tasks`);
         return;
       }
-      await this.attachLoadedThread(String(targetId), false);
+      try {
+        await this.attachLoadedThread(String(targetId), false);
+      } catch (error) {
+        if (this.definition.ssh || !this.state.connected || this.rpc !== rpc) throw error;
+        // A task owned by another client does not make a working local runtime unavailable.
+        const reason = error instanceof Error ? error.message : String(error);
+        this.technicalConnectionError = reason;
+        console.error(`${this.definition.name} task attach failed: ${reason}`);
+        this.resetThreadState();
+        this.state.thread = null;
+        this.state.threadStatus = "idle";
+        this.state.connectionError = localRuntimeReason(reason);
+        this.state.phase = "done";
+        this.broadcast("snapshot", this.snapshot());
+        return;
+      }
       this.options.thread = String(targetId);
       this.state.connectionError = null;
       this.state.phase = this.computePhase();
@@ -1949,7 +1980,7 @@ export class MachineRuntime {
       this.technicalConnectionError = technicalError;
       this.state.connectionError = this.definition.ssh
         ? `Could not connect to ${this.definition.name}. Make sure “ssh ${this.definition.ssh}” works from this Mac.`
-        : "Shared Codex runtime unavailable. Pocket will retry automatically.";
+        : localRuntimeReason(technicalError);
       this.loadedThreads = [];
       this.resetThreadState();
       this.state.thread = null;
@@ -1970,7 +2001,7 @@ export class MachineRuntime {
     this.technicalConnectionError = error?.message ?? "app-server connection closed";
     this.state.connectionError = this.definition.ssh
       ? `Connection to ${this.definition.name} dropped. Pocket will retry automatically.`
-      : "Shared Codex runtime unavailable. Pocket will retry automatically.";
+      : localRuntimeReason(this.technicalConnectionError);
     this.loadedThreads = [];
     this.resetThreadState();
     this.state.thread = null;
@@ -2103,7 +2134,19 @@ export class MachineRuntime {
       throw new Error("selected task is not available in this Codex runtime");
     }
     if (this.state.thread?.id === requestedId) return this.snapshot();
-    await this.attachLoadedThread(requestedId, true);
+    try {
+      await this.attachLoadedThread(requestedId, true);
+    } catch (error) {
+      if (!this.definition.ssh && this.state.connected && this.rpc) {
+        this.resetThreadState();
+        this.state.thread = null;
+        this.state.threadStatus = "idle";
+        this.state.connectionError = localRuntimeReason(String(error));
+        this.state.phase = "done";
+        this.broadcast("snapshot", this.snapshot());
+      }
+      throw error;
+    }
     this.options.thread = requestedId;
     return this.snapshot();
   }
@@ -2341,22 +2384,22 @@ export class MachineRuntime {
     return { accepted: true, requestId };
   }
 
-  private async sendMessageNow(value: unknown, requestedAction: unknown): Promise<JsonObject> {
+  private async sendMessageNow(value: unknown, requestedAction: unknown, imagesValue: unknown = []): Promise<JsonObject> {
     if (typeof value !== "string") throw new Error("message text is required");
     const text = value.replace(/\r\n/g, "\n");
-    if (!text.trim()) throw new Error("message text is required");
+    const images = imageInputs(imagesValue);
     if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`message exceeds ${MAX_MESSAGE_LENGTH.toLocaleString()} characters`);
     if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
     const capability = this.messageCapability();
     if (!capability.allowed || !capability.mode) throw new Error(capability.reason ?? "This task cannot accept a message right now");
 
     const threadId = this.state.thread.id;
-    const input = [{ type: "text", text, text_elements: [] }];
+    const input = messageInputs(text, images);
     const action = String(requestedAction ?? capability.mode);
     if (action === "queue") {
       if (capability.mode !== "steer") throw new Error("Queue next is only available while a turn is active");
       if (this.state.queuedMessage) throw new Error("A message is already queued");
-      this.state.queuedMessage = { threadId, text, createdAt: Date.now() };
+      this.state.queuedMessage = { threadId, text, ...(images.length ? { images } : {}), createdAt: Date.now() };
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
       return { accepted: true, mode: "queue", ...payload };
@@ -2430,7 +2473,7 @@ export class MachineRuntime {
     const queued = this.state.queuedMessage;
     if (!queued) throw new Error("There is no queued message to send");
     if (action === "steer") {
-      const result = await this.sendMessageNow(queued.text, "steer");
+      const result = await this.sendMessageNow(queued.text, "steer", queued.images);
       if (this.state.queuedMessage === queued) this.state.queuedMessage = null;
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
@@ -2468,7 +2511,9 @@ export class MachineRuntime {
     this.state.phase = this.computePhase();
     if (changed && broadcastReset) this.broadcast("snapshot", this.snapshot());
 
-    const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
+    // CLI 0.153.4 only replays restored token usage when turns are included.
+    // Transcript rendering and activity details still use the paginated history APIs.
+    const resumed = await this.rpc.request("thread/resume", { threadId });
     const thread = resumed?.thread ?? {};
     const resumedId = String(thread.id ?? threadId);
     if (resumedId !== threadId) throw new Error("app-server resumed an unexpected thread");
@@ -2639,6 +2684,11 @@ export class MachineRuntime {
     }
     if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
     switch (method) {
+      case "thread/tokenUsage/updated":
+        if (!this.state.thread || params.threadId !== this.state.thread.id) break;
+        this.state.context = contextSnapshot(params.tokenUsage);
+        this.broadcast("context", { context: this.state.context });
+        break;
       case "thread/status/changed":
         this.state.threadStatus = statusText(params.status);
         this.state.phase = this.computePhase();
@@ -2864,6 +2914,7 @@ export class MachineRuntime {
   }
 
   private resetThreadState(): void {
+    this.state.context = null;
     for (const queued of this.assistantFlushes.values()) clearTimeout(queued.timer);
     this.assistantFlushes.clear();
     this.state.turn = null;
@@ -2890,7 +2941,7 @@ export class MachineRuntime {
     if (!queued || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return false;
     this.startingQueuedMessage = true;
     try {
-      const input = [{ type: "text", text: queued.text, text_elements: [] }];
+      const input = messageInputs(queued.text, queued.images);
       const result = await this.rpc.request("turn/start", { threadId, input });
       if (this.state.thread?.id !== threadId || this.state.queuedMessage !== queued) return;
       this.state.queuedMessage = null;
@@ -3095,6 +3146,7 @@ class PocketGateway {
         local: id === "local",
         connected: Boolean(runtime.state.connected),
         catalogAvailable,
+        connectionError: summary.connectionError,
         selected: id === this.selectedMachineId,
         tasks: tasks.map((task) => {
           const attached = task.id === runtime.state.thread?.id;
@@ -3198,8 +3250,8 @@ class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).selectThread(threadId));
   }
 
-  sendMessage(machineId: unknown, text: unknown, action: unknown): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId).sendMessage(text, action));
+  sendMessage(machineId: unknown, text: unknown, action: unknown, images: unknown = []): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).sendMessage(text, action, images));
   }
 
   interruptTurn(machineId: unknown, expectedThreadId: unknown, expectedTurnId: unknown): Promise<JsonObject> {
@@ -3412,13 +3464,13 @@ function staticPath(pathname: string): string | null {
   return null;
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
+async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promise<JsonObject> {
   const chunks: Buffer[] = [];
   let length = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     length += buffer.length;
-    if (length > 65_536) throw new Error("request body is too large");
+    if (length > maxBytes) throw new Error("request body is too large");
     chunks.push(buffer);
   }
   if (length === 0) return {};
@@ -3563,10 +3615,10 @@ async function handleRequest(
   }
   if (method === "POST" && url.pathname === "/api/message") {
     try {
-      const body = await readJsonBody(request);
+      const body = await readJsonBody(request, Math.ceil(MAX_INPUT_IMAGES_BYTES * 4 / 3) + 65_536);
       sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => body.question
         ? gateway.answerAsyncQuestion(body.machineId, body.question)
-        : gateway.sendMessage(body.machineId, body.text, body.action)), gateway);
+        : gateway.sendMessage(body.machineId, body.text, body.action, body.images)), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
