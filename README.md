@@ -1,162 +1,99 @@
 # Codex Pocket
 
-Codex Pocket v0.1 is a tiny browser client for Codex app-server sessions with normal message sending, task access controls, approval handling, and structured input answers.
+Codex Pocket is a lightweight browser and mobile client with a small Node.js gateway for official Codex app-server runtimes. A macOS menu-bar app hosts the gateway; browsers can control tasks on that Mac and on multiple machines connected through SSH.
 
-```text
-Codex app-server
-        ↓
-localhost Node gateway
-        ↓ filtered SSE + paginated history
-responsive browser UI
-```
+Codex Pocket is an unofficial community project and is not affiliated with or endorsed by OpenAI.
 
-The browser never receives the raw app-server stream. The gateway keeps a small in-memory state, coalesces assistant text deltas, and forwards only compact thread, turn, message, plan, activity, request, and completion updates. Raw reasoning and response events stay local; bounded command output, diffs, tool results, and surfaced images are fetched only when an activity is expanded.
+## What it does
+
+- Select and resume saved tasks across local and SSH runtimes.
+- Follow live messages, user-facing reasoning summaries, command/tool activities, file-change diffs, plans, and turn status. Activity details load on demand.
+- Respond to supported approvals and structured questions, including async questions with choices or free-text answers.
+- Choose the model, reasoning effort, and access mode exposed by the selected runtime.
+- Send messages, stop an active turn, or queue one message for the next turn. **Steer now** in the queue banner injects that queued message into the active turn; **Cancel** removes it.
+- Send images with text or on their own using the image picker or desktop clipboard paste. Removable thumbnails remain available in the fullscreen composer, and images travel with queued/steered messages. Input supports PNG, JPEG, GIF, and WebP: up to four images, 4 MB each and 8 MB combined.
+- View surfaced assistant images inline and in a fullscreen viewer, including supported local-file references fetched through the gateway or SSH. Unavailable images show useful alt text.
+- See account quota and a **Ctx** chip showing context-window percentage remaining from authoritative app-server usage. Without usage replay or a live update, it shows **Ctx —**.
+- Browse bounded, paginated history in a mobile-focused UI with themes, display toggles, a fullscreen composer, and a browser-local **Enter sends message** preference.
+
+While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion, stays parked after Stop, and clears only after a successful steer. Queues live in gateway memory and are lost on task changes or gateway restart. They cannot be edited or expanded into multiple queued messages.
 
 ## Requirements
 
-- Codex CLI with `app-server proxy` support
-- Node.js 22.6 or newer
-- a supported shared/managed Codex app-server runtime
-- `npm install` once after cloning or updating dependencies
+- Node.js **22.6 or newer**, with npm. Pocket uses Node's `--experimental-strip-types` flag.
+- An authenticated Codex CLI on each runtime machine, with `codex app-server proxy` and a running shared/managed app-server. Current functionality has been exercised with **Codex CLI 0.153.4**; available controls depend on the runtime's protocol support.
+- macOS for the menu-bar host. The checked-in app executable is **Apple Silicon (arm64)**; rebuilding requires Apple's command-line developer tools.
+- For remote machines, working non-interactive SSH from the gateway Mac and `codex` available in the remote SSH command environment.
 
-Pocket uses one local browser dependency for safe Markdown rendering. It never loads scripts from a CDN.
+Codex Desktop itself is not required. Running Desktop alone does not necessarily start the shared runtime Pocket needs.
 
-## Normal macOS use
+## macOS quick start
 
-Double-click `Codex Pocket.app` in this repository.
+**Network boundary:** Pocket can control Codex runtimes and may approve powerful actions depending on the selected access mode. Its four-digit PIN is a convenience gate for trusted LAN/private-network use, **not internet-grade authentication**. **DO NOT port-forward Pocket directly to the public internet.** For remote access, use a private encrypted network/VPN such as WireGuard or Tailscale. Pocket serves HTTP and defaults to **localhost (`127.0.0.1:4173`)** unless LAN access is explicitly enabled.
 
-The tiny native menu-bar host finds Node from common paths or the bundled ChatGPT/Codex runtime, starts or reuses the gateway, and then stays visible as a status icon without opening a browser tab. Choose **Open Pocket** from its menu when you want a local browser client. Double-clicking the app again is a no-op: it does not create another icon, gateway, or browser tab. Keep the app bundle inside the project folder so it can locate `gateway.ts`.
+1. Clone this repository and install dependencies:
 
-Browser tabs are only clients. Closing every Pocket tab does not stop the gateway, and phone/laptop clients keep working while the menu-bar icon remains. The menu header switch can turn only the Pocket gateway off and back on while leaving the native host alive. **Keep Mac Awake** is a separate persisted switch; it prevents idle system sleep only while Pocket is on and still allows display sleep. **Quit Codex Pocket** from either the menu bar or authenticated web Settings gracefully releases Pocket's local and SSH connections, removes the status icon, and stops the host. **Restart Pocket** performs the existing gateway handoff without quitting the menu-bar host.
+   ```sh
+   git clone https://github.com/oksklok/codex-pocket.git
+   cd codex-pocket
+   npm install
+   ```
 
-For normal phone setup:
+2. Authenticate Codex if necessary and start its existing shared runtime:
 
-1. Double-click `Codex Pocket.app`, then choose **Open Pocket** from the menu-bar icon.
-2. Open web **Settings**.
-3. Enable local-network access, choose the bind address and port, and enter a four-digit PIN.
-4. Save and click **Restart Pocket**.
-5. Open the phone URL shown in Settings (or copy it from the menu bar) and enter the PIN.
+   ```sh
+   codex login
+   codex app-server daemon start
+   ```
 
-To add a development machine that already works through SSH:
+   To work in that runtime from the terminal as well, use `codex --remote unix://`. Pocket selects existing saved tasks; it does not create tasks.
 
-```text
-Settings → Machines → Add
-Name: G14
-SSH alias: g14
-Save → Restart Pocket
-```
+3. Double-click **Codex Pocket.app**, then choose **Open Pocket** from its menu-bar icon. Keep the app bundle inside the repository so it can find the gateway and dependencies. The host locates a compatible Node executable in common install locations or the Codex bundled runtime.
 
-The local entry uses the gateway computer's hostname unless an optional display name is set under **Settings → Machines**. The top bar's **Machine** selector chooses its shared local runtime or a configured SSH runtime. **Task** shows normal saved sessions from `thread/list`: active sessions first, then other loaded sessions, then recent inactive sessions. Selecting an inactive session resumes it with the official `thread/resume` API before Pocket loads its paginated history.
+4. Select a machine and saved task from the top bar.
 
-The local shared runtime can be unavailable even while Codex Desktop itself is running. Pocket reports that as **Shared runtime unavailable** rather than calling the computer offline. Desktop-owned private stdio sessions are intentionally unsupported and remain available only in the full Codex client.
+For a phone, open web **Settings**, enable local-network access, choose the bind address/port, and set a four-digit PIN. Save, choose **Restart Pocket**, then open the displayed phone URL and enter the PIN over your trusted network.
 
-Settings are stored locally in `.codex-pocket.local.json`, which is ignored by Git and created only after the first save. The restart action performs a one-shot background handoff and moves the browser to the new port when necessary. A malformed or unsafe config is ignored with a warning and the gateway falls back to `127.0.0.1:4173`.
-
-Pocket reads account-wide quota through the official `account/rateLimits/read` app-server method and follows `account/rateLimits/updated`. The web header and menu bar show the available windows as remaining percentages with local reset times. Quota may come from any connected compatible runtime, is cached as a last-known snapshot during short disconnects, and never affects task connectivity when unavailable.
-
-LAN mode uses plain HTTP and is intended only for a trusted home network. Remote or untrusted-network access should later go through an encrypted private network such as Tailscale rather than exposing this listener directly.
+Closing browser tabs leaves the gateway running. The menu bar provides a gateway power switch, **Keep Mac Awake**, **Launch at Login** where supported, and **Quit Codex Pocket**. The app is not distributed as a notarized installer; you can rebuild it locally with `macos/build-app.sh`.
 
 ## SSH machines
 
-Remote machines are optional entries in `.codex-pocket.local.json`:
-
-```json
-{
-  "machines": [
-    { "name": "G14", "ssh": "g14" },
-    { "name": "PC1", "ssh": "pc1" }
-  ]
-}
-```
-
-Pocket uses the existing SSH configuration, keys, and agent from the gateway Mac. It does not store SSH credentials. Each alias must already work non-interactively; test it normally with `ssh g14` before adding it. Pocket connects with SSH batch mode to the remote `codex app-server proxy`, keeps each machine's runtime and task state isolated, and retries a dropped connection after five seconds without interrupting other machines.
-
-Stored sessions exposed by the remote shared runtime can be selected even when they are not already loaded. Private Desktop stdio sessions are intentionally not discovered or attached.
-
-## Development and troubleshooting
-
-Start or connect a normal Codex TUI to the managed shared runtime when needed:
+On each remote machine, authenticate Codex and start its shared app-server. From the gateway Mac, verify an existing SSH alias works without prompting:
 
 ```sh
-codex --remote unix://
+ssh -o BatchMode=yes devbox codex --version
 ```
 
-The existing development command still works:
+Then use **Settings → Machines → Add**, enter a display name and SSH alias such as `devbox`, save, and restart Pocket. Pocket launches `codex app-server proxy` through that alias and uses the Mac's existing SSH configuration, keys, and agent. It does not store SSH credentials. A remote Codex Desktop installation is unnecessary.
+
+Settings are stored in the Git-ignored `.codex-pocket.local.json`. Local config, runtime records, and logs should stay private. If the Mac runtime is unavailable, check that its shared daemon is running; Pocket also shows a concise underlying connection or task-ownership error.
+
+## Architecture and limits
+
+```text
+Local / SSH Codex app-server runtimes
+                ↓ supported protocol
+         Node.js Pocket gateway
+                ↓ filtered SSE + paginated history
+         Desktop / mobile browser
+```
+
+Pocket uses supported app-server protocol surfaces. It does not scrape Codex databases, rollout/session files, terminal output, or Desktop UI. Desktop-private, stdio-owned live sessions are not attachable through Pocket; a saved task owned by another runtime may also refuse attachment.
+
+Task attachment uses `thread/resume` with `excludeTurns: true`. History stays bounded through `thread/turns/list` and `thread/items/list`, with older pages loaded as you scroll and activity details fetched lazily. Pocket never requests full history just to obtain context usage, and it does not estimate tokens. Raw app-server events are not forwarded wholesale to browsers.
+
+Image transport is limited to validated image input and images surfaced by trusted Codex items; it is not a general file browser or arbitrary-file endpoint. Access, approvals, model settings, and message controls remain subject to what the selected app-server supports.
+
+## Development
 
 ```sh
+npm install
 npm start
+npm test
 ```
 
-For troubleshooting or one-off overrides, command-line host/port values and `CODEX_POCKET_PIN` take precedence over the saved file:
+`npm start` runs the gateway directly without the menu-bar host and uses the same saved settings. With no saved LAN configuration it listens on localhost. `CODEX_BIN` can select a local Codex executable; `--host`, `--port`, and `CODEX_POCKET_PIN` override saved network settings. Non-loopback listening requires a four-digit PIN and the network precautions above.
 
-```sh
-CODEX_POCKET_PIN=1234 npm start -- --host 0.0.0.0
-npm start -- --host 192.168.1.123 --port 4180
-```
+Build the native host with `macos/build-app.sh`. For a read-only connectivity check, use `npm run probe -- --list-only` or `npm run probe-remote -- devbox --list-only`. [SPIKE_REPORT.md](SPIKE_REPORT.md) records the original historical experiment, not the current feature list.
 
-Precedence is: safe defaults, then the saved local file, then explicit CLI `--host`/`--port` and the `CODEX_POCKET_PIN` environment variable. Successful LAN login creates a random HttpOnly, SameSite session cookie; the PIN is not placed in URLs. Repeated incorrect PIN attempts are temporarily throttled in memory.
-
-Other optional arguments:
-
-```sh
-npm start -- --thread THREAD_ID
-npm start -- --port 4180
-npm start -- --ws ws://127.0.0.1:4500
-```
-
-On macOS with only the Codex Desktop bundled Node runtime available:
-
-```sh
-/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node \
-  --experimental-strip-types gateway.ts
-```
-
-To rebuild the small native app-bundle executable after changing its Swift source:
-
-```sh
-macos/build-app.sh
-```
-
-## Browser view
-
-- a fixed-height chat client whose transcript is the only normally scrolling area;
-- compact Machine → Task selectors for saved sessions, plus state, account quota, model, human-readable reasoning effort, task info, and Settings;
-- an Access selector for Ask for approval, Approve for me, and Full access using each task's app-server permission profile;
-- a collapsible desktop inspector (phone drawer) for friendly machine/project/task/access details, the current plan, and browser-local activity display toggles;
-- Working, Waiting for input, Waiting for approval, Done, Stopped, Failed, and runtime-availability states;
-- elapsed current-turn time;
-- live coalesced assistant/user messages and chronological inline summaries for commands, tools, file changes, explicit user-facing reasoning summaries, multi-agent work, images, and context compaction;
-- recent conversation history with older pages loaded automatically when scrolling upward;
-- browser-local **System**, **Light**, and **Dark** themes;
-- a contextual bottom composer: idle text + **Send** starts a turn; working + empty shows **Stop**; working text + **Send** queues next; **Steer** injects immediately;
-- compact Approve/Deny cards for command, file-change, and additional-permission requests; and
-- compact answer cards for supported Codex multiple-choice, Other, and free-text questions.
-
-Model and effort options come from the connected app-server's `model/list` catalog. Pocket applies changes with `thread/settings/update`; Codex's normal next-turn semantics still apply while a turn is active. The one-message queue exists only in gateway memory, can be replaced or cancelled, starts after normal completion, and is discarded when the selected task changes or Pocket restarts.
-
-If Stop interrupts a turn while a next message is queued, Pocket leaves that message parked instead of automatically starting another turn. The queue banner then offers explicit Send and Cancel actions. The low-bandwidth filtering remains internal. Optional byte counters are available from `/api/diagnostics`; they are not included in normal browser snapshots or SSE events.
-
-## Control boundary
-
-Access choices, approval decisions, structured input answers, exact-identity Stop, and message Send/Steer all use the selected machine's supported app-server protocol; Pocket does not edit `config.toml`. Approve is one request/one turn only, and additional-permission approval grants only the requested subset. Pocket validates every structured answer against the pending request and sends the app-server's exact response shape; unsupported or stale request variants remain local-only.
-
-Codex Pocket v0.1 still cannot retry turns, create threads, browse files, show diffs, or open a terminal. It has no database, accounts, PWA layer, or deployment configuration. LAN listening is opt-in through local Settings or an explicit `--host` override and always requires a valid four-digit PIN.
-
-## Protocol probe
-
-The disposable protocol probe remains available:
-
-```sh
-npm run probe -- --list-only
-```
-
-For a one-off SSH transport check against another machine, use an existing SSH host or alias:
-
-```sh
-npm run probe-remote -- g14 --list-only
-npm run probe-remote -- g14 --monitor-seconds 30
-```
-
-This launches `codex app-server proxy` on the remote host through normal SSH stdio, then speaks the same app-server protocol as the local probe. It uses the user's existing SSH configuration and credentials; Pocket stores none. The probe is intentionally disposable and does not reconnect automatically—run it again after an SSH disconnect.
-
-The completed macOS connectivity results are in [`SPIKE_REPORT.md`](./SPIKE_REPORT.md). The gateway reuses its supported WebSocket-over-`codex app-server proxy` transport and the paginated `thread/turns/list` API.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution basics. Licensed under the [MIT License](LICENSE). `package.json` deliberately retains `"private": true` to prevent accidental npm publication.

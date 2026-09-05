@@ -39,7 +39,7 @@ managed Codex app-server 0.149.1
 └── probe via WebSocket over `codex app-server proxy`
 ```
 
-Both clients used thread `01a05347-57b1-7883-ac9f-67098d649779`. The TUI initiated a real turn while the probe was subscribed. The probe observed its full compact lifecycle without reading TUI output.
+Both clients used thread `example-thread-id` (synthetic identifier). The TUI initiated a real turn while the probe was subscribed. The probe observed its full compact lifecycle without reading TUI output.
 
 `codex app-server proxy` forwards raw bytes to the Unix control socket; it is not a JSONL adapter. The probe therefore performs the normal HTTP WebSocket upgrade and WebSocket framing through the proxy.
 
