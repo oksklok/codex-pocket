@@ -84,9 +84,13 @@
             </div>
             <form class="composer" id="composer">
               <label class="sr-only" for="message-text">Message Codex</label>
-              <textarea id="message-text" rows="1" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
+              <div class="composer-input">
+                <textarea id="message-text" rows="1" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
+                <button type="button" class="expand-composer" id="expand-composer" aria-label="Expand composer" aria-expanded="false" hidden>
+                  <svg aria-hidden="true" viewBox="0 0 20 20"><path class="fullscreen-enter" d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/><path class="fullscreen-exit" d="M3 7h4V3m6 0v4h4M7 17v-4H3m10 4v-4h4"/></svg>
+                </button>
+              </div>
               <div class="composer-actions">
-                <button type="button" class="expand-composer" id="expand-composer" aria-label="Expand composer" aria-expanded="false">↗</button>
                 <button type="submit" id="send-message" data-action="start" disabled>Send</button>
               </div>
               <p class="form-status" id="composer-status" aria-live="polite"></p>

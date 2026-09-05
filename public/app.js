@@ -46,6 +46,7 @@ const elements = {
   expandFiles: document.querySelector("#expand-files"),
   composer: document.querySelector("#composer"),
   composerZone: document.querySelector(".composer-zone"),
+  composerInput: document.querySelector(".composer-input"),
   expandComposer: document.querySelector("#expand-composer"),
   enterSends: document.querySelector("#enter-sends"),
   imageViewer: document.querySelector("#image-viewer"),
@@ -197,8 +198,7 @@ function toggleComposer() {
   const { selectionStart, selectionEnd, selectionDirection, scrollTop } = textarea;
   composerExpanded = !composerExpanded;
   elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
-  elements.expandComposer.textContent = composerExpanded ? "Collapse" : "↗";
-  elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Collapse composer" : "Expand composer");
+  elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Exit fullscreen composer" : "Expand composer");
   elements.expandComposer.setAttribute("aria-expanded", String(composerExpanded));
   fitExpandedComposer();
   resizeComposer();
@@ -997,9 +997,18 @@ function renderComposer() {
 }
 
 function resizeComposer() {
-  if (composerExpanded) { elements.messageText.style.height = "100%"; return; }
-  elements.messageText.style.height = "auto";
-  elements.messageText.style.height = `${Math.max(40, Math.min(elements.messageText.scrollHeight + 2, 112))}px`;
+  const textarea = elements.messageText;
+  const scrollTop = textarea.scrollTop;
+  elements.composerInput.classList.remove("can-expand");
+  textarea.style.height = composerExpanded ? "100%" : "auto";
+  const style = getComputedStyle(textarea);
+  const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+  const singleLine = Math.max(40 - border, parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom));
+  const showExpand = composerExpanded || textarea.scrollHeight > singleLine + 1;
+  elements.composerInput.classList.toggle("can-expand", showExpand);
+  elements.expandComposer.hidden = !showExpand;
+  if (!composerExpanded) textarea.style.height = `${Math.max(40, Math.min(textarea.scrollHeight + border, 112))}px`;
+  textarea.scrollTop = scrollTop;
 }
 
 function renderState() {
@@ -2049,6 +2058,12 @@ elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
 window.visualViewport?.addEventListener("resize", fitExpandedComposer);
 window.visualViewport?.addEventListener("scroll", fitExpandedComposer);
+let composerWidth = 0;
+new ResizeObserver(([entry]) => {
+  if (entry.contentRect.width === composerWidth) return;
+  composerWidth = entry.contentRect.width;
+  resizeComposer();
+}).observe(elements.composerInput);
 elements.enterSends.addEventListener("change", () => {
   enterSends = elements.enterSends.checked;
   try { localStorage.setItem("codex-pocket-enter-sends", String(enterSends)); } catch {}
