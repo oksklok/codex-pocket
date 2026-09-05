@@ -9,7 +9,8 @@ import { hostname, networkInterfaces } from "node:os";
 import { dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
+import MarkdownIt from "markdown-it";
+import { asyncAnswerText, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
 type PendingRpc = {
@@ -63,6 +64,8 @@ type PocketMessage = {
   role: "user" | "assistant";
   text: string;
   phase?: string | null;
+  delivery?: "async" | null;
+  questions?: Array<{ title: string; options: string[] }>;
   createdAt: number;
   complete: boolean;
 };
@@ -1057,13 +1060,14 @@ class RpcClient {
 function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
   if (!item || (item.type !== "userMessage" && item.type !== "agentMessage")) return null;
   const text = boundedText(readText(item));
-  if (!text) return null;
+  if (!text && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
   return {
     id: String(item.id ?? `${item.type}-${randomBytes(6).toString("hex")}`),
     turnId,
     role: item.type === "userMessage" ? "user" : "assistant",
     text,
     ...(item.type === "agentMessage" ? { phase: item.phase == null ? null : String(item.phase) } : {}),
+    ...(item.type === "agentMessage" ? { delivery: item.delivery === "async" ? "async" : null, questions: normalizeAsyncQuestions(item.questions) } : {}),
     createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime),
     complete,
   };
@@ -1350,6 +1354,80 @@ const IMAGE_TYPES = new Map([
   [".webp", "image/webp"],
 ]);
 
+const imageMarkdown = new MarkdownIt({ html: false });
+function messageImagePaths(text: string): string[] {
+  const paths: string[] = [];
+  for (const token of imageMarkdown.parse(text, {})) {
+    for (const child of token.children ?? []) {
+      const src = child.type === "image" ? child.attrGet("src") : null;
+      if (src?.startsWith("/") && !src.startsWith("//") && paths.length < 10) {
+        try { paths.push(decodeURIComponent(src)); } catch { paths.push(""); }
+      }
+    }
+  }
+  return paths;
+}
+
+// Only message POSTs use these bounded, in-memory receipts. Recovery never repeats a POST.
+export class MessageSubmissions {
+  readonly epoch = randomBytes(6).toString("hex");
+  private receipts = new Map<string, JsonObject>();
+  private evicted = false;
+
+  async run(id: unknown, operation: () => Promise<JsonObject>): Promise<JsonObject> {
+    if (id === undefined) return operation(); // Older Pocket clients.
+    if (typeof id !== "string" || !/^[a-zA-Z0-9-]{8,100}$/.test(id)) throw new Error("Invalid message submission");
+    const previous = this.receipts.get(id);
+    if (previous) {
+      // A browser/transport can repeat a request even though Pocket never retries POSTs.
+      await previous.finished;
+      if (previous.status === "accepted") return previous.result;
+      throw new Error(previous.error || "This message submission was already handled");
+    }
+    if (!id.startsWith(`${this.epoch}-`)) throw new Error("Pocket restarted. Refresh the task before sending.");
+    let finish!: () => void;
+    const receipt: JsonObject = { id, status: "pending", finished: new Promise<void>((resolve) => { finish = resolve; }) };
+    this.remember(receipt);
+    try {
+      const result = await operation();
+      receipt.status = "accepted";
+      receipt.result = result;
+      return result;
+    } catch (error) {
+      receipt.error = compact(error instanceof Error ? error.message : String(error), 300);
+      receipt.status = /timed out|closed|disconnected/i.test(receipt.error) ? "unknown" : "rejected";
+      throw error;
+    } finally {
+      finish();
+    }
+  }
+
+  async recover(id: string): Promise<JsonObject> {
+    if (!/^[a-zA-Z0-9-]{8,100}$/.test(id)) throw new Error("Invalid message submission");
+    if (!id.startsWith(`${this.epoch}-`)) return { id, status: "unknown" };
+    if (!this.receipts.has(id)) {
+      // Fence a POST that never reached us: a delayed copy must not send after draft restoration.
+      // After eviction, absence is no longer proof that a submission never landed.
+      this.remember({ id, status: this.evicted ? "unknown" : "rejected", error: "Message did not reach Pocket. Please send again." });
+    }
+    const receipt = this.receipts.get(id)!;
+    if (receipt.status === "pending") {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([receipt.finished, new Promise((resolve) => { timer = setTimeout(resolve, 5000); })]);
+      clearTimeout(timer);
+    }
+    return { id, status: receipt.status, ...(receipt.error ? { error: receipt.error } : {}) };
+  }
+
+  private remember(receipt: JsonObject): void {
+    this.receipts.set(receipt.id, receipt);
+    if (this.receipts.size > 100) {
+      this.receipts.delete(this.receipts.keys().next().value!);
+      this.evicted = true;
+    }
+  }
+}
+
 function imageTypeForPath(path: string): string | null {
   return IMAGE_TYPES.get(extname(path).toLowerCase()) ?? null;
 }
@@ -1456,6 +1534,7 @@ export class MachineRuntime {
   private quota: RuntimeQuota | null = null;
   private quotaRefreshTimer: NodeJS.Timeout | null = null;
   private onQuotaChange: () => void;
+  private asyncAnswers: Record<string, Record<string, string>> = {};
 
   constructor(options: Options, definition: MachineDefinition, onQuotaChange: () => void) {
     this.options = options;
@@ -1534,6 +1613,7 @@ export class MachineRuntime {
     const snapshot = JSON.parse(JSON.stringify(this.state));
     delete snapshot.metrics;
     snapshot.message = this.messageCapability();
+    snapshot.asyncAnswers = this.asyncAnswers;
     return snapshot;
   }
 
@@ -1558,6 +1638,7 @@ export class MachineRuntime {
       itemsView: "summary",
     });
     const rawTurns = Array.isArray(page?.data) ? page.data : [];
+    for (const turn of rawTurns) for (const item of turn.items ?? []) this.rememberItem(item, String(turn.id));
     const turns = (await this.hydrateHistoryTurns(rpc, threadId, rawTurns)).reverse();
     for (const turn of turns) {
       for (const activity of Array.isArray(turn.activities) ? turn.activities : []) {
@@ -1641,6 +1722,20 @@ export class MachineRuntime {
       return { mimeType: "image/png", data };
     }
     const surfacedPath = String(item.type === "imageView" ? item.path ?? "" : item.savedPath ?? "");
+    return this.readSurfacedImage(surfacedPath);
+  }
+
+  async messageImage(threadId: unknown, messageId: unknown, index: unknown): Promise<{ mimeType: string; data: Buffer }> {
+    const { item } = await this.resolveActivityItem(threadId, messageId);
+    const imageIndex = Number(index);
+    if (item.type !== "agentMessage" || !Number.isInteger(imageIndex) || imageIndex < 0 || imageIndex >= 10) throw new Error("Image unavailable");
+    let path = messageImagePaths(boundedText(item.text))[imageIndex];
+    // Codex emits Windows Markdown destinations as /C:/Users/..., not a browser URL.
+    if (/windows/i.test(this.state.platform)) path = path?.replace(/^\/([a-z]:\/)/i, "$1");
+    return this.readSurfacedImage(path || "");
+  }
+
+  private async readSurfacedImage(surfacedPath: string): Promise<{ mimeType: string; data: Buffer }> {
     const mimeType = imageTypeForPath(surfacedPath);
     if (!surfacedPath || !mimeType) throw new Error("Image unavailable");
     let data: Buffer;
@@ -1692,6 +1787,27 @@ export class MachineRuntime {
       () => this.sendMessageNow(text, action),
       () => this.sendMessageNow(text, action),
     );
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
+  answerAsyncQuestion(question: JsonObject): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(async () => {
+      const { item } = await this.resolveActivityItem(question.threadId, question.messageId);
+      const questions = normalizeAsyncQuestions(item.questions);
+      const index = Number(question.index);
+      if (item.type !== "agentMessage" || item.delivery !== "async" || !Number.isInteger(index) || !questions[index]) throw new Error("This question is unavailable");
+      if (this.asyncAnswers[item.id]?.[index] !== undefined) throw new Error("This question was already answered");
+      const answer = typeof question.answer === "string" ? question.answer.trim() : "";
+      if (!answer || answer.length > 8000) throw new Error("Enter an answer of up to 8,000 characters");
+      const active = this.state.turn?.status === "inProgress";
+      if (active && this.itemTurns.get(item.id) !== this.state.turn?.id) throw new Error("Another turn is active. Answer after it finishes.");
+      const result = await this.sendMessageNow(asyncAnswerText(questions[index].title, answer), active ? "steer" : "start");
+      this.asyncAnswers[item.id] = { ...this.asyncAnswers[item.id], [index]: answer };
+      if (Object.keys(this.asyncAnswers).length > 100) delete this.asyncAnswers[Object.keys(this.asyncAnswers)[0]];
+      this.broadcast("answers", { asyncAnswers: this.asyncAnswers });
+      return { ...result, asyncAnswers: this.asyncAnswers };
+    });
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
   }
@@ -2689,6 +2805,7 @@ export class MachineRuntime {
 
   private handleItem(item: any, turnId: unknown, phase: "start" | "done"): void {
     const itemTurnId = String(turnId ?? this.state.turn?.id ?? "");
+    if (item?.type === "agentMessage") this.rememberItem(item, itemTurnId);
     if (item?.type === "agentMessage" && phase === "done") {
       this.flushAssistantDelta(String(item.id));
       const existing = this.state.liveMessages.find((message) => message.id === String(item.id));
@@ -2756,6 +2873,7 @@ export class MachineRuntime {
     this.pendingServerRequests.clear();
     this.itemCache.clear();
     this.itemTurns.clear();
+    this.asyncAnswers = {};
     this.state.liveMessages = [];
     this.state.model = "Not exposed";
     this.state.reasoningEffort = "Not exposed";
@@ -2873,6 +2991,7 @@ export class MachineRuntime {
 }
 
 class PocketGateway {
+  readonly submissions = new MessageSubmissions();
   private runtimes = new Map<string, MachineRuntime>();
   private selectedMachineId = "local";
   private subscribers = new Set<ServerResponse>();
@@ -2929,7 +3048,7 @@ class PocketGateway {
   }
 
   snapshot(): JsonObject {
-    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota };
+    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota, submissionEpoch: this.submissions.epoch };
   }
 
   hostStatus(options: Options): JsonObject {
@@ -3061,6 +3180,14 @@ class PocketGateway {
 
   async activityImage(machineId: unknown, threadId: unknown, itemId: unknown): Promise<{ mimeType: string; data: Buffer }> {
     return this.requireSelected(machineId).activityImage(threadId, itemId);
+  }
+
+  async messageImage(machineId: unknown, threadId: unknown, messageId: unknown, index: unknown): Promise<{ mimeType: string; data: Buffer }> {
+    return this.requireSelected(machineId).messageImage(threadId, messageId, index);
+  }
+
+  answerAsyncQuestion(machineId: unknown, question: JsonObject): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).answerAsyncQuestion(question));
   }
 
   async listLoadedThreads(machineId?: unknown): Promise<LoadedThreadSummary[]> {
@@ -3393,6 +3520,14 @@ async function handleRequest(
     }
     return;
   }
+  if (url.pathname === "/api/message/image" && method === "GET") {
+    try {
+      sendImage(response, await gateway.messageImage(url.searchParams.get("machineId"), url.searchParams.get("threadId"), url.searchParams.get("messageId"), url.searchParams.get("index")), gateway);
+    } catch {
+      sendJson(response, 404, { error: "Image unavailable" }, gateway);
+    }
+    return;
+  }
   if (url.pathname === "/api/settings" && method === "GET") {
     sendJson(response, 200, {
       settings: publicSettings(settings, auth.pin),
@@ -3429,7 +3564,9 @@ async function handleRequest(
   if (method === "POST" && url.pathname === "/api/message") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 202, await gateway.sendMessage(body.machineId, body.text, body.action), gateway);
+      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => body.question
+        ? gateway.answerAsyncQuestion(body.machineId, body.question)
+        : gateway.sendMessage(body.machineId, body.text, body.action)), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
@@ -3451,7 +3588,7 @@ async function handleRequest(
   if (method === "POST" && url.pathname === "/api/message/queue") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 202, await gateway.sendQueuedMessage(body.machineId, body.action), gateway);
+      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action)), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
@@ -3544,7 +3681,13 @@ async function handleRequest(
     return;
   }
   if (url.pathname === "/api/state") {
-    sendJson(response, 200, gateway.snapshot(), gateway);
+    try {
+      const submissionId = url.searchParams.get("submissionId");
+      const submission = submissionId ? await gateway.submissions.recover(submissionId) : null;
+      sendJson(response, 200, { ...gateway.snapshot(), ...(submission ? { submission } : {}) }, gateway);
+    } catch (error) {
+      sendJson(response, 400, { error: String(error instanceof Error ? error.message : error) }, gateway);
+    }
     return;
   }
   if (url.pathname === "/api/diagnostics") {

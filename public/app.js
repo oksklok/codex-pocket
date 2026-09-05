@@ -3,6 +3,8 @@ import {
   mergeActivities,
   orderTranscriptEntries,
   preserveMessageCreatedAt,
+  reconcileSubmission,
+  resolvedAsyncAnswer,
 } from "./pocket-logic.js";
 
 const elements = {
@@ -43,6 +45,12 @@ const elements = {
   expandCommands: document.querySelector("#expand-commands"),
   expandFiles: document.querySelector("#expand-files"),
   composer: document.querySelector("#composer"),
+  composerZone: document.querySelector(".composer-zone"),
+  expandComposer: document.querySelector("#expand-composer"),
+  enterSends: document.querySelector("#enter-sends"),
+  imageViewer: document.querySelector("#image-viewer"),
+  viewerImage: document.querySelector("#viewer-image"),
+  closeImage: document.querySelector("#close-image"),
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
   composerStatus: document.querySelector("#composer-status"),
@@ -78,6 +86,22 @@ const elements = {
 };
 
 const markdown = window.markdownit({ html: false, linkify: false, breaks: true, typographer: false });
+const defaultImage = markdown.renderer.rules.image;
+markdown.renderer.rules.image = (tokens, index, options, environment, renderer) => {
+  const token = tokens[index];
+  const src = token.attrGet("src") || "";
+  if (src.startsWith("/") && !src.startsWith("//") && environment.message?.role === "assistant") {
+    const imageIndex = environment.imageIndex++;
+    if (imageIndex >= 10) return markdown.utils.escapeHtml(token.content || "Image unavailable");
+    const url = new URL("/api/message/image", location.origin);
+    url.searchParams.set("machineId", state.machineId);
+    url.searchParams.set("threadId", state.thread.id);
+    url.searchParams.set("messageId", environment.message.id);
+    url.searchParams.set("index", imageIndex);
+    token.attrSet("src", url.pathname + url.search);
+  } else if (!/^https?:\/\//i.test(src)) return markdown.utils.escapeHtml(token.content || "Image unavailable");
+  return defaultImage(tokens, index, options, environment, renderer);
+};
 const defaultLinkOpen = markdown.renderer.rules.link_open
   || ((tokens, index, options, environment, renderer) => renderer.renderToken(tokens, index, options));
 markdown.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
@@ -88,9 +112,24 @@ markdown.renderer.rules.link_open = (tokens, index, options, environment, render
   return defaultLinkOpen(tokens, index, options, environment, renderer);
 };
 
-function renderMarkdownInto(element, value) {
+function renderMarkdownInto(element, value, message = null) {
   element.classList.add("markdown");
-  element.innerHTML = markdown.render(String(value || ""));
+  element.innerHTML = markdown.render(String(value || ""), { message, imageIndex: 0 });
+  for (const table of element.querySelectorAll("table")) {
+    const scroll = document.createElement("div");
+    scroll.className = "table-scroll";
+    table.replaceWith(scroll);
+    scroll.append(table);
+  }
+  for (const img of element.querySelectorAll("img")) {
+    img.loading = "lazy";
+    img.addEventListener("error", () => img.replaceWith(document.createTextNode(`${img.alt || "Image"} (unavailable)`)), { once: true });
+    img.tabIndex = 0;
+    img.setAttribute("role", "button");
+    img.setAttribute("aria-label", `Open image: ${img.alt || "Image"}`);
+    img.addEventListener("click", () => openImage(img));
+    img.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImage(img); } });
+  }
 }
 
 const phaseLabels = {
@@ -135,6 +174,46 @@ let sendingQueuedMessage = false;
 let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
+let enterSends = true;
+try { enterSends = localStorage.getItem("codex-pocket-enter-sends") !== "false"; } catch {}
+elements.enterSends.checked = enterSends;
+let composerExpanded = false;
+let composing = false;
+let deferredTranscript = false;
+let imageOpener = null;
+let queueDeliveryUnknown = false;
+const asyncDrafts = new Map();
+
+function openImage(img) {
+  imageOpener = img;
+  elements.viewerImage.src = img.src;
+  elements.viewerImage.alt = img.alt;
+  elements.imageViewer.showModal();
+  elements.closeImage.focus();
+}
+
+function toggleComposer() {
+  const textarea = elements.messageText;
+  const { selectionStart, selectionEnd, selectionDirection, scrollTop } = textarea;
+  composerExpanded = !composerExpanded;
+  elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
+  elements.expandComposer.textContent = composerExpanded ? "Collapse" : "↗";
+  elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Collapse composer" : "Expand composer");
+  elements.expandComposer.setAttribute("aria-expanded", String(composerExpanded));
+  fitExpandedComposer();
+  resizeComposer();
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+  textarea.scrollTop = scrollTop;
+}
+
+function fitExpandedComposer() {
+  const viewport = window.visualViewport;
+  for (const [name, value] of [["--composer-height", viewport?.height ?? innerHeight], ["--composer-top", viewport?.offsetTop ?? 0]]) {
+    if (composerExpanded) elements.composerZone.style.setProperty(name, `${value}px`);
+    else elements.composerZone.style.removeProperty(name);
+  }
+}
 let settingsValue = null;
 let savingSettings = false;
 let restartingPocket = false;
@@ -232,6 +311,44 @@ async function apiFetch(url, options) {
     throw new Error("Authentication required");
   }
   return response;
+}
+
+async function postMessageAction(url, body) {
+  const submissionId = `${state?.submissionEpoch}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+  const requested = { ...body, threadId: state?.thread?.id, turnId: state?.turn?.id,
+    text: body.text ?? state?.queuedMessage?.text, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
+  let response, result;
+  try {
+    response = await apiFetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, submissionId }), signal: AbortSignal.timeout(25000),
+    });
+    result = await response.json();
+  } catch (error) {
+    if (!(error instanceof TypeError) && !["AbortError", "TimeoutError"].includes(error.name)) throw error;
+    let snapshot;
+    try {
+      const recovered = await apiFetch(`/api/state?submissionId=${encodeURIComponent(submissionId)}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+      if (!recovered.ok) throw new Error("State unavailable");
+      snapshot = await recovered.json();
+      applySnapshot(snapshot);
+      connectEvents();
+    } catch {
+      connectEvents();
+      const failure = new Error("Connection lost; delivery could not be confirmed. Check the task before sending again.");
+      failure.deliveryUnknown = true;
+      throw failure;
+    }
+    const outcome = reconcileSubmission(submissionId, snapshot, requested);
+    if (outcome === "accepted") return { accepted: true, recovered: true };
+    const failure = new Error(outcome === "rejected"
+      ? snapshot.submission.error || "Message was not sent. Please send again."
+      : "Connection restored; delivery is still unconfirmed. Check the task before sending again.");
+    failure.deliveryUnknown = outcome === "unknown";
+    throw failure;
+  }
+  if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
+  return result;
 }
 
 function projectName(cwd) {
@@ -628,7 +745,7 @@ function renderQueue() {
     elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
-    elements.sendQueue.disabled = !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || switchingMachine || switchingThread;
+    elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || switchingMachine || switchingThread;
     elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : turnActive ? "Steer now" : "Send";
     elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage;
   }
@@ -880,6 +997,7 @@ function renderComposer() {
 }
 
 function resizeComposer() {
+  if (composerExpanded) { elements.messageText.style.height = "100%"; return; }
   elements.messageText.style.height = "auto";
   elements.messageText.style.height = `${Math.max(40, Math.min(elements.messageText.scrollHeight + 2, 112))}px`;
 }
@@ -936,9 +1054,88 @@ function messageNode(message) {
   meta.append(role, time);
   const body = document.createElement("div");
   body.className = "message-body";
-  renderMarkdownInto(body, message.text);
+  renderMarkdownInto(body, message.text, message);
+  if (message.delivery === "async" && message.questions?.length) {
+    // Upstream also repeats questions/options in Markdown. Remove only exact duplicate blocks.
+    const repeated = new Set(message.questions.flatMap((question) => [question.title, ...question.options]));
+    for (const node of body.querySelectorAll("p, li")) {
+      if (repeated.has(node.textContent.trim())) node.remove();
+    }
+    for (const list of body.querySelectorAll("ul, ol")) if (!list.children.length) list.remove();
+    for (const [index, question] of message.questions.entries()) body.append(asyncQuestionNode(message, question, index));
+  }
   article.append(meta, body);
   return article;
+}
+
+function asyncQuestionNode(message, question, index) {
+  const key = `${message.id}:${index}`;
+  const draft = asyncDrafts.get(key) || { text: "", sending: false, error: "", uncertain: false };
+  asyncDrafts.set(key, draft);
+  const all = new Map([...historyMessages, ...liveMessages]);
+  const answer = resolvedAsyncAnswer(message, index, [...all.values()], state?.asyncAnswers);
+  if (answer !== null) { draft.error = ""; draft.uncertain = false; }
+  const form = document.createElement("form");
+  form.className = "async-answer";
+  const fields = document.createElement("fieldset");
+  fields.disabled = answer !== null || draft.sending || draft.uncertain || !state?.message?.allowed;
+  const title = document.createElement("legend");
+  title.textContent = question.title;
+  fields.append(title);
+  if (answer !== null) {
+    const resolved = document.createElement("p");
+    resolved.className = "answer-resolved";
+    resolved.textContent = `Answered: ${answer}`;
+    fields.append(resolved);
+  } else {
+    const options = document.createElement("div");
+    options.className = "async-options";
+    for (const option of question.options) {
+      const choice = document.createElement("button");
+      choice.type = "button";
+      choice.textContent = option;
+      choice.classList.toggle("selected", draft.text === option);
+      choice.addEventListener("click", () => { draft.text = option; submitAsyncAnswer(message, index, draft); });
+      options.append(choice);
+    }
+    const input = document.createElement("textarea");
+    input.rows = 2;
+    input.maxLength = 8000;
+    input.placeholder = "Or write your answer…";
+    input.setAttribute("aria-label", `Your answer: ${question.title}`);
+    input.value = draft.text;
+    input.addEventListener("input", () => { draft.text = input.value; draft.error = ""; });
+    const send = document.createElement("button");
+    send.type = "submit";
+    send.textContent = draft.sending ? "Sending…" : "Answer";
+    fields.append(options, input, send);
+  }
+  const status = document.createElement("p");
+  status.className = "form-status error-text";
+  status.textContent = draft.error;
+  form.append(fields, status);
+  form.addEventListener("submit", (event) => { event.preventDefault(); submitAsyncAnswer(message, index, draft); });
+  return form;
+}
+
+async function submitAsyncAnswer(message, index, draft) {
+  if (draft.sending || draft.uncertain || !draft.text.trim()) return;
+  const machineId = state.machineId, threadId = state.thread.id;
+  draft.sending = true;
+  draft.error = "";
+  document.activeElement?.blur();
+  renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+  try {
+    const result = await postMessageAction("/api/message", { machineId, question: { threadId, messageId: message.id, index, answer: draft.text } });
+    if (machineId !== state?.machineId || threadId !== state?.thread?.id) return;
+    if (!result.recovered) mergeState(result, true);
+  } catch (error) {
+    draft.error = error.message;
+    draft.uncertain = Boolean(error.deliveryUnknown);
+  } finally {
+    draft.sending = false;
+    renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+  }
 }
 
 function detailField(label, value, className = "detail-code") {
@@ -1151,6 +1348,11 @@ function activityNode(activity) {
 }
 
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
+  if (transcriptSelectionActive() || elements.conversation.contains(document.activeElement) && document.activeElement?.tagName === "TEXTAREA") {
+    deferredTranscript = true;
+    return;
+  }
+  deferredTranscript = false;
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
   const messages = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
@@ -1186,6 +1388,15 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   updateJumpLatest();
 }
 
+function transcriptSelectionActive() {
+  const selection = window.getSelection();
+  return selection && !selection.isCollapsed && (elements.conversation.contains(selection.anchorNode) || elements.conversation.contains(selection.focusNode));
+}
+
+function flushDeferredTranscript() {
+  if (deferredTranscript && !transcriptSelectionActive()) renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+}
+
 function updateJumpLatest() {
   const distance = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight;
   elements.jumpLatest.hidden = distance < 200;
@@ -1201,6 +1412,7 @@ function jumpToLatest() {
 }
 
 function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities)) {
+  if (Object.hasOwn(next, "queuedMessage") && !next.queuedMessage) queueDeliveryUnknown = false;
   const terminalTransitions = [];
   if (Array.isArray(next.activities)) {
     next = { ...next, activities: mergeActivities([...liveActivities.values()], next.activities) };
@@ -1212,7 +1424,6 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
     }
   }
   if (next.message && !next.message.allowed) {
-    composerError = "";
     composerNotice = "";
   }
   state = { ...(state || {}), ...next };
@@ -1247,6 +1458,8 @@ function resetConversationState() {
   submittingInterrupt = false;
   sendingQueuedMessage = false;
   inputDrafts.clear();
+  asyncDrafts.clear();
+  queueDeliveryUnknown = false;
   setHistoryStatus();
 }
 
@@ -1391,11 +1604,7 @@ async function submitMessage(action) {
   }
   renderState();
   try {
-    const response = await apiFetch("/api/message", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, text, action }),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
+    const result = await postMessageAction("/api/message", { machineId: state?.machineId, text, action });
     elements.messageText.value = "";
     resizeComposer();
     composerNotice = "";
@@ -1408,7 +1617,11 @@ async function submitMessage(action) {
         ? { queuedMessage: result.queuedMessage } : {}),
     });
   } catch (error) {
-    if (optimisticQueue) {
+    if (error.deliveryUnknown) {
+      elements.messageText.value = "";
+      queueDeliveryUnknown = action === "queue";
+      resizeComposer();
+    } else if (optimisticQueue) {
       if (state?.queuedMessage === optimisticQueue) mergeState({ queuedMessage: null });
       elements.messageText.value = text;
       resizeComposer();
@@ -1448,16 +1661,11 @@ async function sendQueuedMessage() {
   composerNotice = "Sending queued message…";
   renderState();
   try {
-    const response = await apiFetch("/api/message/queue", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ machineId: state?.machineId, action }),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.accepted) throw new Error(result.error || "Could not send the queued message");
-    mergeState({ queuedMessage: null });
+    const result = await postMessageAction("/api/message/queue", { machineId: state?.machineId, action });
+    if (!result.recovered) mergeState({ queuedMessage: null });
     composerNotice = "";
   } catch (error) {
+    queueDeliveryUnknown = Boolean(error.deliveryUnknown);
     composerNotice = "";
     composerError = error.message;
   } finally {
@@ -1649,6 +1857,7 @@ function connectEvents() {
   source.addEventListener("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
   source.addEventListener("control", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  source.addEventListener("answers", (event) => { if (!switchingThread) mergeState(parseEvent(event), true); });
   source.addEventListener("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
   source.addEventListener("turn", (event) => {
     if (switchingThread) return;
@@ -1830,11 +2039,28 @@ elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
 elements.destinationSearch.addEventListener("input", renderDestinationSwitcher);
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && composerExpanded) { event.preventDefault(); toggleComposer(); return; }
   if (event.key === "Escape" && !elements.destinationSwitcher.hidden) {
     event.preventDefault();
     if (closeDestinationSwitcher()) elements.destinationButton.focus();
   }
 });
+elements.expandComposer.addEventListener("click", toggleComposer);
+elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
+window.visualViewport?.addEventListener("resize", fitExpandedComposer);
+window.visualViewport?.addEventListener("scroll", fitExpandedComposer);
+elements.enterSends.addEventListener("change", () => {
+  enterSends = elements.enterSends.checked;
+  try { localStorage.setItem("codex-pocket-enter-sends", String(enterSends)); } catch {}
+});
+elements.closeImage.addEventListener("click", () => elements.imageViewer.close());
+elements.imageViewer.addEventListener("close", () => { elements.viewerImage.removeAttribute("src"); imageOpener?.focus({ preventScroll: true }); });
+document.addEventListener("selectionchange", flushDeferredTranscript);
+elements.conversation.addEventListener("focusout", (event) => {
+  if (!event.relatedTarget?.closest(".async-answer")) queueMicrotask(flushDeferredTranscript);
+});
+elements.messageText.addEventListener("compositionstart", () => { composing = true; });
+elements.messageText.addEventListener("compositionend", () => { composing = false; });
 elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   const action = elements.sendMessage.dataset.action;
@@ -1850,7 +2076,8 @@ elements.messageText.addEventListener("input", () => {
   renderComposer();
 });
 elements.messageText.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && elements.messageText.value.trim()) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229
+    && (enterSends || event.ctrlKey || event.metaKey) && elements.messageText.value.trim()) {
     event.preventDefault();
     elements.composer.requestSubmit();
   }

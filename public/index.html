@@ -86,6 +86,7 @@
               <label class="sr-only" for="message-text">Message Codex</label>
               <textarea id="message-text" rows="1" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
               <div class="composer-actions">
+                <button type="button" class="expand-composer" id="expand-composer" aria-label="Expand composer" aria-expanded="false">↗</button>
                 <button type="submit" id="send-message" data-action="start" disabled>Send</button>
               </div>
               <p class="form-status" id="composer-status" aria-live="polite"></p>
@@ -155,6 +156,7 @@
           <h3 id="settings-appearance-title">Appearance</h3>
           <label for="settings-theme">Theme</label>
           <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+          <label class="enter-preference"><input id="enter-sends" type="checkbox" checked> Enter sends message</label>
           <p class="field-help">Stored in this browser only.</p>
         </section>
         <section class="settings-section" aria-labelledby="settings-machines-title">
@@ -174,6 +176,10 @@
         <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save settings</button></div>
       </form>
     </section>
+    <dialog class="image-viewer" id="image-viewer" aria-label="Image viewer">
+      <button type="button" id="close-image" aria-label="Close image">Close</button>
+      <img id="viewer-image" alt="">
+    </dialog>
     <script src="/vendor/markdown-it.min.js"></script>
     <script type="module" src="/app.js"></script>
   </body>

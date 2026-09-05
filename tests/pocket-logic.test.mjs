@@ -9,8 +9,12 @@ import {
   orderTranscriptEntries,
   pocketPhase,
   preserveMessageCreatedAt,
+  asyncAnswerText,
+  normalizeAsyncQuestions,
+  reconcileSubmission,
+  resolvedAsyncAnswer,
 } from "../public/pocket-logic.js";
-import { MachineRuntime } from "../gateway.ts";
+import { MachineRuntime, MessageSubmissions } from "../gateway.ts";
 
 const machine = { id: "local" };
 const task = { id: "thread-1", status: "failed" };
@@ -178,4 +182,125 @@ test("activity IDs survive final answers, thin completion snapshots, and history
   const history = await runtime.history(null, 2);
   assert.deepEqual(history.turns[0].activities.map((activity) => activity.id), ids);
   assert.deepEqual(mergeActivities(history.turns[0].activities, visible).map((activity) => activity.id), ids);
+});
+
+test("lost message/queue/steer responses reconcile once without repeating an action", async () => {
+  const receipts = new MessageSubmissions();
+  const runtime = activeRuntime();
+  let starts = 0, steers = 0;
+  runtime.rpc = { request: async (method) => {
+    if (method === "turn/steer") steers++;
+    if (method === "turn/start") starts++;
+    return { turn: { id: "next-turn", status: "inProgress" } };
+  } };
+  const queueId = `${receipts.epoch}-queue`;
+  await receipts.run(queueId, () => runtime.sendMessage("Exactly once", "queue"));
+  const queued = runtime.state.queuedMessage;
+  const recover = async (id) => ({ ...runtime.snapshot(), submission: await receipts.recover(id) });
+  assert.equal(reconcileSubmission(queueId, await recover(queueId)), "accepted");
+  assert.equal(runtime.state.queuedMessage, queued);
+  assert.equal((await receipts.run(queueId, () => runtime.sendMessage("Duplicate", "queue"))).accepted, true);
+  assert.equal(runtime.state.queuedMessage, queued);
+  const steerId = `${receipts.epoch}-steer`;
+  await receipts.run(steerId, () => runtime.sendQueuedMessage("steer"));
+  assert.equal(reconcileSubmission(steerId, await recover(steerId)), "accepted");
+  assert.equal(runtime.state.queuedMessage, null);
+  assert.equal(steers, 1);
+  runtime.handleNotification({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });
+  const startId = `${receipts.epoch}-start`;
+  await receipts.run(startId, () => runtime.sendMessage("New turn", "start"));
+  assert.equal(reconcileSubmission(startId, await recover(startId)), "accepted");
+  assert.equal(starts, 1);
+
+  const missingId = `${receipts.epoch}-missing`;
+  assert.equal(reconcileSubmission(missingId, await recover(missingId)), "rejected");
+  await assert.rejects(receipts.run(missingId, () => runtime.sendMessage("Delayed POST", "start")), /did not reach/);
+  assert.equal(starts, 1);
+  assert.equal(reconcileSubmission(startId, { submission: await new MessageSubmissions().recover(startId) }), "unknown");
+  assert.equal(reconcileSubmission(startId, {}), "unknown");
+  const requested = { machineId: "local", threadId: "thread-1", turnId: "turn-1", action: "queue", text: "Exactly once", previousMessageIds: ["old-user"] };
+  const state = { machineId: "local", thread: { id: "thread-1" }, turn: { id: "next-turn" } };
+  assert.equal(reconcileSubmission(queueId, { ...state, queuedMessage: queued }, requested), "accepted");
+  const user = { id: "new-user", role: "user", turnId: "next-turn", text: "Exactly once" };
+  assert.equal(reconcileSubmission(startId, { ...state, liveMessages: [user] }, { ...requested, action: "start" }), "accepted");
+  assert.equal(reconcileSubmission(startId, { ...state, liveMessages: [{ ...user, id: "old-user" }] }, requested), "unknown");
+  assert.equal(reconcileSubmission(startId, { ...state, machineId: "another-machine", liveMessages: [user] }, requested), "unknown");
+});
+
+test("one recovery waits for an in-flight submission and preserves uncertain failures", async () => {
+  const receipts = new MessageSubmissions();
+  const id = `${receipts.epoch}-pending`;
+  let finish;
+  const operation = receipts.run(id, () => new Promise((resolve) => { finish = resolve; }));
+  const recovery = receipts.recover(id);
+  finish({ accepted: true });
+  await operation;
+  assert.equal((await recovery).status, "accepted");
+  const failedId = `${receipts.epoch}-failed`;
+  await assert.rejects(receipts.run(failedId, async () => { throw new Error("App-server connection closed"); }));
+  assert.equal((await receipts.recover(failedId)).status, "unknown");
+  const rejectedId = `${receipts.epoch}-rejected`;
+  await assert.rejects(receipts.run(rejectedId, async () => { throw new Error("Queue is occupied"); }));
+  assert.equal((await receipts.recover(rejectedId)).status, "rejected");
+});
+
+test("async final_answer questions stay mid-turn through live/history normalization", async () => {
+  const runtime = activeRuntime();
+  const items = [
+    { id: "commentary", type: "agentMessage", phase: "commentary", text: "Working", createdAt: 100 },
+    { id: "question", type: "agentMessage", phase: "final_answer", delivery: "async", text: "Scope?\n- Keep\n- Expand", questions: [{ title: "Scope?", options: ["Keep", "Expand"] }], createdAt: 200 },
+    { id: "later", type: "commandExecution", command: "npm test", createdAt: 300 },
+    { id: "final", type: "agentMessage", phase: "final_answer", text: "Done", createdAt: 400 },
+  ];
+  for (const item of items) runtime.handleNotification({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item } });
+  const question = runtime.state.liveMessages.find((message) => message.id === "question");
+  assert.equal(question.delivery, "async");
+  assert.deepEqual(question.questions, items[1].questions);
+  const order = (messages, activities) => orderTranscriptEntries([
+    ...messages.map((value) => ({ type: "message", value })),
+    ...activities.map((value) => ({ type: "activity", value })),
+  ]).map((entry) => entry.value.id);
+  assert.deepEqual(order(runtime.state.liveMessages, runtime.state.activities), ["commentary", "question", "later", "final"]);
+  runtime.rpc = { request: async (method) => method === "thread/turns/list"
+    ? { data: [{ id: "turn-1", status: "completed", items: [] }] }
+    : { data: items.map((item) => ({ turnId: "turn-1", item })) } };
+  const history = (await runtime.history(null, 2)).turns[0];
+  assert.deepEqual(history.messages.find((message) => message.id === "question").questions, items[1].questions);
+  assert.deepEqual(order(history.messages, history.activities), ["commentary", "question", "later", "final"]);
+  const bounded = normalizeAsyncQuestions(Array(12).fill({ title: "x".repeat(3000), options: Array(22).fill("y".repeat(600)) }));
+  assert.equal(bounded.length, 10);
+  assert.equal(bounded[0].title.length, 2000);
+  assert.equal(bounded[0].options.length, 20);
+  assert.equal(bounded[0].options[0].length, 500);
+  assert.deepEqual(normalizeAsyncQuestions([{ title: "Free text", options: null }]), [{ title: "Free text", options: [] }]);
+});
+
+test("async answers steer the original active turn, retain failure state, and start after completion", async () => {
+  const runtime = activeRuntime();
+  const item = { id: "question", type: "agentMessage", phase: "final_answer", delivery: "async", text: "", questions: [{ title: "Scope?", options: ["Keep"] }, { title: "Anything else?", options: null }] };
+  runtime.handleNotification({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item } });
+  const message = runtime.state.liveMessages[0];
+  assert.ok(message);
+  const question = { threadId: "thread-1", messageId: "question", index: 0, answer: "Keep" };
+  const calls = [];
+  let fail = true;
+  runtime.rpc = { request: async (method, params) => {
+    calls.push({ method, params });
+    if (fail) throw new Error("Answer rejected");
+    return { turn: { id: "turn-2", status: "inProgress" } };
+  } };
+  await assert.rejects(runtime.answerAsyncQuestion(question), /Answer rejected/);
+  assert.deepEqual(runtime.snapshot().asyncAnswers, {});
+  fail = false;
+  await runtime.answerAsyncQuestion(question);
+  assert.equal(calls.at(-1).method, "turn/steer");
+  assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Scope?", "Keep"));
+  assert.equal(runtime.state.queuedMessage, null);
+  assert.equal(resolvedAsyncAnswer(message, 0, [], runtime.snapshot().asyncAnswers), "Keep");
+  await assert.rejects(runtime.answerAsyncQuestion(question), /already answered/);
+  assert.equal(resolvedAsyncAnswer(message, 0, [{ role: "user", createdAt: message.createdAt + 1, text: asyncAnswerText("Scope?", "Keep") }]), "Keep");
+  runtime.handleNotification({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });
+  await runtime.answerAsyncQuestion({ ...question, index: 1, answer: "Please check mobile" });
+  assert.equal(calls.at(-1).method, "turn/start");
+  assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Anything else?", "Please check mobile"));
 });
