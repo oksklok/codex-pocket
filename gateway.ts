@@ -8,8 +8,8 @@ import { createServer as createNetServer, isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
 import { dirname, extname, join } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
-import { historyTurnTimestamp, isUnsupportedMethodError, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
 type PendingRpc = {
@@ -1198,7 +1198,16 @@ function activityFromItem(
 function normalizeHistoryTurn(turn: any, hydratedItems?: any[]): JsonObject {
   const completedAt = turn?.completedAt ? numberTime(turn.completedAt, 0) : null;
   const createdAt = numberTime(historyTurnTimestamp(turn, completedAt ?? 0), completedAt ?? 0);
-  const items = hydratedItems ?? (Array.isArray(turn?.items) ? turn.items : []);
+  const itemsById = new Map((Array.isArray(turn?.items) ? turn.items : []).map((item: any) => [String(item.id), item]));
+  for (const item of hydratedItems ?? []) {
+    const previous = itemsById.get(String(item.id)) as any;
+    itemsById.set(String(item.id), {
+      ...previous,
+      ...item,
+      ...(item.type === "reasoning" && !item.summary?.length && previous?.summary?.length ? { summary: previous.summary } : {}),
+    });
+  }
+  const items = [...itemsById.values()];
   const messages = items
     .map((item: any, index: number) => messageFromItem(item, String(turn.id), true, createdAt + index)).filter(Boolean);
   const activities = items
@@ -1422,7 +1431,7 @@ function normalizeInputQuestions(params: JsonObject): PocketInputQuestion[] | nu
   return questions;
 }
 
-class MachineRuntime {
+export class MachineRuntime {
   readonly state: PocketState;
   private rpc: RpcClient | null = null;
   private subscribers = new Set<ServerResponse>();
@@ -1696,10 +1705,10 @@ class MachineRuntime {
     return operation;
   }
 
-  sendQueuedMessage(): Promise<JsonObject> {
+  sendQueuedMessage(action: unknown = "start"): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.sendQueuedMessageNow(),
-      () => this.sendQueuedMessageNow(),
+      () => this.sendQueuedMessageNow(action),
+      () => this.sendQueuedMessageNow(action),
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
@@ -2230,6 +2239,7 @@ class MachineRuntime {
     const action = String(requestedAction ?? capability.mode);
     if (action === "queue") {
       if (capability.mode !== "steer") throw new Error("Queue next is only available while a turn is active");
+      if (this.state.queuedMessage) throw new Error("A message is already queued");
       this.state.queuedMessage = { threadId, text, createdAt: Date.now() };
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
@@ -2299,9 +2309,18 @@ class MachineRuntime {
     }
   }
 
-  private async sendQueuedMessageNow(): Promise<JsonObject> {
+  private async sendQueuedMessageNow(action: unknown): Promise<JsonObject> {
     if (!this.state.thread) throw new Error("Codex is disconnected");
-    if (!this.state.queuedMessage) throw new Error("There is no queued message to send");
+    const queued = this.state.queuedMessage;
+    if (!queued) throw new Error("There is no queued message to send");
+    if (action === "steer") {
+      const result = await this.sendMessageNow(queued.text, "steer");
+      if (this.state.queuedMessage === queued) this.state.queuedMessage = null;
+      const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
+      this.broadcast("queue", payload);
+      return { ...result, ...payload };
+    }
+    if (action !== "start") throw new Error("Invalid queued message action");
     if (this.state.turn?.status === "inProgress") throw new Error("Stop or finish the active turn first");
     const started = await this.startQueuedMessage(this.state.thread.id);
     if (!started) throw new Error(this.state.queuedMessage?.error ?? "Could not send the queued message");
@@ -2538,7 +2557,6 @@ class MachineRuntime {
           error: null,
         };
         this.state.plan = [];
-        this.state.activities = [];
         this.state.pending = [];
         this.pendingServerRequests.clear();
         this.state.phase = "working";
@@ -2566,7 +2584,9 @@ class MachineRuntime {
         this.state.pending = [];
         this.pendingServerRequests.clear();
         this.state.stoppingTurnId = null;
-        this.state.activities = this.state.activities.map((activity) => activity.status === "running"
+        this.state.threadStatus = "idle";
+        for (const item of Array.isArray(turn.items) ? turn.items : []) this.handleItem(item, this.state.turn.id, "done");
+        this.state.activities = this.state.activities.map((activity) => activity.turnId === this.state.turn?.id && activity.status === "running"
           ? {
               ...activity,
               status: status === "interrupted" ? "interrupted" : status === "failed" ? "failed" : "completed",
@@ -2610,11 +2630,16 @@ class MachineRuntime {
         this.state.phase = this.computePhase();
         this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
         break;
-      case "error":
-        this.state.connectionError = compact(params.error?.message ?? params.message ?? params, 400);
-        this.state.phase = "failed";
+      case "error": {
+        const error = compact(params.error?.message ?? params.message ?? params, 400);
+        console.warn(`${this.definition.name}: turn ${params.turnId ?? "unknown"} error (willRetry=${params.willRetry === true}): ${error}`);
+        if (String(params.turnId ?? "") !== this.state.turn?.id) break;
+        // Turn errors are not connectivity failures. Completion owns the terminal status.
+        if (params.willRetry !== true && this.state.turn) this.state.turn.error = error;
+        this.state.phase = this.computePhase();
         this.broadcast("status", this.statusPayload());
         break;
+      }
       default:
         break;
     }
@@ -2683,13 +2708,11 @@ class MachineRuntime {
       }
       return;
     }
+    item = { ...this.itemCache.get(String(item?.id))?.item, ...item };
     this.rememberItem(item, itemTurnId);
     const activity = activityFromItem(item, phase, itemTurnId);
     if (!activity) return;
-    const index = this.state.activities.findIndex((candidate) => candidate.id === activity.id);
-    if (index >= 0) this.state.activities[index] = { ...activity, createdAt: this.state.activities[index].createdAt };
-    else this.state.activities.push(activity);
-    this.state.activities = this.state.activities.slice(-MAX_ACTIVITIES);
+    this.state.activities = mergeActivities(this.state.activities, [activity]).slice(-MAX_ACTIVITIES);
     const stored = this.state.activities.find((candidate) => candidate.id === activity.id);
     if (stored) this.broadcast("activity", stored);
   }
@@ -3056,8 +3079,8 @@ class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).interruptTurn(expectedThreadId, expectedTurnId));
   }
 
-  sendQueuedMessage(machineId: unknown): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId).sendQueuedMessage());
+  sendQueuedMessage(machineId: unknown, action: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId).sendQueuedMessage(action));
   }
 
   cancelQueuedMessage(machineId: unknown): Promise<JsonObject> {
@@ -3428,7 +3451,7 @@ async function handleRequest(
   if (method === "POST" && url.pathname === "/api/message/queue") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 202, await gateway.sendQueuedMessage(body.machineId), gateway);
+      sendJson(response, 202, await gateway.sendQueuedMessage(body.machineId, body.action), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
@@ -3717,7 +3740,9 @@ async function main(): Promise<void> {
   await gateway.start();
 }
 
-main().catch((error) => {
-  console.error(`gateway failed: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`gateway failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}

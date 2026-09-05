@@ -23,10 +23,19 @@ export function historyTurnTimestamp(turn, fallback) {
   return turn?.createdAt ?? turn?.created_at ?? turn?.startedAt ?? turn?.started_at ?? fallback;
 }
 
-export function shouldShowWorkingFallback(phase, visibleActivities, activeTurnId) {
-  if (phase !== "working") return false;
-  return !visibleActivities.some((activity) => activity.status === "running"
-    && (!activeTurnId || !activity.turnId || activity.turnId === activeTurnId));
+export function mergeActivities(existing, incoming) {
+  const activities = new Map(existing.map((activity) => [activity.id, activity]));
+  for (const activity of incoming) {
+    const previous = activities.get(activity.id);
+    activities.set(activity.id, previous ? {
+      ...previous,
+      ...activity,
+      createdAt: previous.createdAt,
+      detail: activity.detail || previous.detail,
+      status: previous.status !== "running" && activity.status === "running" ? previous.status : activity.status,
+    } : activity);
+  }
+  return [...activities.values()];
 }
 
 export function orderTranscriptEntries(entries) {

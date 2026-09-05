@@ -1,8 +1,8 @@
 import {
   destinationTaskStatus,
+  mergeActivities,
   orderTranscriptEntries,
   preserveMessageCreatedAt,
-  shouldShowWorkingFallback,
 } from "./pocket-logic.js";
 
 const elements = {
@@ -45,11 +45,9 @@ const elements = {
   composer: document.querySelector("#composer"),
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
-  steerMessage: document.querySelector("#steer-message"),
   composerStatus: document.querySelector("#composer-status"),
   attentionBanner: document.querySelector("#attention-banner"),
   queueBanner: document.querySelector("#queue-banner"),
-  workingFallback: document.querySelector("#working-fallback"),
   queueText: document.querySelector("#queue-text"),
   sendQueue: document.querySelector("#send-queue"),
   cancelQueue: document.querySelector("#cancel-queue"),
@@ -628,11 +626,11 @@ function renderQueue() {
   if (queued) {
     elements.queueText.textContent = queued.text;
     elements.queueText.title = queued.text;
-    const canSend = state?.message?.mode === "start" && state?.turn?.status !== "inProgress";
-    elements.sendQueue.hidden = !canSend;
-    elements.sendQueue.disabled = sendingQueuedMessage || cancellingQueue || switchingMachine || switchingThread;
-    elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : "Send";
-    elements.cancelQueue.disabled = cancellingQueue || sendingQueuedMessage;
+    const turnActive = state?.turn?.status === "inProgress";
+    elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
+    elements.sendQueue.disabled = !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || switchingMachine || switchingThread;
+    elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : turnActive ? "Steer now" : "Send";
+    elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage;
   }
 }
 
@@ -850,8 +848,6 @@ function renderComposer() {
     || switchingThread
     || submittingMessage
     || stopping;
-  elements.steerMessage.hidden = !(turnActive && hasText);
-  elements.steerMessage.disabled = !allowed;
   if (turnActive && !hasText) {
     elements.sendMessage.dataset.action = "stop";
     elements.sendMessage.textContent = stopping ? "Stopping…" : "Stop";
@@ -861,7 +857,7 @@ function renderComposer() {
     elements.sendMessage.dataset.action = turnActive ? "queue" : "start";
     elements.sendMessage.textContent = "Send";
     elements.sendMessage.classList.remove("stop-action");
-    elements.sendMessage.disabled = !allowed || !hasText;
+    elements.sendMessage.disabled = !allowed || !hasText || Boolean(state?.queuedMessage);
   }
   const status = submittingMessage
     ? "Sending…"
@@ -885,7 +881,7 @@ function renderComposer() {
 
 function resizeComposer() {
   elements.messageText.style.height = "auto";
-  elements.messageText.style.height = `${Math.min(elements.messageText.scrollHeight, 112)}px`;
+  elements.messageText.style.height = `${Math.max(40, Math.min(elements.messageText.scrollHeight + 2, 112))}px`;
 }
 
 function renderState() {
@@ -922,7 +918,6 @@ function renderState() {
   renderDisplayControls();
   renderQuota();
   renderComposer();
-  renderWorkingFallback();
 }
 
 function messageNode(message) {
@@ -1155,16 +1150,6 @@ function activityNode(activity) {
   return article;
 }
 
-function renderWorkingFallback(visibleActivities = null) {
-  let activities = visibleActivities;
-  if (!activities) {
-    const allActivities = new Map(historyActivities);
-    for (const [id, activity] of liveActivities) allActivities.set(id, activity);
-    activities = [...allActivities.values()].filter(activityVisible);
-  }
-  elements.workingFallback.hidden = !shouldShowWorkingFallback(state?.phase, activities, state?.turn?.id);
-}
-
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
@@ -1172,7 +1157,6 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   const allActivities = new Map(historyActivities);
   for (const [id, activity] of liveActivities) allActivities.set(id, activity);
   const activities = [...allActivities.values()].filter(activityVisible);
-  renderWorkingFallback(activities);
   const timeline = orderTranscriptEntries([
     ...messages.map((value) => ({ type: "message", value })),
     ...activities.map((value) => ({ type: "activity", value })),
@@ -1219,6 +1203,7 @@ function jumpToLatest() {
 function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities)) {
   const terminalTransitions = [];
   if (Array.isArray(next.activities)) {
+    next = { ...next, activities: mergeActivities([...liveActivities.values()], next.activities) };
     for (const activity of next.activities) {
       const previous = liveActivities.get(activity.id) || state?.activities?.find((candidate) => candidate.id === activity.id);
       if (previous?.status === "running" && ["completed", "failed", "interrupted"].includes(activity.status)) {
@@ -1394,10 +1379,16 @@ async function selectDestination(machineId, threadId) {
 
 async function submitMessage(action) {
   const text = elements.messageText.value;
-  if (!text.trim() || submittingMessage || switchingMachine || switchingThread) return;
+  if (!text.trim() || submittingMessage || switchingMachine || switchingThread || state?.queuedMessage) return;
   submittingMessage = true;
   composerError = "";
   composerNotice = "";
+  const optimisticQueue = action === "queue" ? { threadId: state?.thread?.id, text, createdAt: Date.now() } : null;
+  if (optimisticQueue) {
+    elements.messageText.value = "";
+    resizeComposer();
+    mergeState({ queuedMessage: optimisticQueue });
+  }
   renderState();
   try {
     const response = await apiFetch("/api/message", {
@@ -1412,9 +1403,16 @@ async function submitMessage(action) {
       ...(result.turn ? { turn: result.turn } : {}),
       ...(result.phase ? { phase: result.phase } : {}),
       ...(result.message ? { message: result.message } : {}),
-      ...(Object.hasOwn(result, "queuedMessage") ? { queuedMessage: result.queuedMessage } : {}),
+      // A queue SSE update can arrive before this response, including an automatic send.
+      ...(Object.hasOwn(result, "queuedMessage") && (!optimisticQueue || state?.queuedMessage === optimisticQueue)
+        ? { queuedMessage: result.queuedMessage } : {}),
     });
   } catch (error) {
+    if (optimisticQueue) {
+      if (state?.queuedMessage === optimisticQueue) mergeState({ queuedMessage: null });
+      elements.messageText.value = text;
+      resizeComposer();
+    }
     composerError = error.message;
   } finally {
     submittingMessage = false;
@@ -1423,7 +1421,7 @@ async function submitMessage(action) {
 }
 
 async function cancelQueuedMessage() {
-  if (cancellingQueue) return;
+  if (submittingMessage || sendingQueuedMessage || cancellingQueue) return;
   cancellingQueue = true;
   renderQueue();
   try {
@@ -1443,7 +1441,8 @@ async function cancelQueuedMessage() {
 }
 
 async function sendQueuedMessage() {
-  if (sendingQueuedMessage || !state?.queuedMessage || switchingMachine || switchingThread) return;
+  if (submittingMessage || cancellingQueue || sendingQueuedMessage || !state?.queuedMessage || switchingMachine || switchingThread) return;
+  const action = state?.turn?.status === "inProgress" ? "steer" : "start";
   sendingQueuedMessage = true;
   composerError = "";
   composerNotice = "Sending queued message…";
@@ -1452,13 +1451,14 @@ async function sendQueuedMessage() {
     const response = await apiFetch("/api/message/queue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ machineId: state?.machineId }),
+      body: JSON.stringify({ machineId: state?.machineId, action }),
     });
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Could not send the queued message");
     mergeState({ queuedMessage: null });
-    composerNotice = "Queued message sent.";
+    composerNotice = "";
   } catch (error) {
+    composerNotice = "";
     composerError = error.message;
   } finally {
     sendingQueuedMessage = false;
@@ -1841,7 +1841,6 @@ elements.composer.addEventListener("submit", (event) => {
   if (action === "stop") interruptTurn();
   else submitMessage(action === "queue" ? "queue" : "start");
 });
-elements.steerMessage.addEventListener("click", () => submitMessage("steer"));
 elements.sendQueue.addEventListener("click", sendQueuedMessage);
 elements.cancelQueue.addEventListener("click", cancelQueuedMessage);
 elements.messageText.addEventListener("input", () => {

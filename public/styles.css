@@ -166,7 +166,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   display: inline-flex; align-items: center; min-height: 28px; padding: 4px 9px;
   border-radius: 999px; background: rgba(139,184,255,.12); color: var(--blue); font-size: .72rem; font-weight: 750;
 }
-.phase-pill.working { background: rgba(69,200,138,.12); color: var(--accent); }
+.phase-pill.working { background: rgba(69,200,138,.12); color: var(--accent); animation: phase-breathe 2.4s ease-in-out infinite; }
 .phase-pill.waiting_permission, .phase-pill.waiting_input { background: rgba(240,195,106,.13); color: var(--warning); }
 .phase-pill.stopped { background: rgba(240,195,106,.13); color: var(--warning); }
 .phase-pill.unavailable { background: rgba(255,139,139,.13); color: var(--danger); }
@@ -218,10 +218,11 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 }
 .conversation {
   min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
-  padding: 10px max(16px, calc((100vw - 1050px) / 2)) 20px; scroll-behavior: auto;
+  padding: 10px max(16px, calc((100vw - 1050px) / 2)) 8px; scroll-behavior: auto;
   scrollbar-width: none;
 }
 .conversation::-webkit-scrollbar { display: none; }
+.conversation > :last-child { margin-bottom: 0; }
 .empty-state, .panel-empty { margin: 18px 0; color: var(--subtle); font-size: .76rem; text-align: center; }
 .message { width: min(100%, 760px); margin: 0 auto 16px; }
 .message.user { width: min(88%, 650px); margin-right: max(0px, calc((100% - 760px) / 2)); }
@@ -292,15 +293,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .detail-note { color: var(--subtle); font-size: .64rem; }
 @keyframes blink { 50% { opacity: .25; } }
 @keyframes working-pulse { 50% { opacity: .35; transform: scale(.78); } }
-
-.working-fallback {
-  width: min(100%, 780px); min-height: 24px; margin: 0 auto 5px; display: flex; align-items: center; gap: 7px;
-  padding: 2px; color: var(--muted); font-size: .7rem; font-weight: 650;
-}
-.working-indicator {
-  width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent-strong);
-  animation: working-pulse 1.35s ease-in-out infinite;
-}
+@keyframes phase-breathe { 50% { opacity: .72; } }
 
 .composer-zone { position: relative; border-top: 1px solid var(--line-soft); background: var(--composer-bg); padding: 8px max(12px, calc((100vw - 1050px) / 2)); }
 .jump-latest {
@@ -311,11 +304,10 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 }
 .jump-latest svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .composer { width: min(100%, 780px); margin: 0 auto; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; }
-.composer textarea { height: 44px; min-height: 44px; max-height: 112px; resize: none; padding: 10px 11px; line-height: 1.35; overflow-y: auto; }
+.composer textarea { height: 40px; min-height: 40px; max-height: 112px; resize: none; padding: 8px 11px; line-height: 20px; overflow-y: auto; }
 .composer textarea:placeholder-shown { -webkit-user-select: none; user-select: none; }
 .composer-actions { align-self: end; gap: 6px; }
-.composer button { height: 44px; min-height: 44px; min-width: 66px; padding: 7px 10px; }
-.composer .secondary-composer-button { border-color: var(--line); background: var(--surface-strong); color: var(--muted); }
+.composer button { height: 40px; min-height: 40px; min-width: 66px; padding: 7px 10px; }
 .composer .stop-action { border-color: rgba(255,139,139,.42); background: rgba(255,139,139,.12); color: var(--danger); }
 .form-status { grid-column: 1 / -1; margin: 0; color: var(--subtle); font-size: .64rem; line-height: 1.25; }
 .form-status:empty { display: none; }
@@ -353,6 +345,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .queue-copy { min-width: 0; display: flex; gap: 8px; }
 .queue-copy #queue-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.queue-actions button { min-height: 40px; }
 
 .inspector {
   min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr);
@@ -474,8 +467,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .message-body { font-size: .84rem; line-height: 1.53; }
   .composer { grid-template-columns: minmax(0,1fr) auto; }
   .composer-actions { flex-direction: row; }
-  .composer button { height: 44px; min-height: 44px; min-width: 58px; padding: 5px 7px; font-size: .7rem; }
-  .composer textarea { min-height: 44px; }
+  .composer button { min-width: 58px; padding: 5px 7px; font-size: .7rem; }
   .queue-copy { display: grid; gap: 2px; }
   .attention-banner { padding: 8px; }
   .approval-actions button { flex: 1; }
@@ -494,5 +486,5 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 
 @media (prefers-reduced-motion: reduce) {
   .inspector, .expandable .activity-label::after { transition: none; }
-  .timeline-activity.running .activity-status::before, .working-indicator { animation: none; }
+  .timeline-activity.running .activity-status::before, .phase-pill.working { animation: none; }
 }

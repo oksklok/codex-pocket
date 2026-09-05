@@ -8,7 +8,7 @@
     "gateway": "node --experimental-strip-types gateway.ts",
     "probe": "node --experimental-strip-types probe.ts",
     "probe-remote": "node --experimental-strip-types probe.ts --ssh",
-    "test": "node --test tests/pocket-logic.test.mjs"
+    "test": "node --experimental-strip-types --test tests/pocket-logic.test.mjs"
   },
   "engines": {
     "node": ">=22.6"

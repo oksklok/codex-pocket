@@ -82,14 +82,10 @@
                 <button class="text-button" id="cancel-queue" type="button">Cancel</button>
               </span>
             </div>
-            <div class="working-fallback" id="working-fallback" role="status" aria-label="Codex is working" hidden>
-              <span class="working-indicator" aria-hidden="true"></span><span>Working…</span>
-            </div>
             <form class="composer" id="composer">
               <label class="sr-only" for="message-text">Message Codex</label>
               <textarea id="message-text" rows="1" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
               <div class="composer-actions">
-                <button type="button" class="secondary-composer-button" id="steer-message" hidden>Steer</button>
                 <button type="submit" id="send-message" data-action="start" disabled>Send</button>
               </div>
               <p class="form-status" id="composer-status" aria-live="polite"></p>
