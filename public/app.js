@@ -573,13 +573,16 @@ function renderDestinationSwitcher() {
       const summary = document.createElement("summary");
       summary.textContent = "⋯";
       summary.setAttribute("aria-label", `Actions for ${task.name}`);
-      summary.addEventListener("click", () => closeTaskMenus(actions));
       actions.append(summary);
       const menu = document.createElement("div");
       menu.className = "task-action-menu";
       actions.append(menu);
-      actions.addEventListener("toggle", () => {
+      summary.addEventListener("click", (event) => {
+        event.preventDefault();
+        closeTaskMenus(actions);
+        actions.open = !actions.open;
         if (!actions.open) return;
+        // Measure and position synchronously, before the open menu can paint.
         const anchor = summary.getBoundingClientRect();
         const drawer = elements.destinationSwitcher.getBoundingClientRect();
         const bounds = elements.destinationList.getBoundingClientRect();
@@ -588,7 +591,7 @@ function renderDestinationSwitcher() {
         menu.style.left = `${Math.max(drawer.left + 8, Math.min(anchor.right - menu.offsetWidth, drawer.right - menu.offsetWidth - 8))}px`;
         menu.style.top = `${Math.max(bounds.top, Math.min(top, bounds.bottom - menu.offsetHeight))}px`;
       });
-      for (const [action, label] of [[task.archived ? "unarchive" : "archive", task.archived ? "Unarchive" : "Archive"], ["delete", "Delete task"]]) {
+      for (const [action, label] of [[task.archived ? "unarchive" : "archive", task.archived ? "Unarchive" : "Archive"], ["delete", "Delete"]]) {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
