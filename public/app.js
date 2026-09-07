@@ -573,7 +573,21 @@ function renderDestinationSwitcher() {
       const summary = document.createElement("summary");
       summary.textContent = "⋯";
       summary.setAttribute("aria-label", `Actions for ${task.name}`);
+      summary.addEventListener("click", () => closeTaskMenus(actions));
       actions.append(summary);
+      const menu = document.createElement("div");
+      menu.className = "task-action-menu";
+      actions.append(menu);
+      actions.addEventListener("toggle", () => {
+        if (!actions.open) return;
+        const anchor = summary.getBoundingClientRect();
+        const drawer = elements.destinationSwitcher.getBoundingClientRect();
+        const bounds = elements.destinationList.getBoundingClientRect();
+        const top = anchor.bottom + menu.offsetHeight <= bounds.bottom
+          ? anchor.bottom : anchor.top - menu.offsetHeight;
+        menu.style.left = `${Math.max(drawer.left + 8, Math.min(anchor.right - menu.offsetWidth, drawer.right - menu.offsetWidth - 8))}px`;
+        menu.style.top = `${Math.max(bounds.top, Math.min(top, bounds.bottom - menu.offsetHeight))}px`;
+      });
       for (const [action, label] of [[task.archived ? "unarchive" : "archive", task.archived ? "Unarchive" : "Archive"], ["delete", "Delete task"]]) {
         const button = document.createElement("button");
         button.type = "button";
@@ -583,7 +597,7 @@ function renderDestinationSwitcher() {
           if (action === "delete" && !confirm(`Delete task “${task.name}”? This permanently deletes its Codex conversation. Project files are not deleted.`)) return;
           performTaskAction({ machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action, confirmed: action === "delete" });
         });
-        actions.append(button);
+        menu.append(button);
       }
       entry.append(actions);
       group.append(entry);
@@ -666,6 +680,16 @@ async function refreshNavigationCatalog() {
     renderDestinationSwitcher();
   }
 }
+
+// Menus are overlays; dismiss them before scrolling or interacting elsewhere.
+function closeTaskMenus(except = null) {
+  for (const actions of elements.destinationList.querySelectorAll(".task-actions[open]")) {
+    if (actions !== except) actions.open = false;
+  }
+}
+document.addEventListener("pointerdown", (event) => closeTaskMenus(event.target.closest(".task-actions")));
+elements.destinationList.addEventListener("scroll", () => closeTaskMenus());
+window.addEventListener("resize", () => closeTaskMenus());
 
 function closeDestinationSwitcher() {
   if (destinationSelection || taskActionBusy) return false;

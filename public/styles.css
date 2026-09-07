@@ -543,10 +543,11 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 .destination-archived { display: flex; align-items: center; gap: 6px; padding: 8px 12px; color: var(--muted); font-size: .72rem; }
-.destination-entry { display: flex; align-items: start; gap: 4px; }
-.destination-entry > .destination-task { flex: 1; }
-.task-actions { flex: none; max-width: 96px; font-size: .7rem; }
-.task-actions summary { cursor: pointer; list-style: none; padding: 6px 10px; min-height: 38px; }
+.destination-entry { position: relative; }
+.destination-entry > .destination-task { padding-right: 44px; }
+.task-actions { position: absolute; top: 0; right: 0; font-size: .7rem; }
+.task-actions summary { display: grid; place-items: center; cursor: pointer; list-style: none; width: 40px; height: 38px; padding: 0; }
+.task-action-menu { position: fixed; z-index: 10; width: 136px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 4px 16px rgba(0,0,0,.22); }
 .task-actions summary::-webkit-details-marker { display: none; }
-.task-actions button { display: block; width: 100%; min-height: 36px; padding: 6px; border: 0; background: var(--surface-strong); color: var(--text); text-align: left; border-radius: 5px; }
+.task-actions button { display: block; width: 100%; min-height: 40px; padding: 8px; border: 0; background: var(--surface-strong); color: var(--text); text-align: left; border-radius: 5px; }
 .destination-group-heading .text-button { margin-left: auto; font-size: .7rem; }
