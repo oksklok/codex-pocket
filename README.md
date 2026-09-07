@@ -97,3 +97,20 @@ npm test
 Build the native host with `macos/build-app.sh`. For a read-only connectivity check, use `npm run probe -- --list-only` or `npm run probe-remote -- devbox --list-only`. [SPIKE_REPORT.md](SPIKE_REPORT.md) records the original historical experiment, not the current feature list.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution basics. Licensed under the [MIT License](LICENSE). `package.json` deliberately retains `"private": true` to prevent accidental npm publication.
+
+## Docker / headless hosts
+
+Docker runs Pocket as an SSH-runtime-only gateway; it does not run Codex locally in the container. Install Docker with Compose, clone this repository, and prepare two private directories beside `compose.yaml`:
+
+- `data/.codex-pocket.local.json`: Pocket settings with `lanEnabled: true`, `host: "0.0.0.0"`, `port: 4173`, your four-digit `pin`, and `machines` entries containing a display `name` and SSH alias (`ssh`). You can copy an existing Pocket settings file and adjust the machines.
+- `ssh/`: a dedicated outbound SSH key, `config`, and verified `known_hosts`. Each alias must specify its host, user, and `IdentityFile ~/.ssh/id_ed25519`. Install only this key's public half on the runtime machines. Protect the directories and private key with permissions 700 and 600 respectively.
+
+The supplied container uses the image’s non-root `node` user (UID 1000). The mounted data and SSH files must be owned by UID 1000. It has no privileged mode, Docker socket, or host filesystem access beyond these two mounts. Verify each alias can run `codex --version` and reach its shared Codex app-server before using Pocket.
+
+```sh
+docker compose up -d --build
+```
+
+Open the host's LAN address on port 4173 and sign in with your existing PIN. Use LAN/private VPN access only: the PIN is a convenience gate, not internet-grade authentication. **Never port-forward Pocket directly to the internet.**
+
+`CODEX_POCKET_DATA_DIR` keeps writable settings and runtime markers separate from application files. `CODEX_POCKET_HEADLESS=1` requires at least one SSH machine, omits the local runtime, and makes Restart Pocket exit cleanly for Compose to restart it. Stop with `docker compose down`; the web Quit action is disabled. Neither variable changes the normal macOS host defaults when unset.

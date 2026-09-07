@@ -18,7 +18,7 @@ import {
   reconcileSubmission,
   resolvedAsyncAnswer,
 } from "../public/pocket-logic.js";
-import { MachineRuntime, MessageSubmissions } from "../gateway.ts";
+import { MachineRuntime, MessageSubmissions, PocketGateway } from "../gateway.ts";
 
 const machine = { id: "local" };
 const task = { id: "thread-1", status: "failed" };
@@ -519,4 +519,13 @@ test("selection hold survives transient collapse and flushes once after 500ms cl
   assert.equal(hold.active, false);
   assert.equal(pending, null);
   assert.equal(flushes, 1);
+});
+
+test("headless gateway exposes only SSH runtimes and selects the first", () => {
+  const options = { host: "127.0.0.1", port: 4173, localName: "Local", machines: [{ name: "Remote", ssh: "remote" }] };
+  const gateway = new PocketGateway(options, true);
+  assert.deepEqual(gateway.listMachines().map(machine => machine.id), ["ssh:remote"]);
+  assert.equal(gateway.state.machineId, "ssh:remote");
+  assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), ["local", "ssh:remote"]);
+  assert.throws(() => new PocketGateway({ ...options, machines: [] }, true), /at least one configured SSH/);
 });

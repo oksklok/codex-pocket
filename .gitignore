@@ -5,3 +5,5 @@ node_modules/
 .codex-pocket.local.json.tmp
 .codex-pocket.runtime.json
 .codex-pocket.quit
+data/
+ssh/

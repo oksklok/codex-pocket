@@ -2270,6 +2270,8 @@ function renderMachineSettings(values) {
 
 function renderSettings(value) {
   settingsValue = value;
+  elements.quitPocket.disabled = Boolean(value.headless);
+  elements.quitPocket.textContent = value.headless ? "Stop container through Docker Compose" : "Quit Codex Pocket";
   elements.settingsTheme.value = selectedTheme;
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";

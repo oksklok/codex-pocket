@@ -1,0 +1,12 @@
+services:
+  pocket:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4173:4173"
+    environment:
+      CODEX_POCKET_DATA_DIR: /data
+      CODEX_POCKET_HEADLESS: "1"
+    volumes:
+      - ./data:/data
+      - ./ssh:/home/node/.ssh

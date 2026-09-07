@@ -2,7 +2,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer, isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
@@ -246,10 +246,12 @@ const LOGIN_FAILURE_WINDOW_MS = 60_000;
 const LOGIN_BLOCK_MS = 8_000;
 const ROOT_DIR = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(ROOT_DIR, "public");
-const CONFIG_PATH = join(ROOT_DIR, ".codex-pocket.local.json");
-const RUNTIME_PATH = join(ROOT_DIR, ".codex-pocket.runtime.json");
-const QUIT_PATH = join(ROOT_DIR, ".codex-pocket.quit");
-const LOG_PATH = join(ROOT_DIR, ".codex-pocket.log");
+const DATA_DIR = process.env.CODEX_POCKET_DATA_DIR || ROOT_DIR;
+const HEADLESS = process.env.CODEX_POCKET_HEADLESS === "1";
+const CONFIG_PATH = join(DATA_DIR, ".codex-pocket.local.json");
+const RUNTIME_PATH = join(DATA_DIR, ".codex-pocket.runtime.json");
+const QUIT_PATH = join(DATA_DIR, ".codex-pocket.quit");
+const LOG_PATH = join(DATA_DIR, ".codex-pocket.log");
 const SAFE_CONFIG: LocalConfig = {
   lanEnabled: false,
   host: "127.0.0.1",
@@ -397,6 +399,7 @@ function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin:
 function publicSettings(settings: LocalSettings, fallbackPin: string | null): JsonObject {
   return {
     hostName: localMachineName(),
+    headless: HEADLESS,
     lanEnabled: settings.config.lanEnabled,
     host: settings.config.host,
     port: settings.config.port,
@@ -3114,7 +3117,7 @@ export class MachineRuntime {
   }
 }
 
-class PocketGateway {
+export class PocketGateway {
   readonly submissions = new MessageSubmissions();
   private runtimes = new Map<string, MachineRuntime>();
   private selectedMachineId = "local";
@@ -3133,11 +3136,13 @@ class PocketGateway {
   private warnedAccountMismatch = false;
   private warnedShapeMismatch = false;
 
-  constructor(options: Options) {
+  constructor(options: Options, headless = HEADLESS) {
     const definitions: MachineDefinition[] = [
-      { id: "local", name: options.localName || localMachineName(), ssh: null },
+      ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null }]),
       ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh })),
     ];
+    if (!definitions.length) throw new Error("Headless Pocket requires at least one configured SSH machine");
+    this.selectedMachineId = definitions[0].id;
     for (const definition of definitions) {
       const runtimeOptions: Options = {
         ...options,
@@ -3912,6 +3917,7 @@ async function handleRequest(
 }
 
 async function main(): Promise<void> {
+  if (process.env.CODEX_POCKET_DATA_DIR) mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const settings = loadLocalSettings();
   const options = parseArgs(process.argv.slice(2), {
     host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
@@ -3981,7 +3987,7 @@ async function main(): Promise<void> {
   restartPocket = async () => {
     if (shuttingDown) throw new Error("Pocket is already restarting");
     await validateRestartTarget(settings.config, options);
-    await startRestartHandoff();
+    if (!HEADLESS) await startRestartHandoff();
     const localUrl = browserUrl(
       settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
       settings.config.port,
@@ -3996,6 +4002,7 @@ async function main(): Promise<void> {
     setTimeout(() => void shutdown(), 75).unref();
   };
   quitPocket = () => {
+    if (HEADLESS) throw new Error("Stop this container through Docker Compose");
     if (shuttingDown) throw new Error("Pocket is already stopping");
     markHostQuit();
     shuttingDown = true;
