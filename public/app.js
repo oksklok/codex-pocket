@@ -496,8 +496,22 @@ async function refreshMachines() {
   }
 }
 
+let destinationRenderKey = null;
 function renderDestinationSwitcher() {
   if (elements.destinationSwitcher.hidden) return;
+  // Transcript/usage updates do not change the catalog. Keep open menus and focus.
+  const renderKey = JSON.stringify([
+    navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
+    state?.machineId, state?.thread?.id, destinationSelection, taskActionBusy,
+    destinationError, destinationRetry,
+  ]);
+  if (renderKey === destinationRenderKey) {
+    const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
+    if (status && !destinationSelection) status.textContent = destinationTaskStatus(
+      { id: state?.machineId }, { id: state?.thread?.id }, state);
+    return;
+  }
+  destinationRenderKey = renderKey;
   elements.destinationList.replaceChildren();
   const query = elements.destinationSearch.value.trim().toLowerCase();
   const catalogMachines = Array.isArray(navigationCatalog?.machines) ? navigationCatalog.machines : [];
@@ -696,6 +710,7 @@ window.addEventListener("resize", () => closeTaskMenus());
 
 function closeDestinationSwitcher() {
   if (destinationSelection || taskActionBusy) return false;
+  closeTaskMenus();
   elements.destinationSwitcher.hidden = true;
   elements.destinationBackdrop.hidden = true;
   elements.destinationButton.setAttribute("aria-expanded", "false");
