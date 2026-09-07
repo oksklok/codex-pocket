@@ -22,7 +22,7 @@ export function preserveMessageCreatedAt(existing, incoming) {
 export function contextSnapshot(usage) {
   const used = usage?.last?.totalTokens, window = usage?.modelContextWindow;
   if (!Number.isFinite(used) || used < 0 || !Number.isFinite(window) || window <= 0) return null;
-  return { usedTokens: used, contextWindow: window, remainingPercent: Math.round(100 * (1 - Math.min(used, window) / window)) };
+  return { usedTokens: used, contextWindow: window, usedPercent: Math.round(100 * Math.min(used, window) / window) };
 }
 
 export const MAX_INPUT_IMAGES = 4;

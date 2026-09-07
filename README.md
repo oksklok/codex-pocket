@@ -6,14 +6,14 @@ Codex Pocket is an unofficial community project and is not affiliated with or en
 
 ## What it does
 
-- Select and resume saved tasks across local and SSH runtimes.
+- Select and resume saved tasks across local and SSH runtimes; create a named task in a chosen project folder, archive/unarchive it, or delete its conversation after confirmation.
 - Follow live messages, user-facing reasoning summaries, command/tool activities, file-change diffs, plans, and turn status. Activity details load on demand.
 - Respond to supported approvals and structured questions, including async questions with choices or free-text answers.
 - Choose the model, reasoning effort, and access mode exposed by the selected runtime.
 - Send messages, stop an active turn, or queue one message for the next turn. **Steer now** in the queue banner injects that queued message into the active turn; **Cancel** removes it.
-- Send images with text or on their own using the image picker or desktop clipboard paste. Removable thumbnails remain available in the fullscreen composer, and images travel with queued/steered messages. Input supports PNG, JPEG, GIF, and WebP: up to four images, 4 MB each and 8 MB combined.
+- Send images with text or on their own using the image picker or desktop clipboard paste. Removable thumbnails remain available in the fullscreen composer, and images travel with queued/steered messages. Sent images remain viewable from live messages and history where Codex exposes them. Input supports PNG, JPEG, GIF, and WebP: up to four images, 4 MB each and 8 MB combined.
 - View surfaced assistant images inline and in a fullscreen viewer, including supported local-file references fetched through the gateway or SSH. Unavailable images show useful alt text.
-- See account quota and a **Ctx** chip showing context-window percentage remaining from authoritative app-server usage. Without usage replay or a live update, it shows **Ctx —**.
+- See account quota and a **Ctx** chip showing context-window percentage used from authoritative app-server usage. Without usage replay or a live update, it shows **Ctx —**. Context and quota can each be hidden under Settings → Appearance for this browser.
 - Browse bounded, paginated history in a mobile-focused UI with themes, display toggles, a fullscreen composer, and a browser-local **Enter sends message** preference.
 
 While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion, stays parked after Stop, and clears only after a successful steer. Queues live in gateway memory and are lost on task changes or gateway restart. They cannot be edited or expanded into multiple queued messages.
@@ -46,7 +46,7 @@ Codex Desktop itself is not required. Running Desktop alone does not necessarily
    codex app-server daemon start
    ```
 
-   To work in that runtime from the terminal as well, use `codex --remote unix://`. Pocket selects existing saved tasks; it does not create tasks.
+   To work in that runtime from the terminal as well, use `codex --remote unix://`. Use **New task** in the switcher to create and select an empty task immediately, then send your first real message. No placeholder message is inserted; Codex may omit empty tasks from its persisted saved-task list until the first turn finishes.
 
 3. Double-click **Codex Pocket.app**, then choose **Open Pocket** from its menu-bar icon. Keep the app bundle inside the repository so it can find the gateway and dependencies. The host locates a compatible Node executable in common install locations or the Codex bundled runtime.
 

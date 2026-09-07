@@ -45,6 +45,7 @@
               <input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…">
               <button class="icon-button destination-close" id="destination-close" type="button" aria-label="Close task switcher" title="Close">×</button>
             </div>
+            <label class="destination-archived"><input type="checkbox" id="show-archived"> Archived tasks</label>
             <div class="destination-list" id="destination-list" aria-live="polite"></div>
           </section>
         </div>
@@ -166,6 +167,8 @@
           <h3 id="settings-appearance-title">Appearance</h3>
           <label for="settings-theme">Theme</label>
           <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+          <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show context usage</label>
+          <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show quota</label>
           <label class="enter-preference"><input id="enter-sends" type="checkbox" checked> Enter sends message</label>
           <p class="field-help">Stored in this browser only.</p>
         </section>

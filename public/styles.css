@@ -217,14 +217,13 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 }
 .conversation {
   min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
-  padding: 10px max(16px, calc((100vw - 1050px) / 2)) 8px; scroll-behavior: auto;
+  padding: 10px max(16px, calc((100vw - 1050px) / 2)) 0; scroll-behavior: auto;
   scrollbar-width: none;
 }
 .conversation::-webkit-scrollbar { display: none; }
 .conversation { -webkit-user-select: text; user-select: text; }
 .conversation * { -webkit-user-select: inherit; user-select: inherit; }
 .conversation button, .conversation button *, .conversation [role="button"] { -webkit-user-select: none; user-select: none; }
-.conversation > :last-child { margin-bottom: 0; }
 .empty-state, .panel-empty { margin: 18px 0; color: var(--subtle); font-size: .76rem; text-align: center; }
 .message { width: min(100%, 760px); margin: 0 auto 16px; }
 .message.user { width: min(88%, 650px); margin-right: max(0px, calc((100% - 760px) / 2)); }
@@ -538,3 +537,19 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .inspector, .expandable .activity-label::after { transition: none; }
   .timeline-activity.running .activity-status::before, .phase-pill.working { animation: none; }
 }
+
+.message-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.message-images img { width: 96px; height: 96px; object-fit: contain; border: 1px solid var(--line); border-radius: 7px; cursor: zoom-in; }
+.composer-thumbnail img { cursor: zoom-in; }
+@media (max-width: 620px) {
+  .message-body pre, .message-body pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
+.destination-archived { display: flex; align-items: center; gap: 6px; padding: 8px 12px; color: var(--muted); font-size: .72rem; }
+.destination-entry { display: flex; align-items: start; gap: 4px; }
+.destination-entry > .destination-task { flex: 1; }
+.task-actions { flex: none; max-width: 96px; font-size: .7rem; }
+.task-actions summary { cursor: pointer; list-style: none; padding: 6px 10px; min-height: 38px; }
+.task-actions summary::-webkit-details-marker { display: none; }
+.task-actions button { display: block; width: 100%; min-height: 36px; padding: 6px; border: 0; background: var(--surface-strong); color: var(--text); text-align: left; border-radius: 5px; }
+.destination-group-heading .text-button { margin-left: auto; font-size: .7rem; }

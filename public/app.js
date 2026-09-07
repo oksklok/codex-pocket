@@ -9,6 +9,8 @@ import {
 } from "./pocket-logic.js";
 
 const elements = {
+  showContext: document.querySelector("#show-context"),
+  showQuota: document.querySelector("#show-quota"),
   context: document.querySelector("#context-chip"),
   contextPercent: document.querySelector("#context-percent"),
   contextFill: document.querySelector("#context-fill"),
@@ -36,6 +38,7 @@ const elements = {
   destinationBackdrop: document.querySelector("#destination-backdrop"),
   destinationSearch: document.querySelector("#destination-search"),
   destinationClose: document.querySelector("#destination-close"),
+  showArchived: document.querySelector("#show-archived"),
   destinationList: document.querySelector("#destination-list"),
   modelSelect: document.querySelector("#model-select"),
   effortSelect: document.querySelector("#effort-select"),
@@ -116,7 +119,7 @@ const defaultLinkOpen = markdown.renderer.rules.link_open
   || ((tokens, index, options, environment, renderer) => renderer.renderToken(tokens, index, options));
 markdown.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
   const href = tokens[index].attrGet("href") || "";
-  if (!/^(?:https?:|mailto:)/i.test(href)) tokens[index].attrSet("href", "#");
+  if (!/^(?:https?:|mailto:)/i.test(href)) tokens[index].attrSet("data-unsupported-link", "true");
   tokens[index].attrSet("target", "_blank");
   tokens[index].attrSet("rel", "noopener noreferrer");
   return defaultLinkOpen(tokens, index, options, environment, renderer);
@@ -125,21 +128,24 @@ markdown.renderer.rules.link_open = (tokens, index, options, environment, render
 function renderMarkdownInto(element, value, message = null) {
   element.classList.add("markdown");
   element.innerHTML = markdown.render(String(value || ""), { message, imageIndex: 0 });
+  for (const link of element.querySelectorAll("a[data-unsupported-link]")) link.replaceWith(...link.childNodes);
   for (const table of element.querySelectorAll("table")) {
     const scroll = document.createElement("div");
     scroll.className = "table-scroll";
     table.replaceWith(scroll);
     scroll.append(table);
   }
-  for (const img of element.querySelectorAll("img")) {
-    img.loading = "lazy";
-    img.addEventListener("error", () => img.replaceWith(document.createTextNode(`${img.alt || "Image"} (unavailable)`)), { once: true });
-    img.tabIndex = 0;
-    img.setAttribute("role", "button");
-    img.setAttribute("aria-label", `Open image: ${img.alt || "Image"}`);
-    img.addEventListener("click", () => openImage(img));
-    img.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImage(img); } });
-  }
+  for (const img of element.querySelectorAll("img")) enableImageViewer(img);
+}
+
+function enableImageViewer(img) {
+  img.loading = "lazy";
+  img.addEventListener("error", () => img.replaceWith(document.createTextNode(`${img.alt || "Image"} (unavailable)`)), { once: true });
+  img.tabIndex = 0;
+  img.setAttribute("role", "button");
+  img.setAttribute("aria-label", `Open image: ${img.alt || "Image"}`);
+  img.addEventListener("click", () => openImage(img));
+  img.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImage(img); } });
 }
 
 const phaseLabels = {
@@ -171,6 +177,8 @@ let navigationCatalog = null;
 let navigationRequest = null;
 let destinationSelection = null;
 let destinationError = "";
+let destinationRetry = null;
+let taskActionBusy = false;
 let switchingThread = false;
 let switchingMachine = false;
 let submittingMessage = false;
@@ -190,6 +198,14 @@ let imageDeliveryUnknown = false;
 let enterSends = true;
 try { enterSends = localStorage.getItem("codex-pocket-enter-sends") !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
+for (const [toggle, meter, key] of [[elements.showContext, elements.context, "context"], [elements.showQuota, elements.quota, "quota"]]) {
+  try { toggle.checked = localStorage.getItem(`codex-pocket-show-${key}`) !== "false"; } catch {}
+  meter.hidden = !toggle.checked;
+  toggle.addEventListener("change", () => {
+    meter.hidden = !toggle.checked;
+    try { localStorage.setItem(`codex-pocket-show-${key}`, String(toggle.checked)); } catch {}
+  });
+}
 let composerExpanded = false;
 let composing = false;
 let deferredTranscript = false;
@@ -520,6 +536,13 @@ function renderDestinationSwitcher() {
       availabilityStatus.textContent = availability;
       heading.append(availabilityStatus);
     }
+    const create = document.createElement("button");
+    create.type = "button";
+    create.className = "text-button";
+    create.textContent = "New task";
+    create.disabled = !machine.connected || Boolean(destinationSelection) || taskActionBusy;
+    create.addEventListener("click", () => newTask(machine));
+    heading.append(create);
     group.append(heading);
     if (machine.local && machine.connectionError) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: machine.connectionError }));
 
@@ -528,7 +551,7 @@ function renderDestinationSwitcher() {
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
-      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection);
+      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection) || taskActionBusy || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
       row.title = task.cwd || task.id;
       const check = document.createElement("span");
@@ -544,7 +567,28 @@ function renderDestinationSwitcher() {
         : destinationTaskStatus(machine, task, state);
       row.append(check, label, status);
       row.addEventListener("click", () => selectDestination(machine.id, task.id));
-      group.append(row);
+      const entry = document.createElement("div");
+      entry.className = "destination-entry";
+      entry.append(row);
+      const actions = document.createElement("details");
+      actions.className = "task-actions";
+      const summary = document.createElement("summary");
+      summary.textContent = "⋯";
+      summary.setAttribute("aria-label", `Actions for ${task.name}`);
+      actions.append(summary);
+      for (const [action, label] of [[task.archived ? "unarchive" : "archive", task.archived ? "Unarchive" : "Archive"], ["delete", "Delete task"]]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.disabled = !machine.connected || Boolean(destinationSelection) || taskActionBusy || task.status?.startsWith("active");
+        button.addEventListener("click", () => {
+          if (action === "delete" && !confirm(`Delete task “${task.name}”? This permanently deletes its Codex conversation. Project files are not deleted.`)) return;
+          performTaskAction({ machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action, confirmed: action === "delete" });
+        });
+        actions.append(button);
+      }
+      entry.append(actions);
+      group.append(entry);
     }
 
     if (!tasks.length && !availability) {
@@ -565,6 +609,15 @@ function renderDestinationSwitcher() {
     const error = document.createElement("p");
     error.className = "destination-error";
     error.textContent = destinationError;
+    if (destinationRetry) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "text-button";
+      retry.textContent = "Retry";
+      retry.disabled = Boolean(destinationSelection) || taskActionBusy;
+      retry.addEventListener("click", () => selectDestination(destinationRetry.machineId, destinationRetry.threadId));
+      error.append(" ", retry);
+    }
     elements.destinationList.prepend(error);
   }
 }
@@ -600,7 +653,7 @@ async function refreshLoadedThreads() {
 async function refreshNavigationCatalog() {
   if (navigationRequest) return navigationRequest;
   navigationRequest = (async () => {
-    const response = await apiFetch("/api/navigation");
+    const response = await apiFetch(`/api/navigation?archived=${elements.showArchived.checked}`);
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || "Task catalog unavailable");
     navigationCatalog = value;
@@ -617,13 +670,14 @@ async function refreshNavigationCatalog() {
 }
 
 function closeDestinationSwitcher() {
-  if (destinationSelection) return false;
+  if (destinationSelection || taskActionBusy) return false;
   elements.destinationSwitcher.hidden = true;
   elements.destinationBackdrop.hidden = true;
   elements.destinationButton.setAttribute("aria-expanded", "false");
   document.body.classList.remove("destination-open");
   elements.destinationSearch.value = "";
   destinationError = "";
+  destinationRetry = null;
   return true;
 }
 
@@ -1023,6 +1077,7 @@ function renderImageThumbnails(container, images, removable = false) {
     const img = document.createElement("img");
     img.src = image.url;
     img.alt = `Image ${index + 1}`;
+    enableImageViewer(img);
     thumb.append(img);
     if (removable) {
       const remove = document.createElement("button");
@@ -1119,9 +1174,9 @@ function renderState() {
   renderDisplayControls();
   renderQuota();
   const context = state.context;
-  elements.contextPercent.textContent = context ? `${context.remainingPercent}%` : "—";
-  elements.contextFill.style.width = `${context?.remainingPercent ?? 0}%`;
-  elements.context.title = context ? `${context.remainingPercent}% context remaining · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
+  elements.contextPercent.textContent = context ? `${context.usedPercent}%` : "—";
+  elements.contextFill.style.width = `${context?.usedPercent ?? 0}%`;
+  elements.context.title = context ? `${context.usedPercent}% context used · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
   elements.runtimeReason.textContent = state.machineId === "local" ? state.connectionError || "" : "";
   elements.runtimeReason.hidden = !elements.runtimeReason.textContent;
   renderComposer();
@@ -1144,7 +1199,18 @@ function messageNode(message) {
   const body = document.createElement("div");
   body.className = "message-body";
   renderMarkdownInto(body, message.text, message);
-  if (message.imageCount) body.append(Object.assign(document.createElement("p"), { className: "image-note", textContent: `${message.imageCount} image${message.imageCount === 1 ? "" : "s"} attached` }));
+  if (message.role === "user" && message.imageCount) {
+    const images = document.createElement("div");
+    images.className = "message-images";
+    for (let index = 0; index < Math.min(message.imageCount, 10); index++) {
+      const img = document.createElement("img");
+      img.src = "/api/message/image?" + new URLSearchParams({ machineId: state.machineId, threadId: state.thread.id, messageId: message.id, index });
+      img.alt = `Attached image ${index + 1}`;
+      enableImageViewer(img);
+      images.append(img);
+    }
+    body.append(images);
+  }
   if (message.delivery === "async" && message.questions?.length) {
     // Upstream also repeats questions/options in Markdown. Remove only exact duplicate blocks.
     const repeated = new Set(message.questions.flatMap((question) => [question.title, ...question.options]));
@@ -1634,8 +1700,55 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   }
 }
 
+async function newTask(machine) {
+  const name = prompt(`New task on ${machine.name}: task name`);
+  if (name === null || !name.trim()) return;
+  const defaultCwd = machine.id === state?.machineId ? state?.thread?.cwd : machine.tasks?.find((task) => task.selected)?.cwd;
+  const cwd = prompt("Project folder on this machine (absolute path)", defaultCwd || "");
+  if (cwd === null || !cwd.trim()) return;
+  await performTaskAction({ machineId: machine.id, action: "create", name, cwd });
+}
+
+async function performTaskAction(body) {
+  if (taskActionBusy || destinationSelection || switchingMachine || switchingThread) return;
+  taskActionBusy = true;
+  switchingThread = true;
+  destinationError = "";
+  destinationRetry = null;
+  renderState();
+  renderDestinationSwitcher();
+  let succeeded = false;
+  try {
+    const response = await apiFetch("/api/tasks", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, expectedMachineId: state?.machineId || "", expectedThreadId: state?.thread?.id || "" }),
+    });
+    const snapshot = await response.json();
+    if (!response.ok) throw new Error(snapshot.error || "Task action failed");
+    applySnapshot(snapshot, false);
+    succeeded = true;
+  } catch (error) {
+    // Never repeat task creation or deletion after a lost response.
+    destinationError = error instanceof TypeError ? "Could not confirm the task action. Check the refreshed list before trying again." : error.message;
+    try { const response = await apiFetch("/api/state"); if (response.ok) applySnapshot(await response.json(), false); } catch {}
+  } finally {
+    switchingThread = false;
+    taskActionBusy = false;
+  }
+  const error = destinationError;
+  renderState();
+  await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
+  destinationError = error;
+  renderDestinationSwitcher();
+  if (succeeded && body.action === "create") {
+    closeDestinationSwitcher();
+    elements.messageText.focus();
+  }
+  if (state?.thread) await loadHistory(null, historyEpoch, true);
+}
+
 async function selectDestination(machineId, threadId) {
-  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection) return;
+  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection || taskActionBusy) return;
   if (machineId === state?.machineId && threadId === state?.thread?.id) {
     closeDestinationSwitcher();
     return;
@@ -1701,6 +1814,7 @@ async function selectDestination(machineId, threadId) {
       return;
     }
     destinationError = message;
+    destinationRetry = /another Codex runtime|active writer/i.test(message) ? { machineId, threadId } : null;
     renderDestinationSwitcher();
   }
 }
@@ -2158,6 +2272,10 @@ elements.destinationButton.addEventListener("click", () => {
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
 elements.destinationSearch.addEventListener("input", renderDestinationSwitcher);
+elements.showArchived.addEventListener("change", async () => {
+  if (navigationRequest) await navigationRequest;
+  await refreshNavigationCatalog();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && composerExpanded) { event.preventDefault(); toggleComposer(); return; }
   if (event.key === "Escape" && !elements.destinationSwitcher.hidden) {

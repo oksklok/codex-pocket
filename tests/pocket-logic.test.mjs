@@ -310,14 +310,14 @@ test("async answers steer the original active turn, retain failure state, and st
 
 test("bounded resume leaves context unavailable until replay or a later authoritative update", async () => {
   const usage = { total: { totalTokens: 900000 }, last: { totalTokens: 27000 }, modelContextWindow: 100000 };
-  assert.deepEqual(contextSnapshot(usage), { usedTokens: 27000, contextWindow: 100000, remainingPercent: 73 });
+  assert.deepEqual(contextSnapshot(usage), { usedTokens: 27000, contextWindow: 100000, usedPercent: 27 });
   assert.equal(contextSnapshot({ ...usage, modelContextWindow: null }), null);
   assert.equal(contextSnapshot({ ...usage, last: { totalTokens: -1 } }), null);
-  assert.equal(contextSnapshot({ ...usage, last: { totalTokens: 200000 } }).remainingPercent, 0);
+  assert.equal(contextSnapshot({ ...usage, last: { totalTokens: 200000 } }).usedPercent, 100);
   const runtime = activeRuntime();
   const update = (threadId) => runtime.handleNotification({ method: "thread/tokenUsage/updated", params: { threadId, tokenUsage: usage } });
   update("unrelated"); assert.equal(runtime.snapshot().context, null);
-  update("thread-1"); assert.equal(runtime.snapshot().context.remainingPercent, 73);
+  update("thread-1"); assert.equal(runtime.snapshot().context.usedPercent, 27);
   runtime.loadedThreads = [{ id: "thread-2", name: "Other", cwd: "/tmp", status: "idle" }];
   const resumes = [];
   runtime.rpc = { request: async (method, params) => {
@@ -397,4 +397,99 @@ test("image submission recovery matches exact images and never repeats accepted 
   assert.equal(reconcileSubmission(id, snapshot, requested), "accepted");
   assert.equal(reconcileSubmission(id, { ...snapshot, queuedMessage: { ...snapshot.queuedMessage, images: [] } }, requested), "unknown");
   assert.equal(reconcileSubmission(id, { ...snapshot, queuedMessage: null, liveMessages: [{ id: "new", turnId: "turn-2", role: "user", text: "Look" }], turn: { id: "turn-2" } }, { ...requested, text: "Look", action: "start" }), "unknown");
+});
+
+test("primary messages and coalesced deltas retain content beyond 12k", async () => {
+  const runtime = activeRuntime();
+  const text = "Beginning\n" + "汉字 and code\n".repeat(1800) + "Final tail";
+  const events = [];
+  runtime.broadcast = (event, value) => events.push({ event, value });
+  runtime.handleNotification({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "agentMessage", id: "long", text } } });
+  assert.equal(runtime.snapshot().liveMessages.find(m => m.id === "long").text, text);
+  runtime.queueAssistantDelta("stream", "turn-1", text.slice(0, 11990));
+  runtime.flushAssistantDelta("stream");
+  runtime.queueAssistantDelta("stream", "turn-1", text.slice(11990));
+  runtime.flushAssistantDelta("stream");
+  assert.equal(runtime.snapshot().liveMessages.find(m => m.id === "stream").text, text);
+  assert.equal(events.filter(e => e.event === "assistant_delta").map(e => e.value.delta).join(""), text);
+  runtime.rpc = { request: async (method) => method === "thread/turns/list"
+    ? { data: [{ id: "turn-1", status: "completed" }] }
+    : { data: [{ turnId: "turn-1", item: { id: "history-agent", type: "agentMessage", text } }, { turnId: "turn-1", item: { id: "history-user", type: "userMessage", content: [{ type: "text", text }] } }] } };
+  const history = await runtime.history(null, 1);
+  assert.deepEqual(history.turns[0].messages.map(m => m.text), [text, text]);
+  assert.throws(() => messageInputs(text), /12,000/);
+});
+
+test("user image endpoint resolves native live and history items without exposing blobs in messages", async () => {
+  const runtime = activeRuntime();
+  const item = { type: "userMessage", id: "image-user", content: [png] };
+  runtime.handleNotification({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item } });
+  assert.equal(runtime.snapshot().liveMessages[0].imageCount, 1);
+  assert.equal(runtime.snapshot().liveMessages[0].text, "");
+  assert.ok(!JSON.stringify(runtime.snapshot().liveMessages).includes("base64"));
+  const result = await runtime.messageImage("thread-1", "image-user", 0);
+  assert.equal(result.mimeType, "image/png");
+  assert.equal(result.data.toString("base64"), png.url.split(",")[1]);
+  await assert.rejects(runtime.messageImage("other-thread", "image-user", 0), /selected task changed/);
+  await assert.rejects(runtime.messageImage("thread-1", "image-user", 1), /unavailable/);
+  runtime.itemCache.clear();
+  runtime.rpc = { request: async (method) => { assert.equal(method, "thread/items/list"); return { data: [{ turnId: "turn-1", item }] }; } };
+  assert.deepEqual(await runtime.messageImage("thread-1", "image-user", 0), result);
+});
+
+test("empty task creation selects returned ID without fake input; lifecycle and same-name replacement use official APIs", async () => {
+  const runtime = activeRuntime();
+  const tasks = new Map();
+  const calls = [];
+  let serial = 0;
+  runtime.rpc = { request: async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/start") { const thread = { id: `new-${++serial}`, cwd: params.cwd, status: "idle", canAcceptDirectInput: true }; tasks.set(thread.id, thread); return { thread }; }
+    if (method === "thread/name/set") { tasks.get(params.threadId).name = params.name; return {}; }
+    if (method === "thread/list") return { data: [...tasks.values()].filter(t => t.archived === true && params.archived === true) }; // Empty live tasks are absent from persisted listing.
+    if (method === "thread/loaded/list") return { data: [...tasks.values()].filter(t => !t.archived).map(t => t.id) };
+    if (method === "thread/read") { assert.equal(params.includeTurns, false); return { thread: tasks.get(params.threadId) }; }
+    if (method === "thread/archive") { tasks.get(params.threadId).archived = true; return {}; }
+    if (method === "thread/unarchive") { tasks.get(params.threadId).archived = false; return {}; }
+    if (method === "thread/delete") { tasks.delete(params.threadId); return {}; }
+    if (method === "thread/resume") { assert.equal(params.excludeTurns, true); return { thread: tasks.get(params.threadId) }; }
+    return { data: [] };
+  } };
+  const create = () => runtime.taskAction({ action: "create", name: "Same name", cwd: "/tmp/pocket-test" });
+  const first = await create();
+  assert.equal(first.thread.id, "new-1");
+  assert.equal(first.message.mode, "start");
+  assert.ok((await runtime.listLoadedThreads()).some(t => t.id === first.thread.id));
+  assert.ok(!calls.some(c => c.method === "turn/start" || c.method === "thread/resume"));
+  await assert.rejects(runtime.taskAction({ action: "delete", threadId: "new-1" }), /Confirm/);
+  await runtime.taskAction({ action: "archive", threadId: "new-1" });
+  assert.equal(runtime.state.thread, null);
+  assert.equal((await runtime.listArchivedThreads())[0].id, "new-1");
+  await runtime.taskAction({ action: "unarchive", threadId: "new-1", archived: true });
+  await runtime.selectThread("new-1");
+  await runtime.taskAction({ action: "delete", threadId: "new-1", confirmed: true });
+  assert.equal(runtime.state.thread, null);
+  const next = await create();
+  assert.equal(next.thread.name, "Same name");
+  assert.notEqual(first.thread.id, next.thread.id);
+});
+
+test("ownership conflict stays friendly and a normal subsequent attachment can succeed", async () => {
+  const runtime = activeRuntime();
+  const thread = { id: "owned", name: "Owned task", cwd: "/tmp", status: "idle", canAcceptDirectInput: true };
+  let conflict = true;
+  runtime.rpc = { request: async (method, params) => {
+    if (method === "thread/list") return { data: [thread] };
+    if (method === "thread/resume") {
+      assert.deepEqual(params, { threadId: "owned", excludeTurns: true });
+      if (conflict) throw new Error("thread owned already has an active writer (error -32600)");
+      return { thread };
+    }
+    return { data: [] };
+  } };
+  await assert.rejects(runtime.selectThread("owned"), /Close it there, then retry/);
+  assert.equal(runtime.state.thread, null);
+  assert.ok(!runtime.state.connectionError.includes("-32600"));
+  conflict = false;
+  assert.equal((await runtime.selectThread("owned")).thread.id, "owned");
 });

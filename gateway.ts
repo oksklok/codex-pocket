@@ -176,7 +176,7 @@ type PocketState = {
   models: PocketModel[];
   access: PocketAccess;
   queuedMessage: QueuedMessage | null;
-  context: null | { usedTokens: number; contextWindow: number; remainingPercent: number };
+  context: null | { usedTokens: number; contextWindow: number; usedPercent: number };
   stoppingTurnId: string | null;
   threadStatus: string;
   phase: "connecting" | "unavailable" | "working" | "waiting_input" | "waiting_permission" | "done" | "stopped" | "failed";
@@ -808,7 +808,7 @@ function clientFrame(opcode: number, payload: Buffer): Buffer {
 }
 
 function localRuntimeReason(error: string): string {
-  if (/active writer/i.test(error)) return "This task is open in another Codex runtime. Choose another task.";
+  if (/active writer/i.test(error)) return "This task is open in another Codex runtime. Close it there, then retry.";
   if (/failed to connect to socket/i.test(error) && /No such file/i.test(error)) return "Local Codex app-server is not running (shared socket missing).";
   if (/spawn .*ENOENT|executable.*not found/i.test(error)) return "Codex executable not found.";
   return compact(error.replace(/^Error:\s*/, ""), 180);
@@ -1071,7 +1071,7 @@ class RpcClient {
 
 function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
   if (!item || (item.type !== "userMessage" && item.type !== "agentMessage")) return null;
-  const text = boundedText(readText(item));
+  const text = readText(item);
   const imageCount = item.type === "userMessage" && Array.isArray(item.content) ? item.content.filter((input: any) => input.type === "image" || input.type === "localImage").length : 0;
   if (!text && !imageCount && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
   return {
@@ -1744,8 +1744,17 @@ export class MachineRuntime {
   async messageImage(threadId: unknown, messageId: unknown, index: unknown): Promise<{ mimeType: string; data: Buffer }> {
     const { item } = await this.resolveActivityItem(threadId, messageId);
     const imageIndex = Number(index);
-    if (item.type !== "agentMessage" || !Number.isInteger(imageIndex) || imageIndex < 0 || imageIndex >= 10) throw new Error("Image unavailable");
-    let path = messageImagePaths(boundedText(item.text))[imageIndex];
+    if (!Number.isInteger(imageIndex) || imageIndex < 0 || imageIndex >= 10) throw new Error("Image unavailable");
+    if (item.type === "userMessage") {
+      const input = (Array.isArray(item.content) ? item.content : []).filter((input: any) => input.type === "image" || input.type === "localImage")[imageIndex];
+      if (input?.type === "localImage") return this.readSurfacedImage(String(input.path ?? ""));
+      if (input?.type !== "image") throw new Error("Image unavailable");
+      const [image] = imageInputs([input]);
+      const [header, data] = image.url.split(",");
+      return { mimeType: header.slice(5, header.indexOf(";")), data: Buffer.from(data, "base64") };
+    }
+    if (item.type !== "agentMessage") throw new Error("Image unavailable");
+    let path = messageImagePaths(readText(item))[imageIndex];
     // Codex emits Windows Markdown destinations as /C:/Users/..., not a browser URL.
     if (/windows/i.test(this.state.platform)) path = path?.replace(/^\/([a-z]:\/)/i, "$1");
     return this.readSurfacedImage(path || "");
@@ -2057,6 +2066,13 @@ export class MachineRuntime {
     const loadedIds = new Set<string>(Array.isArray(loaded?.data)
       ? loaded.data.map((value: any) => String(value?.id ?? value))
       : []);
+    const listedIds = new Set(threads.map((thread: any) => String(thread.id)));
+    for (const id of [...loadedIds].filter((id) => !listedIds.has(id)).slice(0, 50)) {
+      try {
+        const result = await this.rpc.request("thread/read", { threadId: id, includeTurns: false });
+        if (result.thread) threads.push(result.thread);
+      } catch { /* A live task may unload between listing and metadata read. */ }
+    }
     this.loadedThreads = threads
       .filter(isUserFacingThread)
       .map((thread: any) => loadedThreadSummary(thread, String(thread.id), loadedIds.has(String(thread.id))))
@@ -2126,6 +2142,63 @@ export class MachineRuntime {
     return profiles;
   }
 
+  async listArchivedThreads(): Promise<LoadedThreadSummary[]> {
+    if (!this.rpc || !this.state.connected) return [];
+    const page = await this.rpc.request("thread/list", { limit: 50, archived: true, sortKey: "recency_at", sortDirection: "desc" });
+    return (page.data || []).filter(isUserFacingThread).map((thread: any) => loadedThreadSummary(thread, String(thread.id), false));
+  }
+
+  taskAction(body: JsonObject): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(() => this.taskActionNow(body));
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
+  private async taskActionNow(body: JsonObject): Promise<JsonObject> {
+    if (!this.rpc || !this.state.connected) throw new Error("Codex is disconnected");
+    const action = String(body.action ?? "");
+    if (action === "create") {
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
+      if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
+      if (!cwd || cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd)) throw new Error("Enter an absolute project folder on this machine");
+      const started = await this.rpc.request("thread/start", { cwd });
+      const id = String(started.thread?.id ?? "");
+      if (!id) throw new Error("Codex did not return a new task");
+      // Keep even an empty task selectable from its live protocol metadata.
+      let nameError: unknown;
+      try { await this.rpc.request("thread/name/set", { threadId: id, name }); started.thread.name = name; }
+      catch (error) { nameError = error; }
+      this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
+      await this.attachLoadedThread(id, true, started);
+      this.options.thread = id;
+      await this.refreshLoadedThreads();
+      if (nameError) throw new Error("Task created, but its name could not be saved. Open the created task before trying again.");
+      return this.snapshot();
+    }
+    if (!["archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
+    const id = String(body.threadId ?? "");
+    if (!id || id.length > 512) throw new Error("Invalid task");
+    const catalog = body.archived === true ? await this.listArchivedThreads() : await this.refreshLoadedThreads();
+    const task = catalog.find((task) => task.id === id);
+    if (!task) throw new Error("Task no longer appears in this list; refresh and try again");
+    if ((action === "unarchive") !== (body.archived === true) && action !== "delete") throw new Error("Task archive state changed; refresh and try again");
+    if (task.status.startsWith("active") || (this.state.thread?.id === id && this.state.turn?.status === "inProgress")) throw new Error("Stop or finish this task before archiving or deleting it");
+    if (action === "delete" && body.confirmed !== true) throw new Error("Confirm task deletion first");
+    await this.rpc.request(`thread/${action}`, { threadId: id });
+    if (action !== "unarchive" && this.state.thread?.id === id) {
+      this.resetThreadState();
+      this.state.thread = null;
+      this.options.thread = undefined;
+      this.state.threadStatus = "idle";
+      this.state.connectionError = null;
+      this.state.phase = this.computePhase();
+      this.broadcast("snapshot", this.snapshot());
+    }
+    await this.refreshLoadedThreads();
+    return this.snapshot();
+  }
+
   private async selectThreadNow(threadId: string): Promise<JsonObject> {
     const requestedId = String(threadId ?? "").trim();
     if (!requestedId) throw new Error("threadId is required");
@@ -2137,7 +2210,9 @@ export class MachineRuntime {
     try {
       await this.attachLoadedThread(requestedId, true);
     } catch (error) {
-      if (!this.definition.ssh && this.state.connected && this.rpc) {
+      this.technicalConnectionError = String(error);
+      console.error(`${this.definition.name} task attach failed: ${String(error)}`);
+      if (this.state.connected && this.rpc) {
         this.resetThreadState();
         this.state.thread = null;
         this.state.threadStatus = "idle";
@@ -2145,7 +2220,7 @@ export class MachineRuntime {
         this.state.phase = "done";
         this.broadcast("snapshot", this.snapshot());
       }
-      throw error;
+      throw /active writer/i.test(String(error)) ? new Error(localRuntimeReason(String(error))) : error;
     }
     this.options.thread = requestedId;
     return this.snapshot();
@@ -2486,7 +2561,7 @@ export class MachineRuntime {
     return { accepted: true, queuedMessage: null };
   }
 
-  private async attachLoadedThread(threadId: string, broadcastReset: boolean): Promise<void> {
+  private async attachLoadedThread(threadId: string, broadcastReset: boolean, started?: JsonObject): Promise<void> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const summary = this.loadedThreads.find((thread) => thread.id === threadId);
     if (!summary) throw new Error("selected task is not available in this Codex runtime");
@@ -2511,7 +2586,7 @@ export class MachineRuntime {
     this.state.phase = this.computePhase();
     if (changed && broadcastReset) this.broadcast("snapshot", this.snapshot());
 
-    const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
+    const resumed = started ?? await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
     const thread = resumed?.thread ?? {};
     const resumedId = String(thread.id ?? threadId);
     if (resumedId !== threadId) throw new Error("app-server resumed an unexpected thread");
@@ -2853,7 +2928,7 @@ export class MachineRuntime {
 
   private handleItem(item: any, turnId: unknown, phase: "start" | "done"): void {
     const itemTurnId = String(turnId ?? this.state.turn?.id ?? "");
-    if (item?.type === "agentMessage") this.rememberItem(item, itemTurnId);
+    if (item?.type === "agentMessage" || item?.type === "userMessage") this.rememberItem(item, itemTurnId);
     if (item?.type === "agentMessage" && phase === "done") {
       this.flushAssistantDelta(String(item.id));
       const existing = this.state.liveMessages.find((message) => message.id === String(item.id));
@@ -2887,9 +2962,9 @@ export class MachineRuntime {
     let message = this.state.liveMessages.find((candidate) => candidate.id === itemId);
     if (!message) {
       message = { id: itemId, turnId, role: "assistant", text: "", createdAt: Date.now(), complete: false };
-      this.upsertLiveMessage(message);
+      message = this.upsertLiveMessage(message);
     }
-    message.text = boundedText(`${message.text}${delta}`);
+    message.text += delta;
     const queued = this.assistantFlushes.get(itemId);
     if (queued) {
       queued.delta += delta;
@@ -2904,7 +2979,7 @@ export class MachineRuntime {
     if (!queued) return;
     clearTimeout(queued.timer);
     this.assistantFlushes.delete(itemId);
-    this.broadcast("assistant_delta", { id: itemId, delta: boundedText(queued.delta, 4_000) });
+    this.broadcast("assistant_delta", { id: itemId, delta: queued.delta });
   }
 
   private flushAllAssistantDeltas(): void {
@@ -3124,14 +3199,14 @@ class PocketGateway {
     }));
   }
 
-  async navigationCatalog(): Promise<JsonObject> {
+  async navigationCatalog(archived = false): Promise<JsonObject> {
     const machines = await Promise.all([...this.runtimes.entries()].map(async ([id, runtime]) => {
       const summary = runtime.machineSummary();
       let tasks: LoadedThreadSummary[] = [];
       let catalogAvailable = false;
       if (summary.connected) {
         try {
-          tasks = await runtime.listLoadedThreads();
+          tasks = archived ? await runtime.listArchivedThreads() : await runtime.listLoadedThreads();
           catalogAvailable = true;
         } catch {
           // The normal switcher stays concise; diagnostics/logs retain technical failures.
@@ -3150,6 +3225,7 @@ class PocketGateway {
           const attached = task.id === runtime.state.thread?.id;
           return {
             id: task.id,
+            archived,
             name: task.name,
             preview: task.preview,
             cwd: task.cwd,
@@ -3168,6 +3244,25 @@ class PocketGateway {
       selectedThreadId: this.state.thread?.id ?? null,
       machines,
     };
+  }
+
+  taskAction(body: JsonObject): Promise<JsonObject> {
+    return this.enqueue(async () => {
+      if (String(body.expectedMachineId ?? "") !== this.selectedMachineId || String(body.expectedThreadId ?? "") !== String(this.state.thread?.id ?? "")) throw new Error("Selected task changed; try again");
+      const next = this.runtimes.get(String(body.machineId));
+      if (!next) throw new Error("Machine is not configured");
+      await next.taskAction(body);
+      if (body.action === "create" && this.selectedMachineId !== body.machineId) {
+        const previous = this.selected();
+        for (const response of this.subscribers) previous.removeSubscriber(response);
+        this.selectedMachineId = String(body.machineId);
+        for (const response of this.subscribers) next.addSubscriber(response, false);
+        this.refreshQuotaSource();
+      }
+      const snapshot = this.snapshot();
+      for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
+      return snapshot;
+    });
   }
 
   selectDestination(
@@ -3365,7 +3460,7 @@ const CONTENT_TYPES: Record<string, string> = {
 
 function securityHeaders(): Record<string, string> {
   return {
-    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -3611,6 +3706,16 @@ async function handleRequest(
     }
     return;
   }
+  if (method === "POST" && url.pathname === "/api/tasks") {
+    try {
+      sendJson(response, 200, await gateway.taskAction(await readJsonBody(request)), gateway);
+    } catch (error) {
+      console.error(`Task action failed: ${String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(response, 409, { error: /active writer/i.test(message) ? localRuntimeReason(message) : message }, gateway);
+    }
+    return;
+  }
   if (method === "POST" && url.pathname === "/api/message") {
     try {
       const body = await readJsonBody(request, Math.ceil(MAX_INPUT_IMAGES_BYTES * 4 / 3) + 65_536);
@@ -3758,7 +3863,7 @@ async function handleRequest(
     return;
   }
   if (url.pathname === "/api/navigation") {
-    sendJson(response, 200, await gateway.navigationCatalog(), gateway);
+    sendJson(response, 200, await gateway.navigationCatalog(url.searchParams.get("archived") === "true"), gateway);
     return;
   }
   if (url.pathname === "/api/history") {
