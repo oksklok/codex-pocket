@@ -1,4 +1,5 @@
 import {
+  createSelectionHold,
   destinationTaskStatus,
   mergeActivities,
   orderTranscriptEntries,
@@ -209,16 +210,13 @@ for (const [toggle, meter, key] of [[elements.showContext, elements.context, "co
 let composerExpanded = false;
 let composing = false;
 let deferredTranscript = false;
-let imageOpener = null;
+const viewer = setupImageViewer(elements.imageViewer, elements.viewerImage, elements.closeImage);
+const selectionHold = createSelectionHold(flushDeferredTranscript);
 let queueDeliveryUnknown = false;
 const asyncDrafts = new Map();
 
 function openImage(img) {
-  imageOpener = img;
-  elements.viewerImage.src = img.src;
-  elements.viewerImage.alt = img.alt;
-  elements.imageViewer.showModal();
-  elements.closeImage.focus();
+  viewer.open(img);
 }
 
 function toggleComposer() {
@@ -553,7 +551,7 @@ function renderDestinationSwitcher() {
       row.className = `destination-task ${selected ? "selected" : ""}`;
       row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection) || taskActionBusy || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
-      row.title = task.cwd || task.id;
+      row.title = task.cwd || task.name || "Task";
       const check = document.createElement("span");
       check.className = "destination-check";
       check.textContent = selected ? "✓" : "";
@@ -1529,7 +1527,8 @@ function activityNode(activity) {
 }
 
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
-  if (transcriptSelectionActive() || elements.conversation.contains(document.activeElement) && document.activeElement?.tagName === "TEXTAREA") {
+  selectionHold.observe(transcriptSelectionActive());
+  if (selectionHold.active || elements.conversation.contains(document.activeElement) && document.activeElement?.tagName === "TEXTAREA") {
     deferredTranscript = true;
     return;
   }
@@ -1575,7 +1574,7 @@ function transcriptSelectionActive() {
 }
 
 function flushDeferredTranscript() {
-  if (deferredTranscript && !transcriptSelectionActive()) renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+  if (deferredTranscript && !selectionHold.active && !transcriptSelectionActive()) renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
 }
 
 function updateJumpLatest() {
@@ -1623,6 +1622,10 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
 }
 
 function resetConversationState() {
+  selectionHold.reset();
+  deferredTranscript = false;
+  // A destination change intentionally replaces the previous transcript.
+  elements.conversation.replaceChildren();
   historyEpoch += 1;
   historyMessages.clear();
   liveMessages.clear();
@@ -2303,9 +2306,7 @@ elements.enterSends.addEventListener("change", () => {
   enterSends = elements.enterSends.checked;
   try { localStorage.setItem("codex-pocket-enter-sends", String(enterSends)); } catch {}
 });
-elements.closeImage.addEventListener("click", () => elements.imageViewer.close());
-elements.imageViewer.addEventListener("close", () => { elements.viewerImage.removeAttribute("src"); imageOpener?.focus({ preventScroll: true }); });
-document.addEventListener("selectionchange", flushDeferredTranscript);
+document.addEventListener("selectionchange", () => selectionHold.observe(transcriptSelectionActive()));
 elements.conversation.addEventListener("focusout", (event) => {
   if (!event.relatedTarget?.closest(".async-answer")) queueMicrotask(flushDeferredTranscript);
 });
@@ -2540,3 +2541,92 @@ async function start() {
 }
 
 start();
+
+// Viewer transforms are independent of the browser's page zoom.
+function setupImageViewer(dialog, image, close) {
+  let opener;
+  let scale = 1, x = 0, y = 0;
+  let gesture = null;
+  const pointers = new Map();
+  const points = () => [...pointers.values()];
+  const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const midpoint = (a, b) => ({ x: (a.x + b.x) / 2 - dialog.clientWidth / 2, y: (a.y + b.y) / 2 - dialog.clientHeight / 2 });
+  function paint() {
+    const limitX = Math.max(0, (image.offsetWidth * scale - dialog.clientWidth) / 2);
+    const limitY = Math.max(0, (image.offsetHeight * scale - dialog.clientHeight) / 2);
+    x = Math.max(-limitX, Math.min(limitX, x));
+    y = Math.max(-limitY, Math.min(limitY, y));
+    image.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`;
+    image.style.cursor = scale > 1 ? 'grab' : 'default';
+  }
+  function begin(multi = false) {
+    const [a, b] = points();
+    gesture = a ? { a, distance: b ? distance(a, b) : 0, center: b ? midpoint(a, b) : null, scale, x, y, moved: multi, multi } : null;
+  }
+  dialog.addEventListener('pointerdown', event => {
+    if (event.target.closest('button') || event.button !== 0) return;
+    event.preventDefault();
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    dialog.setPointerCapture(event.pointerId);
+    begin(pointers.size > 1);
+  });
+  dialog.addEventListener('pointermove', event => {
+    if (!pointers.has(event.pointerId) || !gesture) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const [a, b] = points();
+    if (b && gesture.center) {
+      scale = Math.max(1, Math.min(6, gesture.scale * distance(a, b) / Math.max(1, gesture.distance)));
+      const center = midpoint(a, b);
+      x = center.x - (gesture.center.x - gesture.x) * scale / gesture.scale;
+      y = center.y - (gesture.center.y - gesture.y) * scale / gesture.scale;
+    } else {
+      const dx = a.x - gesture.a.x, dy = a.y - gesture.a.y;
+      if (Math.hypot(dx, dy) > 8) gesture.moved = true;
+      if (scale > 1) { x = gesture.x + dx; y = gesture.y + dy; }
+    }
+    paint();
+  });
+  function finish(event) {
+    if (!pointers.has(event.pointerId)) return;
+    const last = pointers.size === 1;
+    const dx = event.clientX - gesture.a.x, dy = event.clientY - gesture.a.y;
+    const rect = image.getBoundingClientRect();
+    const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+    const dismiss = event.type === 'pointerup' && last && !gesture.multi && (
+      (!gesture.moved && outside) || (scale === 1 && dy > 100 && dy > Math.abs(dx) * 1.5));
+    pointers.delete(event.pointerId);
+    if (dialog.hasPointerCapture(event.pointerId)) dialog.releasePointerCapture(event.pointerId);
+    begin(true); // A pinch becoming one finger must never become a dismiss gesture.
+    if (dismiss) dialog.close();
+  }
+  dialog.addEventListener('pointerup', finish);
+  dialog.addEventListener('pointercancel', finish);
+  dialog.addEventListener('wheel', event => {
+    event.preventDefault();
+    const previous = scale;
+    scale = Math.max(1, Math.min(6, scale * Math.exp(-event.deltaY * .002)));
+    const px = event.clientX - dialog.clientWidth / 2, py = event.clientY - dialog.clientHeight / 2;
+    x = px - (px - x) * scale / previous;
+    y = py - (py - y) * scale / previous;
+    paint();
+  }, { passive: false });
+  image.addEventListener('load', paint);
+  window.addEventListener('resize', () => { if (dialog.open) paint(); });
+  close.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', () => {
+    pointers.clear();
+    gesture = null;
+    image.removeAttribute('src');
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
+  });
+  return { open(source) {
+    opener = source;
+    scale = 1; x = 0; y = 0;
+    pointers.clear(); gesture = null;
+    image.src = source.src;
+    image.alt = source.alt;
+    dialog.showModal();
+    paint();
+    close.focus();
+  } };
+}

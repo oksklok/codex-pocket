@@ -115,7 +115,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .brand svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
 .destination-control { position: relative; min-width: 0; }
 .destination-button {
-  position: relative; z-index: 10; width: 100%; min-height: 36px; display: grid;
+  position: relative; width: 100%; min-height: 36px; display: grid;
   grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 6px 9px 6px 11px;
   overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong);
   color: var(--text); cursor: pointer; font-size: .76rem; font-weight: 700; text-align: left;
@@ -123,14 +123,15 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .destination-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .destination-button[aria-expanded="true"] { border-color: rgba(69,200,138,.44); background: rgba(69,200,138,.12); }
-.destination-backdrop { position: fixed; z-index: 8; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
+.destination-backdrop { position: fixed; z-index: 8; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(4,7,11,.62); }
 .destination-switcher {
-  position: absolute; z-index: 9; top: calc(100% + 7px); left: 0; width: min(560px, calc(100vw - 24px));
-  max-height: min(70dvh, 620px); overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr);
-  border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 18px 55px rgba(0,0,0,.42);
+  position: fixed; z-index: 9; inset: 0 auto 0 0; width: min(400px, 88vw); height: 100dvh;
+  overflow: hidden; display: grid; grid-template-rows: auto auto auto minmax(0,1fr); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  border: 1px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 0 18px 55px rgba(0,0,0,.42);
 }
 .destination-switcher-head { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 7px; padding: 10px; border-bottom: 1px solid var(--line-soft); }
-.destination-switcher-head input {
+.destination-search { display: block; padding: 12px 12px 0; }
+.destination-search input {
   min-width: 0; width: 100%; height: 38px; min-height: 38px; padding: 7px 10px;
   border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text);
 }
@@ -249,10 +250,11 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .markdown th, .markdown td { min-width: 100px; padding: 7px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
 .markdown th { background: var(--surface-strong); font-weight: 750; }
 .markdown img { display: block; max-width: 100%; max-height: 65dvh; object-fit: contain; margin: 8px auto; cursor: zoom-in; }
-.image-viewer { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; padding: 60px 12px 12px; border: 0; background: var(--bg); color: var(--text); }
-.image-viewer::backdrop { background: rgba(0,0,0,.85); }
-.image-viewer img { display: block; width: 100%; height: 100%; object-fit: contain; }
-.image-viewer button { position: absolute; right: 12px; top: 12px; min-height: 40px; padding: 8px 14px; background: var(--surface-strong); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+.image-viewer { position: fixed; inset: 0; margin: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; padding: 0; border: 0; overflow: hidden; background: #090b0eed; color: white; touch-action: none; overscroll-behavior: contain; user-select: none; }
+.image-viewer::backdrop { background: #090b0e; }
+.image-viewer img { position: absolute; left: 50%; top: 50%; max-width: calc(100% - 24px); max-height: calc(100% - 104px); width: auto; height: auto; object-fit: contain; transform: translate(-50%, -50%); transform-origin: center; touch-action: none; -webkit-user-drag: none; }
+.image-viewer button { position: absolute; z-index: 1; right: max(12px, env(safe-area-inset-right)); top: max(12px, env(safe-area-inset-top)); width: 40px; height: 40px; min-height: 40px; padding: 9px; background: #25282dcc; color: white; border: 1px solid #ffffff30; border-radius: 50%; }
+.image-viewer button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .async-answer { margin: 12px 0; }
 .async-question { min-width: 0; }
 .async-title { margin: 0 0 8px; font-weight: 600; }
@@ -466,11 +468,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .topbar { grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; padding: 7px 9px; }
   .brand { display: none; }
   .destination-control { grid-column: 1 / 4; grid-row: 1; }
-  .destination-switcher {
-    position: fixed; top: auto; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); left: 12px;
-    width: auto; max-height: min(78dvh, 680px); border-radius: 14px;
-  }
-  .destination-backdrop { background: rgba(4,7,11,.62); }
   .destination-list { padding-bottom: 12px; }
   .phase-row { grid-column: 1; grid-row: 2; }
   .topbar-actions { grid-column: 2 / 4; grid-row: 2; }

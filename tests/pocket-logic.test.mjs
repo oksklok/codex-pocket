@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  createSelectionHold,
   destinationTaskStatus,
   historyTurnTimestamp,
   isUnsupportedMethodError,
@@ -492,4 +493,30 @@ test("ownership conflict stays friendly and a normal subsequent attachment can s
   assert.ok(!runtime.state.connectionError.includes("-32600"));
   conflict = false;
   assert.equal((await runtime.selectThread("owned")).thread.id, "owned");
+});
+
+test("selection hold survives transient collapse and flushes once after 500ms clear", () => {
+  let pending = null, flushes = 0, id = 0;
+  const hold = createSelectionHold(() => flushes++, {
+    setTimeout(callback, delay) { assert.equal(delay, 500); pending = callback; return ++id; },
+    clearTimeout() { pending = null; },
+  });
+  hold.observe(true);
+  hold.observe(false);
+  const first = pending;
+  hold.observe(false);
+  assert.equal(pending, first);
+  hold.observe(true);
+  assert.equal(pending, null);
+  assert.equal(hold.active, true);
+  hold.observe(false);
+  pending(); pending = null;
+  assert.equal(hold.active, false);
+  assert.equal(flushes, 1);
+  hold.observe(false);
+  assert.equal(pending, null);
+  hold.observe(true); hold.observe(false); hold.reset();
+  assert.equal(hold.active, false);
+  assert.equal(pending, null);
+  assert.equal(flushes, 1);
 });

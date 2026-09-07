@@ -167,3 +167,30 @@ export function pocketPhase({ connectionError, connected, pending, turn, threadS
   if (turn?.status === "interrupted") return "stopped";
   return connected ? "done" : "connecting";
 }
+
+// Android can briefly collapse a range while a native selection handle moves.
+export function createSelectionHold(onRelease, timers = globalThis) {
+  let active = false;
+  let release = null;
+  return {
+    get active() { return active; },
+    observe(selected) {
+      if (selected) {
+        active = true;
+        timers.clearTimeout(release);
+        release = null;
+      } else if (active && release === null) {
+        release = timers.setTimeout(() => {
+          release = null;
+          active = false;
+          onRelease();
+        }, 500);
+      }
+    },
+    reset() {
+      timers.clearTimeout(release);
+      release = null;
+      active = false;
+    },
+  };
+}
