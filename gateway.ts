@@ -3735,7 +3735,7 @@ async function handleRequest(
       const config = saveLocalSettings(settings, await readJsonBody(request), auth.pin);
       sendJson(response, 200, {
         saved: true,
-        restartRequired: true,
+        restartRequired: settingsNeedRestart(settings, options, auth),
         settings: publicSettings(settings, config.pin),
       }, gateway);
     } catch (error) {
