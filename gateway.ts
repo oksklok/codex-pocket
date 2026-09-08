@@ -1821,7 +1821,17 @@ export class MachineRuntime {
 
   answerAsyncQuestion(question: JsonObject): Promise<JsonObject> {
     const operation = this.selectionQueue.then(async () => {
-      const { item } = await this.resolveActivityItem(question.threadId, question.messageId);
+      if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+      const threadId = String(question.threadId ?? "");
+      const messageId = String(question.messageId ?? "");
+      if (threadId !== this.state.thread.id) throw new Error("The selected task changed; try again");
+      if (!messageId || messageId.length > 512) throw new Error("Invalid question");
+      const live = this.state.liveMessages.find(message => message.id === messageId && message.role === "assistant"
+        && message.delivery === "async" && message.questions?.length);
+      const cached = this.itemCache.get(messageId);
+      const item = live ? { ...live, type: "agentMessage" }
+        : cached?.item.delivery === "async" && cached.item.questions?.length ? cached.item
+        : (await this.resolveActivityItem(threadId, messageId)).item;
       const questions = normalizeAsyncQuestions(item.questions);
       const index = Number(question.index);
       if (item.type !== "agentMessage" || item.delivery !== "async" || !Number.isInteger(index) || !questions[index]) throw new Error("This question is unavailable");
@@ -1829,7 +1839,7 @@ export class MachineRuntime {
       const answer = typeof question.answer === "string" ? question.answer.trim() : "";
       if (!answer || answer.length > 8000) throw new Error("Enter an answer of up to 8,000 characters");
       const active = this.state.turn?.status === "inProgress";
-      if (active && this.itemTurns.get(item.id) !== this.state.turn?.id) throw new Error("Another turn is active. Answer after it finishes.");
+      if (active && (live?.turnId ?? cached?.turnId ?? this.itemTurns.get(item.id)) !== this.state.turn?.id) throw new Error("Another turn is active. Answer after it finishes.");
       const result = await this.sendMessageNow(asyncAnswerText(questions[index].title, answer), active ? "steer" : "start");
       this.asyncAnswers[item.id] = { ...this.asyncAnswers[item.id], [index]: answer };
       if (Object.keys(this.asyncAnswers).length > 100) delete this.asyncAnswers[Object.keys(this.asyncAnswers)[0]];
@@ -2817,6 +2827,8 @@ export class MachineRuntime {
         this.updateModel(turn);
         const status = String(turn.status ?? "completed");
         const error = compact(turn.error?.message ?? turn.error, 400) || null;
+        const turnId = String(turn.id ?? params.turnId ?? this.state.turn?.id ?? "");
+        const alreadyTerminal = this.state.turn?.id === turnId && ["completed", "interrupted", "failed"].includes(this.state.turn.status);
         this.state.turn = {
           id: String(turn.id ?? params.turnId ?? this.state.turn?.id ?? ""),
           status,
@@ -2845,6 +2857,7 @@ export class MachineRuntime {
           activities: this.state.activities,
           message: this.messageCapability(),
         });
+        if (!alreadyTerminal) void this.finalizeTerminalMessages(this.state.turn.id);
         if (status !== "interrupted"
           && !this.startingQueuedMessage
           && this.state.thread
@@ -2984,6 +2997,36 @@ export class MachineRuntime {
     clearTimeout(queued.timer);
     this.assistantFlushes.delete(itemId);
     this.broadcast("assistant_delta", { id: itemId, delta: queued.delta });
+  }
+
+  private async finalizeTerminalMessages(turnId: string): Promise<void> {
+    const pending = this.state.liveMessages.filter(message => message.turnId === turnId && message.role === "assistant" && !message.complete);
+    if (!pending.length || !this.rpc || !this.state.thread) return;
+    const rpc = this.rpc;
+    const threadId = this.state.thread.id;
+    // One recent item page, bypassing the cache that may still contain item/started.
+    let items: any[] = [];
+    try {
+      const page = await rpc.request("thread/items/list", {
+        threadId, turnId, cursor: null, limit: DETAIL_ITEMS_PAGE_LIMIT, sortDirection: "desc",
+      });
+      items = (Array.isArray(page?.data) ? page.data : [])
+        .filter((entry: any) => !entry.turnId || String(entry.turnId) === turnId).map((entry: any) => entry.item);
+    } catch (error) {
+      console.warn(`${this.definition.name}: terminal message reconciliation unavailable: ${String(error)}`);
+    }
+    if (this.rpc !== rpc || this.state.thread?.id !== threadId) return;
+    for (const message of pending) {
+      // A task reset or a newer item/completed wins over this delayed response.
+      if (!this.state.liveMessages.includes(message) || message.complete) continue;
+      this.flushAssistantDelta(message.id);
+      const item = items.find(item => item?.type === "agentMessage" && String(item.id) === message.id && typeof item.text === "string");
+      if (item) this.handleItem(item, turnId, "done");
+      else {
+        message.complete = true;
+        this.broadcast("message", message);
+      }
+    }
   }
 
   private flushAllAssistantDeltas(): void {

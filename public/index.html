@@ -45,7 +45,7 @@
               <button class="icon-button destination-close" id="destination-close" type="button" aria-label="Close task switcher" title="Close">×</button>
             </div>
             <label class="destination-search"><span class="sr-only">Search tasks</span><input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…"></label>
-            <label class="destination-archived"><input type="checkbox" id="show-archived"> Archived tasks</label>
+            <label class="destination-archived"><input type="checkbox" id="show-archived"> Archived Tasks</label>
             <div class="destination-list" id="destination-list" aria-live="polite"></div>
           </section>
         </div>
@@ -73,12 +73,12 @@
           <div class="history-status" id="history-status" aria-live="polite" hidden></div>
           <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state">Loading recent messages…</p></div>
           <div class="composer-zone">
-            <button class="jump-latest" id="jump-latest" type="button" aria-label="Jump to latest" title="Jump to latest" hidden>
+            <button class="jump-latest" id="jump-latest" type="button" aria-label="Jump to Latest" title="Jump to Latest" hidden>
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></svg>
             </button>
             <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
             <div class="queue-banner" id="queue-banner" hidden>
-              <div class="queue-copy"><strong>Queued next</strong><span id="queue-text"></span></div>
+              <div class="queue-copy"><strong>Queued Next</strong><span id="queue-text"></span></div>
               <div class="composer-images" id="queue-images"></div>
               <span class="queue-actions">
                 <button class="text-button" id="send-queue" type="button" hidden>Send</button>
@@ -91,7 +91,7 @@
               <label class="sr-only" for="message-text">Message Codex</label>
               <div class="composer-input">
                 <textarea id="message-text" rows="1" maxlength="12000" placeholder="Message Codex…" disabled></textarea>
-                <button type="button" class="expand-composer" id="expand-composer" aria-label="Expand composer" aria-expanded="false" hidden>
+                <button type="button" class="expand-composer" id="expand-composer" aria-label="Expand Composer" aria-expanded="false" hidden>
                   <svg aria-hidden="true" viewBox="0 0 20 20"><path class="fullscreen-enter" d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/><path class="fullscreen-exit" d="M3 7h4V3m6 0v4h4M7 17v-4H3m10 4v-4h4"/></svg>
                 </button>
               </div>
@@ -107,38 +107,38 @@
         <button class="inspector-backdrop" id="inspector-backdrop" type="button" aria-label="Close task info" hidden></button>
         <aside class="inspector" id="sidebar" aria-labelledby="inspector-title">
           <div class="inspector-heading">
-            <h2 id="inspector-title">Task details</h2>
+            <h2 id="inspector-title">Task Details</h2>
             <button class="icon-button" id="inspector-close" type="button" aria-label="Close task info">×</button>
           </div>
           <div class="inspector-scroll">
             <dl class="metadata">
               <div><dt>Machine</dt><dd id="machine">—</dd></div>
-              <div><dt>Working path</dt><dd id="project">—</dd></div>
+              <div><dt>Working Path</dt><dd id="project">—</dd></div>
             </dl>
             <section class="secondary-panel runtime-panel" aria-labelledby="runtime-title">
               <div class="panel-heading"><h3 id="runtime-title">Runtime</h3></div>
               <p class="field-help error-text" id="runtime-reason" hidden></p>
               <label for="model-select">Model</label>
               <select id="model-select" aria-label="Model" disabled><option>Model</option></select>
-              <label for="effort-select">Reasoning effort</label>
-              <select id="effort-select" aria-label="Reasoning effort" disabled><option>Effort</option></select>
+              <label for="effort-select">Reasoning Effort</label>
+              <select id="effort-select" aria-label="Reasoning Effort" disabled><option>Effort</option></select>
               <label for="access-select">Access</label>
               <select id="access-select" aria-label="Access" disabled><option>Access</option></select>
             </section>
             <section class="secondary-panel" id="plan-panel" aria-labelledby="plan-title" hidden>
-              <div class="panel-heading"><h3 id="plan-title">Current plan</h3><span class="count-badge" id="plan-count">0/0</span></div>
+              <div class="panel-heading"><h3 id="plan-title">Current Plan</h3><span class="count-badge" id="plan-count">0/0</span></div>
               <ol class="plan-list" id="plan-list"></ol>
             </section>
             <section class="secondary-panel display-panel" aria-labelledby="display-title">
               <div class="panel-heading"><h3 id="display-title">Display</h3></div>
-              <label class="display-option"><input id="display-commands" type="checkbox" checked><span>Tool calls</span></label>
+              <label class="display-option"><input id="display-commands" type="checkbox" checked><span>Tool Calls</span></label>
               <label class="display-option"><input id="display-reasoning" type="checkbox" checked><span>Reasoning</span></label>
               <label class="display-option"><input id="display-collaboration" type="checkbox" checked><span>Subagents</span></label>
               <label class="display-option"><input id="display-images" type="checkbox" checked><span>Images</span></label>
-              <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context compaction</span></label>
+              <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context Compaction</span></label>
               <div class="display-divider" role="separator"></div>
-              <label class="display-option"><input id="expand-commands" type="checkbox"><span>Expand commands by default</span></label>
-              <label class="display-option"><input id="expand-files" type="checkbox"><span>Expand file changes by default</span></label>
+              <label class="display-option"><input id="expand-commands" type="checkbox"><span>Expand Commands by Default</span></label>
+              <label class="display-option"><input id="expand-files" type="checkbox"><span>Expand File Changes by Default</span></label>
             </section>
           </div>
         </aside>
@@ -150,13 +150,13 @@
         <div class="settings-heading"><h2 id="settings-title">Settings</h2><button class="icon-button" id="settings-close" type="button" aria-label="Close settings">×</button></div>
         <section class="settings-section" aria-labelledby="settings-network-title">
           <h3 id="settings-network-title">Network</h3>
-          <label class="checkbox-row" for="settings-lan-enabled"><input id="settings-lan-enabled" type="checkbox"><span>Enable access from local network</span></label>
+          <label class="checkbox-row" for="settings-lan-enabled"><input id="settings-lan-enabled" type="checkbox"><span>Enable Access from Local Network</span></label>
           <div class="network-fields">
-            <div><label for="settings-host">Bind address</label><input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required></div>
+            <div><label for="settings-host">Bind Address</label><input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required></div>
             <div><label for="settings-port">Port</label><input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required></div>
           </div>
           <p class="field-help">Use 0.0.0.0 for all local-network interfaces.</p>
-          <div class="phone-urls" id="phone-urls" hidden><span>Open on your phone</span><div id="phone-url-list"></div></div>
+          <div class="phone-urls" id="phone-urls" hidden><span>Open on Your Phone</span><div id="phone-url-list"></div></div>
         </section>
         <section class="settings-section" aria-labelledby="settings-security-title">
           <h3 id="settings-security-title">Security</h3>
@@ -167,29 +167,29 @@
           <h3 id="settings-appearance-title">Appearance</h3>
           <label for="settings-theme">Theme</label>
           <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
-          <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show project names in Tasks</label>
-          <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show context usage</label>
-          <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show quota</label>
-          <label class="enter-preference"><input id="enter-sends" type="checkbox" checked> Enter sends message</label>
+          <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show Project Names in Tasks</label>
+          <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show Context Usage</label>
+          <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show Quota</label>
+          <label class="enter-preference"><input id="enter-sends" type="checkbox" checked> Enter Sends Message</label>
           <p class="field-help">Stored in this browser only.</p>
         </section>
         <section class="settings-section" aria-labelledby="settings-machines-title">
           <h3 id="settings-machines-title">Machines</h3>
           <div id="settings-local-machine">
-            <label for="settings-local-name">Local machine display name</label>
+            <label for="settings-local-name">Local Machine Display Name</label>
             <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname">
             <p class="field-help">Optional. This changes only the name shown in Pocket.</p>
           </div>
-          <h4>SSH machines</h4>
+          <h4>SSH Machines</h4>
           <div class="settings-machines" id="settings-machines"></div>
-          <button class="secondary-button machine-add" id="machine-add" type="button">Add machine</button>
+          <button class="secondary-button machine-add" id="machine-add" type="button">Add Machine</button>
           <p class="field-help">Use an SSH alias configured on this Pocket host.</p>
         </section>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
         <p class="field-help" id="container-lifecycle" hidden>Container lifecycle is managed by Docker Compose.</p>
         <div class="settings-quit"><p>Stop the host app and release its local and remote connections.</p><button class="danger-button" id="quit-pocket" type="button">Quit Codex Pocket</button></div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
-        <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save settings</button></div>
+        <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save</button></div>
       </form>
     </section>
     <dialog class="image-viewer" id="image-viewer" aria-label="Image viewer">

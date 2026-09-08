@@ -67,6 +67,7 @@ input, textarea,
   -webkit-user-select: text; user-select: text;
 }
 button, select { touch-action: manipulation; }
+button, summary, [role="button"], select, input[type="checkbox"] { -webkit-tap-highlight-color: transparent; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 1.55rem; }
 h2 { margin-bottom: 0; font-size: 1rem; }
@@ -229,9 +230,10 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
 .conversation button, .conversation button *, .conversation [role="button"] { -webkit-user-select: none; user-select: none; }
 .empty-state, .panel-empty { margin: 18px 0; color: var(--subtle); font-size: .76rem; text-align: center; }
 .message { width: min(100%, 760px); margin: 0 auto 16px; }
-.message.user { width: min(88%, 650px); margin-right: max(0px, calc((100% - 760px) / 2)); }
+.message.user { width: fit-content; max-width: min(88%, 650px); margin-right: max(0px, calc((100% - 760px) / 2)); }
 .message-meta { display: flex; justify-content: space-between; margin-bottom: 5px; color: var(--subtle); font-size: .62rem; font-weight: 700; }
 .message-body { color: var(--text); font-size: .88rem; line-height: 1.58; overflow-wrap: anywhere; }
+.message.user .message-meta { gap: 16px; }
 .message.user .message-body { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--surface-strong); }
 .message.streaming .message-body::after { content: ""; display: inline-block; width: 5px; height: 1em; margin-left: 3px; background: var(--accent); vertical-align: -.15em; animation: blink 1s infinite; }
 .markdown > :first-child { margin-top: 0; }
@@ -464,6 +466,13 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 @media (max-width: 860px) {
+  html, body { height: auto; min-height: 100%; overflow: visible; }
+  .shell { height: auto; min-height: 100dvh; display: flex; flex-direction: column; overflow: visible; }
+  .shell .workspace { flex: 1; display: flex; overflow: visible; }
+  .shell .chat-panel { flex: 1; height: auto; display: flex; flex-direction: column; }
+  .shell .conversation { flex: 1; overflow: visible; overscroll-behavior: auto; }
+  .shell .topbar { position: sticky; top: 0; flex-shrink: 0; }
+  .composer-zone:not(.expanded-composer) { position: sticky; bottom: 0; z-index: 3; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .topbar { grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; padding: 7px 9px; }
   .brand { display: none; }
   .destination-control { grid-column: 1 / 4; grid-row: 1; }
@@ -508,7 +517,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .quota-chip.multiple { width: 126px; }
   .topbar-actions { gap: 4px; }
   .message { margin-bottom: 14px; }
-  .message.user { width: 94%; }
+  .message.user { max-width: 94%; }
   .message-body { font-size: .84rem; line-height: 1.53; }
   .composer { grid-template-columns: minmax(0,1fr) auto; }
   .composer-actions { flex-direction: row; }
@@ -532,8 +541,9 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .timeline-activity.running .activity-status::before, .phase-pill.working { animation: none; }
 }
 
-.message-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.message-images img { width: 96px; height: 96px; object-fit: contain; border: 1px solid var(--line); border-radius: 7px; cursor: zoom-in; }
+.message-images { display: flex; flex-wrap: wrap; max-width: 260px; gap: 8px; margin-top: 8px; }
+.message-images:first-child { margin-top: 0; }
+.message-images img { width: auto; height: auto; max-width: 100%; max-height: 260px; object-fit: contain; border: 1px solid var(--line); border-radius: 7px; cursor: zoom-in; }
 .composer-thumbnail img { cursor: zoom-in; }
 @media (max-width: 620px) {
   .message-body pre, .message-body pre code { white-space: pre-wrap; overflow-wrap: anywhere; }

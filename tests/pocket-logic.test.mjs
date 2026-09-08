@@ -550,3 +550,106 @@ test("SSH auto-attach writer conflict preserves connection and saved-task catalo
     assert.deepEqual((await runtime.listLoadedThreads()).map(task => task.id), ["owned"]);
   } finally { await runtime.stop(); }
 });
+
+function notify(runtime, method, params) {
+  runtime.handleNotification({ method, params: { threadId: "thread-1", turnId: "turn-1", ...params } });
+}
+
+test("terminal turns flush deltas and reconcile incomplete messages once from authoritative items", async () => {
+  for (const status of ["completed", "interrupted", "failed"]) {
+    const runtime = activeRuntime();
+    const events = [];
+    runtime.broadcast = (event, value) => events.push({ event, value });
+    let finish;
+    const calls = [];
+    runtime.rpc = { request: (method, params) => {
+      calls.push({ method, params });
+      return new Promise(resolve => { finish = resolve; });
+    } };
+    notify(runtime, "item/agentMessage/delta", { itemId: "partial", delta: "Visible partial" });
+    notify(runtime, "turn/completed", { turn: { id: "turn-1", status } });
+    assert.equal(runtime.assistantFlushes.size, 0);
+    assert.ok(events.some(event => event.event === "assistant_delta"));
+    assert.deepEqual(calls, [{ method: "thread/items/list", params: {
+      threadId: "thread-1", turnId: "turn-1", cursor: null, limit: 100, sortDirection: "desc",
+    } }]);
+    notify(runtime, "turn/completed", { turn: { id: "turn-1", status } });
+    assert.equal(calls.length, 1);
+    notify(runtime, "item/agentMessage/delta", { itemId: "partial", delta: " last buffered text" });
+    finish({ data: [{ turnId: "turn-1", item: { id: "partial", type: "agentMessage", text: "Authoritative final text" } }], nextCursor: "not-followed" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.length, 1);
+    assert.equal(runtime.assistantFlushes.size, 0);
+    assert.equal(runtime.state.liveMessages[0].text, "Authoritative final text");
+    assert.equal(runtime.state.liveMessages[0].complete, true);
+    assert.ok(events.some(event => event.event === "message" && event.value.complete));
+  }
+});
+
+test("terminal snapshots with a completed message need no item lookup", () => {
+  const runtime = activeRuntime();
+  runtime.rpc = { request: () => { assert.fail("No remote lookup needed"); } };
+  notify(runtime, "item/agentMessage/delta", { itemId: "final", delta: "Partial" });
+  notify(runtime, "turn/completed", { turn: { id: "turn-1", status: "completed", items: [
+    { id: "final", type: "agentMessage", text: "Complete final" },
+  ] } });
+  assert.equal(runtime.assistantFlushes.size, 0);
+  assert.equal(runtime.state.liveMessages[0].text, "Complete final");
+  assert.equal(runtime.state.liveMessages[0].complete, true);
+});
+
+test("terminal reconciliation preserves final events and cannot leak across task resets", async () => {
+  for (const reset of [false, true]) {
+    const runtime = activeRuntime();
+    let finish;
+    runtime.rpc = { request: () => new Promise(resolve => { finish = resolve; }) };
+    notify(runtime, "item/agentMessage/delta", { itemId: "partial", delta: "Partial" });
+    notify(runtime, "turn/completed", { turn: { id: "turn-1", status: "interrupted" } });
+    if (reset) runtime.resetThreadState();
+    else notify(runtime, "item/completed", { item: { id: "partial", type: "agentMessage", text: "Newer final" } });
+    finish({ data: [{ item: { id: "partial", type: "agentMessage", text: "Stale final" } }] });
+    await new Promise(resolve => setImmediate(resolve));
+    if (reset) assert.equal(runtime.state.liveMessages.length, 0);
+    else assert.equal(runtime.state.liveMessages[0].text, "Newer final");
+  }
+  const runtime = activeRuntime();
+  let calls = 0;
+  runtime.rpc = { request: async () => { calls++; throw new Error("Offline"); } };
+  notify(runtime, "item/agentMessage/delta", { itemId: "partial", delta: "Keep this text" });
+  notify(runtime, "turn/completed", { turn: { id: "turn-1", status: "failed" } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.equal(runtime.state.liveMessages[0].text, "Keep this text");
+  assert.equal(runtime.state.liveMessages[0].complete, true);
+});
+
+test("async answers use trusted live or cached questions without remote lookup", async () => {
+  for (const source of ["live", "cache", "remote"]) {
+    const runtime = activeRuntime();
+    const item = { id: "question", type: "agentMessage", delivery: "async", text: "Choose", questions: [{ title: "Scope?", options: ["Keep", "Expand"] }] };
+    notify(runtime, "item/completed", { item });
+    if (source !== "cache") runtime.itemCache.clear();
+    if (source !== "live") runtime.state.liveMessages = [];
+    const calls = [];
+    runtime.rpc = { request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === "thread/items/list") return { data: [{ turnId: "turn-1", item }] };
+      return { turnId: "turn-1" };
+    } };
+    const question = { threadId: "thread-1", messageId: "question", index: 0, answer: "Keep" };
+    await assert.rejects(runtime.answerAsyncQuestion({ ...question, threadId: "other" }), /changed/);
+    assert.equal(calls.length, 0);
+    if (source !== "remote") {
+      await assert.rejects(runtime.answerAsyncQuestion({ ...question, index: 9 }), /unavailable/);
+      await assert.rejects(runtime.answerAsyncQuestion({ ...question, answer: " " }), /Enter an answer/);
+      runtime.state.turn.id = "another-turn";
+      await assert.rejects(runtime.answerAsyncQuestion(question), /Another turn/);
+      runtime.state.turn.id = "turn-1";
+      assert.equal(calls.length, 0);
+    }
+    await runtime.answerAsyncQuestion(question);
+    assert.deepEqual(calls.map(call => call.method), source === "remote" ? ["thread/items/list", "turn/steer"] : ["turn/steer"]);
+    assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Scope?", "Keep"));
+    await assert.rejects(runtime.answerAsyncQuestion(question), /already answered/);
+  }
+});

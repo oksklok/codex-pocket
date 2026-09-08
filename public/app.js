@@ -238,7 +238,7 @@ function toggleComposer() {
   const { selectionStart, selectionEnd, selectionDirection, scrollTop } = textarea;
   composerExpanded = !composerExpanded;
   elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
-  elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Exit fullscreen composer" : "Expand composer");
+  elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Exit Fullscreen Composer" : "Expand Composer");
   elements.expandComposer.setAttribute("aria-expanded", String(composerExpanded));
   fitExpandedComposer();
   resizeComposer();
@@ -320,7 +320,7 @@ function effortLabel(value) {
 }
 
 function accessLabel(access) {
-  return ({ ask: "Ask for approval", auto: "Approve for me", full: "Full access", custom: "Custom access", unavailable: "Access unavailable" })[access?.mode] || "Access unavailable";
+  return ({ ask: "Ask for Approval", auto: "Approve for Me", full: "Full Access", custom: "Custom Access", unavailable: "Access unavailable" })[access?.mode] || "Access unavailable";
 }
 
 function showLogin(message = "") {
@@ -567,7 +567,7 @@ function renderDestinationSwitcher() {
     const create = document.createElement("button");
     create.type = "button";
     create.className = "text-button";
-    create.textContent = "New task";
+    create.textContent = "New Task";
     create.disabled = !machine.connected || Boolean(destinationSelection) || taskActionBusy;
     create.addEventListener("click", () => newTask(machine));
     if (!archived) heading.append(create);
@@ -820,9 +820,9 @@ function renderModelControls() {
 function renderAccessControl() {
   const access = state?.access;
   const modes = [
-    { value: "ask", label: "Ask for approval" },
-    { value: "auto", label: "Approve for me" },
-    { value: "full", label: "Full access" },
+    { value: "ask", label: "Ask for Approval" },
+    { value: "auto", label: "Approve for Me" },
+    { value: "full", label: "Full Access" },
   ];
   elements.accessSelect.replaceChildren();
   for (const mode of modes) {
@@ -838,7 +838,7 @@ function renderAccessControl() {
   if (access?.mode === "custom" || access?.mode === "unavailable") {
     const option = document.createElement("option");
     option.value = access.mode;
-    option.textContent = access.mode === "custom" ? "Custom access" : "Access unavailable";
+    option.textContent = access.mode === "custom" ? "Custom Access" : "Access unavailable";
     option.selected = true;
     option.disabled = true;
     elements.accessSelect.prepend(option);
@@ -891,7 +891,7 @@ function renderQueue() {
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
     elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || switchingMachine || switchingThread;
-    elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : turnActive ? "Steer now" : "Send";
+    elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : turnActive ? "Steer Now" : "Send";
     elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage;
   }
 }
@@ -912,7 +912,7 @@ function renderStructuredInput(pending) {
   const heading = document.createElement("div");
   heading.className = "approval-heading";
   const title = document.createElement("strong");
-  title.textContent = "Input needed";
+  title.textContent = "Input Needed";
   const behavior = document.createElement("span");
   behavior.textContent = pending.blocking === false ? "Non-blocking" : "Turn paused";
   heading.append(title, behavior);
@@ -1020,7 +1020,7 @@ function renderStructuredInput(pending) {
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.className = "approval-approve";
-  submit.textContent = submittingInputRequestId === pending.id || pending.resolving ? "Sending…" : "Send answer";
+  submit.textContent = submittingInputRequestId === pending.id || pending.resolving ? "Sending…" : "Send Answer";
   submit.disabled = requestDisabled;
   actions.append(submit);
   form.append(actions);
@@ -1045,7 +1045,7 @@ function renderAttention() {
   const heading = document.createElement("div");
   heading.className = "approval-heading";
   const title = document.createElement("strong");
-  title.textContent = "Approval needed";
+  title.textContent = "Approval Needed";
   const count = document.createElement("span");
   const total = state.pending.filter((request) => request.kind === "permission").length;
   count.textContent = total > 1 ? `1 of ${total}` : "";
@@ -1358,7 +1358,7 @@ function asyncQuestionNode(message, question, index) {
       const other = document.createElement("button");
       other.type = "button";
       other.className = "other-answer";
-      other.textContent = "Other answer…";
+      other.textContent = "Other Answer…";
       other.disabled = disabled;
       other.setAttribute("aria-expanded", String(!freeText.hidden));
       other.addEventListener("click", () => {
@@ -1385,7 +1385,7 @@ async function submitAsyncAnswer(message, index, draft) {
   draft.sending = true;
   draft.error = "";
   document.activeElement?.blur();
-  renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+  renderConversation({ restoreScrollTop: transcriptScroller().scrollTop });
   try {
     const result = await postMessageAction("/api/message", { machineId, question: { threadId, messageId: message.id, index, answer: draft.text } });
     if (machineId !== state?.machineId || threadId !== state?.thread?.id) return;
@@ -1395,7 +1395,7 @@ async function submitAsyncAnswer(message, index, draft) {
     draft.uncertain = Boolean(error.deliveryUnknown);
   } finally {
     draft.sending = false;
-    renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+    renderConversation({ restoreScrollTop: transcriptScroller().scrollTop });
   }
 }
 
@@ -1439,9 +1439,9 @@ function renderRichActivityDetail(container, activity, value) {
   const append = (node) => { if (node) container.append(node); };
   if (detail.type === "commandExecution") {
     append(detailField("Command", detail.command));
-    append(detailField("Working directory", detail.cwd));
+    append(detailField("Working Directory", detail.cwd));
     append(detailField("Duration", detail.duration, "detail-note"));
-    if (detail.exitCode !== null && detail.exitCode !== 0) append(detailField("Exit code", detail.exitCode, "detail-note"));
+    if (detail.exitCode !== null && detail.exitCode !== 0) append(detailField("Exit Code", detail.exitCode, "detail-note"));
     append(detailField("Output", detail.output));
     if (detail.outputTruncated) append(detailField("", "Output truncated", "detail-note"));
   } else if (detail.type === "fileChange") {
@@ -1478,7 +1478,7 @@ function renderRichActivityDetail(container, activity, value) {
     append(detailField("Subagents", detail.subagents?.length ? `${detail.subagents.length}` : "", "detail-note"));
   } else if (detail.type === "imageView" || detail.type === "imageGeneration") {
     append(detailField("Image", detail.name, "detail-note"));
-    append(detailField("Revised prompt", detail.revisedPrompt));
+    append(detailField("Revised Prompt", detail.revisedPrompt));
     append(detailField("Failure", detail.failure));
     if (detail.imageAvailable) {
       const image = document.createElement("img");
@@ -1510,7 +1510,7 @@ async function loadActivityDetail(activity, force = false) {
   const request = { epoch, machineId, threadId, version };
   activityDetailRequests.set(activity.id, request);
   activityDetails.set(activity.id, { expanded: true, loading: true });
-  const scrollTop = elements.conversation.scrollTop;
+  const scrollTop = transcriptScroller().scrollTop;
   renderConversation({ restoreScrollTop: scrollTop });
   try {
     const url = new URL("/api/activity/detail", location.origin);
@@ -1531,7 +1531,7 @@ async function loadActivityDetail(activity, force = false) {
   } finally {
     if (activityDetailRequests.get(activity.id) === request) activityDetailRequests.delete(activity.id);
   }
-  renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+  renderConversation({ restoreScrollTop: transcriptScroller().scrollTop });
 }
 
 function refreshExpandedDetailOnTerminal(previous, activity) {
@@ -1565,10 +1565,10 @@ function activityNode(activity) {
       const current = activityDetails.get(activity.id);
       if (current?.expanded) {
         activityDetails.set(activity.id, { ...current, expanded: false });
-        renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+        renderConversation({ restoreScrollTop: transcriptScroller().scrollTop });
       } else if (current?.detail || current?.error) {
         activityDetails.set(activity.id, { ...current, expanded: true });
-        renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+        renderConversation({ restoreScrollTop: transcriptScroller().scrollTop });
       } else {
         loadActivityDetail(activity);
       }
@@ -1579,7 +1579,7 @@ function activityNode(activity) {
   const kind = document.createElement("span");
   kind.className = "activity-kind";
   const labels = {
-    command: "Command", tool: "Tool", search: "Search", files: "File changes",
+    command: "Command", tool: "Tool", search: "Search", files: "File Changes",
     reasoning: "Reasoning", collaboration: "Subagents", image: "Image", compaction: "Context", review: "Review",
   };
   kind.textContent = labels[activity.kind] || "Activity";
@@ -1672,13 +1672,13 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
     cursor = record.node.nextSibling;
   }
   if (restoreScrollTop !== null) {
-    elements.conversation.scrollTop = restoreScrollTop;
+    transcriptScroller().scrollTop = restoreScrollTop;
   } else if (preserveScroll) {
-    const addedHeight = elements.conversation.scrollHeight - preserveScroll.scrollHeight;
-    elements.conversation.scrollTop = preserveScroll.scrollTop + addedHeight;
+    const addedHeight = transcriptScroller().scrollHeight - preserveScroll.scrollHeight;
+    transcriptScroller().scrollTop = preserveScroll.scrollTop + addedHeight;
     shouldFollowConversation = false;
   } else if (!selectionHold.active && (forceBottom || shouldFollowConversation)) {
-    elements.conversation.scrollTop = elements.conversation.scrollHeight;
+    transcriptScroller().scrollTop = transcriptScroller().scrollHeight;
     shouldFollowConversation = true;
   }
   updateJumpLatest();
@@ -1709,18 +1709,22 @@ function clearSelectionForOverlay() {
 }
 
 function flushDeferredTranscript() {
-  if (deferredTranscript && !selectionHold.active && !transcriptSelectionActive()) renderConversation({ restoreScrollTop: elements.conversation.scrollTop });
+  if (deferredTranscript && !selectionHold.active && !transcriptSelectionActive()) renderConversation({ restoreScrollTop: transcriptScroller().scrollTop });
+}
+
+function transcriptScroller() {
+  return matchMedia("(max-width: 860px)").matches ? document.scrollingElement : elements.conversation;
 }
 
 function updateJumpLatest() {
-  const distance = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight;
+  const distance = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight;
   elements.jumpLatest.hidden = distance < 200;
 }
 
 function jumpToLatest() {
   shouldFollowConversation = true;
-  elements.conversation.scrollTo({
-    top: elements.conversation.scrollHeight,
+  transcriptScroller().scrollTo({
+    top: transcriptScroller().scrollHeight,
     behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
   });
   updateJumpLatest();
@@ -1816,7 +1820,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
       || requestedThreadId !== state?.thread?.id
       || page.machineId !== requestedMachineId
       || page.threadId !== requestedThreadId) return;
-    const preserveScroll = cursor ? { scrollHeight: elements.conversation.scrollHeight, scrollTop: elements.conversation.scrollTop } : null;
+    const preserveScroll = cursor ? { scrollHeight: transcriptScroller().scrollHeight, scrollTop: transcriptScroller().scrollTop } : null;
     for (const turn of page.turns || []) {
       for (const message of turn.messages || []) {
         const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
@@ -1827,7 +1831,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     nextCursor = page.nextCursor;
     setHistoryStatus();
     renderConversation({ preserveScroll, forceBottom });
-    const transcriptFits = elements.conversation.scrollHeight <= elements.conversation.clientHeight + 1;
+    const transcriptFits = transcriptScroller().scrollHeight <= transcriptScroller().clientHeight + 1;
     if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {
     if (epoch !== historyEpoch || requestedMachineId !== state?.machineId || requestedThreadId !== state?.thread?.id) return;
@@ -2505,10 +2509,14 @@ elements.modelSelect.addEventListener("change", () => {
 });
 elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
-elements.conversation.addEventListener("scroll", () => {
-  shouldFollowConversation = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 80;
+function handleTranscriptScroll() {
+  shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < 80;
   updateJumpLatest();
-  if (!shouldFollowConversation && elements.conversation.scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
+  if (!shouldFollowConversation && transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
+}
+elements.conversation.addEventListener("scroll", handleTranscriptScroll);
+document.addEventListener("scroll", () => {
+  if (transcriptScroller() === document.scrollingElement) handleTranscriptScroll();
 });
 elements.jumpLatest.addEventListener("click", jumpToLatest);
 elements.inspectorButton.addEventListener("click", toggleInspector);
