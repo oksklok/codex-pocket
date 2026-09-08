@@ -167,6 +167,7 @@
           <h3 id="settings-appearance-title">Appearance</h3>
           <label for="settings-theme">Theme</label>
           <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+          <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show project names in Tasks</label>
           <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show context usage</label>
           <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show quota</label>
           <label class="enter-preference"><input id="enter-sends" type="checkbox" checked> Enter sends message</label>
@@ -174,16 +175,18 @@
         </section>
         <section class="settings-section" aria-labelledby="settings-machines-title">
           <h3 id="settings-machines-title">Machines</h3>
-          <label for="settings-local-name">Local machine display name</label>
-          <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname">
-          <p class="field-help">Optional. This changes only the name shown in Pocket.</p>
+          <div id="settings-local-machine">
+            <label for="settings-local-name">Local machine display name</label>
+            <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname">
+            <p class="field-help">Optional. This changes only the name shown in Pocket.</p>
+          </div>
           <h4>SSH machines</h4>
-          <div class="machine-settings-head" aria-hidden="true"><span>Name</span><span>SSH alias</span><span></span></div>
           <div class="settings-machines" id="settings-machines"></div>
           <button class="secondary-button machine-add" id="machine-add" type="button">Add machine</button>
-          <p class="field-help">Use an SSH alias that already works from this Mac. Pocket never stores SSH credentials.</p>
+          <p class="field-help">Use an SSH alias configured on this Pocket host.</p>
         </section>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
+        <p class="field-help" id="container-lifecycle" hidden>Container lifecycle is managed by Docker Compose.</p>
         <div class="settings-quit"><p>Stop the host app and release its local and remote connections.</p><button class="danger-button" id="quit-pocket" type="button">Quit Codex Pocket</button></div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
         <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit">Save settings</button></div>

@@ -174,8 +174,11 @@ let historyEpoch = 0;
 let historyRequest = null;
 let threadsRequest = null;
 let machinesRequest = null;
-let navigationCatalog = null;
-let navigationRequest = null;
+// Active and archived catalogs are independent; mutations invalidate both.
+const navigationCatalogs = [null, null];
+const navigationRequests = [null, null];
+const navigationErrors = ["", ""];
+let navigationEpoch = 0;
 let destinationSelection = null;
 let destinationError = "";
 let destinationRetry = null;
@@ -207,11 +210,22 @@ for (const [toggle, meter, key] of [[elements.showContext, elements.context, "co
     try { localStorage.setItem(`codex-pocket-show-${key}`, String(toggle.checked)); } catch {}
   });
 }
+const showProjects = document.querySelector("#show-projects");
+try { showProjects.checked = localStorage.getItem("codex-pocket-show-projects") === "true"; } catch {}
+showProjects.addEventListener("change", () => {
+  try { localStorage.setItem("codex-pocket-show-projects", String(showProjects.checked)); } catch {}
+  renderDestinationSwitcher();
+});
 let composerExpanded = false;
 let composing = false;
 let deferredTranscript = false;
 const viewer = setupImageViewer(elements.imageViewer, elements.viewerImage, elements.closeImage);
-const selectionHold = createSelectionHold(flushDeferredTranscript);
+const transcriptNodes = new Map();
+const heldTranscriptNodes = new Set();
+const selectionHold = createSelectionHold(() => {
+  heldTranscriptNodes.clear();
+  flushDeferredTranscript();
+});
 let queueDeliveryUnknown = false;
 const asyncDrafts = new Map();
 
@@ -459,9 +473,7 @@ function renderQuota() {
 }
 
 function threadLabel(thread) {
-  const project = thread.project || projectName(thread.cwd);
-  const name = thread.name || thread.preview || "Untitled task";
-  return project && project !== "—" && project !== name ? `${project} — ${name}` : name;
+  return thread.name || "Untitled task";
 }
 
 function setConnection(connected, failed = false) {
@@ -499,11 +511,15 @@ async function refreshMachines() {
 let destinationRenderKey = null;
 function renderDestinationSwitcher() {
   if (elements.destinationSwitcher.hidden) return;
+  const archived = elements.showArchived.checked;
+  const slot = Number(archived);
+  const navigationCatalog = navigationCatalogs[slot];
+  const navigationRequest = navigationRequests[slot];
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
     navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
     state?.machineId, state?.thread?.id, destinationSelection, taskActionBusy,
-    destinationError, destinationRetry,
+    destinationError, destinationRetry, archived, showProjects.checked, navigationErrors[slot],
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -518,7 +534,7 @@ function renderDestinationSwitcher() {
   if (navigationRequest && !catalogMachines.length) {
     const loading = document.createElement("p");
     loading.className = "destination-empty";
-    loading.textContent = "Loading tasks…";
+    loading.textContent = archived ? "Loading archived tasks…" : "Loading tasks…";
     elements.destinationList.append(loading);
     return;
   }
@@ -528,7 +544,7 @@ function renderDestinationSwitcher() {
       if (!query || machineMatches) return true;
       return `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
     });
-    if (query && !machineMatches && !tasks.length) continue;
+    if ((archived || query && !machineMatches) && !tasks.length) continue;
 
     const catalogAvailable = machine.catalogAvailable !== false;
     const availability = !machine.connected
@@ -554,7 +570,7 @@ function renderDestinationSwitcher() {
     create.textContent = "New task";
     create.disabled = !machine.connected || Boolean(destinationSelection) || taskActionBusy;
     create.addEventListener("click", () => newTask(machine));
-    heading.append(create);
+    if (!archived) heading.append(create);
     group.append(heading);
     if (machine.local && machine.connectionError) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: machine.connectionError }));
 
@@ -571,7 +587,11 @@ function renderDestinationSwitcher() {
       check.textContent = selected ? "✓" : "";
       const label = document.createElement("span");
       label.className = "destination-task-label";
-      label.textContent = threadLabel(task);
+      label.append(Object.assign(document.createElement("span"), { textContent: threadLabel(task) }));
+      if (showProjects.checked) {
+        const project = task.project || projectName(task.cwd);
+        if (project && project !== "—") label.append(Object.assign(document.createElement("small"), { className: "task-project", textContent: project }));
+      }
       const status = document.createElement("span");
       status.className = "destination-task-status";
       status.textContent = destinationSelection?.machineId === machine.id && destinationSelection?.threadId === task.id
@@ -628,10 +648,10 @@ function renderDestinationSwitcher() {
     }
     elements.destinationList.append(group);
   }
-  if (!catalogMachines.length || (query && !elements.destinationList.childElementCount)) {
+  if (!catalogMachines.length || !elements.destinationList.childElementCount) {
     const empty = document.createElement("p");
     empty.className = "destination-empty";
-    empty.textContent = query ? "No matching tasks" : "Task catalog unavailable";
+    empty.textContent = navigationErrors[slot] || (query ? "No matching tasks" : archived ? "No archived tasks" : "Task catalog unavailable");
     elements.destinationList.append(empty);
   }
   if (destinationError) {
@@ -679,23 +699,39 @@ async function refreshLoadedThreads() {
   }
 }
 
-async function refreshNavigationCatalog() {
-  if (navigationRequest) return navigationRequest;
-  navigationRequest = (async () => {
-    const response = await apiFetch(`/api/navigation?archived=${elements.showArchived.checked}`);
-    const value = await response.json();
-    if (!response.ok) throw new Error(value.error || "Task catalog unavailable");
-    navigationCatalog = value;
-    destinationError = "";
+function invalidateNavigationCatalogs() {
+  navigationEpoch += 1;
+  navigationCatalogs.fill(null);
+  navigationRequests.fill(null);
+  navigationErrors.fill("");
+}
+
+async function refreshNavigationCatalog(archived = elements.showArchived.checked, force = false) {
+  const slot = Number(archived);
+  if (navigationRequests[slot]) return navigationRequests[slot];
+  if (navigationCatalogs[slot] && !force) return;
+  const epoch = navigationEpoch;
+  const request = (async () => {
+    try {
+      const response = await apiFetch(`/api/navigation?archived=${archived}`);
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error || "Task catalog unavailable");
+      if (epoch !== navigationEpoch) return;
+      navigationCatalogs[slot] = value;
+      navigationErrors[slot] = "";
+    } catch (error) {
+      if (epoch === navigationEpoch) navigationErrors[slot] = error.message || "Task catalog unavailable";
+    } finally {
+      if (epoch === navigationEpoch) {
+        navigationRequests[slot] = null;
+        renderDestinationSwitcher();
+        if (!archived && navigationCatalogs[0]) void refreshNavigationCatalog(true);
+      }
+    }
   })();
-  try {
-    await navigationRequest;
-  } catch (error) {
-    destinationError = error.message || "Task catalog unavailable";
-  } finally {
-    navigationRequest = null;
-    renderDestinationSwitcher();
-  }
+  navigationRequests[slot] = request;
+  renderDestinationSwitcher();
+  return request;
 }
 
 // Menus are overlays; dismiss them before scrolling or interacting elsewhere.
@@ -723,11 +759,12 @@ function closeDestinationSwitcher() {
 
 function openDestinationSwitcher() {
   if (switchingMachine || switchingThread) return;
+  clearSelectionForOverlay();
   elements.destinationSwitcher.hidden = false;
   elements.destinationBackdrop.hidden = false;
   elements.destinationButton.setAttribute("aria-expanded", "true");
   document.body.classList.add("destination-open");
-  refreshNavigationCatalog();
+  refreshNavigationCatalog(elements.showArchived.checked, true);
   renderDestinationSwitcher();
   if (!matchMedia("(max-width: 860px)").matches) elements.destinationSearch.focus();
 }
@@ -1095,6 +1132,8 @@ function renderComposer() {
       ? "Sending approval response…"
       : submittingInputRequestId
         ? "Sending structured answer…"
+      : updatingModel
+        ? "Updating model…"
       : updatingAccess
         ? "Updating access…"
     : composerError
@@ -1102,6 +1141,7 @@ function renderComposer() {
       || (switchingMachine ? "Switching machines…" : switchingThread ? "Switching tasks…" : capability?.reason)
       || "";
   elements.composerStatus.textContent = status;
+  elements.composerStatus.hidden = !status;
   elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
   renderAttention();
   renderQueue();
@@ -1569,11 +1609,7 @@ function activityNode(activity) {
 }
 
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
-  selectionHold.observe(transcriptSelectionActive());
-  if (selectionHold.active || elements.conversation.contains(document.activeElement) && document.activeElement?.tagName === "TEXTAREA") {
-    deferredTranscript = true;
-    return;
-  }
+  observeTranscriptSelection();
   deferredTranscript = false;
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
@@ -1585,17 +1621,55 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
     ...messages.map((value) => ({ type: "message", value })),
     ...activities.map((value) => ({ type: "activity", value })),
   ]);
-  elements.conversation.replaceChildren();
-  if (timeline.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = "No conversation history yet.";
-    elements.conversation.append(empty);
-    updateJumpLatest();
-    return;
+  const desired = timeline.length ? timeline : [{ type: "empty", value: { id: "empty" } }];
+  const desiredKeys = new Set(desired.map(entry => `${entry.type}:${entry.value.id}`));
+  // Keep selected entries (and an answer being edited) intact; update other entries normally.
+  const protectedNode = node => heldTranscriptNodes.has(node)
+    || node.contains(document.activeElement) && document.activeElement?.tagName === "TEXTAREA";
+  // Include UI state that changes an entry without changing its protocol payload.
+  const signature = entry => JSON.stringify([
+    entry.value,
+    entry.type === "activity" ? [activityDetails.get(entry.value.id), activityExpandsByDefault(entry.value)] : null,
+    entry.type === "message" && entry.value.questions?.length ? [
+      state?.message?.allowed,
+      entry.value.questions.map((_, index) => [
+        asyncDrafts.get(`${entry.value.id}:${index}`),
+        resolvedAsyncAnswer(entry.value, index, messages, state?.asyncAnswers),
+      ]),
+    ] : null,
+  ]);
+  for (const [key, record] of transcriptNodes) {
+    if (desiredKeys.has(key)) continue;
+    if (protectedNode(record.node)) { deferredTranscript = true; continue; }
+    record.node.remove();
+    transcriptNodes.delete(key);
   }
-  for (const entry of timeline) {
-    elements.conversation.append(entry.type === "message" ? messageNode(entry.value) : activityNode(entry.value));
+  let cursor = elements.conversation.firstChild;
+  for (const entry of desired) {
+    const key = `${entry.type}:${entry.value.id}`;
+    let record = transcriptNodes.get(key);
+    const nextSignature = signature(entry);
+    if (!record || record.signature !== nextSignature) {
+      if (record && protectedNode(record.node)) {
+        deferredTranscript = true;
+      } else {
+        const node = entry.type === "message" ? messageNode(entry.value)
+          : entry.type === "activity" ? activityNode(entry.value)
+          : Object.assign(document.createElement("p"), { className: "empty-state", textContent: "No conversation history yet." });
+        node.dataset.timelineKey = key;
+        if (record) {
+          if (cursor === record.node) cursor = node;
+          record.node.replaceWith(node);
+        }
+        record = { node, signature: signature(entry) };
+        transcriptNodes.set(key, record);
+      }
+    }
+    if (record.node !== cursor) {
+      if (protectedNode(record.node)) deferredTranscript = true;
+      else elements.conversation.insertBefore(record.node, cursor);
+    }
+    cursor = record.node.nextSibling;
   }
   if (restoreScrollTop !== null) {
     elements.conversation.scrollTop = restoreScrollTop;
@@ -1603,7 +1677,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
     const addedHeight = elements.conversation.scrollHeight - preserveScroll.scrollHeight;
     elements.conversation.scrollTop = preserveScroll.scrollTop + addedHeight;
     shouldFollowConversation = false;
-  } else if (forceBottom || shouldFollowConversation) {
+  } else if (!selectionHold.active && (forceBottom || shouldFollowConversation)) {
     elements.conversation.scrollTop = elements.conversation.scrollHeight;
     shouldFollowConversation = true;
   }
@@ -1613,6 +1687,25 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
 function transcriptSelectionActive() {
   const selection = window.getSelection();
   return selection && !selection.isCollapsed && (elements.conversation.contains(selection.anchorNode) || elements.conversation.contains(selection.focusNode));
+}
+
+function observeTranscriptSelection() {
+  const selected = transcriptSelectionActive();
+  selectionHold.observe(selected);
+  if (!selected) return;
+  const selection = window.getSelection();
+  for (const node of elements.conversation.children) {
+    for (let index = 0; index < selection.rangeCount; index++) {
+      if (selection.getRangeAt(index).intersectsNode(node)) heldTranscriptNodes.add(node);
+    }
+  }
+}
+
+function clearSelectionForOverlay() {
+  window.getSelection()?.removeAllRanges();
+  selectionHold.reset();
+  heldTranscriptNodes.clear();
+  flushDeferredTranscript();
 }
 
 function flushDeferredTranscript() {
@@ -1665,6 +1758,8 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
 
 function resetConversationState() {
   selectionHold.reset();
+  heldTranscriptNodes.clear();
+  transcriptNodes.clear();
   deferredTranscript = false;
   // A destination change intentionally replaces the previous transcript.
   elements.conversation.replaceChildren();
@@ -1781,6 +1876,7 @@ async function performTaskAction(body) {
     taskActionBusy = false;
   }
   const error = destinationError;
+  invalidateNavigationCatalogs();
   renderState();
   await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
   destinationError = error;
@@ -1990,7 +2086,7 @@ async function updateThreadSettings(model, effort) {
     });
     const result = await response.json();
     if (!response.ok || !result.updated) throw new Error(result.error || "Could not update model settings");
-    composerNotice = result.appliesTo === "next_turn" ? "Model settings saved for the next turn." : "Model settings updated.";
+    composerNotice = "";
     mergeState({ model: result.model, reasoningEffort: result.reasoningEffort });
   } catch (error) {
     composerError = error.message;
@@ -2012,7 +2108,7 @@ async function updateAccess(mode) {
     });
     const result = await response.json();
     if (!response.ok || !result.updated) throw new Error(result.error || "Could not update access");
-    composerNotice = result.appliesTo === "next_turn" ? "Access saved for the next turn." : "Access updated.";
+    composerNotice = "";
     mergeState({ access: result.access });
   } catch (error) {
     composerError = error.message;
@@ -2263,7 +2359,26 @@ function renderMachineSettings(values) {
       next.splice(index, 1);
       renderMachineSettings(next);
     });
-    row.append(name, ssh, remove);
+    const controls = document.createElement("div");
+    controls.className = "machine-row-actions";
+    for (const [direction, label] of [[-1, "Up"], [1, "Down"]]) {
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "text-button";
+      move.textContent = label;
+      move.setAttribute("aria-label", `${label}: ${machine.name || "machine"}`);
+      move.disabled = index + direction < 0 || index + direction >= configured.length;
+      move.addEventListener("click", () => {
+        const next = machineSettingsValue();
+        [next[index], next[index + direction]] = [next[index + direction], next[index]];
+        renderMachineSettings(next);
+      });
+      controls.append(move);
+    }
+    remove.textContent = "Remove";
+    remove.className = "text-button machine-remove";
+    controls.append(remove);
+    row.append(name, ssh, controls);
     elements.settingsMachines.append(row);
   });
 }
@@ -2271,7 +2386,9 @@ function renderMachineSettings(values) {
 function renderSettings(value) {
   settingsValue = value;
   elements.quitPocket.disabled = Boolean(value.headless);
-  elements.quitPocket.textContent = value.headless ? "Stop container through Docker Compose" : "Quit Codex Pocket";
+  elements.quitPocket.closest(".settings-quit").hidden = Boolean(value.headless);
+  document.querySelector("#container-lifecycle").hidden = !value.headless;
+  document.querySelector("#settings-local-machine").hidden = Boolean(value.headless);
   elements.settingsTheme.value = selectedTheme;
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";
@@ -2282,7 +2399,7 @@ function renderSettings(value) {
   elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured. Enter a new PIN only to change it." : "No PIN configured.";
   renderMachineSettings(value.machines);
   elements.phoneUrlList.replaceChildren();
-  const urls = Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
+  const urls = value.headless ? [location.origin] : Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
   for (const url of urls) {
     const link = document.createElement("a");
     link.href = url;
@@ -2293,6 +2410,7 @@ function renderSettings(value) {
 }
 
 async function openSettings() {
+  clearSelectionForOverlay();
   elements.settingsScreen.hidden = false;
   document.body.classList.add("settings-open");
   elements.settingsStatus.textContent = "Loading settings…";
@@ -2319,9 +2437,9 @@ elements.destinationButton.addEventListener("click", () => {
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
 elements.destinationSearch.addEventListener("input", renderDestinationSwitcher);
-elements.showArchived.addEventListener("change", async () => {
-  if (navigationRequest) await navigationRequest;
-  await refreshNavigationCatalog();
+elements.showArchived.addEventListener("change", () => {
+  renderDestinationSwitcher();
+  void refreshNavigationCatalog();
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && composerExpanded) { event.preventDefault(); toggleComposer(); return; }
@@ -2350,7 +2468,7 @@ elements.enterSends.addEventListener("change", () => {
   enterSends = elements.enterSends.checked;
   try { localStorage.setItem("codex-pocket-enter-sends", String(enterSends)); } catch {}
 });
-document.addEventListener("selectionchange", () => selectionHold.observe(transcriptSelectionActive()));
+document.addEventListener("selectionchange", observeTranscriptSelection);
 elements.conversation.addEventListener("focusout", (event) => {
   if (!event.relatedTarget?.closest(".async-answer")) queueMicrotask(flushDeferredTranscript);
 });
@@ -2499,6 +2617,7 @@ elements.settingsForm.addEventListener("submit", async (event) => {
     });
     const result = await response.json();
     if (!response.ok || !result.saved) throw new Error(result.error || "Could not save settings");
+    invalidateNavigationCatalogs();
     renderSettings(result.settings);
     elements.settingsRestart.hidden = !result.restartRequired;
     elements.settingsStatus.textContent = "Settings saved.";
