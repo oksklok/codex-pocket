@@ -725,7 +725,7 @@ async function refreshNavigationCatalog(archived = elements.showArchived.checked
       if (epoch === navigationEpoch) {
         navigationRequests[slot] = null;
         renderDestinationSwitcher();
-        if (!archived && navigationCatalogs[0]) void refreshNavigationCatalog(true);
+        if (navigationCatalogs[slot] && !navigationCatalogs[1 - slot]) void refreshNavigationCatalog(!archived);
       }
     }
   })();
