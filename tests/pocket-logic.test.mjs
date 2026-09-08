@@ -653,3 +653,31 @@ test("async answers use trusted live or cached questions without remote lookup",
     await assert.rejects(runtime.answerAsyncQuestion(question), /already answered/);
   }
 });
+
+test("GPT-6 async reply envelopes show only human answers in live messages and history", async () => {
+  const runtime = activeRuntime();
+  const wrap = payload => `<send_user_message_question_reply>\n${payload}\n</send_user_message_question_reply>`;
+  const payload = JSON.stringify([
+    { questionItemId: "internal-id", question: "Which?", answer: "Use the first option." },
+    { questionItemId: "another-id", answer: "Then continue." },
+  ]);
+  const cases = [
+    [wrap(payload), "Use the first option.\n\nThen continue."],
+    [wrap(JSON.stringify([{ answer: "Yes" }])), "Yes"],
+    [wrap("broken JSON"), "Question answered."],
+    [wrap('{"answer":"wrong shape"}'), "Question answered."],
+    [wrap('[{"answer":42}]'), "Question answered."],
+    ["Ordinary <tags> and JSON {}", "Ordinary <tags> and JSON {}"],
+    [`Example: ${wrap(payload)}`, `Example: ${wrap(payload)}`],
+  ];
+  const items = cases.map(([text], index) => ({ type: "userMessage", id: `reply-${index}`, content: [{ type: "text", text }] }));
+  items.push({ type: "agentMessage", id: "assistant-example", text: wrap(payload) });
+  for (const item of items) runtime.handleNotification({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item } });
+  const expected = [...cases.map(([, visible]) => visible), wrap(payload)];
+  assert.deepEqual(runtime.snapshot().liveMessages.map(message => message.text), expected);
+  runtime.rpc = { request: async method => method === "thread/turns/list"
+    ? { data: [{ id: "turn-1", status: "completed" }] }
+    : { data: items.map(item => ({ turnId: "turn-1", item })) } };
+  const history = await runtime.history(null, 1);
+  assert.deepEqual(history.turns[0].messages.map(message => message.text), expected);
+});

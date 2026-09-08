@@ -572,7 +572,8 @@ function renderDestinationSwitcher() {
     create.addEventListener("click", () => newTask(machine));
     if (!archived) heading.append(create);
     group.append(heading);
-    if (machine.local && machine.connectionError) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: machine.connectionError }));
+    if (machine.local && machine.connectionError
+      && !(destinationRetry?.machineId === machine.id && machine.connectionError === destinationError)) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: machine.connectionError }));
 
     for (const task of tasks) {
       const selected = machine.id === state?.machineId && task.id === state?.thread?.id;
@@ -655,9 +656,11 @@ function renderDestinationSwitcher() {
     elements.destinationList.append(empty);
   }
   if (destinationError) {
-    const error = document.createElement("p");
+    const error = document.createElement("div");
     error.className = "destination-error";
-    error.textContent = destinationError;
+    const message = document.createElement("span");
+    message.textContent = destinationError;
+    error.append(message);
     if (destinationRetry) {
       const retry = document.createElement("button");
       retry.type = "button";
@@ -665,7 +668,7 @@ function renderDestinationSwitcher() {
       retry.textContent = "Retry";
       retry.disabled = Boolean(destinationSelection) || taskActionBusy;
       retry.addEventListener("click", () => selectDestination(destinationRetry.machineId, destinationRetry.threadId));
-      error.append(" ", retry);
+      error.append(retry);
     }
     elements.destinationList.prepend(error);
   }
@@ -744,11 +747,18 @@ document.addEventListener("pointerdown", (event) => closeTaskMenus(event.target.
 elements.destinationList.addEventListener("scroll", () => closeTaskMenus());
 window.addEventListener("resize", () => closeTaskMenus());
 
+let destinationCloseTimer;
 function closeDestinationSwitcher() {
   if (destinationSelection || taskActionBusy) return false;
   closeTaskMenus();
-  elements.destinationSwitcher.hidden = true;
-  elements.destinationBackdrop.hidden = true;
+  clearTimeout(destinationCloseTimer);
+  elements.destinationSwitcher.inert = true;
+  if (elements.destinationSwitcher.contains(document.activeElement)) elements.destinationButton.focus();
+  // Let the 160 ms slide finish before removing the panels from layout.
+  destinationCloseTimer = setTimeout(() => {
+    elements.destinationSwitcher.hidden = true;
+    elements.destinationBackdrop.hidden = true;
+  }, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 180);
   elements.destinationButton.setAttribute("aria-expanded", "false");
   document.body.classList.remove("destination-open");
   elements.destinationSearch.value = "";
@@ -760,9 +770,12 @@ function closeDestinationSwitcher() {
 function openDestinationSwitcher() {
   if (switchingMachine || switchingThread) return;
   clearSelectionForOverlay();
+  clearTimeout(destinationCloseTimer);
+  elements.destinationSwitcher.inert = false;
   elements.destinationSwitcher.hidden = false;
   elements.destinationBackdrop.hidden = false;
   elements.destinationButton.setAttribute("aria-expanded", "true");
+  void elements.destinationSwitcher.offsetWidth; // Establish the closed position before transitioning.
   document.body.classList.add("destination-open");
   refreshNavigationCatalog(elements.showArchived.checked, true);
   renderDestinationSwitcher();
@@ -2435,7 +2448,7 @@ async function openSettings() {
 }
 
 elements.destinationButton.addEventListener("click", () => {
-  if (elements.destinationSwitcher.hidden) openDestinationSwitcher();
+  if (elements.destinationButton.getAttribute("aria-expanded") !== "true") openDestinationSwitcher();
   else closeDestinationSwitcher();
 });
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);

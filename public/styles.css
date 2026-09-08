@@ -124,10 +124,13 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   color: var(--text); cursor: pointer; font-size: .76rem; font-weight: 700; text-align: left;
 }
 .destination-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.destination-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.destination-button[aria-expanded="true"] { border-color: rgba(69,200,138,.44); background: rgba(69,200,138,.12); }
-.destination-backdrop { position: fixed; z-index: 8; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(4,7,11,.62); }
+.destination-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform 160ms ease; }
+.destination-button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.destination-backdrop { position: fixed; z-index: 8; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(4,7,11,.62); opacity: 0; transition: opacity 160ms ease; }
+body.destination-open .destination-backdrop { opacity: 1; }
+body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-switcher {
+  transform: translateX(-100%); transition: transform 160ms ease;
   position: fixed; z-index: 9; inset: 0 auto 0 0; width: min(400px, 88vw); height: 100dvh;
   overflow: hidden; display: grid; grid-template-rows: auto auto auto minmax(0,1fr); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
   border: 1px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 0 18px 55px rgba(0,0,0,.42);
@@ -154,12 +157,14 @@ button:disabled, select:disabled, textarea:disabled { cursor: default; opacity: 
   background: transparent; color: var(--muted); cursor: pointer; text-align: left; font-size: .72rem;
 }
 .destination-task:hover:not(:disabled), .destination-task:focus-visible { background: var(--surface-strong); color: var(--text); }
+.destination-error > span { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.destination-error > button { flex: 0 0 auto; margin-left: auto; min-height: 44px; min-width: 44px; }
 .destination-task.selected { border-color: rgba(69,200,138,.28); background: rgba(69,200,138,.09); color: var(--text); }
 .destination-check { color: var(--accent); font-weight: 850; text-align: center; }
 .destination-task-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-status { color: var(--accent); font-size: .62rem; font-weight: 750; }
 .destination-group-empty, .destination-empty, .destination-error { margin: 0; padding: 8px 7px; color: var(--subtle); font-size: .68rem; }
-.destination-error { margin-bottom: 5px; border-radius: 7px; background: rgba(255,139,139,.09); color: var(--danger); }
+.destination-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 5px; border-radius: 7px; background: rgba(255,139,139,.09); color: var(--danger); }
 .runtime-controls select { min-height: 36px; padding: 6px 22px 6px 9px; font-size: .76rem; text-overflow: ellipsis; }
 .phase-row, .topbar-actions, .connection, .panel-heading, .inspector-heading, .settings-heading, .settings-actions, .composer-actions, .queue-banner {
   display: flex; align-items: center;
@@ -538,7 +543,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .inspector, .expandable .activity-label::after { transition: none; }
+  .inspector, .expandable .activity-label::after, .destination-switcher, .destination-backdrop, .destination-button svg { transition: none; }
   .timeline-activity.running .activity-status::before, .phase-pill.working { animation: none; }
 }
 

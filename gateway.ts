@@ -1072,9 +1072,25 @@ export class RpcClient {
   }
 }
 
+// Only this complete Codex envelope is internal; quoted or surrounding user text stays intact.
+function visibleUserText(text: string): string {
+  const match = /^\s*<send_user_message_question_reply>([\s\S]*)<\/send_user_message_question_reply>\s*$/.exec(text);
+  if (!match) return text;
+  try {
+    const replies = JSON.parse(match[1]);
+    if (Array.isArray(replies) && replies.length && replies.every((reply) =>
+      reply && typeof reply === "object" && typeof reply.answer === "string" && reply.answer.trim())) {
+      return replies.map((reply) => reply.answer).join("\n\n");
+    }
+  } catch {
+    // Do not expose malformed internal payloads or strip arbitrary user markup.
+  }
+  return "Question answered.";
+}
+
 function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
   if (!item || (item.type !== "userMessage" && item.type !== "agentMessage")) return null;
-  const text = readText(item);
+  const text = item.type === "userMessage" ? visibleUserText(readText(item)) : readText(item);
   const imageCount = item.type === "userMessage" && Array.isArray(item.content) ? item.content.filter((input: any) => input.type === "image" || input.type === "localImage").length : 0;
   if (!text && !imageCount && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
   return {
