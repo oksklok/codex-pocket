@@ -18,7 +18,7 @@ import {
   reconcileSubmission,
   resolvedAsyncAnswer,
 } from "../public/pocket-logic.js";
-import { MachineRuntime, MessageSubmissions, PocketGateway } from "../gateway.ts";
+import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient } from "../gateway.ts";
 
 const machine = { id: "local" };
 const task = { id: "thread-1", status: "failed" };
@@ -528,4 +528,25 @@ test("headless gateway exposes only SSH runtimes and selects the first", () => {
   assert.equal(gateway.state.machineId, "ssh:remote");
   assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), ["local", "ssh:remote"]);
   assert.throws(() => new PocketGateway({ ...options, machines: [] }, true), /at least one configured SSH/);
+});
+
+test("SSH auto-attach writer conflict preserves connection and saved-task catalog", async (t) => {
+  const thread = { id: "owned", name: "Owned task", cwd: "/project", status: { type: "active" } };
+  t.mock.method(RpcClient.prototype, "connect", async () => {});
+  t.mock.method(RpcClient.prototype, "notify", () => {});
+  t.mock.method(RpcClient.prototype, "close", () => {});
+  t.mock.method(RpcClient.prototype, "request", async (method) => {
+    if (method === "thread/list") return { data: [thread] };
+    if (method === "thread/loaded/list") return { data: [thread.id] };
+    if (method === "thread/resume") throw new Error("thread already has an active writer (-32600)");
+    return { data: [] };
+  });
+  const runtime = new MachineRuntime({ machines: [] }, { id: "ssh:remote", name: "Remote", ssh: "remote" }, () => {});
+  try {
+    await runtime.start();
+    assert.equal(runtime.state.connected, true);
+    assert.equal(runtime.state.thread, null);
+    assert.notEqual(runtime.state.phase, "unavailable");
+    assert.deepEqual((await runtime.listLoadedThreads()).map(task => task.id), ["owned"]);
+  } finally { await runtime.stop(); }
 });

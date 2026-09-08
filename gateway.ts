@@ -993,7 +993,7 @@ function connectWebSocket(
   });
 }
 
-class RpcClient {
+export class RpcClient {
   private wire!: Wire;
   private abortTransport: (() => void) | null = null;
   private closing = false;
@@ -1966,9 +1966,9 @@ export class MachineRuntime {
       try {
         await this.attachLoadedThread(String(targetId), false);
       } catch (error) {
-        if (this.definition.ssh || !this.state.connected || this.rpc !== rpc) throw error;
-        // A task owned by another client does not make a working local runtime unavailable.
         const reason = error instanceof Error ? error.message : String(error);
+        if (!this.state.connected || this.rpc !== rpc || (this.definition.ssh && !/active writer/i.test(reason))) throw error;
+        // An owned task does not make the runtime or its saved-task catalog unavailable.
         this.technicalConnectionError = reason;
         console.error(`${this.definition.name} task attach failed: ${reason}`);
         this.resetThreadState();
@@ -1993,6 +1993,7 @@ export class MachineRuntime {
       this.state.connectionError = this.definition.ssh
         ? `Could not connect to ${this.definition.name}. Make sure “ssh ${this.definition.ssh}” works from this Mac.`
         : localRuntimeReason(technicalError);
+      this.state.connected = false;
       this.loadedThreads = [];
       this.resetThreadState();
       this.state.thread = null;
