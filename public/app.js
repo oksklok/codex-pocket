@@ -573,7 +573,7 @@ function renderDestinationSwitcher() {
     if (!archived) heading.append(create);
     group.append(heading);
     if (machine.local && machine.connectionError
-      && !(destinationRetry?.machineId === machine.id && machine.connectionError === destinationError)) {
+      && !(destinationRetry && machine.connectionError === destinationError)) {
       const ownershipConflict = /another Codex runtime|active writer/i.test(machine.connectionError);
       const error = document.createElement("div");
       error.className = ownershipConflict ? "destination-error" : "destination-empty error-text";
