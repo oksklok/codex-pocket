@@ -158,7 +158,6 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 }
 .destination-task:hover:not(:disabled), .destination-task:focus-visible { background: var(--surface-strong); color: var(--text); }
 .destination-error > span { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
-.destination-error > button { flex: 0 0 auto; margin-left: auto; background: var(--surface); }
 .destination-task.selected { border-color: rgba(69,200,138,.28); background: rgba(69,200,138,.09); color: var(--text); }
 .destination-check { color: var(--accent); font-weight: 850; text-align: center; }
 .destination-task-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -589,3 +588,5 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 #settings-pin { max-width: 280px; }
 .settings-card .checkbox-row, .settings-card .enter-preference { min-height: 32px; }
 .settings-actions button, .settings-restart button, .machine-add { min-height: 40px; padding: 7px 11px; font-size: 14px; }
+
+.task-selection-error { display: block; white-space: normal; overflow-wrap: anywhere; color: var(--danger); font-size: .65rem; font-weight: 400; line-height: 1.35; margin-top: 3px; }

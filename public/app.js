@@ -181,7 +181,7 @@ const navigationErrors = ["", ""];
 let navigationEpoch = 0;
 let destinationSelection = null;
 let destinationError = "";
-let destinationRetry = null;
+let destinationTaskError = null;
 let taskActionBusy = false;
 let switchingThread = false;
 let switchingMachine = false;
@@ -518,8 +518,8 @@ function renderDestinationSwitcher() {
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
     navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
-    state?.machineId, state?.thread?.id, destinationSelection, taskActionBusy,
-    destinationError, destinationRetry, archived, showProjects.checked, navigationErrors[slot],
+    state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
+    destinationError, destinationTaskError, archived, showProjects.checked, navigationErrors[slot],
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -568,7 +568,7 @@ function renderDestinationSwitcher() {
     create.type = "button";
     create.className = "text-button";
     create.textContent = "New Task";
-    create.disabled = !machine.connected || Boolean(destinationSelection) || taskActionBusy;
+    create.disabled = !machine.connected || taskActionBusy;
     create.addEventListener("click", () => newTask(machine));
     if (!archived) heading.append(create);
     group.append(heading);
@@ -586,7 +586,7 @@ function renderDestinationSwitcher() {
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
-      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection) || taskActionBusy || task.archived;
+      row.disabled = !machine.connected || !catalogAvailable || taskActionBusy || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
       row.title = task.cwd || task.name || "Task";
       const check = document.createElement("span");
@@ -595,7 +595,9 @@ function renderDestinationSwitcher() {
       const label = document.createElement("span");
       label.className = "destination-task-label";
       label.append(Object.assign(document.createElement("span"), { textContent: threadLabel(task) }));
-      if (showProjects.checked) {
+      const taskError = destinationTaskError?.machineId === machine.id && destinationTaskError?.threadId === task.id ? destinationTaskError.message : "";
+      if (taskError) label.append(Object.assign(document.createElement("small"), { className: "task-selection-error", textContent: taskError }));
+      else if (showProjects.checked) {
         const project = task.project || projectName(task.cwd);
         if (project && project !== "—") label.append(Object.assign(document.createElement("small"), { className: "task-project", textContent: project }));
       }
@@ -636,8 +638,9 @@ function renderDestinationSwitcher() {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
-        button.disabled = !machine.connected || Boolean(destinationSelection) || taskActionBusy || task.status?.startsWith("active");
+        button.disabled = !machine.connected || taskActionBusy || task.status?.startsWith("active");
         button.addEventListener("click", () => {
+          if (destinationSelection) return;
           if (action === "delete" && !confirm(`Delete task “${task.name}”? This permanently deletes its Codex conversation. Project files are not deleted.`)) return;
           performTaskAction({ machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action, confirmed: action === "delete" });
         });
@@ -667,15 +670,6 @@ function renderDestinationSwitcher() {
     const message = document.createElement("span");
     message.textContent = destinationError;
     error.append(message);
-    if (destinationRetry) {
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "text-button";
-      retry.textContent = "Retry";
-      retry.disabled = Boolean(destinationSelection) || taskActionBusy;
-      retry.addEventListener("click", () => selectDestination(destinationRetry.machineId, destinationRetry.threadId));
-      error.append(retry);
-    }
     elements.destinationList.prepend(error);
   }
 }
@@ -769,7 +763,7 @@ function closeDestinationSwitcher() {
   document.body.classList.remove("destination-open");
   elements.destinationSearch.value = "";
   destinationError = "";
-  destinationRetry = null;
+  destinationTaskError = null;
   return true;
 }
 
@@ -1399,6 +1393,7 @@ function asyncQuestionNode(message, question, index) {
 }
 
 async function submitAsyncAnswer(message, index, draft) {
+  if (destinationSelection) return;
   if (draft.sending || draft.uncertain || !draft.text.trim()) return;
   const machineId = state.machineId, threadId = state.thread.id;
   draft.sending = true;
@@ -1864,6 +1859,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
 }
 
 async function newTask(machine) {
+  if (destinationSelection) return;
   const name = prompt(`New task on ${machine.name}: task name`);
   if (name === null || !name.trim()) return;
   const defaultCwd = machine.id === state?.machineId ? state?.thread?.cwd : machine.tasks?.find((task) => task.selected)?.cwd;
@@ -1877,7 +1873,7 @@ async function performTaskAction(body) {
   taskActionBusy = true;
   switchingThread = true;
   destinationError = "";
-  destinationRetry = null;
+  destinationTaskError = null;
   renderState();
   renderDestinationSwitcher();
   let succeeded = false;
@@ -1912,78 +1908,68 @@ async function performTaskAction(body) {
 }
 
 async function selectDestination(machineId, threadId) {
-  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection || taskActionBusy) return;
+  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess) return;
+  destinationTaskError = null;
   if (machineId === state?.machineId && threadId === state?.thread?.id) {
     closeDestinationSwitcher();
     return;
   }
   const expectedMachineId = state?.machineId || "";
   const expectedThreadId = state?.thread?.id || "";
-  const token = { machineId, threadId, expectedMachineId, expectedThreadId };
+  const token = { machineId, threadId, events: [] };
   destinationSelection = token;
-  switchingMachine = machineId !== expectedMachineId;
-  switchingThread = true;
-  composerError = "";
-  composerNotice = "";
-  renderState();
   renderDestinationSwitcher();
+  let accepted = null;
+  let rejected = false;
+  let message = "Could not switch tasks";
   try {
     const response = await apiFetch("/api/navigation/select", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ machineId, threadId, expectedMachineId, expectedThreadId }),
     });
     const snapshot = await response.json();
-    if (!response.ok) throw new Error(snapshot.error || "Could not switch tasks");
-    if (destinationSelection !== token) return;
-    if (snapshot.machineId !== machineId || snapshot.thread?.id !== threadId) {
-      throw new Error("Task selection response did not match the requested destination");
+    if (!response.ok) {
+      // A structured rejection is definitive unless another client changed selection.
+      rejected = response.status === 409 && !/selected task changed/i.test(snapshot.error || "");
+      throw new Error(snapshot.error || message);
     }
+    if (snapshot.machineId !== machineId || snapshot.thread?.id !== threadId) throw new Error("Task selection response did not match the requested destination");
+    accepted = snapshot;
+  } catch (error) {
+    message = error.message || message;
+    if (!rejected) {
+      // Recover lost/malformed responses without repeating the selection request.
+      try {
+        const response = await apiFetch("/api/state");
+        if (response.ok) {
+          const snapshot = await response.json();
+          if (snapshot.machineId !== expectedMachineId || snapshot.thread?.id !== expectedThreadId) accepted = snapshot;
+        }
+      } catch { /* Keep the current conversation intact if recovery is unavailable. */ }
+    }
+  }
+  destinationSelection = null;
+  if (accepted) {
     loadedThreads = [];
     threadsRequest = null;
-    applySnapshot(snapshot, false);
-    switchingMachine = false;
-    switchingThread = false;
-    destinationSelection = null;
+    applySnapshot(accepted, false);
+    // The response covers events through the final selection snapshot. Preserve later deltas.
+    const lastSnapshot = token.events.findLastIndex(entry => entry.snapshot?.machineId === accepted.machineId && entry.snapshot?.thread?.id === accepted.thread?.id);
+    for (const entry of token.events.slice(lastSnapshot < 0 ? token.events.length : lastSnapshot + 1)) entry.deliver();
     closeDestinationSwitcher();
-    renderState();
     await loadHistory(null, historyEpoch, true);
     await Promise.allSettled([refreshMachines(), refreshLoadedThreads()]);
-    refreshNavigationCatalog();
-  } catch (error) {
-    if (destinationSelection !== token) return;
-    const message = error.message || "Could not switch tasks";
-    switchingMachine = false;
-    switchingThread = false;
-    destinationSelection = null;
-    let accepted = false;
-    try {
-      const response = await apiFetch("/api/state");
-      if (response.ok) {
-        const snapshot = await response.json();
-        accepted = snapshot.machineId === machineId && snapshot.thread?.id === threadId;
-        if (accepted) {
-          loadedThreads = [];
-          threadsRequest = null;
-        }
-        applySnapshot(snapshot, true);
-      }
-    } catch {
-      setConnection(false, true);
-    }
-    renderState();
-    await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
-    if (accepted) {
-      closeDestinationSwitcher();
-      return;
-    }
-    destinationError = message;
-    destinationRetry = /another Codex runtime|active writer/i.test(message) ? { machineId, threadId } : null;
+  } else {
+    // Retain live updates received for the original task while the request was pending.
+    for (const entry of token.events) entry.deliver();
+    destinationTaskError = { machineId, threadId, message: /another Codex runtime|active writer/i.test(message)
+      ? "Open in another Codex runtime. Close it there and try again." : message };
     renderDestinationSwitcher();
   }
 }
 
 async function submitMessage(action) {
+  if (destinationSelection) return;
   const text = elements.messageText.value;
   const images = selectedImages;
   if ((!text.trim() && !images.length) || readingImages || imageDeliveryUnknown || submittingMessage || switchingMachine || switchingThread || state?.queuedMessage) return;
@@ -2031,6 +2017,7 @@ async function submitMessage(action) {
 }
 
 async function cancelQueuedMessage() {
+  if (destinationSelection) return;
   if (submittingMessage || sendingQueuedMessage || cancellingQueue) return;
   cancellingQueue = true;
   renderQueue();
@@ -2051,6 +2038,7 @@ async function cancelQueuedMessage() {
 }
 
 async function sendQueuedMessage() {
+  if (destinationSelection) return;
   if (submittingMessage || cancellingQueue || sendingQueuedMessage || !state?.queuedMessage || switchingMachine || switchingThread) return;
   const action = state?.turn?.status === "inProgress" ? "steer" : "start";
   sendingQueuedMessage = true;
@@ -2072,6 +2060,7 @@ async function sendQueuedMessage() {
 }
 
 async function interruptTurn() {
+  if (destinationSelection) return;
   if (submittingInterrupt || switchingMachine || switchingThread || state?.turn?.status !== "inProgress") return;
   const machineId = state?.machineId;
   const expectedThreadId = state?.thread?.id;
@@ -2098,6 +2087,7 @@ async function interruptTurn() {
 }
 
 async function updateThreadSettings(model, effort) {
+  if (destinationSelection) return;
   if (updatingModel || switchingMachine || switchingThread || !state?.thread) return;
   updatingModel = true;
   composerError = "";
@@ -2120,6 +2110,7 @@ async function updateThreadSettings(model, effort) {
 }
 
 async function updateAccess(mode) {
+  if (destinationSelection) return;
   if (updatingAccess || switchingMachine || switchingThread || !state?.thread) return;
   updatingAccess = true;
   composerError = "";
@@ -2142,6 +2133,7 @@ async function updateAccess(mode) {
 }
 
 async function resolveApproval(requestId, decision) {
+  if (destinationSelection) return;
   if (resolvingApproval || switchingMachine || switchingThread || !requestId) return;
   resolvingApproval = true;
   composerError = "";
@@ -2171,6 +2163,7 @@ async function resolveApproval(requestId, decision) {
 }
 
 async function submitStructuredInput(pending) {
+  if (destinationSelection) return;
   if (!pending?.id || submittingInputRequestId || switchingMachine || switchingThread) return;
   const requestDraft = inputDrafts.get(pending.id) || new Map();
   const answers = [];
@@ -2246,26 +2239,31 @@ function connectEvents() {
   if (intentionalQuit) return;
   source?.close();
   source = new EventSource("/events");
-  source.addEventListener("open", () => setConnection(true));
-  source.addEventListener("error", handleEventError);
-  source.addEventListener("snapshot", (event) => { if (!switchingThread) applySnapshot(parseEvent(event)); });
-  source.addEventListener("status", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  source.addEventListener("thread", (event) => { if (!switchingThread) mergeState({ thread: parseEvent(event) }); });
-  source.addEventListener("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  source.addEventListener("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  source.addEventListener("control", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  source.addEventListener("context", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  source.addEventListener("answers", (event) => { if (!switchingThread) mergeState(parseEvent(event), true); });
-  source.addEventListener("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
-  source.addEventListener("turn", (event) => {
+  const on = (type, handler) => source.addEventListener(type, event => {
+    if (destinationSelection && type !== "open" && type !== "error") {
+      destinationSelection.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => handler(event) });
+    } else handler(event);
+  });
+  on("open", () => setConnection(true));
+  on("error", handleEventError);
+  on("snapshot", (event) => { if (!switchingThread) applySnapshot(parseEvent(event)); });
+  on("status", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  on("thread", (event) => { if (!switchingThread) mergeState({ thread: parseEvent(event) }); });
+  on("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  on("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  on("control", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  on("context", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  on("answers", (event) => { if (!switchingThread) mergeState(parseEvent(event), true); });
+  on("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
+  on("turn", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
     if (value.turn?.status && value.turn.status !== "inProgress") composerNotice = "";
     mergeState(value);
   });
-  source.addEventListener("plan", (event) => { if (!switchingThread) mergeState({ plan: parseEvent(event) }); });
-  source.addEventListener("request", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  source.addEventListener("activity", (event) => {
+  on("plan", (event) => { if (!switchingThread) mergeState({ plan: parseEvent(event) }); });
+  on("request", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  on("activity", (event) => {
     if (switchingThread) return;
     const activity = parseEvent(event);
     const activities = [...(state.activities || [])];
@@ -2276,14 +2274,14 @@ function connectEvents() {
     mergeState({ activities: activities.slice(-50) });
     if (expandByDefault && !activityDetails.has(activity.id)) loadActivityDetail(activity);
   });
-  source.addEventListener("message", (event) => {
+  on("message", (event) => {
     if (switchingThread) return;
     const message = parseEvent(event);
     const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
     liveMessages.set(message.id, preserveMessageCreatedAt(existing, message));
     renderConversation();
   });
-  source.addEventListener("assistant_delta", (event) => {
+  on("assistant_delta", (event) => {
     if (switchingThread) return;
     const value = parseEvent(event);
     const known = liveMessages.get(value.id) || historyMessages.get(value.id);
