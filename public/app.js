@@ -572,14 +572,13 @@ function renderDestinationSwitcher() {
     create.addEventListener("click", () => newTask(machine));
     if (!archived) heading.append(create);
     group.append(heading);
+    // Auto-attach ownership failures belong to a task, not the machine catalog.
+    // Only a failed manual selection surfaces ownership here, with its Retry target.
     if (machine.local && machine.connectionError
-      && !(destinationRetry && machine.connectionError === destinationError)) {
-      const ownershipConflict = /another Codex runtime|active writer/i.test(machine.connectionError);
-      const error = document.createElement("div");
-      error.className = ownershipConflict ? "destination-error" : "destination-empty error-text";
-      error.append(Object.assign(document.createElement("span"), { textContent: machine.connectionError }));
-      if (ownershipConflict) group.prepend(error);
-      else group.append(error);
+      && !/another Codex runtime|active writer/i.test(machine.connectionError)) {
+      group.append(Object.assign(document.createElement("p"), {
+        className: "destination-empty error-text", textContent: machine.connectionError,
+      }));
     }
 
     for (const task of tasks) {
