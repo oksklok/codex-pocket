@@ -586,7 +586,7 @@ function renderDestinationSwitcher() {
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
-      row.disabled = !machine.connected || !catalogAvailable || taskActionBusy || task.archived;
+      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection) || taskActionBusy || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
       row.title = task.cwd || task.name || "Task";
       const check = document.createElement("span");

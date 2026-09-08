@@ -338,7 +338,7 @@ test("bounded resume leaves context unavailable until replay or a later authorit
   runtime.rpc = { request: async (method, params) => {
     if (method === "thread/resume") {
       resumes.push(params);
-      assert.equal(runtime.snapshot().context, null);
+      assert.deepEqual(runtime.snapshot().context, contextSnapshot(usage));
       update("thread-3");
       return { thread: { id: "thread-3", status: "idle" } };
     }
@@ -489,8 +489,8 @@ test("ownership conflict stays friendly and a normal subsequent attachment can s
     return { data: [] };
   } };
   await assert.rejects(runtime.selectThread("owned"), /Close it there, then retry/);
-  assert.equal(runtime.state.thread, null);
-  assert.ok(!runtime.state.connectionError.includes("-32600"));
+  assert.equal(runtime.state.thread.id, "thread-1");
+  assert.equal(runtime.state.connectionError, null);
   conflict = false;
   assert.equal((await runtime.selectThread("owned")).thread.id, "owned");
 });
@@ -680,4 +680,49 @@ test("GPT-6 async reply envelopes show only human answers in live messages and h
     : { data: items.map(item => ({ turnId: "turn-1", item })) } };
   const history = await runtime.history(null, 1);
   assert.deepEqual(history.turns[0].messages.map(message => message.text), expected);
+});
+
+test("same-machine rejected selection preserves authoritative task, subscription, and live state", async () => {
+  const runtime = activeRuntime();
+  const gateway = new PocketGateway({ machines: [] });
+  gateway.runtimes.set("local", runtime);
+  const owned = { id: "owned", name: "Owned", status: "idle", cwd: "/tmp" };
+  runtime.state.queuedMessage = { threadId: "thread-1", text: "Keep queued", images: [] };
+  runtime.pendingServerRequests.set("approval", { method: "test" });
+  runtime.itemCache.set("cached", { item: { id: "cached" } });
+  runtime.asyncAnswers = { question: "Keep answer" };
+  const before = structuredClone(runtime.state);
+  const calls = [], events = [];
+  let reject = true;
+  runtime.broadcast = (type, value) => events.push({ type, value: structuredClone(value) });
+  runtime.rpc = { request: async (method) => {
+    calls.push(method);
+    if (method === "thread/list") return { data: [owned] };
+    if (method === "thread/resume") {
+      assert.equal(runtime.state.thread.id, "thread-1");
+      assert.equal(calls.includes("thread/unsubscribe"), false);
+      if (reject) {
+        runtime.handleNotification({ method: "item/completed", params: { threadId: "owned", item: { id: "target-only", type: "agentMessage", text: "Must not leak" } } });
+        assert.deepEqual(runtime.state, before);
+        throw new Error("already has an active writer");
+      }
+      return { thread: owned };
+    }
+    return { data: [] };
+  } };
+  await assert.rejects(gateway.selectDestination("local", "owned", "local", "thread-1"), /another Codex runtime/);
+  assert.deepEqual(runtime.state, before);
+  assert.equal(gateway.snapshot().thread.id, "thread-1");
+  assert.equal(calls.includes("thread/unsubscribe"), false);
+  assert.deepEqual(events, []);
+  assert(runtime.pendingServerRequests.has("approval"));
+  assert(runtime.itemCache.has("cached"));
+  assert.deepEqual(runtime.asyncAnswers, { question: "Keep answer" });
+  runtime.handleNotification({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { id: "still-live", type: "agentMessage", text: "Still receiving" } } });
+  assert.equal(runtime.state.liveMessages.at(-1).text, "Still receiving");
+  reject = false;
+  const accepted = await gateway.selectDestination("local", "owned", "local", "thread-1");
+  assert.equal(accepted.thread.id, "owned");
+  assert(calls.lastIndexOf("thread/unsubscribe") > calls.lastIndexOf("thread/resume"));
+  assert.deepEqual(events.filter(e => e.type === "snapshot").map(e => e.value.thread?.id), ["owned"]);
 });

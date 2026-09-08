@@ -1555,6 +1555,7 @@ export class MachineRuntime {
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private selectionQueue: Promise<void> = Promise.resolve();
+  private pendingAttachment: { threadId: string; replay: Array<() => void> } | null = null;
   private startingQueuedMessage = false;
   private permissionProfiles: PermissionProfileSummary[] = [];
   private allowedReviewers: string[] | null = null;
@@ -2242,14 +2243,6 @@ export class MachineRuntime {
     } catch (error) {
       this.technicalConnectionError = String(error);
       console.error(`${this.definition.name} task attach failed: ${String(error)}`);
-      if (this.state.connected && this.rpc) {
-        this.resetThreadState();
-        this.state.thread = null;
-        this.state.threadStatus = "idle";
-        this.state.connectionError = localRuntimeReason(String(error));
-        this.state.phase = "done";
-        this.broadcast("snapshot", this.snapshot());
-      }
       throw /active writer/i.test(String(error)) ? new Error(localRuntimeReason(String(error))) : error;
     }
     this.options.thread = requestedId;
@@ -2597,29 +2590,19 @@ export class MachineRuntime {
     if (!summary) throw new Error("selected task is not available in this Codex runtime");
     const changed = this.state.thread?.id !== threadId;
     const previousThreadId = changed ? this.state.thread?.id : null;
-    if (previousThreadId) {
-      try {
-        await this.rpc.request("thread/unsubscribe", { threadId: previousThreadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS);
-      } catch (error) {
-        console.warn(`${this.definition.name}: previous task unsubscribe skipped: ${compact(error, 180)}`);
-      }
-    }
-    if (changed) this.resetThreadState();
-    this.state.thread = {
-      id: summary.id,
-      name: summary.name,
-      cwd: summary.cwd,
-      source: "unknown",
-    };
-    this.state.threadStatus = summary.status;
-    this.state.connectionError = null;
-    this.state.phase = this.computePhase();
-    if (changed && broadcastReset) this.broadcast("snapshot", this.snapshot());
-
-    const resumed = started ?? await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
+    // Resume and validate before releasing the current subscription or mutating task state.
+    const rpc = this.rpc;
+    const attachment = { threadId, replay: [] as Array<() => void> };
+    this.pendingAttachment = changed ? attachment : null;
+    let resumed: JsonObject;
+    try { resumed = started ?? await rpc.request("thread/resume", { threadId, excludeTurns: true }); }
+    finally { this.pendingAttachment = null; }
     const thread = resumed?.thread ?? {};
     const resumedId = String(thread.id ?? threadId);
     if (resumedId !== threadId) throw new Error("app-server resumed an unexpected thread");
+    if (this.rpc !== rpc || !this.state.connected) throw new Error("Codex disconnected while opening the task");
+    if (changed) this.resetThreadState();
+    this.state.connectionError = null;
     this.state.thread = {
       id: resumedId,
       name: compact(thread.name ?? thread.preview, 180) || summary.name,
@@ -2629,6 +2612,7 @@ export class MachineRuntime {
     this.canAcceptDirectInput = thread.canAcceptDirectInput === true;
     this.state.threadStatus = statusText(thread.status ?? summary.status);
     this.updateModel(resumed);
+    for (const replay of attachment.replay) replay();
     try {
       await this.loadPermissionProfiles(this.state.thread.cwd);
       this.updateAccessFromCodex(resumed);
@@ -2638,7 +2622,12 @@ export class MachineRuntime {
       this.state.access.description = compact(error instanceof Error ? error.message : String(error), 240);
     }
     if (this.canAcceptDirectInput && this.state.threadStatus.startsWith("active") && this.state.turn?.status !== "inProgress") {
-      await this.loadActiveTurn();
+      try { await this.loadActiveTurn(); }
+      catch (error) { console.warn(`${this.definition.name}: active turn details unavailable: ${compact(error, 180)}`); }
+    }
+    if (previousThreadId) {
+      try { await rpc.request("thread/unsubscribe", { threadId: previousThreadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS); }
+      catch (error) { console.warn(`${this.definition.name}: previous task unsubscribe skipped: ${compact(error, 180)}`); }
     }
     this.state.phase = this.computePhase();
     if (broadcastReset) this.broadcast("snapshot", this.snapshot());
@@ -2666,6 +2655,11 @@ export class MachineRuntime {
   }
 
   private handleServerRequest(message: JsonObject): void {
+    const attachment = this.pendingAttachment;
+    if (attachment && String(message.params?.threadId ?? message.params?.conversationId ?? "") === attachment.threadId) {
+      attachment.replay.push(() => this.handleServerRequest(message));
+      return;
+    }
     const method = String(message.method ?? "");
     const params = message.params ?? {};
     if (!this.state.thread) return;
@@ -2779,6 +2773,11 @@ export class MachineRuntime {
   }
 
   private handleNotification(message: JsonObject): void {
+    const attachment = this.pendingAttachment;
+    if (attachment && String(message.params?.threadId ?? message.params?.conversationId ?? "") === attachment.threadId) {
+      attachment.replay.push(() => this.handleNotification(message));
+      return;
+    }
     const method = String(message.method ?? "");
     const params = message.params ?? {};
     if (method === "account/rateLimits/updated") {
