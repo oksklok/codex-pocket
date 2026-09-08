@@ -158,7 +158,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 }
 .destination-task:hover:not(:disabled), .destination-task:focus-visible { background: var(--surface-strong); color: var(--text); }
 .destination-error > span { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
-.destination-error > button { flex: 0 0 auto; margin-left: auto; min-height: 44px; min-width: 44px; }
+.destination-error > button { flex: 0 0 auto; margin-left: auto; background: var(--surface); }
 .destination-task.selected { border-color: rgba(69,200,138,.28); background: rgba(69,200,138,.09); color: var(--text); }
 .destination-check { color: var(--accent); font-weight: 850; text-align: center; }
 .destination-task-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
