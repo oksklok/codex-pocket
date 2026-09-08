@@ -573,7 +573,14 @@ function renderDestinationSwitcher() {
     if (!archived) heading.append(create);
     group.append(heading);
     if (machine.local && machine.connectionError
-      && !(destinationRetry?.machineId === machine.id && machine.connectionError === destinationError)) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: machine.connectionError }));
+      && !(destinationRetry?.machineId === machine.id && machine.connectionError === destinationError)) {
+      const ownershipConflict = /another Codex runtime|active writer/i.test(machine.connectionError);
+      const error = document.createElement("div");
+      error.className = ownershipConflict ? "destination-error" : "destination-empty error-text";
+      error.append(Object.assign(document.createElement("span"), { textContent: machine.connectionError }));
+      if (ownershipConflict) group.prepend(error);
+      else group.append(error);
+    }
 
     for (const task of tasks) {
       const selected = machine.id === state?.machineId && task.id === state?.thread?.id;
