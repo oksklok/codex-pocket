@@ -965,3 +965,93 @@ test("release cancels a waiting queue and clears state after existing task opera
   assert.deepEqual(runtime.state.liveMessages, []);
   assert.equal(runtime.state.connected, true);
 });
+
+test("reconnect delay progresses, caps, resets on catalog-only success, and cancels on stop", async (t) => {
+  const timers = [];
+  t.mock.method(globalThis, "setTimeout", (fn, delay) => { const timer = { fn, delay }; timers.push(timer); return timer; });
+  t.mock.method(globalThis, "clearTimeout", timer => { if (timer) timer.cancelled = true; });
+  let succeed = false, resumes = 0;
+  t.mock.method(RpcClient.prototype, "connect", async () => { if (!succeed) throw new Error("Offline fixture"); });
+  t.mock.method(RpcClient.prototype, "close", () => {});
+  t.mock.method(RpcClient.prototype, "notify", () => {});
+  t.mock.method(RpcClient.prototype, "request", async method => {
+    if (method === "thread/list") return { data: [{ id: "available", name: "Available", status: "idle" }] };
+    if (method === "thread/resume") resumes++;
+    return { data: [] };
+  });
+  const runtime = new MachineRuntime({}, { id: "ssh:test", name: "Test", ssh: "test" }, () => {});
+  await runtime.start(false);
+  for (const expected of [5000, 10000, 20000, 30000, 60000, 60000]) {
+    const timer = timers.at(-1);
+    assert.equal(timer.delay, expected);
+    timer.fn();
+    await new Promise(setImmediate);
+  }
+  succeed = true;
+  timers.at(-1).fn();await new Promise(setImmediate);
+  assert(runtime.state.connected);
+  assert.equal(runtime.state.thread, null);
+  assert.equal(resumes, 0);
+  assert.equal(runtime.autoAttach, false);
+  runtime.handleClose(new Error("Later disconnect"));
+  assert.equal(timers.at(-1).delay, 5000);
+  const pending = timers.at(-1);
+  await runtime.stop();
+  assert(pending.cancelled);
+});
+
+test("proxy handshake is bounded and timeout enters normal reconnect; success and abort clear timer", async (t) => {
+  const childProcess = (await import("node:child_process")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const { createHash } = await import("node:crypto");
+  const children = [], timers = [];
+  const spawnMock = t.mock.method(childProcess, "spawn", () => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => { child.killed = true; };
+    children.push(child); return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+  t.mock.method(globalThis, "setTimeout", (fn, delay) => { const timer = { fn, delay }; timers.push(timer); return timer; });
+  t.mock.method(globalThis, "clearTimeout", timer => { if (timer) timer.cancelled = true; });
+  const runtime = new MachineRuntime({}, { id: "local", name: "Test", ssh: null }, () => {});
+  const starting = runtime.start(false);
+  children.at(-1).emit("spawn");
+  const timeout = timers.at(-1);
+  assert.equal(timeout.delay, 15000);
+  timeout.fn();await starting;
+  assert(children[0].killed);
+  assert.equal(runtime.state.connected, false);
+  assert.equal(timers.at(-1).delay, 5000);
+  assert.match(runtime.state.connectionError, /handshake timed out/);
+  await runtime.stop();
+  const client = new RpcClient();
+  const connecting = client.connect();
+  const child = children.at(-1), successTimer = timers.at(-1);
+  child.emit("spawn");
+  const request = child.stdin.read().toString();
+  const key = /Sec-WebSocket-Key: (.+)\r/.exec(request)[1];
+  const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+  child.stdout.write(`HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  await connecting;assert(successTimer.cancelled);client.close();
+  const aborted = new RpcClient();const pending = aborted.connect();const abortTimer = timers.at(-1);
+  aborted.close();await assert.rejects(pending, /aborted/);assert(abortTimer.cancelled);
+  for (const event of ["error", "exit"]) {
+    const failed = new RpcClient();const attempt = failed.connect();const timer = timers.at(-1);
+    if (event === "error") children.at(-1).emit("error", new Error("spawn failed"));
+    else children.at(-1).emit("exit", 1, null);
+    await assert.rejects(attempt);assert(timer.cancelled);failed.close();
+  }
+  let socket;
+  t.mock.method(globalThis, "WebSocket", function () {
+    socket = new EventTarget();socket.close = () => { socket.closed = true; };return socket;
+  });
+  const direct = new RpcClient();const stalled = direct.connect("ws://127.0.0.1:1234");
+  assert.equal(timers.at(-1).delay, 15000);timers.at(-1).fn();
+  await assert.rejects(stalled, /handshake timed out/);assert(socket.closed);direct.close();
+  const established = new RpcClient();const opening = established.connect("ws://127.0.0.1:1234");const directTimer = timers.at(-1);
+  socket.dispatchEvent(new Event("open"));await opening;assert(directTimer.cancelled);established.close();
+});

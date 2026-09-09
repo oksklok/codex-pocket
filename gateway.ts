@@ -820,6 +820,8 @@ function localRuntimeReason(error: string): string {
   return compact(error.replace(/^Error:\s*/, ""), 180);
 }
 
+const TRANSPORT_HANDSHAKE_MS = 15_000;
+
 function connectProxy(
   onPayload: (payload: Buffer) => void,
   onClose: (error?: Error) => void,
@@ -847,8 +849,18 @@ function connectProxy(
     let fragmentedOpcode: number | null = null;
     let fragments: Buffer[] = [];
 
+    const handshakeTimer = setTimeout(() => {
+      settled = true;
+      closing = true;
+      child.stdin.end();
+      child.kill("SIGTERM");
+      reject(new Error("app-server proxy WebSocket handshake timed out"));
+    }, TRANSPORT_HANDSHAKE_MS);
+
     const sendFrame = (opcode: number, payload: Buffer) => child.stdin.write(clientFrame(opcode, payload));
     registerAbort(() => {
+      clearTimeout(handshakeTimer);
+      if (!settled) { settled = true; reject(new Error("app-server proxy connection aborted")); }
       closing = true;
       child.stdin.end();
       child.kill("SIGTERM");
@@ -909,6 +921,7 @@ function connectProxy(
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
+      if (closing) return;
       buffer = Buffer.concat([buffer, chunk]);
       if (!upgraded) {
         const headerEnd = buffer.indexOf("\r\n\r\n");
@@ -918,10 +931,14 @@ function connectProxy(
         const accept = /^sec-websocket-accept:\s*(.+)$/im.exec(header)?.[1]?.trim();
         if (!/^HTTP\/1\.1 101\b/m.test(header) || accept !== expectedAccept) {
           const error = new Error(`app-server proxy WebSocket upgrade failed: ${compact(header, 300)}`);
+          clearTimeout(handshakeTimer);
+          settled = true;
+          closing = true;
           reject(error);
           child.kill("SIGTERM");
           return;
         }
+        clearTimeout(handshakeTimer);
         upgraded = true;
         settled = true;
         resolve({
@@ -945,14 +962,17 @@ function connectProxy(
       if (text) console.error(`${sshAlias ? `${sshAlias} SSH proxy` : "app-server proxy"}: ${text}`);
     });
     child.once("error", (error) => {
+      clearTimeout(handshakeTimer);
       if (!settled) reject(error);
       else if (!closing) onClose(error);
     });
     child.once("exit", (code, signal) => {
+      clearTimeout(handshakeTimer);
       if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code}): ${compact(stderr, 600)}`));
       else if (!closing) onClose(new Error(`app-server proxy closed (${signal ?? code})`));
     });
     child.once("spawn", () => {
+      if (closing) return;
       child.stdin.write(
         `GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${websocketKey}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
       );
@@ -968,9 +988,18 @@ function connectWebSocket(
 ): Promise<Wire> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
-    registerAbort(() => socket.close());
     let opened = false;
+    const handshakeTimer = setTimeout(() => {
+      reject(new Error(`WebSocket handshake timed out: ${url}`));
+      socket.close();
+    }, TRANSPORT_HANDSHAKE_MS);
+    registerAbort(() => {
+      clearTimeout(handshakeTimer);
+      if (!opened) reject(new Error("WebSocket connection aborted"));
+      socket.close();
+    });
     socket.addEventListener("open", () => {
+      clearTimeout(handshakeTimer);
       opened = true;
       resolve({
         send(message) {
@@ -986,12 +1015,15 @@ function connectWebSocket(
       onPayload(data);
     });
     socket.addEventListener("error", () => {
+      clearTimeout(handshakeTimer);
       const error = new Error(`WebSocket connection failed: ${url}`);
       if (!opened) reject(error);
       else onClose(error);
     });
     socket.addEventListener("close", () => {
+      clearTimeout(handshakeTimer);
       if (opened) onClose();
+      else reject(new Error("WebSocket closed before connecting"));
     });
   });
 }
@@ -1562,6 +1594,7 @@ export class MachineRuntime {
   private definition: MachineDefinition;
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectDelayIndex = 0;
   private trustedImagePaths = new Set<string>();
   private selectionQueue: Promise<void> = Promise.resolve();
   private pendingAttachment: { threadId: string; replay: Array<() => void> } | null = null;
@@ -2023,6 +2056,7 @@ export class MachineRuntime {
       this.state.connectionError = null;
       await this.refreshQuota();
       if (!targetId || !this.autoAttach) {
+        this.reconnectDelayIndex = 0;
         this.resetThreadState();
         this.state.thread = null;
         this.state.threadStatus = "idle";
@@ -2034,11 +2068,12 @@ export class MachineRuntime {
       }
       try {
         await this.attachLoadedThread(String(targetId), false);
-        if (!this.autoAttach) { await this.releaseTask(); return; }
+        if (!this.autoAttach) { this.reconnectDelayIndex = 0; await this.releaseTask(); return; }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         if (!this.state.connected || this.rpc !== rpc || (this.definition.ssh && !/active writer/i.test(reason))) throw error;
         // An owned task does not make the runtime or its saved-task catalog unavailable.
+        this.reconnectDelayIndex = 0;
         this.technicalConnectionError = reason;
         console.error(`${this.definition.name} task attach failed: ${reason}`);
         this.resetThreadState();
@@ -2049,6 +2084,7 @@ export class MachineRuntime {
         this.broadcast("snapshot", this.snapshot());
         return;
       }
+      this.reconnectDelayIndex = 0;
       this.options.thread = String(targetId);
       this.state.connectionError = null;
       this.state.phase = this.computePhase();
@@ -2097,10 +2133,13 @@ export class MachineRuntime {
 
   private scheduleReconnect(): void {
     if (this.shuttingDown || this.reconnectTimer) return;
+    const delays = [5_000, 10_000, 20_000, 30_000, 60_000];
+    const delay = delays[this.reconnectDelayIndex];
+    this.reconnectDelayIndex = Math.min(this.reconnectDelayIndex + 1, delays.length - 1);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect().catch((error) => console.error(error));
-    }, 5_000);
+    }, delay);
   }
 
   private async refreshQuota(): Promise<void> {

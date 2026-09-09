@@ -704,9 +704,25 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func startGateway(node: URL) throws {
-        fileManager.createFile(atPath: logURL.path, contents: nil)
-        let log = try FileHandle(forWritingTo: logURL)
-        try log.seekToEnd()
+        if !fileManager.fileExists(atPath: logURL.path) {
+            fileManager.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logURL.path)
+        let log = try FileHandle(forUpdating: logURL)
+        do {
+            let size = try log.seekToEnd()
+            if size > 2 * 1024 * 1024 {
+                try log.seek(toOffset: size - 1024 * 1024)
+                let tail = try log.readToEnd() ?? Data()
+                try log.seek(toOffset: 0)
+                try log.write(contentsOf: tail)
+                try log.truncate(atOffset: UInt64(tail.count))
+            }
+            try log.seekToEnd()
+        } catch {
+            try? log.close()
+            throw error
+        }
         let process = Process()
         process.executableURL = node
         process.arguments = ["--experimental-strip-types", gatewayURL.path]
