@@ -1159,3 +1159,53 @@ test("phone URLs discover only local private or CGNAT IPv4 interfaces", async (t
     assert.deepEqual(gateway.hostStatus({ host: "127.0.0.1", port: 4173 }).phoneUrls, []);
   } finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });
+
+test("only an exact local missing socket starts the daemon once before reconnecting", async (t) => {
+  const childProcess = (await import('node:child_process')).default;
+  const { syncBuiltinESMExports } = await import('node:module');
+  const missing = 'failed to connect to socket: No such file or directory';
+  let starts = [], connects = 0, scenario;
+  const starter = t.mock.method(childProcess, 'execFile', (command, args, options, callback) => {
+    starts.push({ command, args, options });
+    queueMicrotask(() => callback(scenario.startFails ? new Error('unsupported daemon start') : null));
+    return { kill() {} };
+  });
+  syncBuiltinESMExports();
+  t.mock.method(RpcClient.prototype, 'connect', async () => {
+    connects++;
+    if (connects === 1 || scenario.retryFails) throw new Error(scenario.error);
+  });
+  t.mock.method(RpcClient.prototype, 'request', async () => ({ data: [] }));
+  t.mock.method(RpcClient.prototype, 'notify', () => {});
+  t.mock.method(RpcClient.prototype, 'close', () => {});
+  try {
+    for (scenario of [
+      { error: missing, recovered: true },
+      { error: missing, retryFails: true },
+      { error: missing, startFails: true },
+      { error: missing, ssh: 'remote' },
+      { error: missing, ws: 'ws://127.0.0.1:7777' },
+      { error: 'failed to connect to socket: Permission denied' },
+      { error: 'spawn codex ENOENT' },
+    ]) {
+      starts = []; connects = 0;
+      const runtime = new MachineRuntime({ ws: scenario.ws }, { id: scenario.ssh ? 'ssh:remote' : 'local', name: 'Test', ssh: scenario.ssh || null }, () => {});
+      try {
+        await runtime.start(false);
+        const recovery = scenario.error === missing && !scenario.ssh && !scenario.ws;
+        assert.equal(starts.length, recovery ? 1 : 0);
+        assert.equal(connects, recovery && !scenario.startFails ? 2 : 1);
+        if (recovery) {
+          assert.deepEqual(starts[0].args, ['app-server', 'daemon', 'start']);
+          assert.equal(starts[0].options.timeout, 15000);
+        }
+        assert.equal(runtime.state.connected, Boolean(scenario.recovered));
+        assert.equal(runtime.state.thread, null);
+        if (!scenario.recovered) {
+          assert.equal(runtime.reconnectTimer._idleTimeout, 5000);
+          assert.equal(runtime.reconnectDelayIndex, 1);
+        }
+      } finally { await runtime.stop(); }
+    }
+  } finally { starter.mock.restore(); syncBuiltinESMExports(); }
+});

@@ -51,6 +51,7 @@ const elements = {
   planPanel: document.querySelector("#plan-panel"),
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
+  displayFiles: document.querySelector("#display-files"),
   displayCommands: document.querySelector("#display-commands"),
   displayReasoning: document.querySelector("#display-reasoning"),
   displayCollaboration: document.querySelector("#display-collaboration"),
@@ -288,7 +289,7 @@ applyTheme();
 
 function loadDisplayPreferences() {
   const defaults = {
-    commands: true, reasoning: true, collaboration: true, images: true, compaction: true,
+    commands: true, files: true, reasoning: true, collaboration: true, images: true, compaction: true,
     expandCommands: false, expandFiles: false,
   };
   try {
@@ -303,6 +304,7 @@ function saveDisplayPreferences() {
 }
 
 function activityVisible(activity) {
+  if (activity.kind === "files") return displayPreferences.files;
   if (activity.kind === "reasoning") return displayPreferences.reasoning;
   if (activity.kind === "collaboration") return displayPreferences.collaboration;
   if (activity.kind === "image") return displayPreferences.images;
@@ -317,7 +319,7 @@ function activityExpandsByDefault(activity) {
 
 function effortLabel(value) {
   const normalized = String(value || "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
-  const labels = { none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", "extra high": "Extra High", max: "Max", ultra: "Ultra" };
+  const labels = { none: "None", minimal: "Minimal", low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", "extra high": "Extra High", max: "Max", ultra: "Ultra" };
   return labels[normalized] || normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Effort unavailable";
 }
 
@@ -615,6 +617,15 @@ function renderDestinationSwitcher() {
       const entry = document.createElement("div");
       entry.className = "destination-entry";
       entry.append(row);
+      if (taskError === "Open in another Codex runtime. Close it there and try again.") {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "text-button task-selection-retry";
+        retry.textContent = "Retry";
+        retry.disabled = row.disabled;
+        retry.addEventListener("click", () => selectDestination(machine.id, task.id));
+        entry.append(retry);
+      }
       const actions = document.createElement("details");
       actions.className = "task-actions";
       const summary = document.createElement("summary");
@@ -883,6 +894,7 @@ function renderPlan() {
 }
 
 function renderDisplayControls() {
+  elements.displayFiles.checked = displayPreferences.files;
   elements.displayCommands.checked = displayPreferences.commands;
   elements.displayReasoning.checked = displayPreferences.reasoning;
   elements.displayCollaboration.checked = displayPreferences.collaboration;
@@ -1505,6 +1517,7 @@ function renderRichActivityDetail(container, activity, value) {
       image.addEventListener("error", () => {
         image.replaceWith(Object.assign(document.createElement("span"), { className: "detail-note", textContent: "Image unavailable" }));
       }, { once: true });
+      enableImageViewer(image);
       image.src = url.toString();
       container.append(image);
     } else {
@@ -2401,12 +2414,13 @@ function renderMachineSettings(values) {
     });
     const controls = document.createElement("div");
     controls.className = "machine-row-actions";
-    for (const [direction, label] of [[-1, "Up"], [1, "Down"]]) {
+    for (const [direction, label] of [[-1, "↑"], [1, "↓"]]) {
       const move = document.createElement("button");
       move.type = "button";
       move.className = "text-button";
       move.textContent = label;
-      move.setAttribute("aria-label", `${label}: ${machine.name || "machine"}`);
+      move.title = `Move ${machine.name || `machine ${index + 1}`} ${direction < 0 ? "up" : "down"}`;
+      move.setAttribute("aria-label", move.title);
       move.disabled = index + direction < 0 || index + direction >= configured.length;
       move.addEventListener("click", () => {
         const next = machineSettingsValue();
@@ -2415,10 +2429,16 @@ function renderMachineSettings(values) {
       });
       controls.append(move);
     }
-    remove.textContent = "Remove";
+    remove.title = remove.getAttribute("aria-label");
     remove.className = "text-button machine-remove";
     controls.append(remove);
-    row.append(name, ssh, controls);
+    for (const [input, title] of [[name, "Display Name"], [ssh, "SSH Alias"]]) {
+      const label = document.createElement("label");
+      label.className = "machine-settings-field";
+      label.append(Object.assign(document.createElement("span"), { textContent: title }), input);
+      row.append(label);
+    }
+    row.append(controls);
     elements.settingsMachines.append(row);
   });
 }
@@ -2500,6 +2520,22 @@ elements.messageText.addEventListener("paste", (event) => {
 });
 elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
+let viewportBottomTimer = null;
+function cancelViewportBottom() {
+  clearTimeout(viewportBottomTimer);
+  viewportBottomTimer = null;
+}
+window.visualViewport?.addEventListener("resize", () => {
+  if (transcriptScroller() !== document.scrollingElement || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive()) return;
+  cancelViewportBottom();
+  viewportBottomTimer = setTimeout(() => {
+    viewportBottomTimer = null;
+    if (transcriptScroller() !== document.scrollingElement || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive()) return;
+    transcriptScroller().scrollTop = transcriptScroller().scrollHeight;
+    updateJumpLatest();
+  }, 120);
+});
+for (const type of ["touchstart", "wheel", "keydown"]) document.addEventListener(type, cancelViewportBottom, { passive: true });
 window.visualViewport?.addEventListener("resize", fitExpandedComposer);
 window.visualViewport?.addEventListener("scroll", fitExpandedComposer);
 let composerWidth = 0;
@@ -2550,7 +2586,8 @@ elements.modelSelect.addEventListener("change", () => {
 elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 function handleTranscriptScroll() {
-  shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < 80;
+  // A viewport resize may emit scroll before reconciliation; preserve its prior follow state.
+  if (viewportBottomTimer === null) shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < 80;
   updateJumpLatest();
   if (!shouldFollowConversation && transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 }
@@ -2566,6 +2603,7 @@ window.addEventListener("resize", () => {
   updateInspectorButtonState();
 });
 for (const [element, key] of [
+  [elements.displayFiles, "files"],
   [elements.displayCommands, "commands"],
   [elements.displayReasoning, "reasoning"],
   [elements.displayCollaboration, "collaboration"],

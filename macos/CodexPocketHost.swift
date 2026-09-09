@@ -197,44 +197,6 @@ private final class MessageMenuView: NSView {
     required init?(coder: NSCoder) { nil }
 }
 
-private final class SwitchMenuView: NSView {
-    private let toggle = NSSwitch()
-
-    init(title: String) {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        toggle.translatesAutoresizingMaskIntoConstraints = false
-        toggle.controlSize = .small
-        toggle.setAccessibilityLabel(title)
-        addSubview(label)
-        addSubview(toggle)
-        NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 260),
-            heightAnchor.constraint(equalToConstant: 34),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            toggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            toggle.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    func configure(target: AnyObject, action: Selector) {
-        toggle.target = target
-        toggle.action = action
-    }
-
-    func update(isOn: Bool, enabled: Bool) {
-        toggle.state = isOn ? .on : .off
-        toggle.isEnabled = enabled
-        toggle.setAccessibilityValue(isOn ? "On" : "Off")
-    }
-}
-
 final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let keepAwakeDefaultsKey = "keepMacAwake"
     private let fileManager = FileManager.default
@@ -246,8 +208,8 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
     private let headerView = StatusMenuView()
-    private let keepAwakeView = SwitchMenuView(title: "Keep Mac Awake")
-    private let launchAtLoginView = SwitchMenuView(title: "Launch at Login")
+    private var keepAwakeItem: NSMenuItem!
+    private var launchAtLoginItem: NSMenuItem!
     private let quotaViews = [QuotaMenuView(), QuotaMenuView()]
     private let quotaItems = [NSMenuItem(), NSMenuItem()]
     private let quotaUnavailableItem = NSMenuItem()
@@ -299,8 +261,6 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image?.accessibilityDescription = "Codex Pocket"
         statusItem.button?.toolTip = "Codex Pocket"
         headerView.configure(target: self, action: #selector(togglePocketPower))
-        keepAwakeView.configure(target: self, action: #selector(toggleKeepAwake))
-        launchAtLoginView.configure(target: self, action: #selector(toggleLaunchAtLogin))
         menu.delegate = self
         menu.autoenablesItems = false
         let headerItem = NSMenuItem()
@@ -323,11 +283,9 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(copyItem)
         menu.addItem(restartItem)
         menu.addItem(.separator())
-        let keepAwakeItem = NSMenuItem()
-        keepAwakeItem.view = keepAwakeView
+        keepAwakeItem = actionItem("Keep Mac Awake", #selector(toggleKeepAwake), enabled: true)
         menu.addItem(keepAwakeItem)
-        let launchAtLoginItem = NSMenuItem()
-        launchAtLoginItem.view = launchAtLoginView
+        launchAtLoginItem = actionItem("Launch at Login", #selector(toggleLaunchAtLogin), enabled: launchAtLoginAvailable())
         menu.addItem(launchAtLoginItem)
         menu.addItem(.separator())
         quitItem = actionItem("Quit Codex Pocket", #selector(quitPocket), enabled: true)
@@ -361,14 +319,10 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openItem.isEnabled = pocketEnabled && !powerTransition && status != nil
         copyItem.isEnabled = pocketEnabled && !powerTransition && !(status?.phoneUrls.isEmpty ?? true)
         restartItem.isEnabled = pocketEnabled && !powerTransition && status != nil
-        keepAwakeView.update(
-            isOn: UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey),
-            enabled: !quitting && !powerTransition
-        )
-        launchAtLoginView.update(
-            isOn: launchAtLoginEnabled(),
-            enabled: launchAtLoginAvailable() && !quitting && !powerTransition
-        )
+        keepAwakeItem.state = UserDefaults.standard.bool(forKey: Self.keepAwakeDefaultsKey) ? .on : .off
+        keepAwakeItem.isEnabled = !quitting && !powerTransition
+        launchAtLoginItem.state = launchAtLoginEnabled() ? .on : .off
+        launchAtLoginItem.isEnabled = launchAtLoginAvailable() && !quitting && !powerTransition
         quitItem.isEnabled = !quitting
         menu.update()
     }

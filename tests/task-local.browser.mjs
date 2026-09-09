@@ -14,6 +14,7 @@ let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:tr
 Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
+const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
 const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
  const json=(value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
@@ -21,9 +22,11 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);runtime.addSubscriber(res,false);req.on('close',()=>runtime.removeSubscriber(res));return;}
  if(u.pathname==='/api/auth')return json({required:false,authenticated:true});
  if(u.pathname==='/api/state')return json(snapshot());
- if(u.pathname==='/api/settings')return json({settings:{machines:[],phoneUrls:[]}});
+ if(u.pathname==='/api/settings')return json({settings:{machines:[{name:'MacBook Air',ssh:'macbook-air'},{name:'PC 1',ssh:'main-pc'}],phoneUrls:[]}});
  if(u.pathname==='/api/machines')return json({machines:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
+ if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
+ if(u.pathname==='/api/activity/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json({turns:[],nextCursor:null});
  if(u.pathname==='/api/navigation'){calls.push(u.search);return json({machines:[{id:'local',name:'Mac mini',local:true,connected:true,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:true,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
  if(u.pathname==='/api/navigation/select'){
@@ -65,11 +68,43 @@ try {
  const input=page.locator('#message-text');
  const row=name=>page.locator('.destination-entry').filter({has:page.getByText(name,{exact:true})});
  const select=async name=>{await open();await row(name).locator('.destination-task').click();await closed();};
- const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
+
  for(const width of [1280,390]){
- runtime.state.thread=task;runtime.state.machineId='local';mode='success';active=[task,owned,...Array.from({length:9},(_,i)=>({...task,id:`draft-${i}`,name:`Draft task ${i}`}))];
+ runtime.state.models=[{model:'test',displayName:'Test',supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort})),defaultReasoningEffort:'low'}];runtime.state.model='test';runtime.state.reasoningEffort='low';
+ runtime.state.activities=[];runtime.state.liveMessages=[];runtime.state.thread=task;runtime.state.machineId='local';mode='success';active=[task,owned,...Array.from({length:9},(_,i)=>({...task,id:`draft-${i}`,name:`Draft task ${i}`}))];
  await page.setViewportSize({width,height:844});await page.goto(`http://127.0.0.1:${server.address().port}`);
  await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await page.locator('#settings-button').click();
+ await page.locator('.machine-settings-row').first().waitFor();
+ for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).count(),1);
+ assert.equal(await page.getByRole('button',{name:'Move MacBook Air up',exact:true}).isDisabled(),true);
+ assert.equal(await page.getByRole('button',{name:'Move PC 1 down',exact:true}).isDisabled(),true);
+ assert.deepEqual(await page.locator('.machine-settings-row').first().locator('button').allTextContents(),['↑','↓','×']);
+ await page.locator('.machine-settings-row').first().scrollIntoViewIfNeeded();
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
+ await page.locator('#settings-close').click();
+ if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
+ await page.waitForTimeout(200);await page.locator('#display-files').waitFor();
+ assert.deepEqual(await page.locator('#effort-select option').allTextContents(),['Light','Medium','High','Extra High','Max','Ultra']);
+ assert.equal(await page.locator('#effort-select').inputValue(),'low');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/display-${width}.png`});
+ runtime.state.activities=[{id:'file-check',kind:'files',label:'File change test',summary:'file.ts',status:'completed'},{id:'command-check',kind:'command',label:'Tool test',summary:'command',status:'completed'}];runtime.broadcast('snapshot',snapshot());
+ await page.locator('#display-commands').uncheck();
+ assert.equal(await page.locator('.timeline-activity.files').count(),1);assert.equal(await page.locator('.timeline-activity.command').count(),0);
+ await page.locator('#display-files').uncheck();assert.equal(await page.locator('.timeline-activity.files').count(),0);
+ assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('codex-pocket-info-display')).files),false);
+ await page.locator('#display-files').check();await page.locator('#display-commands').check();
+ if(width<860)await page.locator('#inspector-close').click();else await page.locator('#inspector-button').click();
+ await page.waitForTimeout(200);
+ for(const type of ['imageView','imageGeneration']){
+ runtime.state.activities=[{id:type,kind:'image',label:'Image test',status:'completed',expandable:true}];runtime.broadcast('snapshot',snapshot());
+ const card=page.locator(`[data-activity-id="${type}"]`);await card.locator('.activity-summary').click();
+ await page.locator('.detail-image').scrollIntoViewIfNeeded();
+ await page.waitForFunction(()=>document.querySelector('.detail-image')?.naturalWidth>0);
+ const img=page.locator('.detail-image');await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
+ await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();await page.locator('#close-image').click();await card.locator('.activity-summary').click();
+ }
+ runtime.state.activities=[];
  runtime.state.liveMessages=[{id:'markdown-check',role:'assistant',text:'![Remote image](https://example.com/remote.png) ![HTTP image](http://example.com/remote.png) [Web link](https://example.com/)'}];
  runtime.broadcast('snapshot',snapshot());
  await page.getByRole('link',{name:'Web link',exact:true}).waitFor();
@@ -79,7 +114,7 @@ try {
  await input.fill('Draft A');await page.locator('#image-picker').setInputFiles({name:'a.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
  await select('Owned task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Draft B');await select('Current task');assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
- mode='reject';await open();await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();await page.locator('#destination-close').click();await closed();assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
+ mode='reject';await open();await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();const attempts=calls.filter(c=>c==='/api/navigation/select').length;await row('Owned task').getByRole('button',{name:'Retry',exact:true}).click();await row('Owned task').getByRole('button',{name:'Retry',exact:true}).waitFor();assert.equal(calls.filter(c=>c==='/api/navigation/select').length,attempts+1);await page.locator('#destination-close').click();await closed();assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
  mode='success';await page.locator('#send-message').click();await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
  await select('Owned task');assert.equal(await input.inputValue(),'Draft B');await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Stable action draft');await open();
@@ -115,6 +150,19 @@ try {
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
+ if(width===390){
+ runtime.state.liveMessages=Array.from({length:50},(_,i)=>({id:`viewport-${i}`,role:'assistant',text:`Message ${i}\n\nEnough content to scroll the document.`}));runtime.broadcast('snapshot',snapshot());
+ await page.getByText('Message 49',{exact:false}).waitFor();
+ await page.evaluate(()=>window.scrollTo(0,document.scrollingElement.scrollHeight));await page.waitForTimeout(150);
+ const viewportHeight=await page.evaluate(()=>visualViewport.height);
+ await page.setViewportSize({width,height:644});await page.waitForTimeout(300);
+ assert((await page.evaluate(()=>visualViewport.height))<viewportHeight);
+ assert((await page.evaluate(()=>{const d=document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;}))<2);
+ await page.evaluate(()=>window.scrollTo(0,document.scrollingElement.scrollHeight/2));await page.waitForTimeout(150);
+ const readingTop=await page.evaluate(()=>document.scrollingElement.scrollTop);
+ await page.setViewportSize({width,height:544});await page.waitForTimeout(300);
+ assert(Math.abs(await page.evaluate(()=>document.scrollingElement.scrollTop)-readingTop)<2);
  }
- assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable');
+ }
+ assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, ownership Retry, mobile viewport follow and reading position');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -1594,6 +1594,7 @@ export class MachineRuntime {
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
+  private daemonStart: ReturnType<typeof execFile> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelayIndex = 0;
   private trustedImagePaths = new Set<string>();
@@ -1686,6 +1687,7 @@ export class MachineRuntime {
 
   async stop(): Promise<void> {
     this.shuttingDown = true;
+    this.daemonStart?.kill();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.quotaRefreshTimer) clearTimeout(this.quotaRefreshTimer);
@@ -2037,7 +2039,23 @@ export class MachineRuntime {
       if (this.rpc === rpc) this.handleClose(error);
     };
     try {
-      await rpc.connect(this.definition.ssh ? undefined : this.options.ws, this.definition.ssh ?? undefined);
+      try {
+        await rpc.connect(this.definition.ssh ? undefined : this.options.ws, this.definition.ssh ?? undefined);
+      } catch (error) {
+        // Only the local proxy's missing shared socket warrants starting its daemon.
+        if (this.shuttingDown || this.definition.ssh || this.options.ws || !/failed to connect to socket/i.test(String(error)) || !/No such file/i.test(String(error))) throw error;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            this.daemonStart = execFile(process.env.CODEX_BIN || "codex", ["app-server", "daemon", "start"], { timeout: 15_000 }, (failure) => {
+              this.daemonStart = null;
+              failure ? reject(failure) : resolve();
+            });
+          });
+        } catch { throw error; }
+        if (this.shuttingDown) throw error;
+        // One retry only; failure flows to the normal reconnect backoff below.
+        await rpc.connect();
+      }
       const initialized = await rpc.request("initialize", {
         clientInfo: { name: "codex_pocket_gateway", title: "Codex Pocket Gateway", version: "0.1.0" },
         capabilities: { experimentalApi: true, requestAttestation: false },
