@@ -1362,3 +1362,38 @@ test('restart preserves explicit launch overrides without freezing saved setting
   assert.equal(restartUrlForRequest(request, true, 'http://127.0.0.1:4888'), 'http://192.168.50.2:4888');
   assert.equal(restartUrlForRequest(request, false, 'http://127.0.0.1:4999'), 'http://127.0.0.1:4999');
 });
+
+test('PWA manifest and branded PNG icons are served as public static assets', async () => {
+  const { createServer } = await import('node:http');
+  const { handleRequest } = await import('../gateway.ts');
+  const gateway = new PocketGateway({ machines: [] });
+  const server = createServer((req, res) => {
+    handleRequest(req, res, gateway, { required: true, pin: '1234', sessionId: 'test', attempts: new Map() }, {}, { host: '127.0.0.1' }, async () => ({ localUrl: '/' }), () => {}, () => false)
+      .catch(() => { res.writeHead(500); res.end(); });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const html = await (await fetch(origin)).text();
+    assert.match(html, /rel="manifest" href="\/manifest.webmanifest"/);
+    const response = await fetch(`${origin}/manifest.webmanifest`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'application/manifest+json');
+    const manifest = await response.json();
+    assert.equal(manifest.name, 'Codex Pocket');
+    assert.equal(manifest.start_url, '/');
+    assert.equal(manifest.scope, '/');
+    assert.equal(manifest.display, 'standalone');
+    for (const icon of manifest.icons) {
+      const response = await fetch(origin + icon.src);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('content-type'), 'image/png');
+      const png = Buffer.from(await response.arrayBuffer());
+      assert.equal(png.subarray(1, 4).toString(), 'PNG');
+      assert.equal(`${png.readUInt32BE(16)}x${png.readUInt32BE(20)}`, icon.sizes);
+    }
+    assert.deepEqual(manifest.icons.map(icon => icon.sizes), ['192x192', '512x512']);
+    const js = await (await fetch(`${origin}/app.js?viewportDebug=1`)).text();
+    assert(!js.includes('viewportDebug'));
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});

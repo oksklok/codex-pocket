@@ -3662,6 +3662,8 @@ const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
 };
 
 function securityHeaders(): Record<string, string> {
@@ -3758,6 +3760,7 @@ function staticPath(pathname: string): string | null {
   if (pathname === "/app.js") return join(PUBLIC_DIR, "app.js");
   if (pathname === "/pocket-logic.js") return join(PUBLIC_DIR, "pocket-logic.js");
   if (pathname === "/styles.css") return join(PUBLIC_DIR, "styles.css");
+  if (["/manifest.webmanifest", "/pocket-icon-192.png", "/pocket-icon-512.png"].includes(pathname)) return join(PUBLIC_DIR, pathname.slice(1));
   if (pathname === "/pocket-mark.svg") return join(PUBLIC_DIR, "pocket-mark.svg");
   if (pathname === "/vendor/markdown-it.min.js") return join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js");
   return null;
