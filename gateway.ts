@@ -3663,6 +3663,25 @@ const JSON_POST_ROUTES = new Set([
   "/api/input", "/api/thread", "/api/navigation/select", "/api/machine",
 ]);
 
+function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
+  const authority = request.headers.host;
+  if (!authority) return false;
+  try {
+    const parsed = new URL(`http://${authority}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return false;
+    const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (isLoopbackHost(host)) return true;
+    if (isLoopbackHost(options.host)) return false;
+    // LAN/private IP literals also cover Docker's published host address and port.
+    // Never resolve a supplied hostname to decide whether it is trusted.
+    return isPrivateIpv4(host)
+      || host === options.host.toLowerCase()
+      || host === hostname().toLowerCase()
+      || host === `${hostname().replace(/\.local$/i, "").toLowerCase()}.local`
+      || Object.values(networkInterfaces()).flatMap(entries => entries ?? []).some(entry => entry.address === host);
+  } catch { return false; }
+}
+
 export async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
@@ -3676,6 +3695,10 @@ export async function handleRequest(
 ): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (!allowedBrowserHost(request, options)) {
+    sendJson(response, 403, { error: "Unrecognized Pocket host" }, gateway);
+    return;
+  }
   if (url.pathname.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method)) {
     const origin = request.headers.origin;
     const ownOrigin = `http://${request.headers.host}`;

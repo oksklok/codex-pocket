@@ -728,18 +728,26 @@ test("same-machine rejected selection preserves authoritative task, subscription
 });
 
 test("browser mutations enforce origin and JSON while preserving authenticated and loopback shutdown", async () => {
-  const { createServer } = await import("node:http");
+  const { createServer, request } = await import("node:http");
   const { handleRequest } = await import("../gateway.ts");
   const gateway = new PocketGateway({ machines: [] });
   const auth = { required: false, pin: null, sessionId: "session", attempts: new Map() };
   let quits = 0;
+  const options = { host: "127.0.0.1" };
   const server = createServer((req, res) => {
-    handleRequest(req, res, gateway, auth, {}, {}, async () => ({ localUrl: "/" }), () => quits++, () => false)
+    handleRequest(req, res, gateway, auth, {}, options, async () => ({ localUrl: "/" }), () => quits++, () => false)
       .catch(() => { res.writeHead(500); res.end(); });
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const post = (path, headers = {}, body) => fetch(origin + path, { method: "POST", headers, body });
+  const raw = (path, headers = {}, method = "GET", body) => new Promise((resolve, reject) => {
+    const req = request(origin + path, { method, headers }, res => {
+      let text = ""; res.on("data", chunk => { text += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode, json: async () => JSON.parse(text) }));
+    });
+    req.on("error", reject); req.end(body);
+  });
+  const post = (path, headers = {}, body) => raw(path, headers, "POST", body);
   try {
     assert.equal((await post("/api/login", { Origin: origin, "Content-Type": "application/json; charset=utf-8", "Sec-Fetch-Site": "same-origin" }, "{}")).status, 200);
     assert.equal((await post("/api/shutdown", { Origin: "https://attacker.example" })).status, 403);
@@ -758,6 +766,11 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
     assert.equal(cancelled.status, 200);
     assert.deepEqual(await cancelled.json(), { cancelled: true, queuedMessage: null });
     assert.equal(runtime.state.queuedMessage, null);
+    const evilHost = `evil.example:${server.address().port}`;
+    assert.equal((await post("/api/shutdown", { Host: evilHost, Origin: `http://${evilHost}`, "Sec-Fetch-Site": "same-origin" })).status, 403);
+    assert.equal((await raw("/api/auth", { Host: evilHost })).status, 403);
+    assert.equal((await raw("/", { Host: evilHost })).status, 403);
+    assert.equal((await raw("/api/auth", { Host: `localhost:${server.address().port}` })).status, 200);
     assert.equal(quits, 0);
     assert.equal((await post("/api/shutdown", { Origin: origin })).status, 202);
     assert.equal((await post("/api/shutdown")).status, 202);
@@ -765,6 +778,11 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
     assert.equal((await post("/api/shutdown", { Origin: origin })).status, 401);
     assert.equal((await post("/api/shutdown", { Origin: origin, Cookie: "codex_pocket_session=session" })).status, 202);
     assert.equal(quits, 3);
+    options.host = "0.0.0.0";
+    const publishedHost = "192.168.50.2:8080";
+    assert.equal((await post("/api/shutdown", { Host: publishedHost, Origin: `http://${publishedHost}`, Cookie: "codex_pocket_session=session" })).status, 202);
+    assert.equal((await post("/api/shutdown", { Host: evilHost, Origin: `http://${evilHost}`, Cookie: "codex_pocket_session=session" })).status, 403);
+    assert.equal(quits, 4);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });
 
