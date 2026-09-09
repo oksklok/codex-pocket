@@ -2406,6 +2406,10 @@ function renderMachineSettings(values) {
 
 function renderSettings(value) {
   settingsValue = value;
+  for (const field of [elements.settingsLanEnabled, elements.settingsHost, elements.settingsPort]) field.disabled = Boolean(value.headless);
+  document.querySelector("#settings-network-help").textContent = value.headless
+    ? "Network binding is managed by the container/host."
+    : "Use 0.0.0.0 for all local-network interfaces.";
   elements.quitPocket.disabled = Boolean(value.headless);
   elements.quitPocket.closest(".settings-quit").hidden = Boolean(value.headless);
   document.querySelector("#container-lifecycle").hidden = !value.headless;
@@ -2444,7 +2448,7 @@ async function openSettings() {
     renderSettings(result.settings);
     elements.settingsRestart.hidden = !result.restartRequired;
     elements.settingsStatus.textContent = "";
-    elements.settingsLanEnabled.focus();
+    (settingsValue?.headless ? elements.settingsPin : elements.settingsLanEnabled).focus();
   } catch (error) {
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");

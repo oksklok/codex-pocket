@@ -726,3 +726,95 @@ test("same-machine rejected selection preserves authoritative task, subscription
   assert(calls.lastIndexOf("thread/unsubscribe") > calls.lastIndexOf("thread/resume"));
   assert.deepEqual(events.filter(e => e.type === "snapshot").map(e => e.value.thread?.id), ["owned"]);
 });
+
+test("browser mutations enforce origin and JSON while preserving authenticated and loopback shutdown", async () => {
+  const { createServer } = await import("node:http");
+  const { handleRequest } = await import("../gateway.ts");
+  const gateway = new PocketGateway({ machines: [] });
+  const auth = { required: false, pin: null, sessionId: "session", attempts: new Map() };
+  let quits = 0;
+  const server = createServer((req, res) => {
+    handleRequest(req, res, gateway, auth, {}, {}, async () => ({ localUrl: "/" }), () => quits++, () => false)
+      .catch(() => { res.writeHead(500); res.end(); });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const post = (path, headers = {}, body) => fetch(origin + path, { method: "POST", headers, body });
+  try {
+    assert.equal((await post("/api/login", { Origin: origin, "Content-Type": "application/json; charset=utf-8", "Sec-Fetch-Site": "same-origin" }, "{}")).status, 200);
+    assert.equal((await post("/api/shutdown", { Origin: "https://attacker.example" })).status, 403);
+    assert.equal((await post("/api/shutdown", { "Sec-Fetch-Site": "cross-site" })).status, 403);
+    assert.equal((await post("/api/shutdown", { Origin: "null" })).status, 403);
+    assert.equal((await post("/api/login", { Origin: origin, "Content-Type": "text/plain" }, "{}")).status, 415);
+    assert.equal((await post("/api/login", { Origin: origin })).status, 415);
+    assert.equal(quits, 0);
+    assert.equal((await post("/api/shutdown", { Origin: origin })).status, 202);
+    assert.equal((await post("/api/shutdown")).status, 202);
+    auth.required = true;
+    assert.equal((await post("/api/shutdown", { Origin: origin })).status, 401);
+    assert.equal((await post("/api/shutdown", { Origin: origin, Cookie: "codex_pocket_session=session" })).status, 202);
+    assert.equal(quits, 3);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
+test("headless settings preserve deployment network and reject empty machines; macOS remains editable", async () => {
+  const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { saveLocalSettings } = await import("../gateway.ts");
+  const dir = mkdtempSync(join(tmpdir(), "pocket-settings-"));
+  const settings = { path: join(dir, "config.json"), loaded: true, config: {
+    lanEnabled: true, host: "0.0.0.0", port: 4173, pin: "1234", localName: "", machines: [{ name: "Remote", ssh: "remote" }],
+  } };
+  const changes = { lanEnabled: false, host: "127.0.0.1", port: 5000, pin: "5678", machines: [{ name: "Renamed", ssh: "new-alias" }] };
+  try {
+    const saved = saveLocalSettings(settings, changes, null, true);
+    assert.deepEqual([saved.lanEnabled, saved.host, saved.port], [true, "0.0.0.0", 4173]);
+    assert.equal(saved.pin, "5678");
+    assert.deepEqual(saved.machines, changes.machines);
+    const disk = readFileSync(settings.path, "utf8");
+    assert.throws(() => saveLocalSettings(settings, { ...changes, machines: [] }, null, true), /at least one SSH machine/);
+    assert.equal(readFileSync(settings.path, "utf8"), disk);
+    const native = saveLocalSettings(settings, { ...changes, machines: [] }, null, false);
+    assert.deepEqual([native.lanEnabled, native.host, native.port, native.machines], [false, "127.0.0.1", 5000, []]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("assistant local images require thread-local protocol provenance, including hydrated history", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "pocket-images-"));
+  const path = join(dir, "trusted.png"), arbitrary = join(dir, "arbitrary.png");
+  const bytes = Buffer.from(png.url.split(",")[1], "base64");
+  writeFileSync(path, bytes); writeFileSync(arbitrary, bytes);
+  const runtime = activeRuntime();
+  const emit = item => runtime.handleNotification({ method: "item/completed", params: { threadId: runtime.state.thread.id, turnId: "turn-1", item } });
+  const markdown = (id, path) => ({ id, type: "agentMessage", text: `![](${path})` });
+  try {
+    emit(markdown("arbitrary", arbitrary));
+    await assert.rejects(runtime.messageImage("thread-1", "arbitrary", 0), /Image unavailable/);
+    emit({ id: "view", type: "imageView", path });
+    emit(markdown("trusted", path));
+    assert.deepEqual((await runtime.messageImage("thread-1", "trusted", 0)).data, bytes);
+    assert.deepEqual((await runtime.activityImage("thread-1", "view")).data, bytes);
+    runtime.resetThreadState(); runtime.state.thread = { id: "thread-2" };
+    emit(markdown("new-thread", path));
+    await assert.rejects(runtime.messageImage("thread-2", "new-thread", 0), /Image unavailable/);
+    const items = [{ id: "history-view", type: "imageGeneration", savedPath: path }, markdown("history-text", path)];
+    runtime.rpc = { request: async method => method === "thread/turns/list" ? { data: [{ id: "turn-2", status: "completed", items }] } : { data: items.map(item => ({ turnId: "turn-2", item })) } };
+    await runtime.history(null, 1);
+    assert.deepEqual((await runtime.messageImage("thread-2", "history-text", 0)).data, bytes);
+    runtime.resetThreadState();runtime.state.thread={id:"thread-3"};
+    emit({ id:"local",type:"userMessage",content:[{type:"localImage",path}] });
+    assert.deepEqual((await runtime.messageImage("thread-3","local",0)).data,bytes);
+    let release;
+    runtime.rpc = { request: () => new Promise(resolve => { release = resolve; }) };
+    const history = runtime.history(null, 1);
+    runtime.resetThreadState(); runtime.state.thread = { id: "thread-4" };
+    release({ data: [{ id: "old-turn", items: [{ id: "stale-view", type: "imageView", path }] }] });
+    await assert.rejects(history, /selected task changed/);
+    emit(markdown("stale-path", path));
+    await assert.rejects(runtime.messageImage("thread-4", "stale-path", 0), /Image unavailable/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

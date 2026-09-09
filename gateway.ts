@@ -370,7 +370,7 @@ function loadLocalSettings(): LocalSettings {
   }
 }
 
-function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin: string | null): LocalConfig {
+export function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin: string | null, headless = HEADLESS): LocalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("settings must be a JSON object");
   const candidate = value as JsonObject;
   const submittedPin = candidate.pin;
@@ -381,13 +381,14 @@ function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin:
     ? submittedPin
     : settings.config.pin ?? fallbackPin;
   const config = validateLocalConfig({
-    lanEnabled: candidate.lanEnabled,
-    host: candidate.host,
-    port: candidate.port,
+    lanEnabled: headless ? settings.config.lanEnabled : candidate.lanEnabled,
+    host: headless ? settings.config.host : candidate.host,
+    port: headless ? settings.config.port : candidate.port,
     pin,
     localName: candidate.localName ?? settings.config.localName,
     machines: candidate.machines ?? settings.config.machines,
   });
+  if (headless && !config.machines.length) throw new Error("Headless Pocket requires at least one SSH machine");
   const temporaryPath = `${settings.path}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(temporaryPath, settings.path);
@@ -1554,6 +1555,7 @@ export class MachineRuntime {
   private definition: MachineDefinition;
   private shuttingDown = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private trustedImagePaths = new Set<string>();
   private selectionQueue: Promise<void> = Promise.resolve();
   private pendingAttachment: { threadId: string; replay: Array<() => void> } | null = null;
   private startingQueuedMessage = false;
@@ -1673,6 +1675,7 @@ export class MachineRuntime {
       sortDirection: "desc",
       itemsView: "summary",
     });
+    if (this.state.thread?.id !== threadId) throw new Error("The selected task changed");
     const rawTurns = Array.isArray(page?.data) ? page.data : [];
     for (const turn of rawTurns) for (const item of turn.items ?? []) this.rememberItem(item, String(turn.id));
     const turns = (await this.hydrateHistoryTurns(rpc, threadId, rawTurns)).reverse();
@@ -1709,6 +1712,7 @@ export class MachineRuntime {
             sortDirection: "asc",
           });
           this.historyItemsSupported = true;
+          if (this.state.thread?.id !== threadId) throw new Error("The selected task changed");
           for (const entry of Array.isArray(itemPage?.data) ? itemPage.data : []) {
             const item = entry?.item;
             const itemId = item?.id == null ? "" : String(item.id);
@@ -1748,6 +1752,7 @@ export class MachineRuntime {
 
   async activityImage(threadIdValue: unknown, itemIdValue: unknown): Promise<{ mimeType: string; data: Buffer }> {
     const { item } = await this.resolveActivityItem(threadIdValue, itemIdValue);
+    if (String(threadIdValue) !== this.state.thread?.id) throw new Error("Image unavailable");
     if (item.type !== "imageView" && item.type !== "imageGeneration") throw new Error("Image unavailable");
     if (item.type === "imageGeneration" && typeof item.result === "string" && item.result.length > 0) {
       if (item.result.length > Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 16 || !/^[A-Za-z0-9+/=\r\n]+$/.test(item.result)) {
@@ -1763,6 +1768,7 @@ export class MachineRuntime {
 
   async messageImage(threadId: unknown, messageId: unknown, index: unknown): Promise<{ mimeType: string; data: Buffer }> {
     const { item } = await this.resolveActivityItem(threadId, messageId);
+    if (String(threadId) !== this.state.thread?.id) throw new Error("Image unavailable");
     const imageIndex = Number(index);
     if (!Number.isInteger(imageIndex) || imageIndex < 0 || imageIndex >= 10) throw new Error("Image unavailable");
     if (item.type === "userMessage") {
@@ -1782,7 +1788,7 @@ export class MachineRuntime {
 
   private async readSurfacedImage(surfacedPath: string): Promise<{ mimeType: string; data: Buffer }> {
     const mimeType = imageTypeForPath(surfacedPath);
-    if (!surfacedPath || !mimeType) throw new Error("Image unavailable");
+    if (!surfacedPath || !mimeType || !this.trustedImagePaths.has(surfacedPath)) throw new Error("Image unavailable");
     let data: Buffer;
     if (this.definition.ssh) {
       data = await readRemoteImage(this.definition.ssh, surfacedPath, /windows/i.test(this.state.platform));
@@ -2918,6 +2924,16 @@ export class MachineRuntime {
 
   private rememberItem(item: any, turnId: string): void {
     if (!item || typeof item !== "object" || item.id === undefined || item.id === null) return;
+    const paths = item.type === "imageView" ? [item.path]
+      : item.type === "imageGeneration" ? [item.savedPath]
+      : item.type === "userMessage" && Array.isArray(item.content)
+        ? item.content.filter((input: any) => input.type === "localImage").map((input: any) => input.path) : [];
+    for (const path of paths) {
+      if (typeof path !== "string" || !imageTypeForPath(path)) continue;
+      this.trustedImagePaths.delete(path);
+      this.trustedImagePaths.add(path);
+      while (this.trustedImagePaths.size > MAX_DETAIL_ITEMS) this.trustedImagePaths.delete(this.trustedImagePaths.values().next().value!);
+    }
     const itemId = String(item.id);
     this.itemCache.delete(itemId);
     this.itemCache.set(itemId, { turnId, item });
@@ -2947,6 +2963,7 @@ export class MachineRuntime {
         limit: DETAIL_ITEMS_PAGE_LIMIT,
         sortDirection: "desc",
       });
+      if (this.state.thread?.id !== threadId) throw new Error("The selected task changed");
       for (const entry of Array.isArray(page?.data) ? page.data : []) {
         const turnId = String(entry?.turnId ?? knownTurnId ?? "");
         this.rememberItem(entry?.item, turnId);
@@ -3049,6 +3066,7 @@ export class MachineRuntime {
   }
 
   private resetThreadState(): void {
+    this.trustedImagePaths.clear();
     this.state.context = null;
     for (const queued of this.assistantFlushes.values()) clearTimeout(queued.timer);
     this.assistantFlushes.clear();
@@ -3638,7 +3656,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
   }
 }
 
-async function handleRequest(
+export async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   gateway: PocketGateway,
@@ -3651,6 +3669,20 @@ async function handleRequest(
 ): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (url.pathname.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const origin = request.headers.origin;
+    const ownOrigin = `http://${request.headers.host}`;
+    if ((origin !== undefined && origin !== ownOrigin) || request.headers["sec-fetch-site"] === "cross-site") {
+      sendJson(response, 403, { error: "Same-origin request required" }, gateway);
+      return;
+    }
+    if (!["/api/restart", "/api/shutdown"].includes(url.pathname)
+      && request.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+      sendJson(response, 415, { error: "Content-Type must be application/json" }, gateway);
+      return;
+    }
+  }
+
   if (method === "GET" && url.pathname === "/api/auth") {
     sendJson(response, 200, { required: auth.required, authenticated: isAuthenticated(request, auth) }, gateway);
     return;
@@ -3685,9 +3717,7 @@ async function handleRequest(
     });
     return;
   }
-  const loopbackHostShutdown = url.pathname === "/api/shutdown" && method === "POST" && isLoopbackRequest(request);
   if ((url.pathname.startsWith("/api/") || url.pathname === "/events")
-    && !loopbackHostShutdown
     && !isAuthenticated(request, auth)) {
     sendJson(response, 401, { error: "Authentication required" }, gateway);
     return;
