@@ -25,7 +25,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/settings')return json({settings:{machines:[{name:'MacBook Air',ssh:'macbook-air'},{name:'PC 1',ssh:'main-pc'}],phoneUrls:[]}});
  if(u.pathname==='/api/machines')return json({machines:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
- if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
+ if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
  if(u.pathname==='/api/activity/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json({turns:[],nextCursor:null});
  if(u.pathname==='/api/navigation'){calls.push(u.search);return json({machines:[{id:'local',name:'Mac mini',local:true,connected:true,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:true,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
@@ -60,7 +60,8 @@ const server=createServer(async(req,res)=>{
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
-const open=async()=>{if(await page.locator('#destination-button').getAttribute('aria-expanded')!=='true')await page.locator('#destination-button').click();await page.waitForTimeout(210);};
+const open=async()=>{if(await page.locator('#destination-button').getAttribute('aria-expanded')!=='true')await page.locator('#destination-button').click();await page.waitForTimeout(210);assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'destination-search');assert.equal(await page.locator('#destination-close').isVisible(),page.viewportSize().width<1100);};
+const dismissTasks=()=>page.locator(page.viewportSize().width>=1100?'#destination-button':'#destination-close').click();
 const closed=()=>page.waitForFunction(()=>document.querySelector('#destination-switcher').hidden);
 try {
  const defaultDialog=d=>d.accept(d.type()==='prompt'?(d.message().includes('task name')?'New test task':'/project'):undefined);
@@ -69,7 +70,7 @@ try {
  const row=name=>page.locator('.destination-entry').filter({has:page.getByText(name,{exact:true})});
  const select=async name=>{await open();await row(name).locator('.destination-task').click();
  await page.waitForFunction(name=>document.querySelector('#destination-label').textContent.includes(name),name);
- if(page.viewportSize().width>=1100){await page.waitForTimeout(210);assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await page.locator('#destination-close').click();}
+ if(page.viewportSize().width>=1100){await page.waitForTimeout(210);assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}
  await closed();};
 
  for(const width of [1280,390]){
@@ -99,7 +100,7 @@ try {
  assert.equal(await page.locator('#effort-select').inputValue(),'low');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/display-${width}.png`});
  const categories=[['reasoning','reasoning','Reasoning'],['command','command','Command'],['tool','tool','Tool'],['search','search','Search'],['files','files','File Changes'],['collaboration','collaboration','Subagents'],['image','images','Image'],['review','review','Review'],['compaction','compaction','Context Compaction']];
- assert.deepEqual(await page.locator('.display-panel .display-option span').allTextContents(),categories.map(c=>c[2]).concat(['Expand Commands by Default','Expand File Changes by Default']));
+ assert.deepEqual(await page.locator('.display-panel .display-option span').allTextContents(),categories.map(c=>c[2]).concat(['Expand Commands by Default','Expand File Changes by Default','Wrap File Changes']));
  runtime.state.activities=categories.map(([kind])=>({id:`filter-${kind}`,kind,label:`Test ${kind}`,status:'completed'}));runtime.broadcast('snapshot',snapshot());
  await page.locator('.timeline-activity').nth(8).waitFor();
  for(const [kind,key,label] of categories){
@@ -107,6 +108,31 @@ try {
  await page.locator(`#display-${key}`).uncheck();assert.equal(await page.locator(`.timeline-activity.${kind}`).count(),0);assert.equal(await page.locator('.timeline-activity').count(),8);
  await page.locator(`#display-${key}`).check();assert.equal(await page.locator('.timeline-activity').count(),9);
  }
+ assert.equal(await page.locator('#wrap-files').isChecked(),false);
+ await page.locator('#expand-commands').check();await page.locator('#expand-files').check();
+ for(const wrap of [false,true]){
+ await page.locator('#wrap-files').setChecked(wrap);
+ await page.locator('#display-hide-all').click();assert.equal(await page.locator('.timeline-activity').count(),0);
+ for(const [,key] of categories)assert.equal(await page.locator(`#display-${key}`).isChecked(),false);
+ const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('codex-pocket-info-display')));
+ assert.equal(saved.expandCommands,true);assert.equal(saved.expandFiles,true);assert.equal(saved.wrapFiles,wrap);
+ for(const [,key] of categories)assert.equal(saved[key],false);
+ await page.locator('#display-show-all').click();assert.equal(await page.locator('.timeline-activity').count(),9);
+ for(const [,key] of categories)assert.equal(await page.locator(`#display-${key}`).isChecked(),true);
+ assert.deepEqual(await page.locator('#expand-commands, #expand-files, #wrap-files').evaluateAll(es=>es.map(e=>e.checked)),[true,true,wrap]);
+ }
+ await page.locator('#wrap-files').uncheck();
+ runtime.state.activities=[{id:'diff-test',kind:'files',label:'Diff wrapping',status:'completed',expandable:true},{id:'command-test',kind:'command',label:'Command wrapping',status:'completed',expandable:true}];
+ runtime.state.liveMessages=[{id:'code-wrap',role:'assistant',text:'```text\n'+ 'markdown_code'.repeat(100)+'\n```'}];runtime.broadcast('message',runtime.state.liveMessages[0]);for(const activity of runtime.state.activities)runtime.broadcast('activity',activity);
+ await page.locator('.detail-diff .diff-line').waitFor({state:'attached'});await page.locator('[data-activity-id="command-test"] .detail-code').first().waitFor({state:'attached'});
+ const codeStyles=()=>page.locator('[data-activity-id="command-test"] .detail-code, .markdown pre').evaluateAll(es=>es.map(e=>({whiteSpace:getComputedStyle(e).whiteSpace,overflowWrap:getComputedStyle(e).overflowWrap})));
+ const beforeCode=await codeStyles();
+ assert.equal(await page.locator('.detail-diff .diff-line').evaluate(e=>getComputedStyle(e).whiteSpace),'pre');
+ assert(await page.locator('.detail-diff').evaluate(e=>e.scrollWidth>e.clientWidth));
+ await page.locator('#wrap-files').check();
+ assert.equal(await page.locator('.detail-diff .diff-line').evaluate(e=>getComputedStyle(e).whiteSpace),'pre-wrap');
+ assert(await page.locator('.detail-diff').evaluate(e=>e.scrollWidth<=e.clientWidth+1));assert.deepEqual(await codeStyles(),beforeCode);
+ await page.locator('#wrap-files').uncheck();await page.locator('#expand-files').uncheck();await page.locator('#expand-commands').uncheck();
  if(width<860)await page.locator('#inspector-close').click();else await page.locator('#inspector-button').click();
  await page.waitForTimeout(200);
  for(const type of ['imageView','imageGeneration']){
@@ -118,12 +144,14 @@ try {
  await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();await page.locator('#close-image').click();await card.locator('.activity-summary').click();
  }
  if(width>=1100){
- const before=await page.locator('.chat-panel').boundingBox();await open();const left=await page.locator('#destination-switcher').boundingBox();
+ const before=await page.locator('.chat-panel').boundingBox();const widths=await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width));await open();const left=await page.locator('#destination-switcher').boundingBox();
  assert(Math.abs(left.width-310)<2);assert.equal(await page.locator('#destination-backdrop').isVisible(),false);
- assert((await page.locator('.chat-panel').boundingBox()).x>=left.x+left.width-1);
- await page.locator('#inspector-button').click();await page.waitForTimeout(210);assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');
+ assert.deepEqual(await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width)),widths);assert.equal((await page.locator('.chat-panel').boundingBox()).x,before.x);
+ const activeColor=await page.locator('#destination-button').evaluate(e=>getComputedStyle(e).backgroundColor);
+ await page.locator('#inspector-button').click();await page.waitForTimeout(210);assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');assert.equal(await page.locator('#inspector-button').evaluate(e=>getComputedStyle(e).backgroundColor),activeColor);
+ const togetherWidths=await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/rails-${width}.png`});
- await page.locator('#destination-close').click();await closed();assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');
+ await dismissTasks();await closed();assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');assert.deepEqual(await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width)),togetherWidths);assert.notEqual(await page.locator('#destination-button').evaluate(e=>getComputedStyle(e).backgroundColor),activeColor);
  await page.locator('#inspector-button').click();await page.waitForTimeout(210);assert.equal((await page.locator('.chat-panel').boundingBox()).x,before.x);
  }
  runtime.handleNotification({method:'thread/tokenUsage/updated',params:{threadId:'current',tokenUsage:{last:{totalTokens:41000},modelContextWindow:100000}}});
@@ -142,7 +170,7 @@ try {
  await input.fill('Draft A');await page.locator('#image-picker').setInputFiles({name:'a.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
  await select('Owned task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Draft B');await select('Current task');assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
- mode='reject';await open();await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();const attempts=calls.filter(c=>c==='/api/navigation/select').length;await row('Owned task').getByRole('button',{name:'Retry',exact:true}).click();await row('Owned task').getByRole('button',{name:'Retry',exact:true}).waitFor();assert.equal(calls.filter(c=>c==='/api/navigation/select').length,attempts+1);await page.locator('#destination-close').click();await closed();assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
+ mode='reject';await open();await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();const attempts=calls.filter(c=>c==='/api/navigation/select').length;await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(await page.getByRole('button',{name:'Retry',exact:true}).count(),0);assert.equal(calls.filter(c=>c==='/api/navigation/select').length,attempts+1);await dismissTasks();await closed();assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
  mode='success';await page.locator('#send-message').click();await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
  await select('Owned task');assert.equal(await input.inputValue(),'Draft B');await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Stable action draft');await open();
@@ -170,11 +198,11 @@ try {
  await row('Current task').getByText('Renaming…',{exact:true}).waitFor();assert.equal(await page.getByText('Renaming…',{exact:true}).count(),1);
  release();gate=null;await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));
  assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);assert.equal(await input.inputValue(),'Stable action draft');
- task.name='Current task';await page.locator('#destination-close').click();await closed();await open();
+ task.name='Current task';await dismissTasks();await closed();await open();
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.getByRole('button',{name:'Creating…',exact:true}).waitFor();assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('.destination-group').first().getByText('Fixture action failed',{exact:true}).waitFor();assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await page.locator('#destination-close').click();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
@@ -182,9 +210,11 @@ try {
  runtime.state.liveMessages=Array.from({length:50},(_,i)=>({id:`viewport-${i}`,role:'assistant',text:`Message ${i}\n\nEnough content to scroll the document.`}));runtime.broadcast('snapshot',snapshot());
  await page.getByText('Message 49',{exact:false}).waitFor();
  await page.evaluate(()=>window.scrollTo(0,document.scrollingElement.scrollHeight));await page.waitForTimeout(150);
- await page.evaluate(()=>{document.activeElement?.blur();const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-120);});await page.waitForTimeout(150);
- await page.evaluate(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,value:visualViewport.height-200});visualViewport.dispatchEvent(new Event('resize'));});await page.waitForTimeout(300);
- assert((await page.evaluate(()=>{const d=document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;}))<2);
+ for(const decrease of [30,25,20,15]){
+ await page.evaluate(()=>{document.activeElement?.blur();const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-90);});await page.waitForTimeout(20);
+ const gap=await page.evaluate(async decrease=>{Object.defineProperty(visualViewport,'height',{configurable:true,value:visualViewport.height-decrease});visualViewport.dispatchEvent(new Event('resize'));await new Promise(requestAnimationFrame);const d=document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;},decrease);
+ assert(gap<2);
+ }
  await page.evaluate(()=>window.scrollTo(0,document.scrollingElement.scrollHeight/2));await page.waitForTimeout(150);
  const readingTop=await page.evaluate(()=>document.scrollingElement.scrollTop);
  await page.evaluate(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,value:visualViewport.height-100});visualViewport.dispatchEvent(new Event('resize'));});await page.waitForTimeout(300);
@@ -198,5 +228,5 @@ try {
 
  }
  }
- assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, ownership Retry, mobile viewport follow and reading position');
+ assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, Tasks overlay widths and focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

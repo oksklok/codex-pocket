@@ -62,6 +62,7 @@ const elements = {
   displayCompaction: document.querySelector("#display-compaction"),
   expandCommands: document.querySelector("#expand-commands"),
   expandFiles: document.querySelector("#expand-files"),
+  wrapFiles: document.querySelector("#wrap-files"),
   composer: document.querySelector("#composer"),
   composerZone: document.querySelector(".composer-zone"),
   composerInput: document.querySelector(".composer-input"),
@@ -293,7 +294,7 @@ applyTheme();
 function loadDisplayPreferences() {
   const defaults = {
     command: true, tool: true, search: true, review: true, files: true, reasoning: true, collaboration: true, images: true, compaction: true,
-    expandCommands: false, expandFiles: false,
+    expandCommands: false, expandFiles: false, wrapFiles: false,
   };
   try {
     const saved = JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) || "{}") || {};
@@ -628,15 +629,6 @@ function renderDestinationSwitcher() {
       const entry = document.createElement("div");
       entry.className = "destination-entry";
       entry.append(row);
-      if (taskError === "Open in another Codex runtime. Close it there and try again.") {
-        const retry = document.createElement("button");
-        retry.type = "button";
-        retry.className = "text-button task-selection-retry";
-        retry.textContent = "Retry";
-        retry.disabled = row.disabled;
-        retry.addEventListener("click", () => selectDestination(machine.id, task.id));
-        entry.append(retry);
-      }
       const actions = document.createElement("details");
       actions.className = "task-actions";
       const summary = document.createElement("summary");
@@ -803,7 +795,6 @@ function openDestinationSwitcher() {
   document.body.classList.add("destination-open");
   refreshNavigationCatalog(elements.showArchived.checked, true);
   renderDestinationSwitcher();
-  if (!matchMedia("(max-width: 860px)").matches) elements.destinationSearch.focus();
 }
 
 function currentCatalogModel(modelName = state?.model) {
@@ -917,6 +908,7 @@ function renderDisplayControls() {
   elements.displayCompaction.checked = displayPreferences.compaction;
   elements.expandCommands.checked = displayPreferences.expandCommands;
   elements.expandFiles.checked = displayPreferences.expandFiles;
+  elements.wrapFiles.checked = displayPreferences.wrapFiles;
 }
 
 function renderQueue() {
@@ -1454,7 +1446,7 @@ function detailField(label, value, className = "detail-code") {
 
 function diffNode(value) {
   const wrapper = document.createElement("div");
-  wrapper.className = "detail-diff";
+  wrapper.className = `detail-diff${displayPreferences.wrapFiles ? " wrap" : ""}`;
   for (const text of String(value || "").split("\n")) {
     const line = document.createElement("span");
     line.className = `diff-line ${text.startsWith("+") && !text.startsWith("+++") ? "add" : text.startsWith("-") && !text.startsWith("---") ? "remove" : "context"}`;
@@ -1670,7 +1662,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   // Include UI state that changes an entry without changing its protocol payload.
   const signature = entry => JSON.stringify([
     entry.value,
-    entry.type === "activity" ? [activityDetails.get(entry.value.id), activityExpandsByDefault(entry.value)] : null,
+    entry.type === "activity" ? [activityDetails.get(entry.value.id), activityExpandsByDefault(entry.value), entry.value.kind === "files" ? displayPreferences.wrapFiles : null] : null,
     entry.type === "message" && entry.value.questions?.length ? [
       state?.message?.allowed,
       entry.value.questions.map((_, index) => [
@@ -2541,8 +2533,8 @@ elements.messageText.addEventListener("paste", (event) => {
 elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
 let previousViewportHeight = window.visualViewport?.height ?? innerHeight;
-let viewportReconcileTimer;
-function cancelViewportReconciliation() { clearTimeout(viewportReconcileTimer); }
+let viewportReconcileFrame;
+function cancelViewportReconciliation() { cancelAnimationFrame(viewportReconcileFrame); }
 function viewportReconciliationBlocked() {
   const focused = document.activeElement;
   const editing = focused?.matches("textarea, input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]), [contenteditable]:not([contenteditable=false])");
@@ -2557,12 +2549,12 @@ window.visualViewport?.addEventListener("resize", () => {
   const scroller = document.scrollingElement;
   const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
   if (distance > decrease + 80) return;
-  viewportReconcileTimer = setTimeout(() => {
+  viewportReconcileFrame = requestAnimationFrame(() => {
     if (viewportReconciliationBlocked()) return;
     scroller.scrollTop = scroller.scrollHeight;
     shouldFollowConversation = true;
     updateJumpLatest();
-  }, 120);
+  });
 });
 for (const type of ["touchstart", "wheel", "keydown"]) document.addEventListener(type, cancelViewportReconciliation, { passive: true });
 window.visualViewport?.addEventListener("resize", fitExpandedComposer);
@@ -2643,10 +2635,20 @@ for (const [element, key] of [
   [elements.displayCompaction, "compaction"],
   [elements.expandCommands, "expandCommands"],
   [elements.expandFiles, "expandFiles"],
+  [elements.wrapFiles, "wrapFiles"],
 ]) {
   element.addEventListener("change", () => {
     displayPreferences[key] = element.checked;
     saveDisplayPreferences();
+    renderConversation();
+  });
+}
+
+for (const [id, visible] of [["display-show-all", true], ["display-hide-all", false]]) {
+  document.getElementById(id).addEventListener("click", () => {
+    for (const key of ["reasoning", "command", "tool", "search", "files", "collaboration", "images", "review", "compaction"]) displayPreferences[key] = visible;
+    saveDisplayPreferences();
+    renderDisplayControls();
     renderConversation();
   });
 }

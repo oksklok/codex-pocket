@@ -502,8 +502,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .jump-latest { right: 13px; }
   .activity-rich-detail { margin-inline: 7px; padding: 8px; }
   .detail-code { overflow-wrap: anywhere; }
-  .detail-diff { overflow-x: hidden; }
-  .diff-line { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 
 @media (max-width: 620px) {
@@ -592,7 +590,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 
 .task-selection-error { display: block; white-space: normal; overflow-wrap: anywhere; color: var(--danger); font-size: .65rem; font-weight: 400; line-height: 1.35; margin-top: 3px; }
 
-.task-selection-retry { display: block; width: fit-content; min-height: 36px; margin: 3px 44px 3px auto; padding: 5px 9px; }
 .detail-image { cursor: zoom-in; }
 
 .machine-settings-header { display: none; }
@@ -604,13 +601,13 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .machine-row-actions { grid-column: auto; }
 }
 @media (min-width: 1100px) {
-  .workspace { grid-template-columns: 0 minmax(0,1fr) auto; transition: grid-template-columns 160ms ease; }
-  body.destination-open .workspace { grid-template-columns: 310px minmax(0,1fr) auto; }
-  .workspace > .chat-panel { grid-column: 2; grid-row: 1; }
-  .workspace > .inspector { grid-column: 3; grid-row: 1; }
-  .destination-switcher { position: relative; inset: auto; grid-column: 1; grid-row: 1; width: 310px; height: 100%; min-height: 0; padding: 0; box-shadow: none; border-width: 0 1px 0 0; }
-  .destination-backdrop { display: none; }
+  .workspace { position: relative; }
+  .destination-switcher { position: absolute; inset: 0 auto 0 0; width: 310px; height: 100%; min-height: 0; padding: 0; box-shadow: none; border-width: 0 1px 0 0; }
+  .destination-backdrop, .destination-switcher .destination-close { display: none; }
+  .destination-button[aria-expanded="true"] { border-color: rgba(69,200,138,.42); background: rgba(69,200,138,.13); color: var(--accent); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .workspace { transition: none; }
-}
+.detail-diff.wrap { overflow-x: hidden; }
+.detail-diff.wrap .diff-line { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.display-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.display-actions { display: flex; gap: 5px; }
+.display-actions button { min-height: 28px; padding: 3px 6px; font-size: .65rem; }
