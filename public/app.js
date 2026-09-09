@@ -2862,6 +2862,11 @@ function setupImageViewer(dialog, image, close) {
     dialog.close();
   });
   let opener;
+  let settleTimer;
+  function stopSettling() {
+    clearTimeout(settleTimer);
+    dialog.classList.remove('swipe-settling', 'swipe-closing');
+  }
   let scale = 1, x = 0, y = 0, dragY = 0;
   let lastTap = null;
   let gesture = null;
@@ -2876,6 +2881,7 @@ function setupImageViewer(dialog, image, close) {
     y = Math.max(-limitY, Math.min(limitY, y));
     image.style.transform = `translate(-50%, -50%) translate(${x}px, ${y + dragY}px) scale(${scale})`;
     image.style.cursor = scale > 1 ? 'grab' : 'default';
+    dialog.style.setProperty('--viewer-shade', String(1 - Math.min(Math.abs(dragY) / 300, .85)));
   }
   function begin(multi = false) {
     if (multi) lastTap = null;
@@ -2884,6 +2890,8 @@ function setupImageViewer(dialog, image, close) {
   }
   dialog.addEventListener('pointerdown', event => {
     if (event.target.closest('button') || event.button !== 0) return;
+    if (dialog.classList.contains('swipe-closing')) return;
+    stopSettling();
     event.preventDefault();
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     dialog.setPointerCapture(event.pointerId);
@@ -2920,6 +2928,21 @@ function setupImageViewer(dialog, image, close) {
     pointers.delete(event.pointerId);
     if (dialog.hasPointerCapture(event.pointerId)) dialog.releasePointerCapture(event.pointerId);
     begin(true); // A pinch becoming one finger must never become a dismiss gesture.
+    if (dragY && last) {
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        if (dismiss) { dialog.close(); return; }
+      } else {
+        dialog.classList.add('swipe-settling');
+        if (dismiss) {
+          dragY += Math.sign(dragY) * 100;
+          paint();
+          dialog.classList.add('swipe-closing');
+          settleTimer = setTimeout(() => dialog.close(), 140);
+          return;
+        }
+        settleTimer = setTimeout(stopSettling, 140);
+      }
+    }
     dragY = 0;
     if (tap) {
       const now = performance.now();
@@ -2952,12 +2975,16 @@ function setupImageViewer(dialog, image, close) {
   window.addEventListener('resize', () => { if (dialog.open) paint(); });
   close.addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {
+    // A queued close event can arrive after the same image has reopened.
+    if (dialog.open) return;
+    stopSettling();
     pointers.clear();
     gesture = null;
     image.removeAttribute('src');
     if (opener?.isConnected) opener.focus({ preventScroll: true });
   });
   return { open(source) {
+    stopSettling();
     opener = source;
     scale = 1; x = 0; y = 0; dragY = 0; lastTap = null;
     pointers.clear(); gesture = null;

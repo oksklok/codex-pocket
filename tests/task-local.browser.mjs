@@ -96,11 +96,15 @@ try {
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-enter-sends'));await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  const chromeColors=()=>page.locator('.topbar, .composer-zone').evaluateAll(es=>es.map(e=>getComputedStyle(e).backgroundColor));
  assert.equal(await page.locator('#translucent-ui').isChecked(),true);assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
- await page.locator('#settings-button').click();await page.locator('#translucent-ui').uncheck();
+ await page.locator('#settings-button').click();assert.equal(await page.locator('#translucent-ui').isVisible(),width<=860);
+ if(width<=860) await page.locator('#translucent-ui').uncheck();
+ else await page.locator('#translucent-ui').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
  assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  assert.equal(await page.locator('#translucent-ui').isChecked(),false);assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
- await page.locator('#settings-button').click();await page.locator('#translucent-ui').check();await page.locator('#settings-close').click();assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
+ await page.locator('#settings-button').click();
+ if(width<=860) await page.locator('#translucent-ui').check();
+ else await page.locator('#translucent-ui').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change'));});await page.locator('#settings-close').click();assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
  await page.evaluate(()=>localStorage.setItem('codex-pocket-info-display',JSON.stringify({commands:false})));
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  for(const key of ['command','tool','search','review'])assert.equal(await page.locator(`#display-${key}`).isChecked(),false);
@@ -238,10 +242,37 @@ try {
  const [x,y]=await center();const top=(await page.locator('#viewer-image').boundingBox()).y;
  await touch('touchStart',[[x,y]]);await touch('touchMove',[[x,y+dy]]);
  assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-top-dy)<2);
+ assert(await page.locator('#image-viewer').evaluate(e=>[getComputedStyle(e),getComputedStyle(e,'::backdrop')].every(s=>parseFloat(s.backgroundColor.split(',').at(-1))<.93)));
  await touch('touchEnd',[]);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
+ assert.equal(await page.locator('#viewer-image').evaluate(e=>getComputedStyle(e).transitionDuration),'0.14s, 0.14s');
+ const releasedDistance=Math.abs((await page.locator('#viewer-image').boundingBox()).y-top);
+ if(Math.abs(dy)>100) assert(releasedDistance>=Math.abs(dy)-2);
+ else assert(releasedDistance>0);
+ await page.waitForTimeout(180);
  if(Math.abs(dy)>100){assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);await reopen();}
  else {assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-top)<2);}
  }
+ // Reopen synchronously when close removes the open attribute, before its queued event.
+ await page.locator('#image-viewer').evaluate(e=>{
+   const source=document.querySelector('.detail-image');
+   const observer=new MutationObserver(()=>{if(!e.open){observer.disconnect();source.click();}});
+   observer.observe(e,{attributes:true,attributeFilter:['open']});
+ });
+ let [rx,ry]=await center();
+ await touch('touchStart',[[rx,ry]]);await touch('touchMove',[[rx,ry+130]]);await touch('touchEnd',[]);
+ await page.waitForTimeout(220);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
+ assert(await page.locator('#viewer-image').evaluate(e=>e.hasAttribute('src')&&e.naturalWidth>0));
+ assert.equal(await page.locator('#close-image').evaluate(e=>document.activeElement===e),true);
+ // Cancelled gestures reset, and reduced motion never waits for a transition.
+ [rx,ry]=await center();const resetTop=(await page.locator('#viewer-image').boundingBox()).y;
+ await touch('touchStart',[[rx,ry]]);await touch('touchMove',[[rx,ry+55]]);await touch('touchCancel',[]);
+ await page.waitForTimeout(180);assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-resetTop)<2);
+ await page.emulateMedia({reducedMotion:'reduce'});
+ await touch('touchStart',[[rx,ry]]);await touch('touchMove',[[rx,ry-130]]);await touch('touchEnd',[]);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
+ await page.emulateMedia({reducedMotion:'no-preference'});await reopen();
  const doubleTap=async()=>{for(let i=0;i<2;i++){const [x,y]=await center();await touch('touchStart',[[x,y]]);await touch('touchEnd',[]);}};
  await doubleTap();assert.equal(await scale(),2.5);
  let [x,y]=await center();await touch('touchStart',[[x,y]]);await touch('touchMove',[[x,y-150]]);await touch('touchEnd',[]);
