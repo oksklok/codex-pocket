@@ -246,7 +246,27 @@ try {
  await input.fill('Draft A');await page.locator('#image-picker').setInputFiles({name:'a.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
  await select('Owned task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Draft B');await select('Current task');assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
- mode='reject';await open();await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();const attempts=calls.filter(c=>c==='/api/navigation/select').length;await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(await page.getByRole('button',{name:'Retry',exact:true}).count(),0);assert.equal(calls.filter(c=>c==='/api/navigation/select').length,attempts+1);await dismissTasks();await closed();assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
+ mode='reject';await open();await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();
+ assert.equal(await row('Owned task').locator('.task-selection-error').textContent(),'Open elsewhere. Close it and retry.');
+ const aligned=async target=>assert.deepEqual(await target.locator('.destination-check, .destination-task-label > span, .destination-task-status').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().top)),Array(3).fill(await target.locator('.destination-check').evaluate(e=>e.getBoundingClientRect().top)));
+ await aligned(row('Current task'));await aligned(row('Owned task'));
+ if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
+ const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading strong').getBoundingClientRect().top-document.querySelector('.destination-archived input').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
+ assert(spacing.gap>=10&&spacing.gap<=16,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
+ await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change'));});
+ await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/task-rows-${width}.png`});
+ const attempts=calls.filter(c=>c==='/api/navigation/select').length;
+ gate=new Promise(r=>release=r);await row('Owned task').locator('.destination-task').click();
+ await row('Owned task').getByText('Opening…',{exact:true}).waitFor();await aligned(row('Owned task'));
+ // Selection clears the old error; exercise the requested combined layout without changing that behavior.
+ await row('Owned task').locator('.destination-task-label').evaluate(e=>{e.querySelector('small')?.remove();e.append(Object.assign(document.createElement('small'),{className:'task-selection-error',textContent:'Open elsewhere. Close it and retry.'}));});
+ await aligned(row('Owned task'));
+ if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/task-opening-${width}.png`});
+ release();gate=null;
+ await page.locator('#show-projects').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
+await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(await page.getByRole('button',{name:'Retry',exact:true}).count(),0);assert.equal(calls.filter(c=>c==='/api/navigation/select').length,attempts+1);await dismissTasks();await closed();assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
  mode='success';await page.locator('#send-message').click();await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
  await select('Owned task');assert.equal(await input.inputValue(),'Draft B');await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Stable action draft');await open();

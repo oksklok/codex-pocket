@@ -2014,7 +2014,7 @@ async function selectDestination(machineId, threadId) {
     // Retain live updates received for the original task while the request was pending.
     for (const entry of token.events) entry.deliver();
     destinationTaskError = { machineId, threadId, message: /another Codex runtime|active writer/i.test(message)
-      ? "Open in another Codex runtime. Close it there and try again." : message };
+      ? "Open elsewhere. Close it and retry." : message };
     renderDestinationSwitcher();
   }
 }
