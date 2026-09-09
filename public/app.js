@@ -175,6 +175,7 @@ let loadedThreads = [];
 let machines = [];
 let nextCursor = null;
 let source = null;
+const NEAR_BOTTOM_PX = 200;
 let shouldFollowConversation = true;
 let historyEpoch = 0;
 let historyRequest = null;
@@ -1765,7 +1766,7 @@ function transcriptScroller() {
 
 function updateJumpLatest() {
   const distance = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight;
-  elements.jumpLatest.hidden = distance < 200;
+  elements.jumpLatest.hidden = distance < NEAR_BOTTOM_PX;
 }
 
 function jumpToLatest() {
@@ -2622,7 +2623,7 @@ elements.modelSelect.addEventListener("change", () => {
 elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 function handleTranscriptScroll() {
-  shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < 80;
+  shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < NEAR_BOTTOM_PX;
   updateJumpLatest();
   if (!shouldFollowConversation && transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 }

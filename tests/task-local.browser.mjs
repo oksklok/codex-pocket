@@ -326,6 +326,18 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  if(width===390){
  runtime.state.liveMessages=Array.from({length:50},(_,i)=>({id:`viewport-${i}`,role:'assistant',text:`Message ${i}\n\nEnough content to scroll the document.`}));runtime.broadcast('snapshot',snapshot());
  await page.getByText('Message 49',{exact:false}).waitFor();
+ const bottomGap=()=>page.evaluate(()=>{const d=document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;});
+ const scrollGap=async gap=>{await page.evaluate(gap=>{document.activeElement?.blur();const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-gap);},gap);await page.waitForTimeout(150);};
+ const stream=async text=>{runtime.broadcast('assistant_delta',{id:'viewport-49',delta:`\n\n${text} `.repeat(20)});await page.getByText(text,{exact:false}).last().waitFor();await page.waitForTimeout(150);};
+ await scrollGap(150);assert.equal(await page.locator('#jump-latest').isVisible(),false);
+ await stream('Near-bottom streamed text');assert(await bottomGap()<2);
+ await scrollGap(250);assert.equal(await page.locator('#jump-latest').isVisible(),true);
+ const heldTop=await page.evaluate(()=>document.scrollingElement.scrollTop);
+ await stream('Reading older content');assert(Math.abs(await page.evaluate(()=>document.scrollingElement.scrollTop)-heldTop)<2);
+ assert.equal(await page.locator('#jump-latest').isVisible(),true);
+ await page.locator('#jump-latest').click();await page.waitForFunction(()=>{const d=document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight<2;});
+ await stream('Following again');assert(await bottomGap()<2);assert.equal(await page.locator('#jump-latest').isVisible(),false);
+
  await page.evaluate(()=>window.scrollTo(0,document.scrollingElement.scrollHeight));await page.waitForTimeout(150);
  for(const decrease of [30,25,20,15]){
  await page.evaluate(()=>{document.activeElement?.blur();const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-90);});await page.waitForTimeout(20);
