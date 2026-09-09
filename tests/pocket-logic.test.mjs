@@ -1278,7 +1278,7 @@ test('Cancel cannot clear a queued message while automatic turn/start is in flig
   } };
   const delivery = runtime.startQueuedMessage('thread-1');
   assert.equal(runtime.startingQueuedMessage, true);
-  assert.deepEqual(runtime.cancelQueuedMessage(), { cancelled: false, queuedMessage: queued });
+  assert.deepEqual(runtime.cancelQueuedMessage(), { cancelled: false });
   assert.equal(runtime.state.queuedMessage, queued);
   resolveStart({ turn: { id: 'delivered', status: 'inProgress' } });
   assert.equal(await delivery, true);
@@ -1302,4 +1302,36 @@ test('model and permission profile pagination reject repeated cursors without pa
     assert.deepEqual(cursors, [null, 'repeat']);
     assert.equal(field === 'models' ? runtime.state.models : runtime.permissionProfiles, previous);
   }
+});
+
+test('New Task catalog refresh failure after attachment cannot abort ownership handoff', async () => {
+  const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
+  const a = gateway.runtimes.get('local'), b = gateway.runtimes.get('ssh:b');
+  const calls = [];
+  for (const [label, runtime] of [['A', a], ['B', b]]) {
+    Object.assign(runtime.state, { connected: true, thread: label === 'A' ? { id: 'a' } : null, threadStatus: 'idle' });
+    runtime.rpc = { request: async method => {
+      calls.push(`${label}:${method}`);
+      if (method === 'thread/start') return { thread: { id: 'new-b', cwd: '/project', status: 'idle', canAcceptDirectInput: true } };
+      return { data: [] };
+    } };
+  }
+  b.refreshLoadedThreads = async () => {
+    assert.equal(b.state.thread.id, 'new-b');
+    assert.equal(a.state.thread.id, 'a');
+    calls.push('B:refresh-failed');
+    throw new Error('Task catalog request timed out');
+  };
+  const result = await gateway.taskAction({ action: 'create', machineId: 'ssh:b', expectedMachineId: 'local', expectedThreadId: 'a', name: 'New name', cwd: '/project' });
+  assert.equal(result.machineId, 'ssh:b');
+  assert.equal(result.thread.id, 'new-b');
+  assert.equal(result.thread.name, 'New name');
+  assert.equal(gateway.selectedMachineId, 'ssh:b');
+  assert.equal(a.state.thread, null);
+  assert.equal(a.state.connected, true);
+  assert.equal(a.autoAttach, false);
+  assert.equal(b.autoAttach, true);
+  assert.equal(calls.filter(call => call === 'B:refresh-failed').length, 1);
+  assert(calls.indexOf('B:refresh-failed') < calls.indexOf('A:thread/unsubscribe'));
+  assert.deepEqual([...gateway.runtimes.values()].filter(r => r.state.thread).map(r => r.definition.id), ['ssh:b']);
 });

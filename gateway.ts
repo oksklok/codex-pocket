@@ -1965,7 +1965,7 @@ export class MachineRuntime {
   }
 
   cancelQueuedMessage(): JsonObject {
-    if (this.startingQueuedMessage) return { cancelled: false, queuedMessage: this.state.queuedMessage };
+    if (this.startingQueuedMessage) return { cancelled: false };
     if (!this.state.queuedMessage) return { cancelled: false, queuedMessage: null };
     this.state.queuedMessage = null;
     this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
@@ -2325,7 +2325,8 @@ export class MachineRuntime {
       this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
       await this.attachLoadedThread(id, true, started);
       this.options.thread = id;
-      await this.refreshLoadedThreads();
+      // The new task is already attached; catalog failure must not abort the handoff.
+      try { await this.refreshLoadedThreads(); } catch {}
       return { ...this.snapshot(), ...(nameError ? { warning: "Task created, but its name could not be saved. You can rename it later." } : {}) };
     }
     if (!["rename", "archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
