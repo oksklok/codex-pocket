@@ -14,6 +14,7 @@ let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:tr
 Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
+let failSettings=false;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'MacBook Air',ssh:'macbook-air'},{name:'PC 1',ssh:'main-pc'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
 const server=createServer(async(req,res)=>{
@@ -25,6 +26,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/state')return json(snapshot());
  if(u.pathname==='/api/settings'){
  if(req.method==='POST'){
+ if(failSettings)return json({error:'Settings save failed'},500);
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  const restartRequired=body.port!==settings.port;
  settings={...settings,...body};return json({saved:true,settings,restartRequired});
@@ -77,6 +79,8 @@ const errors=[];page.on('pageerror',e=>errors.push(e.message));
 const open=async()=>{if(await page.locator('#destination-button').getAttribute('aria-expanded')!=='true')await page.locator('#destination-button').click();await page.waitForTimeout(210);assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'destination-search');assert.equal(await page.locator('#destination-close').isVisible(),page.viewportSize().width<1100);};
 const dismissTasks=()=>page.locator(page.viewportSize().width>=1100?'#destination-button':'#destination-close').click();
 const closed=()=>page.waitForFunction(()=>document.querySelector('#destination-switcher').hidden);
+const settingsOpen=async()=>{await page.locator('#settings-button').evaluate(e=>e.click());await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');};
+const settingsSave=async()=>{if(await page.locator('#settings-save').isEnabled())await page.locator('#settings-save').click();else await page.locator('#settings-close').click();await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);};
 try {
  const defaultDialog=d=>d.accept(d.type()==='prompt'?(d.message().includes('task name')?'New test task':'/project'):undefined);
  page.on('dialog',defaultDialog);
@@ -97,48 +101,71 @@ try {
  assert.equal(await page.locator('#enter-sends').isChecked(),width>860);
  await page.setViewportSize({width:width>860?390:1280,height:844});assert.equal(await page.locator('#enter-sends').isChecked(),width>860);await page.setViewportSize({width,height:844});
  for(const saved of [true,false]){
- await page.locator('#enter-sends').evaluate((e,value)=>{e.checked=value;e.dispatchEvent(new Event('change'));},saved);
+ await settingsOpen();
+ await page.locator('#enter-sends').evaluate((e,value)=>{e.checked=value;e.dispatchEvent(new Event('change',{bubbles:true}));},saved);
+ await settingsSave();
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  assert.equal(await page.locator('#enter-sends').isChecked(),saved);
  }
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-enter-sends'));await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  const chromeColors=()=>page.locator('.topbar, .composer-zone').evaluateAll(es=>es.map(e=>getComputedStyle(e).backgroundColor));
- assert.equal(await page.locator('#translucent-ui').isChecked(),true);assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
- await page.locator('#settings-button').click();assert.equal(await page.locator('#translucent-ui').isVisible(),width<=860);
- if(width<=860) await page.locator('#translucent-ui').uncheck();
- else await page.locator('#translucent-ui').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
- assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
- await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
- assert.equal(await page.locator('#translucent-ui').isChecked(),false);assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
- await page.locator('#settings-button').click();
- if(width<=860) await page.locator('#translucent-ui').check();
- else await page.locator('#translucent-ui').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change'));});await page.locator('#settings-close').click();assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
- await page.locator('#settings-button').click();
- await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');
+ await settingsOpen();
  const save=page.locator('#settings-save');
  assert.equal(await save.isDisabled(),true);
- await page.locator('#settings-local-name').fill('Renamed host');assert.equal(await save.isEnabled(),true);
- await page.locator('#settings-local-name').fill(settings.localName);assert.equal(await save.isDisabled(),true);
- const machineName=page.locator('[data-machine-name]').first();
- await machineName.fill('Changed machine');assert.equal(await save.isEnabled(),true);
- await machineName.fill('MacBook Air');assert.equal(await save.isDisabled(),true);
- await page.locator('#machine-add').click();assert.equal(await save.isEnabled(),true);
- await page.locator('.machine-settings-row').last().locator('.machine-remove').click();assert.equal(await save.isDisabled(),true);
- for(const id of ['enter-sends','show-context','show-quota','show-projects',...(width<=860?['translucent-ui']:[])]){
- await page.locator('#'+id).click();assert.equal(await save.isDisabled(),true);
- await page.locator('#'+id).click();
+ assert.equal(await page.locator('#translucent-ui').isVisible(),width<=860);
+ const originalChrome=await chromeColors();
+ const originalStorage=await page.evaluate(()=>JSON.stringify({...localStorage}));
+ const originalTheme=await page.locator('html').getAttribute('data-theme');
+ for(const id of ['enter-sends','show-context','show-quota','show-projects','translucent-ui']){
+ await page.locator('#'+id).evaluate(e=>{e.checked=!e.checked;e.dispatchEvent(new Event('change',{bubbles:true}));});
+ assert.equal(await save.isEnabled(),true);
+ assert.deepEqual(await chromeColors(),originalChrome);
+ assert(await page.locator('#context-chip, #quota-chip').evaluateAll(es=>es.every(e=>!e.hidden)));
+ assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),originalStorage);
+ await page.locator('#'+id).evaluate(e=>{e.checked=!e.checked;e.dispatchEvent(new Event('change',{bubbles:true}));});
+ assert.equal(await save.isDisabled(),true);
  }
  const theme=await page.locator('#settings-theme').inputValue();
- await page.locator('#settings-theme').selectOption('light');assert.equal(await save.isDisabled(),true);
- await page.locator('#settings-theme').selectOption(theme);
- await page.locator('#settings-local-name').fill('Saved host '+width);await save.click();
- await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
- await page.locator('#settings-button').click();await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');assert.equal(await save.isDisabled(),true);
+ await page.locator('#settings-theme').selectOption(theme==='dark'?'light':'dark');
+ assert.equal(await page.locator('html').getAttribute('data-theme'),originalTheme);assert.equal(await save.isEnabled(),true);
+ await page.locator('#settings-theme').selectOption(theme);assert.equal(await save.isDisabled(),true);
+ await page.locator('#settings-local-name').fill('Changed');assert.equal(await save.isEnabled(),true);
+ await page.locator('#settings-local-name').fill(settings.localName);assert.equal(await save.isDisabled(),true);
+ await page.locator('#machine-add').click();assert.equal(await save.isEnabled(),true);
+ await page.locator('.machine-settings-row').last().locator('.machine-remove').click();assert.equal(await save.isDisabled(),true);
+ for(const exit of ['settings-cancel','settings-close','Escape']){
+ await page.locator('#settings-local-name').fill('Discard me');
+ await page.locator('#enter-sends').evaluate(e=>{e.checked=!e.checked;e.dispatchEvent(new Event('change',{bubbles:true}));});
+ await page.locator('#display-command').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
+ assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),originalStorage);
+ if(exit==='Escape')await page.keyboard.press('Escape');else await page.locator('#'+exit).click();
+ await settingsOpen();
+ assert.equal(await save.isDisabled(),true);
+ assert.equal(await page.locator('#settings-local-name').inputValue(),settings.localName);
+ assert.equal(await page.locator('#display-command').isChecked(),true);
+ assert.equal(await page.locator('#enter-sends').isChecked(),width>860);
+ }
+ // Commit local and server changes together.
+ await page.locator('#settings-local-name').fill('Saved host '+width);
+ await page.locator('#translucent-ui').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change',{bubbles:true}));});
+ await page.locator('#enter-sends').evaluate(e=>{e.checked=!e.checked;e.dispatchEvent(new Event('change',{bubbles:true}));});
+ await page.locator('#display-command').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
+ failSettings=true;await save.click();await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='Settings save failed');
+ assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),originalStorage);
+ assert.deepEqual(await chromeColors(),originalChrome);
+ failSettings=false;
+ await settingsSave();
+ assert.equal(settings.localName,'Saved host '+width);
+ assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
+ assert.equal(await page.evaluate(()=>localStorage.getItem('codex-pocket-enter-sends')),String(width<=860));
+ assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('codex-pocket-info-display')).command),false);
+ await settingsOpen();assert.equal(await save.isDisabled(),true);
+ await page.locator('#translucent-ui').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});
+ await settingsSave();assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
+ await settingsOpen();
  await page.locator('#settings-port').fill(String(settings.port+1));await save.click();
  await page.locator('#settings-restart').waitFor();
- assert.equal(await page.locator('#settings-screen').isVisible(),true);
- assert.equal(await save.isDisabled(),true);
- assert.equal(await page.locator('#settings-status').textContent(),'');
+ assert.equal(await page.locator('#settings-screen').isVisible(),true);assert.equal(await save.isDisabled(),true);
  assert(await page.locator('#restart-pocket').evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&document.activeElement===e;}));
  await page.locator('#settings-close').click();
  await page.evaluate(()=>localStorage.setItem('codex-pocket-info-display',JSON.stringify({commands:false})));
@@ -172,7 +199,7 @@ try {
  await page.locator('#settings-button').click();
  await page.locator('.machine-settings-row').first().waitFor();
  for(const [theme, system, color] of [['light','dark','#f6f8fa'],['dark','light','#0d1117'],['system','light','#f6f8fa'],['system','dark','#0d1117']]){
- await page.emulateMedia({colorScheme:system});await page.locator('#settings-theme').selectOption(theme);
+ await page.emulateMedia({colorScheme:system});await page.locator('#settings-theme').selectOption(theme);await settingsSave();await settingsOpen();
  await page.waitForFunction(color=>document.querySelector('meta[name="theme-color"]').content===color,color);
  }
  await page.emulateMedia({colorScheme:'light'});
@@ -269,71 +296,36 @@ try {
  await page.locator(width<861?'#inspector-close':'#inspector-button').click();await dismissTasks();await closed();
  await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
  if(width<861){
+ await page.locator('#viewer-image').evaluate(e=>{e.style.width='300px';e.style.height='600px';});
  const cdp=await page.context().newCDPSession(page);
  const touch=(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points.map(([x,y,id=1])=>({x,y,id}))});
  const center=()=>page.locator('#viewer-image').evaluate(e=>{const r=e.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2];});
  const scale=()=>page.locator('#viewer-image').evaluate(e=>new DOMMatrix(getComputedStyle(e).transform).a);
- const reopen=async()=>{await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();await page.waitForTimeout(30);};
- for(const dy of [55,-55,130,-130]){
- const [x,y]=await center();const top=(await page.locator('#viewer-image').boundingBox()).y;
+ for(const dy of [55,-55,180,-180]){
+ const [x,y]=await center();const before=await page.locator('#viewer-image').boundingBox();
  await touch('touchStart',[[x,y]]);await touch('touchMove',[[x,y+dy]]);
- assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-top-dy)<2);
- assert(await page.locator('#image-viewer').evaluate(e=>[getComputedStyle(e),getComputedStyle(e,'::backdrop')].every(s=>parseFloat(s.backgroundColor.split(',').at(-1))<.93)));
+ assert.deepEqual(await page.locator('#viewer-image').boundingBox(),before);
  await touch('touchEnd',[]);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
- assert.equal(await page.locator('#viewer-image').evaluate(e=>getComputedStyle(e).transitionDuration),'0.14s, 0.14s');
- const releasedDistance=Math.abs((await page.locator('#viewer-image').boundingBox()).y-top);
- if(Math.abs(dy)>100) {
- assert(releasedDistance>=Math.abs(dy)-2);
- assert(await page.locator('#viewer-image').evaluate((e,direction)=>{
-   for(const animation of e.getAnimations())animation.finish();
-   const rect=e.getBoundingClientRect();
-   return direction>0?rect.top>=innerHeight:rect.bottom<=0;
- },dy));
+ assert.deepEqual(await page.locator('#viewer-image').boundingBox(),before);
  }
- else assert(releasedDistance>0);
- await page.waitForTimeout(180);
- if(Math.abs(dy)>100){assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);await reopen();}
- else {assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-top)<2);}
- }
- // A tap over the underlying source during the closing animation reopens on completion.
- const [reopenX,reopenY]=await center();
- const sourcePoint=await img.evaluate(e=>{const r=e.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2];});
- await touch('touchStart',[[reopenX,reopenY]]);await touch('touchMove',[[reopenX,reopenY+130]]);await touch('touchEnd',[]);
- assert.equal(await page.locator('#image-viewer').evaluate(e=>e.classList.contains('swipe-closing')),true);
- await touch('touchStart',[sourcePoint]);await touch('touchEnd',[]);
- await page.waitForTimeout(180);
- assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
- assert(await page.locator('#viewer-image').evaluate(e=>e.hasAttribute('src')&&e.naturalWidth>0));
- // Reopen synchronously when close removes the open attribute, before its queued event.
- await page.locator('#image-viewer').evaluate(e=>{
-   const source=document.querySelector('.detail-image');
-   const observer=new MutationObserver(()=>{if(!e.open){observer.disconnect();source.click();}});
-   observer.observe(e,{attributes:true,attributeFilter:['open']});
- });
- let [rx,ry]=await center();
- await touch('touchStart',[[rx,ry]]);await touch('touchMove',[[rx,ry+130]]);await touch('touchEnd',[]);
- await page.waitForTimeout(220);
- assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
- assert(await page.locator('#viewer-image').evaluate(e=>e.hasAttribute('src')&&e.naturalWidth>0));
- assert.equal(await page.locator('#close-image').evaluate(e=>document.activeElement===e),true);
- // Cancelled gestures reset, and reduced motion never waits for a transition.
- [rx,ry]=await center();const resetTop=(await page.locator('#viewer-image').boundingBox()).y;
- await touch('touchStart',[[rx,ry]]);await touch('touchMove',[[rx,ry+55]]);await touch('touchCancel',[]);
- await page.waitForTimeout(180);assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-resetTop)<2);
- await page.emulateMedia({reducedMotion:'reduce'});
- await touch('touchStart',[[rx,ry]]);await touch('touchMove',[[rx,ry-130]]);await touch('touchEnd',[]);
- assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
- await page.emulateMedia({reducedMotion:'no-preference'});await reopen();
  const doubleTap=async()=>{for(let i=0;i<2;i++){const [x,y]=await center();await touch('touchStart',[[x,y]]);await touch('touchEnd',[]);}};
  await doubleTap();assert.equal(await scale(),2.5);
+ const panTop=(await page.locator('#viewer-image').boundingBox()).y;
  let [x,y]=await center();await touch('touchStart',[[x,y]]);await touch('touchMove',[[x,y-150]]);await touch('touchEnd',[]);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);assert.equal(await scale(),2.5);
+ assert((await page.locator('#viewer-image').boundingBox()).y<panTop-100);
  await doubleTap();assert.equal(await scale(),1);
  [x,y]=await center();await touch('touchStart',[[x-4,y,1],[x+4,y,2]]);await touch('touchMove',[[x-8,y,1],[x+8,y,2]]);await touch('touchEnd',[]);
  assert(await scale()>1);assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
  await cdp.detach();
  }
+ await page.locator('#image-viewer').evaluate(e=>e.dispatchEvent(new WheelEvent('wheel',{deltaY:-300,clientX:innerWidth/2,clientY:innerHeight/2,bubbles:true,cancelable:true})));
+ assert(await page.locator('#viewer-image').evaluate(e=>new DOMMatrix(getComputedStyle(e).transform).a>1));
+ await page.locator('#image-viewer').evaluate(e=>e.dispatchEvent(new WheelEvent('wheel',{deltaY:10000,bubbles:true,cancelable:true})));
+ await page.locator('#image-viewer').click({position:{x:5,y:60}});
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
+ await img.click();await page.locator('#image-viewer').waitFor();
  await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();await page.locator('#close-image').click();await card.locator('.activity-summary').click();
  }
  const geometry=()=>page.evaluate(()=>({
@@ -397,7 +389,7 @@ try {
  if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
  const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading strong').getBoundingClientRect().top-document.querySelector('.destination-archived input').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
  assert(spacing.gap>=10&&spacing.gap<=16,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
- await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change'));});
+ await settingsOpen();await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});await settingsSave();
  await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/task-rows-${width}.png`});
  const attempts=calls.filter(c=>c==='/api/navigation/select').length;
@@ -409,7 +401,7 @@ try {
  if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/task-opening-${width}.png`});
  release();gate=null;
- await page.locator('#show-projects').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
+ await settingsOpen();await page.locator('#show-projects').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change',{bubbles:true}));});await settingsSave();
 await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(await page.getByRole('button',{name:'Retry',exact:true}).count(),0);assert.equal(calls.filter(c=>c==='/api/navigation/select').length,attempts+1);await dismissTasks();await closed();assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
  mode='success';await page.locator('#send-message').click();await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
  await select('Owned task');assert.equal(await input.inputValue(),'Draft B');await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);

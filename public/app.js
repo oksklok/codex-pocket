@@ -213,24 +213,13 @@ elements.enterSends.checked = enterSends;
 const translucentUI = document.querySelector("#translucent-ui");
 try { translucentUI.checked = localStorage.getItem("codex-pocket-translucent-ui") !== "false"; } catch {}
 document.documentElement.dataset.translucent = String(translucentUI.checked);
-translucentUI.addEventListener("change", () => {
-  document.documentElement.dataset.translucent = String(translucentUI.checked);
-  try { localStorage.setItem("codex-pocket-translucent-ui", String(translucentUI.checked)); } catch {}
-});
 for (const [toggle, meter, key] of [[elements.showContext, elements.context, "context"], [elements.showQuota, elements.quota, "quota"]]) {
   try { toggle.checked = localStorage.getItem(`codex-pocket-show-${key}`) !== "false"; } catch {}
   meter.hidden = !toggle.checked;
-  toggle.addEventListener("change", () => {
-    meter.hidden = !toggle.checked;
-    try { localStorage.setItem(`codex-pocket-show-${key}`, String(toggle.checked)); } catch {}
-  });
 }
 const showProjects = document.querySelector("#show-projects");
 try { showProjects.checked = localStorage.getItem("codex-pocket-show-projects") === "true"; } catch {}
-showProjects.addEventListener("change", () => {
-  try { localStorage.setItem("codex-pocket-show-projects", String(showProjects.checked)); } catch {}
-  renderDestinationSwitcher();
-});
+let projectsVisible = showProjects.checked;
 let composerExpanded = false;
 let composing = false;
 let deferredTranscript = false;
@@ -271,6 +260,7 @@ function fitExpandedComposer() {
 }
 let settingsValue = null;
 let settingsBaseline = null;
+let settingsDisplayDraft = null;
 let savingSettings = false;
 let restartingPocket = false;
 let quittingPocket = false;
@@ -546,7 +536,7 @@ function renderDestinationSwitcher() {
   const renderKey = JSON.stringify([
     navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
     state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
-    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationCreateError, destinationTaskError, archived, showProjects.checked, navigationErrors[slot],
+    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationCreateError, destinationTaskError, archived, projectsVisible, navigationErrors[slot],
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -625,7 +615,7 @@ function renderDestinationSwitcher() {
       label.append(Object.assign(document.createElement("span"), { textContent: threadLabel(task) }));
       const taskError = destinationTaskError?.machineId === machine.id && destinationTaskError?.threadId === task.id ? destinationTaskError.message : "";
       if (taskError) label.append(Object.assign(document.createElement("small"), { className: "task-selection-error", textContent: taskError }));
-      else if (showProjects.checked) {
+      else if (projectsVisible) {
         const project = task.project || projectName(task.cwd);
         if (project && project !== "—") label.append(Object.assign(document.createElement("small"), { className: "task-project", textContent: project }));
       }
@@ -920,18 +910,19 @@ function renderPlan() {
 }
 
 function renderDisplayControls() {
-  elements.displayFiles.checked = displayPreferences.files;
-  elements.displayCommands.checked = displayPreferences.command;
-  elements.displayTool.checked = displayPreferences.tool;
-  elements.displaySearch.checked = displayPreferences.search;
-  elements.displayReview.checked = displayPreferences.review;
-  elements.displayReasoning.checked = displayPreferences.reasoning;
-  elements.displayCollaboration.checked = displayPreferences.collaboration;
-  elements.displayImages.checked = displayPreferences.images;
-  elements.displayCompaction.checked = displayPreferences.compaction;
-  elements.expandCommands.checked = displayPreferences.expandCommands;
-  elements.expandFiles.checked = displayPreferences.expandFiles;
-  elements.wrapFiles.checked = displayPreferences.wrapFiles;
+  const preferences = settingsDisplayDraft || displayPreferences;
+  elements.displayFiles.checked = preferences.files;
+  elements.displayCommands.checked = preferences.command;
+  elements.displayTool.checked = preferences.tool;
+  elements.displaySearch.checked = preferences.search;
+  elements.displayReview.checked = preferences.review;
+  elements.displayReasoning.checked = preferences.reasoning;
+  elements.displayCollaboration.checked = preferences.collaboration;
+  elements.displayImages.checked = preferences.images;
+  elements.displayCompaction.checked = preferences.compaction;
+  elements.expandCommands.checked = preferences.expandCommands;
+  elements.expandFiles.checked = preferences.expandFiles;
+  elements.wrapFiles.checked = preferences.wrapFiles;
 }
 
 function renderQueue() {
@@ -2396,6 +2387,11 @@ function toggleInspector() {
 function closeSettings() {
   elements.settingsScreen.hidden = true;
   document.body.classList.remove("settings-open");
+  settingsDisplayDraft = null;
+  restoreLocalSettingsControls();
+  if (settingsValue) renderSettings(settingsValue);
+  settingsBaseline = null;
+  updateSettingsSave();
 }
 
 function machineSettingsValue() {
@@ -2416,9 +2412,53 @@ function serverSettingsValue() {
   };
 }
 
+function localSettingsValue() {
+  return {
+    theme: elements.settingsTheme.value,
+    translucent: translucentUI.checked,
+    enterSends: elements.enterSends.checked,
+    context: elements.showContext.checked,
+    quota: elements.showQuota.checked,
+    projects: showProjects.checked,
+    display: { ...(settingsDisplayDraft || displayPreferences) },
+  };
+}
+
+function restoreLocalSettingsControls() {
+  elements.settingsTheme.value = selectedTheme;
+  translucentUI.checked = document.documentElement.dataset.translucent !== "false";
+  elements.enterSends.checked = enterSends;
+  elements.showContext.checked = !elements.context.hidden;
+  elements.showQuota.checked = !elements.quota.hidden;
+  showProjects.checked = projectsVisible;
+  renderDisplayControls();
+}
+
+function commitLocalSettings(value) {
+  selectedTheme = value.theme;
+  enterSends = value.enterSends;
+  projectsVisible = value.projects;
+  document.documentElement.dataset.translucent = String(value.translucent);
+  elements.context.hidden = !value.context;
+  elements.quota.hidden = !value.quota;
+  Object.assign(displayPreferences, value.display);
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
+    for (const [key, setting] of [["translucent-ui", value.translucent], ["enter-sends", enterSends],
+      ["show-context", value.context], ["show-quota", value.quota], ["show-projects", projectsVisible]]) {
+      localStorage.setItem("codex-pocket-" + key, String(setting));
+    }
+  } catch {}
+  saveDisplayPreferences();
+  applyTheme();
+  renderDestinationSwitcher();
+  renderConversation();
+}
+
 function updateSettingsSave() {
   elements.settingsSave.disabled = savingSettings || settingsBaseline === null
-    || JSON.stringify(serverSettingsValue()) === settingsBaseline;
+    || (JSON.stringify(serverSettingsValue()) === settingsBaseline.server
+      && JSON.stringify(localSettingsValue()) === settingsBaseline.local);
 }
 
 function renderMachineSettings(values) {
@@ -2511,7 +2551,6 @@ function renderSettings(value) {
   elements.quitPocket.closest(".settings-quit").hidden = Boolean(value.headless);
   document.querySelector("#container-lifecycle").hidden = !value.headless;
   document.querySelector("#settings-local-machine").hidden = Boolean(value.headless);
-  elements.settingsTheme.value = selectedTheme;
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";
   elements.settingsPort.value = String(value.port || 4173);
@@ -2529,12 +2568,15 @@ function renderSettings(value) {
     elements.phoneUrlList.append(link);
   }
   elements.phoneUrls.hidden = urls.length === 0;
-  settingsBaseline = JSON.stringify(serverSettingsValue());
+  settingsBaseline = { server: JSON.stringify(serverSettingsValue()), local: JSON.stringify(localSettingsValue()) };
   updateSettingsSave();
 }
 
 async function openSettings() {
   settingsBaseline = null;
+  settingsDisplayDraft = { ...displayPreferences };
+  restoreLocalSettingsControls();
+  const localBaseline = JSON.stringify(localSettingsValue());
   updateSettingsSave();
   clearSelectionForOverlay();
   elements.settingsScreen.hidden = false;
@@ -2547,6 +2589,8 @@ async function openSettings() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Settings unavailable");
     renderSettings(result.settings);
+    settingsBaseline.local = localBaseline;
+    updateSettingsSave();
     elements.settingsRestart.hidden = !result.restartRequired;
     elements.settingsStatus.textContent = "";
     (settingsValue?.headless ? elements.settingsPin : elements.settingsLanEnabled).focus();
@@ -2611,10 +2655,6 @@ new ResizeObserver(([entry]) => {
   composerWidth = entry.contentRect.width;
   resizeComposer();
 }).observe(elements.composerInput);
-elements.enterSends.addEventListener("change", () => {
-  enterSends = elements.enterSends.checked;
-  try { localStorage.setItem("codex-pocket-enter-sends", String(enterSends)); } catch {}
-});
 document.addEventListener("selectionchange", observeTranscriptSelection);
 elements.conversation.addEventListener("focusout", (event) => {
   if (!event.relatedTarget?.closest(".async-answer")) queueMicrotask(flushDeferredTranscript);
@@ -2684,6 +2724,7 @@ for (const [element, key] of [
   [elements.wrapFiles, "wrapFiles"],
 ]) {
   element.addEventListener("change", () => {
+    if (settingsDisplayDraft) { settingsDisplayDraft[key] = element.checked; updateSettingsSave(); return; }
     displayPreferences[key] = element.checked;
     saveDisplayPreferences();
     renderConversation();
@@ -2692,7 +2733,8 @@ for (const [element, key] of [
 
 for (const [id, visible] of [["display-show-all", true], ["display-hide-all", false]]) {
   document.getElementById(id).addEventListener("click", () => {
-    for (const key of ["reasoning", "command", "tool", "search", "files", "collaboration", "images", "review", "compaction"]) displayPreferences[key] = visible;
+    for (const key of ["reasoning", "command", "tool", "search", "files", "collaboration", "images", "review", "compaction"]) (settingsDisplayDraft || displayPreferences)[key] = visible;
+    if (settingsDisplayDraft) { renderDisplayControls(); updateSettingsSave(); return; }
     saveDisplayPreferences();
     renderDisplayControls();
     renderConversation();
@@ -2729,11 +2771,6 @@ elements.loginPin.addEventListener("input", () => {
 });
 
 elements.settingsButton.addEventListener("click", openSettings);
-elements.settingsTheme.addEventListener("change", () => {
-  selectedTheme = elements.settingsTheme.value;
-  try { localStorage.setItem(THEME_STORAGE_KEY, selectedTheme); } catch {}
-  applyTheme();
-});
 elements.settingsClose.addEventListener("click", closeSettings);
 elements.settingsCancel.addEventListener("click", closeSettings);
 elements.settingsScreen.addEventListener("click", (event) => { if (event.target === elements.settingsScreen) closeSettings(); });
@@ -2760,8 +2797,10 @@ elements.settingsForm.addEventListener("change", updateSettingsSave);
 elements.settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (savingSettings || elements.settingsSave.disabled) return;
+  const local = localSettingsValue();
+  const serverChanged = JSON.stringify(serverSettingsValue()) !== settingsBaseline.server;
   const pin = elements.settingsPin.value;
-  if (elements.settingsLanEnabled.checked && !settingsValue?.pinConfigured && !/^\d{4}$/.test(pin)) {
+  if (serverChanged && elements.settingsLanEnabled.checked && !settingsValue?.pinConfigured && !/^\d{4}$/.test(pin)) {
     elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access.";
     elements.settingsStatus.classList.add("error-text");
     elements.settingsPin.focus();
@@ -2772,13 +2811,19 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   elements.settingsStatus.textContent = "Saving…";
   elements.settingsStatus.classList.remove("error-text");
   try {
-    const response = await apiFetch("/api/settings", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(serverSettingsValue()),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.saved) throw new Error(result.error || "Could not save settings");
-    invalidateNavigationCatalogs();
+    let result = { settings: settingsValue, restartRequired: !elements.settingsRestart.hidden };
+    if (serverChanged) {
+      const response = await apiFetch("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(serverSettingsValue()),
+      });
+      result = await response.json();
+      if (!response.ok || !result.saved) throw new Error(result.error || "Could not save settings");
+      invalidateNavigationCatalogs();
+    }
+    commitLocalSettings(local);
+    settingsDisplayDraft = { ...displayPreferences };
+    restoreLocalSettingsControls();
     renderSettings(result.settings);
     elements.settingsRestart.hidden = !result.restartRequired;
     elements.settingsStatus.textContent = "";
@@ -2884,14 +2929,7 @@ function setupImageViewer(dialog, image, close) {
     dialog.close();
   });
   let opener;
-  let settleTimer;
-  let reopenTap = null;
-  function stopSettling() {
-    clearTimeout(settleTimer);
-    reopenTap = null;
-    dialog.classList.remove('swipe-settling', 'swipe-closing');
-  }
-  let scale = 1, x = 0, y = 0, dragY = 0;
+  let scale = 1, x = 0, y = 0;
   let lastTap = null;
   let gesture = null;
   const pointers = new Map();
@@ -2903,9 +2941,8 @@ function setupImageViewer(dialog, image, close) {
     const limitY = Math.max(0, (image.offsetHeight * scale - dialog.clientHeight) / 2);
     x = Math.max(-limitX, Math.min(limitX, x));
     y = Math.max(-limitY, Math.min(limitY, y));
-    image.style.transform = `translate(-50%, -50%) translate(${x}px, ${y + dragY}px) scale(${scale})`;
+    image.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`;
     image.style.cursor = scale > 1 ? 'grab' : 'default';
-    dialog.style.setProperty('--viewer-shade', String(1 - Math.min(Math.abs(dragY) / 300, .85)));
   }
   function begin(multi = false) {
     if (multi) lastTap = null;
@@ -2914,27 +2951,16 @@ function setupImageViewer(dialog, image, close) {
   }
   dialog.addEventListener('pointerdown', event => {
     if (event.target.closest('button') || event.button !== 0) return;
-    if (dialog.classList.contains('swipe-closing')) {
-      const rect = opener?.getBoundingClientRect();
-      reopenTap = event.isPrimary && rect && event.clientX >= rect.left && event.clientX <= rect.right
-        && event.clientY >= rect.top && event.clientY <= rect.bottom
-        ? { id: event.pointerId, x: event.clientX, y: event.clientY } : null;
-      event.preventDefault();
-      return;
-    }
-    stopSettling();
     event.preventDefault();
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     dialog.setPointerCapture(event.pointerId);
     begin(pointers.size > 1);
   });
   dialog.addEventListener('pointermove', event => {
-    if (reopenTap?.id === event.pointerId && Math.hypot(event.clientX - reopenTap.x, event.clientY - reopenTap.y) > 8) reopenTap = null;
     if (!pointers.has(event.pointerId) || !gesture) return;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     const [a, b] = points();
     if (b && gesture.center) {
-      dragY = 0;
       scale = Math.max(1, Math.min(6, gesture.scale * distance(a, b) / Math.max(1, gesture.distance)));
       const center = midpoint(a, b);
       x = center.x - (gesture.center.x - gesture.x) * scale / gesture.scale;
@@ -2943,44 +2969,20 @@ function setupImageViewer(dialog, image, close) {
       const dx = a.x - gesture.a.x, dy = a.y - gesture.a.y;
       if (Math.hypot(dx, dy) > 8) gesture.moved = true;
       if (scale > 1) { x = gesture.x + dx; y = gesture.y + dy; }
-      else if (!gesture.multi) dragY = Math.abs(dy) > Math.abs(dx) * 1.5 ? dy : 0;
     }
     paint();
   });
   function finish(event) {
-    if (event.type === 'pointercancel') reopenTap = null;
     if (!pointers.has(event.pointerId)) return;
     const last = pointers.size === 1;
-    const dx = event.clientX - gesture.a.x, dy = event.clientY - gesture.a.y;
     const rect = image.getBoundingClientRect();
     const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
-    const dismiss = event.type === 'pointerup' && last && !gesture.multi && (
-      (!gesture.moved && outside) || (scale === 1 && Math.abs(dy) > 100 && Math.abs(dy) > Math.abs(dx) * 1.5));
+    const dismiss = event.type === 'pointerup' && last && !gesture.multi && !gesture.moved && outside;
     const tap = event.type === 'pointerup' && event.pointerType === 'touch' && last && !gesture.multi && !gesture.moved && !outside;
     const previousTap = lastTap;
     pointers.delete(event.pointerId);
     if (dialog.hasPointerCapture(event.pointerId)) dialog.releasePointerCapture(event.pointerId);
     begin(true); // A pinch becoming one finger must never become a dismiss gesture.
-    if (dragY && last) {
-      if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        if (dismiss) { dialog.close(); return; }
-      } else {
-        dialog.classList.add('swipe-settling');
-        if (dismiss) {
-          dragY = Math.sign(dragY) * Math.max(Math.abs(dragY), (dialog.clientHeight + image.offsetHeight) / 2 + 1);
-          paint();
-          dialog.classList.add('swipe-closing');
-          settleTimer = setTimeout(() => {
-            const source = reopenTap ? opener : null;
-            dialog.close();
-            if (source?.isConnected) open(source);
-          }, 140);
-          return;
-        }
-        settleTimer = setTimeout(stopSettling, 140);
-      }
-    }
-    dragY = 0;
     if (tap) {
       const now = performance.now();
       if (previousTap && now - previousTap.time < 300 && Math.hypot(event.clientX - previousTap.x, event.clientY - previousTap.y) < 24) {
@@ -3014,16 +3016,14 @@ function setupImageViewer(dialog, image, close) {
   dialog.addEventListener('close', () => {
     // A queued close event can arrive after the same image has reopened.
     if (dialog.open) return;
-    stopSettling();
     pointers.clear();
     gesture = null;
     image.removeAttribute('src');
     if (opener?.isConnected) opener.focus({ preventScroll: true });
   });
   function open(source) {
-    stopSettling();
     opener = source;
-    scale = 1; x = 0; y = 0; dragY = 0; lastTap = null;
+    scale = 1; x = 0; y = 0; lastTap = null;
     pointers.clear(); gesture = null;
     image.src = source.src;
     image.alt = source.alt;

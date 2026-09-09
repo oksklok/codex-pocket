@@ -266,15 +266,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .markdown th, .markdown td { min-width: 100px; padding: 7px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
 .markdown th { background: var(--surface-strong); font-weight: 750; }
 .markdown img { display: block; max-width: 100%; max-height: 65dvh; object-fit: contain; margin: 8px auto; cursor: zoom-in; }
-.image-viewer { position: fixed; inset: 0; margin: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; padding: 0; border: 0; overflow: hidden; background: rgb(9 11 14 / calc(.93 * var(--viewer-shade, 1))); color: white; touch-action: none; overscroll-behavior: contain; user-select: none; }
-.image-viewer::backdrop { background: rgb(9 11 14 / var(--viewer-shade, 1)); }
-.image-viewer.swipe-settling, .image-viewer.swipe-settling::backdrop { transition: background-color 140ms ease-out; }
-.image-viewer.swipe-settling img { transition: transform 140ms ease-out, opacity 140ms ease-out; }
-.image-viewer.swipe-closing, .image-viewer.swipe-closing::backdrop { background: transparent; }
-.image-viewer.swipe-closing img { opacity: 0; }
-@media (prefers-reduced-motion: reduce) {
-  .image-viewer.swipe-settling, .image-viewer.swipe-settling::backdrop, .image-viewer.swipe-settling img { transition: none; }
-}
+.image-viewer { position: fixed; inset: 0; margin: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; padding: 0; border: 0; overflow: hidden; background: #090b0eed; color: white; touch-action: none; overscroll-behavior: contain; user-select: none; }
+.image-viewer::backdrop { background: #090b0e; }
 @media (min-width: 861px) {
   .checkbox-row.translucent-preference { display: none !important; }
 }
