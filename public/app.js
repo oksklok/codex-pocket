@@ -1870,7 +1870,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
 
 async function newTask(machine) {
   if (destinationSelection || taskActionBusy) return;
-  const name = prompt(`New task on ${machine.name}: task name`);
+  const name = prompt(`New Task on ${machine.name}: task name`);
   if (name === null || !name.trim()) return;
   const defaultCwd = machine.id === state?.machineId ? state?.thread?.cwd : machine.tasks?.find((task) => task.selected)?.cwd;
   const cwd = prompt("Project folder on this machine (absolute path)", defaultCwd || "");
