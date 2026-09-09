@@ -270,6 +270,7 @@ function fitExpandedComposer() {
   }
 }
 let settingsValue = null;
+let settingsBaseline = null;
 let savingSettings = false;
 let restartingPocket = false;
 let quittingPocket = false;
@@ -2404,6 +2405,22 @@ function machineSettingsValue() {
   }));
 }
 
+function serverSettingsValue() {
+  return {
+    lanEnabled: elements.settingsLanEnabled.checked,
+    host: elements.settingsHost.value.trim(),
+    port: Number(elements.settingsPort.value),
+    pin: elements.settingsPin.value,
+    localName: elements.settingsLocalName.value.trim(),
+    machines: machineSettingsValue(),
+  };
+}
+
+function updateSettingsSave() {
+  elements.settingsSave.disabled = savingSettings || settingsBaseline === null
+    || JSON.stringify(serverSettingsValue()) === settingsBaseline;
+}
+
 function renderMachineSettings(values) {
   elements.settingsMachines.replaceChildren();
   const configured = Array.isArray(values) ? values : [];
@@ -2412,6 +2429,7 @@ function renderMachineSettings(values) {
     empty.className = "machine-settings-empty";
     empty.textContent = "No remote machines configured.";
     elements.settingsMachines.append(empty);
+    updateSettingsSave();
     return;
   }
   const header = document.createElement("div");
@@ -2480,6 +2498,7 @@ function renderMachineSettings(values) {
     row.append(controls);
     elements.settingsMachines.append(row);
   });
+  updateSettingsSave();
 }
 
 function renderSettings(value) {
@@ -2510,9 +2529,13 @@ function renderSettings(value) {
     elements.phoneUrlList.append(link);
   }
   elements.phoneUrls.hidden = urls.length === 0;
+  settingsBaseline = JSON.stringify(serverSettingsValue());
+  updateSettingsSave();
 }
 
 async function openSettings() {
+  settingsBaseline = null;
+  updateSettingsSave();
   clearSelectionForOverlay();
   elements.settingsScreen.hidden = false;
   document.body.classList.add("settings-open");
@@ -2732,9 +2755,11 @@ elements.machineAdd.addEventListener("click", () => {
   renderMachineSettings(next);
   elements.settingsMachines.querySelector(".machine-settings-row:last-child [data-machine-name]")?.focus();
 });
+elements.settingsForm.addEventListener("input", updateSettingsSave);
+elements.settingsForm.addEventListener("change", updateSettingsSave);
 elements.settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (savingSettings) return;
+  if (savingSettings || elements.settingsSave.disabled) return;
   const pin = elements.settingsPin.value;
   if (elements.settingsLanEnabled.checked && !settingsValue?.pinConfigured && !/^\d{4}$/.test(pin)) {
     elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access.";
@@ -2749,27 +2774,24 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   try {
     const response = await apiFetch("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        lanEnabled: elements.settingsLanEnabled.checked,
-        host: elements.settingsHost.value.trim(),
-        port: Number(elements.settingsPort.value),
-        pin,
-        localName: elements.settingsLocalName.value.trim(),
-        machines: machineSettingsValue(),
-      }),
+      body: JSON.stringify(serverSettingsValue()),
     });
     const result = await response.json();
     if (!response.ok || !result.saved) throw new Error(result.error || "Could not save settings");
     invalidateNavigationCatalogs();
     renderSettings(result.settings);
     elements.settingsRestart.hidden = !result.restartRequired;
-    elements.settingsStatus.textContent = "Settings saved.";
+    elements.settingsStatus.textContent = "";
+    if (result.restartRequired) {
+      elements.settingsRestart.scrollIntoView({ block: "center" });
+      elements.restartPocket.focus({ preventScroll: true });
+    } else closeSettings();
   } catch (error) {
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");
   } finally {
     savingSettings = false;
-    elements.settingsSave.disabled = false;
+    updateSettingsSave();
   }
 });
 elements.restartPocket.addEventListener("click", async () => {
@@ -2863,8 +2885,10 @@ function setupImageViewer(dialog, image, close) {
   });
   let opener;
   let settleTimer;
+  let reopenTap = null;
   function stopSettling() {
     clearTimeout(settleTimer);
+    reopenTap = null;
     dialog.classList.remove('swipe-settling', 'swipe-closing');
   }
   let scale = 1, x = 0, y = 0, dragY = 0;
@@ -2890,7 +2914,14 @@ function setupImageViewer(dialog, image, close) {
   }
   dialog.addEventListener('pointerdown', event => {
     if (event.target.closest('button') || event.button !== 0) return;
-    if (dialog.classList.contains('swipe-closing')) return;
+    if (dialog.classList.contains('swipe-closing')) {
+      const rect = opener?.getBoundingClientRect();
+      reopenTap = event.isPrimary && rect && event.clientX >= rect.left && event.clientX <= rect.right
+        && event.clientY >= rect.top && event.clientY <= rect.bottom
+        ? { id: event.pointerId, x: event.clientX, y: event.clientY } : null;
+      event.preventDefault();
+      return;
+    }
     stopSettling();
     event.preventDefault();
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -2898,6 +2929,7 @@ function setupImageViewer(dialog, image, close) {
     begin(pointers.size > 1);
   });
   dialog.addEventListener('pointermove', event => {
+    if (reopenTap?.id === event.pointerId && Math.hypot(event.clientX - reopenTap.x, event.clientY - reopenTap.y) > 8) reopenTap = null;
     if (!pointers.has(event.pointerId) || !gesture) return;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     const [a, b] = points();
@@ -2916,6 +2948,7 @@ function setupImageViewer(dialog, image, close) {
     paint();
   });
   function finish(event) {
+    if (event.type === 'pointercancel') reopenTap = null;
     if (!pointers.has(event.pointerId)) return;
     const last = pointers.size === 1;
     const dx = event.clientX - gesture.a.x, dy = event.clientY - gesture.a.y;
@@ -2934,10 +2967,14 @@ function setupImageViewer(dialog, image, close) {
       } else {
         dialog.classList.add('swipe-settling');
         if (dismiss) {
-          dragY += Math.sign(dragY) * 100;
+          dragY = Math.sign(dragY) * Math.max(Math.abs(dragY), (dialog.clientHeight + image.offsetHeight) / 2 + 1);
           paint();
           dialog.classList.add('swipe-closing');
-          settleTimer = setTimeout(() => dialog.close(), 140);
+          settleTimer = setTimeout(() => {
+            const source = reopenTap ? opener : null;
+            dialog.close();
+            if (source?.isConnected) open(source);
+          }, 140);
           return;
         }
         settleTimer = setTimeout(stopSettling, 140);
@@ -2983,7 +3020,7 @@ function setupImageViewer(dialog, image, close) {
     image.removeAttribute('src');
     if (opener?.isConnected) opener.focus({ preventScroll: true });
   });
-  return { open(source) {
+  function open(source) {
     stopSettling();
     opener = source;
     scale = 1; x = 0; y = 0; dragY = 0; lastTap = null;
@@ -2993,5 +3030,6 @@ function setupImageViewer(dialog, image, close) {
     dialog.showModal();
     paint();
     close.focus();
-  } };
+  }
+  return { open };
 }

@@ -14,6 +14,7 @@ let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:tr
 Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
+let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'MacBook Air',ssh:'macbook-air'},{name:'PC 1',ssh:'main-pc'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
 const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
@@ -22,7 +23,14 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);runtime.addSubscriber(res,false);req.on('close',()=>runtime.removeSubscriber(res));return;}
  if(u.pathname==='/api/auth')return json({required:false,authenticated:true});
  if(u.pathname==='/api/state')return json(snapshot());
- if(u.pathname==='/api/settings')return json({settings:{machines:[{name:'MacBook Air',ssh:'macbook-air'},{name:'PC 1',ssh:'main-pc'}],phoneUrls:[]}});
+ if(u.pathname==='/api/settings'){
+ if(req.method==='POST'){
+ let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
+ const restartRequired=body.port!==settings.port;
+ settings={...settings,...body};return json({saved:true,settings,restartRequired});
+ }
+ return json({settings});
+ }
  if(u.pathname==='/api/machines')return json({machines:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
@@ -105,6 +113,34 @@ try {
  await page.locator('#settings-button').click();
  if(width<=860) await page.locator('#translucent-ui').check();
  else await page.locator('#translucent-ui').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change'));});await page.locator('#settings-close').click();assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
+ await page.locator('#settings-button').click();
+ await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');
+ const save=page.locator('#settings-save');
+ assert.equal(await save.isDisabled(),true);
+ await page.locator('#settings-local-name').fill('Renamed host');assert.equal(await save.isEnabled(),true);
+ await page.locator('#settings-local-name').fill(settings.localName);assert.equal(await save.isDisabled(),true);
+ const machineName=page.locator('[data-machine-name]').first();
+ await machineName.fill('Changed machine');assert.equal(await save.isEnabled(),true);
+ await machineName.fill('MacBook Air');assert.equal(await save.isDisabled(),true);
+ await page.locator('#machine-add').click();assert.equal(await save.isEnabled(),true);
+ await page.locator('.machine-settings-row').last().locator('.machine-remove').click();assert.equal(await save.isDisabled(),true);
+ for(const id of ['enter-sends','show-context','show-quota','show-projects',...(width<=860?['translucent-ui']:[])]){
+ await page.locator('#'+id).click();assert.equal(await save.isDisabled(),true);
+ await page.locator('#'+id).click();
+ }
+ const theme=await page.locator('#settings-theme').inputValue();
+ await page.locator('#settings-theme').selectOption('light');assert.equal(await save.isDisabled(),true);
+ await page.locator('#settings-theme').selectOption(theme);
+ await page.locator('#settings-local-name').fill('Saved host '+width);await save.click();
+ await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
+ await page.locator('#settings-button').click();await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');assert.equal(await save.isDisabled(),true);
+ await page.locator('#settings-port').fill(String(settings.port+1));await save.click();
+ await page.locator('#settings-restart').waitFor();
+ assert.equal(await page.locator('#settings-screen').isVisible(),true);
+ assert.equal(await save.isDisabled(),true);
+ assert.equal(await page.locator('#settings-status').textContent(),'');
+ assert(await page.locator('#restart-pocket').evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&document.activeElement===e;}));
+ await page.locator('#settings-close').click();
  await page.evaluate(()=>localStorage.setItem('codex-pocket-info-display',JSON.stringify({commands:false})));
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  for(const key of ['command','tool','search','review'])assert.equal(await page.locator(`#display-${key}`).isChecked(),false);
@@ -247,12 +283,28 @@ try {
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
  assert.equal(await page.locator('#viewer-image').evaluate(e=>getComputedStyle(e).transitionDuration),'0.14s, 0.14s');
  const releasedDistance=Math.abs((await page.locator('#viewer-image').boundingBox()).y-top);
- if(Math.abs(dy)>100) assert(releasedDistance>=Math.abs(dy)-2);
+ if(Math.abs(dy)>100) {
+ assert(releasedDistance>=Math.abs(dy)-2);
+ assert(await page.locator('#viewer-image').evaluate((e,direction)=>{
+   for(const animation of e.getAnimations())animation.finish();
+   const rect=e.getBoundingClientRect();
+   return direction>0?rect.top>=innerHeight:rect.bottom<=0;
+ },dy));
+ }
  else assert(releasedDistance>0);
  await page.waitForTimeout(180);
  if(Math.abs(dy)>100){assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);await reopen();}
  else {assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-top)<2);}
  }
+ // A tap over the underlying source during the closing animation reopens on completion.
+ const [reopenX,reopenY]=await center();
+ const sourcePoint=await img.evaluate(e=>{const r=e.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2];});
+ await touch('touchStart',[[reopenX,reopenY]]);await touch('touchMove',[[reopenX,reopenY+130]]);await touch('touchEnd',[]);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.classList.contains('swipe-closing')),true);
+ await touch('touchStart',[sourcePoint]);await touch('touchEnd',[]);
+ await page.waitForTimeout(180);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
+ assert(await page.locator('#viewer-image').evaluate(e=>e.hasAttribute('src')&&e.naturalWidth>0));
  // Reopen synchronously when close removes the open attribute, before its queued event.
  await page.locator('#image-viewer').evaluate(e=>{
    const source=document.querySelector('.detail-image');
