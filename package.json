@@ -1,6 +1,8 @@
 {
   "name": "codex-pocket",
   "version": "0.1.0",
+  "description": "Self-hosted browser/PWA client for official Codex app-server runtimes locally and over SSH",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {

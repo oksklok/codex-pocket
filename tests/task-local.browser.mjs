@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {MachineRuntime} from '../gateway.ts';
 const root=fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
 const conflict='This task is open in another Codex runtime. Close it there, then retry.';
-const runtime=new MachineRuntime({}, {id:'local',name:'Mac mini',ssh:null},()=>{});
+const runtime=new MachineRuntime({}, {id:'local',name:'Local',ssh:null},()=>{});
 const task={id:'current',name:'Current task',cwd:'/project',status:'idle',project:'project'};
 const owned={...task,id:'owned',name:'Owned task'};
 let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:true}], fail=true, machineError=conflict;
@@ -15,7 +15,7 @@ Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let failSettings=false;
-let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'MacBook Air',ssh:'macbook-air'},{name:'PC 1',ssh:'main-pc'}],phoneUrls:[]};
+let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
 const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
@@ -38,7 +38,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
  if(u.pathname==='/api/activity/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json({turns:[],nextCursor:null});
- if(u.pathname==='/api/navigation'){calls.push(u.search);return json({machines:[{id:'local',name:'Mac mini',local:true,connected:true,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:true,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
+ if(u.pathname==='/api/navigation'){calls.push(u.search);return json({machines:[{id:'local',name:'Local',local:true,connected:true,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:true,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
@@ -208,8 +208,8 @@ try {
  for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).isVisible(),width<600);
  assert.equal(await page.locator('.machine-settings-header').isVisible(),width>=600);
  if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Actions']);}
- assert.equal(await page.getByRole('button',{name:'Move MacBook Air up',exact:true}).isDisabled(),true);
- assert.equal(await page.getByRole('button',{name:'Move PC 1 down',exact:true}).isDisabled(),true);
+ assert.equal(await page.getByRole('button',{name:'Move Laptop up',exact:true}).isDisabled(),true);
+ assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('button').allTextContents(),['↑','↓','×']);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40]);
  const valueSize=width>=861?'14px':'16px';

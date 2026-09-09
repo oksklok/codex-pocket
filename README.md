@@ -1,8 +1,23 @@
 # Codex Pocket
 
-Codex Pocket is a lightweight browser and mobile client with a small Node.js gateway for official Codex app-server runtimes. A macOS menu-bar app hosts the gateway; browsers can control tasks on that Mac and on multiple machines connected through SSH.
+Codex Pocket is a lightweight, self-hosted browser/PWA client for controlling official Codex app-server runtimes locally and over SSH. Run its small Node.js gateway from the macOS menu bar or headlessly, then manage tasks from your desktop or phone.
 
 Codex Pocket is an unofficial community project and is not affiliated with or endorsed by OpenAI.
+
+## Screenshots
+
+Real Pocket UI with synthetic demo data only, including all tasks, machines, conversations, and usage figures.
+
+| Monitor and control from your phone | Switch tasks across machines |
+| --- | --- |
+| <img src="docs/screenshots/mobile-working.png" alt="Pocket on mobile showing an active task, activity progress, and Stop and Steer Now controls" width="220"> | <img src="docs/screenshots/desktop-tasks.png" alt="Pocket on desktop with three demo machines in the Tasks sidebar and a coding conversation" width="620"> |
+
+<details>
+<summary>macOS menu-bar host</summary>
+
+<img src="docs/screenshots/macos-menu.png" alt="Native Pocket menu with synthetic quota values and Keep Mac Awake enabled" width="260">
+
+</details>
 
 ## What it does
 

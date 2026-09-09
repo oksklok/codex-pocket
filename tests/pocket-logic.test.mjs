@@ -792,7 +792,7 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
         assert.equal((await post("/api/message/queue", { Host: host, Origin: "http://evil.example", "Content-Type": "application/json", Cookie: "codex_pocket_session=session" }, "{}")).status, 403);
       }
     }
-    const publishedHost = "192.168.50.2:8080";
+    const publishedHost = "192.168.1.100:8080";
     assert.equal((await post("/api/shutdown", { Host: publishedHost, Origin: `http://${publishedHost}`, Cookie: "codex_pocket_session=session" })).status, 202);
     assert.equal((await post("/api/shutdown", { Host: evilHost, Origin: `http://${evilHost}`, Cookie: "codex_pocket_session=session" })).status, 403);
     assert.equal(quits, 4);
@@ -1150,12 +1150,12 @@ test("draft memory restores A/B, touches recency, drops empty entries and evicts
 test("phone URLs discover only local private or CGNAT IPv4 interfaces", async (t) => {
   const os = (await import("node:os")).default;
   const { syncBuiltinESMExports } = await import("node:module");
-  const addresses = ["100.64.0.0", "100.127.255.255", "100.63.255.255", "100.128.0.0", "192.168.50.2"];
+  const addresses = ["100.64.0.0", "100.127.255.255", "100.63.255.255", "100.128.0.0", "192.168.1.100"];
   const mock = t.mock.method(os, "networkInterfaces", () => ({ test: addresses.map(address => ({ address, family: "IPv4", internal: false })) }));
   syncBuiltinESMExports();
   try {
     const gateway = new PocketGateway({ machines: [] });
-    assert.deepEqual(gateway.hostStatus({ host: "0.0.0.0", port: 4173 }).phoneUrls, ["http://100.127.255.255:4173", "http://100.64.0.0:4173", "http://192.168.50.2:4173"]);
+    assert.deepEqual(gateway.hostStatus({ host: "0.0.0.0", port: 4173 }).phoneUrls, ["http://100.127.255.255:4173", "http://100.64.0.0:4173", "http://192.168.1.100:4173"]);
     assert.deepEqual(gateway.hostStatus({ host: "127.0.0.1", port: 4173 }).phoneUrls, []);
   } finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });
@@ -1358,8 +1358,8 @@ test('restart preserves explicit launch overrides without freezing saved setting
     assert.equal(next.ws, args.length ? 'ws://localhost:1234' : undefined);
     assert.equal(next.thread, args.length ? 'task-id' : undefined);
   }
-  const request = { headers: { host: '192.168.50.2:4173' } };
-  assert.equal(restartUrlForRequest(request, true, 'http://127.0.0.1:4888'), 'http://192.168.50.2:4888');
+  const request = { headers: { host: '192.168.1.100:4173' } };
+  assert.equal(restartUrlForRequest(request, true, 'http://127.0.0.1:4888'), 'http://192.168.1.100:4888');
   assert.equal(restartUrlForRequest(request, false, 'http://127.0.0.1:4999'), 'http://127.0.0.1:4999');
 });
 
