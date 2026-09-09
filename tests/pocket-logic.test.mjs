@@ -747,6 +747,17 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
     assert.equal((await post("/api/shutdown", { Origin: "null" })).status, 403);
     assert.equal((await post("/api/login", { Origin: origin, "Content-Type": "text/plain" }, "{}")).status, 415);
     assert.equal((await post("/api/login", { Origin: origin })).status, 415);
+    const runtime = gateway.runtimes.get("local");
+    runtime.state.queuedMessage = { threadId: "queued-task", text: "Keep until cancelled" };
+    const cancel = headers => fetch(origin + "/api/message/queue?machineId=local", { method: "DELETE", headers });
+    assert.equal((await cancel({ Origin: "https://attacker.example" })).status, 403);
+    assert.equal((await cancel({ "Sec-Fetch-Site": "cross-site" })).status, 403);
+    assert.equal(runtime.state.queuedMessage.text, "Keep until cancelled");
+    assert.equal((await post("/api/message/queue", { Origin: origin })).status, 415);
+    const cancelled = await cancel({ Origin: origin, "Sec-Fetch-Site": "same-origin" });
+    assert.equal(cancelled.status, 200);
+    assert.deepEqual(await cancelled.json(), { cancelled: true, queuedMessage: null });
+    assert.equal(runtime.state.queuedMessage, null);
     assert.equal(quits, 0);
     assert.equal((await post("/api/shutdown", { Origin: origin })).status, 202);
     assert.equal((await post("/api/shutdown")).status, 202);

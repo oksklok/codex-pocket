@@ -3656,6 +3656,13 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
   }
 }
 
+// Routes whose handlers consume readJsonBody; bodyless mutations still get origin checks.
+const JSON_POST_ROUTES = new Set([
+  "/api/login", "/api/settings", "/api/tasks", "/api/message", "/api/turn/interrupt",
+  "/api/message/queue", "/api/thread/settings", "/api/thread/access", "/api/approval",
+  "/api/input", "/api/thread", "/api/navigation/select", "/api/machine",
+]);
+
 export async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
@@ -3676,7 +3683,7 @@ export async function handleRequest(
       sendJson(response, 403, { error: "Same-origin request required" }, gateway);
       return;
     }
-    if (!["/api/restart", "/api/shutdown"].includes(url.pathname)
+    if (method === "POST" && JSON_POST_ROUTES.has(url.pathname)
       && request.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
       sendJson(response, 415, { error: "Content-Type must be application/json" }, gateway);
       return;
