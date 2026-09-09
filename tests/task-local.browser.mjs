@@ -185,7 +185,18 @@ try {
  const card=page.locator(`[data-activity-id="${type}"]`);await card.locator('.activity-summary').click();
  await page.locator('.detail-image').scrollIntoViewIfNeeded();
  await page.waitForFunction(()=>document.querySelector('.detail-image')?.naturalWidth>0);
- const img=page.locator('.detail-image');await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
+ const img=page.locator('.detail-image');
+ await open();
+ // Set up both underlying panels even on mobile, where their backdrops cover the topbar.
+ await page.locator('#inspector-button').evaluate(e=>e.click());await page.waitForTimeout(210);
+ const sidebarPreferences=await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`)));
+ await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
+ await page.keyboard.press('Escape');await page.waitForTimeout(210);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
+ for(const id of ['destination-button','inspector-button'])assert.equal(await page.locator(`#${id}`).getAttribute('aria-expanded'),'true');
+ assert.deepEqual(await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`))),sidebarPreferences);
+ await page.locator(width<861?'#inspector-close':'#inspector-button').click();await dismissTasks();await closed();
+ await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
  await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();await page.locator('#close-image').click();await card.locator('.activity-summary').click();
  }
  const geometry=()=>page.evaluate(()=>({

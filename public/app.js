@@ -2846,6 +2846,12 @@ start();
 
 // Viewer transforms are independent of the browser's page zoom.
 function setupImageViewer(dialog, image, close) {
+  dialog.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    dialog.close();
+  });
   let opener;
   let scale = 1, x = 0, y = 0;
   let gesture = null;
