@@ -91,6 +91,7 @@ try {
  assert.equal(await page.getByRole('button',{name:'Move MacBook Air up',exact:true}).isDisabled(),true);
  assert.equal(await page.getByRole('button',{name:'Move PC 1 down',exact:true}).isDisabled(),true);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('button').allTextContents(),['↑','↓','×']);
+ assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40]);
  await page.locator('.machine-settings-row').first().scrollIntoViewIfNeeded();
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
  await page.locator('#settings-close').click();
@@ -98,6 +99,8 @@ try {
  await page.waitForTimeout(200);await page.locator('#display-files').waitFor();
  assert.deepEqual(await page.locator('#effort-select option').allTextContents(),['Light','Medium','High','Extra High','Max','Ultra']);
  assert.equal(await page.locator('#effort-select').inputValue(),'low');
+ assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40,40]);
+ assert.equal(await page.locator('#inspector-close').isVisible(),width<861);
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/display-${width}.png`});
  const categories=[['reasoning','reasoning','Reasoning'],['command','command','Command'],['tool','tool','Tool'],['search','search','Search'],['files','files','File Changes'],['collaboration','collaboration','Subagents'],['image','images','Image'],['review','review','Review'],['compaction','compaction','Context Compaction']];
  assert.deepEqual(await page.locator('.display-panel .display-option span').allTextContents(),categories.map(c=>c[2]).concat(['Expand Commands by Default','Expand File Changes by Default','Wrap File Changes']));
@@ -143,16 +146,36 @@ try {
  const img=page.locator('.detail-image');await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
  await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();await page.locator('#close-image').click();await card.locator('.activity-summary').click();
  }
+ const geometry=()=>page.evaluate(()=>({
+ panels:[...document.querySelectorAll('.chat-panel, #composer, #conversation')].map(e=>({width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height,x:e.getBoundingClientRect().x})),
+ scrollTop:document.querySelector('#conversation').scrollTop,scrollHeight:document.querySelector('#conversation').scrollHeight,
+ }));
+ const capture=async name=>{if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/${name}-${width}.png`});};
  if(width>=1100){
- const before=await page.locator('.chat-panel').boundingBox();const widths=await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width));await open();const left=await page.locator('#destination-switcher').boundingBox();
- assert(Math.abs(left.width-310)<2);assert.equal(await page.locator('#destination-backdrop').isVisible(),false);
- assert.deepEqual(await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width)),widths);assert.equal((await page.locator('.chat-panel').boundingBox()).x,before.x);
- const activeColor=await page.locator('#destination-button').evaluate(e=>getComputedStyle(e).backgroundColor);
- await page.locator('#inspector-button').click();await page.waitForTimeout(210);assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');assert.equal(await page.locator('#inspector-button').evaluate(e=>getComputedStyle(e).backgroundColor),activeColor);
- const togetherWidths=await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width));
- if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/rails-${width}.png`});
- await dismissTasks();await closed();assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');assert.deepEqual(await page.locator('.chat-panel, #composer, .inspector').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().width)),togetherWidths);assert.notEqual(await page.locator('#destination-button').evaluate(e=>getComputedStyle(e).backgroundColor),activeColor);
- await page.locator('#inspector-button').click();await page.waitForTimeout(210);assert.equal((await page.locator('.chat-panel').boundingBox()).x,before.x);
+ const baseline=await geometry();await capture('neither');await open();await capture('tasks');assert.deepEqual(await geometry(),baseline);
+ assert.equal((await page.locator('#destination-switcher').boundingBox()).width,310);
+ assert.equal(await page.locator('#destination-backdrop').isVisible(),false);
+ assert.equal(await page.locator('#destination-search').evaluate(e=>e.getBoundingClientRect().height),40);
+ assert.equal(await page.locator('#destination-close').isVisible(),false);
+ const shellStyle=e=>{const s=getComputedStyle(e);return {height:e.getBoundingClientRect().height,padding:s.padding,border:s.borderBottom};};
+ assert.deepEqual(await page.locator('.destination-switcher-head').evaluate(shellStyle),await page.locator('.inspector-heading').evaluate(shellStyle));
+ const activeStyle=e=>{const s=getComputedStyle(e);return {background:s.backgroundColor,border:s.borderColor,color:s.color};};
+ const active=await page.locator('#destination-button').evaluate(activeStyle);
+ await page.locator('#inspector-button').click();await page.waitForTimeout(210);await capture('both');
+ assert.deepEqual(await geometry(),baseline);assert.equal((await page.locator('.inspector').boundingBox()).width,340);
+ assert.deepEqual(await page.locator('#inspector-button').evaluate(activeStyle),active);
+ assert.equal(await page.locator('#inspector-close').isVisible(),false);assert.equal(await page.locator('#inspector-backdrop').isVisible(),false);
+ await dismissTasks();await closed();await capture('details');assert.deepEqual(await geometry(),baseline);
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');
+ await page.locator('#inspector-button').click();await page.waitForTimeout(210);assert.deepEqual(await geometry(),baseline);
+ }else{
+ await open();await capture('tasks');assert.equal(await page.locator('#destination-close').isVisible(),true);assert.equal(await page.locator('#destination-backdrop').isVisible(),true);
+ const header=await page.locator('.destination-switcher-head').evaluate(e=>({height:e.getBoundingClientRect().height,padding:getComputedStyle(e).padding}));
+ const closeSize=await page.locator('#destination-close').evaluate(e=>({width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height}));
+ await dismissTasks();await closed();await page.locator('#inspector-button').click();await page.waitForTimeout(210);await capture('details');
+ assert.deepEqual(await page.locator('.inspector-heading').evaluate(e=>({height:e.getBoundingClientRect().height,padding:getComputedStyle(e).padding})),header);
+ assert.deepEqual(await page.locator('#inspector-close').evaluate(e=>({width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height})),closeSize);
+ assert.equal(await page.locator('#inspector-backdrop').isVisible(),true);await page.locator('#inspector-close').click();await page.waitForTimeout(210);
  }
  runtime.handleNotification({method:'thread/tokenUsage/updated',params:{threadId:'current',tokenUsage:{last:{totalTokens:41000},modelContextWindow:100000}}});
  await page.waitForFunction(()=>document.querySelector('#context-percent').textContent==='41%');
@@ -228,5 +251,5 @@ try {
 
  }
  }
- assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, Tasks overlay widths and focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
+ assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
