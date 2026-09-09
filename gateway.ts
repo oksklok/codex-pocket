@@ -280,7 +280,7 @@ Environment:
   process.exit(0);
 }
 
-function parseArgs(args: string[], defaults: Options): Options {
+export function parseArgs(args: string[], defaults: Options): Options {
   const options: Options = { ...defaults };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
@@ -428,12 +428,12 @@ function browserUrl(host: string, port: number): string {
   return `http://${localHost.includes(":") ? `[${localHost}]` : localHost}:${port}`;
 }
 
-function restartUrlForRequest(request: IncomingMessage, config: LocalConfig, fallback: string): string {
-  if (!config.lanEnabled) return fallback;
+export function restartUrlForRequest(request: IncomingMessage, lanEnabled: boolean, fallback: string): string {
+  if (!lanEnabled) return fallback;
   try {
     const requested = new URL(`http://${request.headers.host ?? ""}`);
     const host = requested.hostname.replace(/^\[|\]$/g, "");
-    if (!isLoopbackHost(host)) return `http://${host.includes(":") ? `[${host}]` : host}:${config.port}`;
+    if (!isLoopbackHost(host)) return `http://${host.includes(":") ? `[${host}]` : host}:${new URL(fallback).port || "80"}`;
   } catch {
     // Fall back to the gateway's local URL for malformed Host headers.
   }
@@ -490,8 +490,8 @@ function markHostQuit(): void {
   });
 }
 
-async function validateRestartTarget(config: LocalConfig, current: Options): Promise<void> {
-  const host = config.lanEnabled ? config.host : SAFE_CONFIG.host;
+async function validateRestartTarget(config: Pick<Options, "host" | "port">, current: Options): Promise<void> {
+  const host = config.host;
   const port = config.port === current.port ? 0 : config.port;
   await new Promise<void>((resolve, reject) => {
     const probe = createNetServer();
@@ -501,19 +501,18 @@ async function validateRestartTarget(config: LocalConfig, current: Options): Pro
   });
 }
 
-const RESTART_HELPER = String.raw`
+export const RESTART_HELPER = String.raw`
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
-const [oldPid, nodePath, gatewayPath, cwd, logPath] = process.argv.slice(1);
+const [oldPid, nodePath, gatewayPath, cwd, logPath, ...args] = process.argv.slice(1);
 const waitForExit = () => {
   try {
     process.kill(Number(oldPid), 0);
     setTimeout(waitForExit, 100);
   } catch {
     const env = { ...process.env };
-    delete env.CODEX_POCKET_PIN;
     const log = fs.openSync(logPath, "a");
-    const child = spawn(nodePath, ["--experimental-strip-types", gatewayPath], {
+    const child = spawn(nodePath, ["--experimental-strip-types", gatewayPath, ...args], {
       cwd,
       detached: true,
       stdio: ["ignore", log, log],
@@ -525,7 +524,7 @@ const waitForExit = () => {
 waitForExit();
 `;
 
-async function startRestartHandoff(): Promise<void> {
+async function startRestartHandoff(args: string[]): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const helper = spawn(process.execPath, [
       "-e",
@@ -535,6 +534,7 @@ async function startRestartHandoff(): Promise<void> {
       fileURLToPath(import.meta.url),
       ROOT_DIR,
       LOG_PATH,
+      ...args,
     ], { cwd: ROOT_DIR, detached: true, stdio: "ignore", env: process.env });
     helper.once("spawn", () => {
       helper.unref();
@@ -3813,7 +3813,7 @@ export async function handleRequest(
   auth: AuthConfig,
   settings: LocalSettings,
   options: Options,
-  restartPocket: () => Promise<{ localUrl: string }>,
+  restartPocket: () => Promise<{ localUrl: string; lanEnabled?: boolean }>,
   quitPocket: () => void,
   isShuttingDown: () => boolean,
 ): Promise<void> {
@@ -3947,7 +3947,7 @@ export async function handleRequest(
       const result = await restartPocket();
       sendJson(response, 202, {
         restarting: true,
-        localUrl: restartUrlForRequest(request, settings.config, result.localUrl),
+        localUrl: restartUrlForRequest(request, result.lanEnabled ?? settings.config.lanEnabled, result.localUrl),
       }, gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
@@ -4153,7 +4153,8 @@ export async function handleRequest(
 async function main(): Promise<void> {
   if (process.env.CODEX_POCKET_DATA_DIR) mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const settings = loadLocalSettings();
-  const options = parseArgs(process.argv.slice(2), {
+  const launchArgs = process.argv.slice(2);
+  const options = parseArgs(launchArgs, {
     host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
     port: settings.config.port,
     localName: settings.config.localName,
@@ -4177,7 +4178,7 @@ async function main(): Promise<void> {
   }
   readFileSync(join(ROOT_DIR, "node_modules", "markdown-it", "dist", "markdown-it.min.js"));
   const gateway = new PocketGateway(options);
-  let restartPocket: () => Promise<{ localUrl: string }>;
+  let restartPocket: () => Promise<{ localUrl: string; lanEnabled?: boolean }>;
   let stopPocket: () => void;
   let quitPocket: () => void;
   let shuttingDown = false;
@@ -4220,15 +4221,14 @@ async function main(): Promise<void> {
   };
   restartPocket = async () => {
     if (shuttingDown) throw new Error("Pocket is already restarting");
-    await validateRestartTarget(settings.config, options);
-    if (!HEADLESS) await startRestartHandoff();
-    const localUrl = browserUrl(
-      settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
-      settings.config.port,
-    );
+    const savedTarget = { host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host, port: settings.config.port };
+    const target = HEADLESS ? savedTarget : parseArgs(launchArgs, { ...options, ...savedTarget });
+    await validateRestartTarget(target, options);
+    if (!HEADLESS) await startRestartHandoff(launchArgs);
+    const localUrl = browserUrl(target.host, target.port);
     shuttingDown = true;
     setTimeout(() => void shutdown(), 350).unref();
-    return { localUrl };
+    return { localUrl, lanEnabled: !isLoopbackHost(target.host) };
   };
   stopPocket = () => {
     if (shuttingDown) throw new Error("Pocket is already stopping");

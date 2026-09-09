@@ -19,7 +19,7 @@ import {
   resolvedAsyncAnswer,
   rememberComposerDraft,
 } from "../public/pocket-logic.js";
-import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient } from "../gateway.ts";
+import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient, parseArgs, RESTART_HELPER, restartUrlForRequest } from "../gateway.ts";
 
 const machine = { id: "local" };
 const task = { id: "thread-1", status: "failed" };
@@ -1334,4 +1334,31 @@ test('New Task catalog refresh failure after attachment cannot abort ownership h
   assert.equal(calls.filter(call => call === 'B:refresh-failed').length, 1);
   assert(calls.indexOf('B:refresh-failed') < calls.indexOf('A:thread/unsubscribe'));
   assert.deepEqual([...gateway.runtimes.values()].filter(r => r.state.thread).map(r => r.definition.id), ['ssh:b']);
+});
+
+
+test('restart preserves explicit launch overrides without freezing saved settings or putting PINs in argv', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const saved = { host: '127.0.0.1', port: 4999, localName: '', machines: [] };
+  const overrides = ['--host', '0.0.0.0', '--port', '4888', '--ws', 'ws://localhost:1234', '--thread', 'task-id'];
+  for (const args of [[], overrides]) for (const pin of [undefined, '', '1234']) {
+    const env = { CODEX_BIN: '/custom/codex' };
+    if (pin !== undefined) env.CODEX_POCKET_PIN = pin;
+    let launch;
+    runInNewContext(RESTART_HELPER, {
+      process: { argv: ['node', '123', '/node', '/gateway.ts', '/project', '/log', ...args], env, kill: () => { throw new Error('old process exited'); } },
+      require: name => name === 'node:fs' ? { openSync: () => 9 } : { spawn: (file, argv, options) => { launch = { file, argv, options }; return { unref() {} }; } },
+    });
+    assert.equal(launch.file, '/node');
+    assert.deepEqual(Array.from(launch.argv), ['--experimental-strip-types', '/gateway.ts', ...args]);
+    assert.deepEqual({ ...launch.options.env }, env);
+    const next = parseArgs(Array.from(launch.argv).slice(2), saved);
+    assert.equal(next.host, args.length ? '0.0.0.0' : saved.host);
+    assert.equal(next.port, args.length ? 4888 : saved.port);
+    assert.equal(next.ws, args.length ? 'ws://localhost:1234' : undefined);
+    assert.equal(next.thread, args.length ? 'task-id' : undefined);
+  }
+  const request = { headers: { host: '192.168.50.2:4173' } };
+  assert.equal(restartUrlForRequest(request, true, 'http://127.0.0.1:4888'), 'http://192.168.50.2:4888');
+  assert.equal(restartUrlForRequest(request, false, 'http://127.0.0.1:4999'), 'http://127.0.0.1:4999');
 });
