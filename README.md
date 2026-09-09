@@ -60,6 +60,16 @@ Phone URLs include local LAN and Tailscale/CGNAT IPv4 addresses (`100.64.0.0/10`
 
 Closing browser tabs leaves the gateway running. The menu bar provides a gateway power switch, **Keep Mac Awake**, **Launch at Login** where supported, and **Quit Codex Pocket**. The app is not distributed as a notarized installer; you can rebuild it locally with `macos/build-app.sh`.
 
+## Standalone mobile app (PWA)
+
+Pocket includes a web app manifest and can launch as a standalone PWA without normal browser chrome. Adding a raw LAN HTTP URL such as `http://192.168.x.x:4173` to the home screen creates only a browser shortcut. A true standalone install requires a **trusted HTTPS origin**.
+
+For private access, keep Pocket on HTTP internally and put a small HTTPS reverse proxy such as Caddy in front of it. Keep the HTTPS endpoint reachable only over a trusted LAN, WireGuard, or another private VPN. Caddy's internal CA is suitable if the Android device trusts that CA.
+
+Open the trusted HTTPS URL in Edge/Chromium on Android, choose **Add to phone / Install app** from the browser menu, and launch the installed icon. It should open without the normal address bar or tab controls. No service worker or offline caching is required for this standalone use case; Pocket still needs a live connection to its gateway.
+
+Keep Caddy configuration, certificates, CA private keys, and all other machine-local HTTPS material outside the repository. Do not commit them. HTTPS does not change Pocket's [private-network security boundary](SECURITY.md).
+
 ## SSH machines
 
 On each remote machine, authenticate Codex and start its shared app-server. From the Pocket host, verify an existing SSH alias works without prompting:
