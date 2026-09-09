@@ -66,6 +66,8 @@ type PocketMessage = {
   phase?: string | null;
   delivery?: "async" | null;
   questions?: Array<{ title: string; options: string[] }>;
+  // Correlation only; transcript renderers display text, never this metadata.
+  questionReplies?: Array<{ questionItemId: string; question?: string; answer: string }>;
   imageCount?: number;
   createdAt: number;
   complete: boolean;
@@ -1074,31 +1076,36 @@ export class RpcClient {
 }
 
 // Only this complete Codex envelope is internal; quoted or surrounding user text stays intact.
-function visibleUserText(text: string): string {
+function normalizedUserReply(text: string): { text: string; questionReplies?: Array<{ questionItemId: string; question?: string; answer: string }> } {
   const match = /^\s*<send_user_message_question_reply>([\s\S]*)<\/send_user_message_question_reply>\s*$/.exec(text);
-  if (!match) return text;
+  if (!match) return { text };
   try {
     const replies = JSON.parse(match[1]);
     if (Array.isArray(replies) && replies.length && replies.every((reply) =>
       reply && typeof reply === "object" && typeof reply.answer === "string" && reply.answer.trim())) {
-      return replies.map((reply) => reply.answer).join("\n\n");
+      return {
+        text: replies.map((reply) => reply.answer).join("\n\n"),
+        questionReplies: replies.filter(reply => typeof reply.questionItemId === "string" && reply.questionItemId.length > 0)
+          .map(reply => ({ questionItemId: reply.questionItemId, ...(typeof reply.question === "string" ? { question: reply.question } : {}), answer: reply.answer })),
+      };
     }
   } catch {
     // Do not expose malformed internal payloads or strip arbitrary user markup.
   }
-  return "Question answered.";
+  return { text: "Question answered." };
 }
 
 function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
   if (!item || (item.type !== "userMessage" && item.type !== "agentMessage")) return null;
-  const text = item.type === "userMessage" ? visibleUserText(readText(item)) : readText(item);
+  const normalized = item.type === "userMessage" ? normalizedUserReply(readText(item)) : { text: readText(item) };
+  const { text } = normalized;
   const imageCount = item.type === "userMessage" && Array.isArray(item.content) ? item.content.filter((input: any) => input.type === "image" || input.type === "localImage").length : 0;
   if (!text && !imageCount && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
   return {
     id: String(item.id ?? `${item.type}-${randomBytes(6).toString("hex")}`),
     turnId,
     role: item.type === "userMessage" ? "user" : "assistant",
-    text,
+    ...normalized,
     ...(imageCount ? { imageCount } : {}),
     ...(item.type === "agentMessage" ? { phase: item.phase == null ? null : String(item.phase) } : {}),
     ...(item.type === "agentMessage" ? { delivery: item.delivery === "async" ? "async" : null, questions: normalizeAsyncQuestions(item.questions) } : {}),

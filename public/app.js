@@ -180,7 +180,8 @@ const navigationRequests = [null, null];
 const navigationErrors = ["", ""];
 let navigationEpoch = 0;
 let destinationSelection = null;
-let destinationError = "";
+let destinationCreateError = null;
+let taskActionTarget = null;
 let destinationTaskError = null;
 let taskActionBusy = false;
 let switchingThread = false;
@@ -197,6 +198,8 @@ let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
 let selectedImages = [];
+const composerDrafts = new Map();
+const draftKey = (machineId, threadId) => threadId ? JSON.stringify([machineId, threadId]) : null;
 let readingImages = false;
 let imageDeliveryUnknown = false;
 let enterSends = true;
@@ -519,7 +522,7 @@ function renderDestinationSwitcher() {
   const renderKey = JSON.stringify([
     navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
     state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
-    destinationError, destinationTaskError, archived, showProjects.checked, navigationErrors[slot],
+    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationCreateError, destinationTaskError, archived, showProjects.checked, navigationErrors[slot],
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -567,11 +570,12 @@ function renderDestinationSwitcher() {
     const create = document.createElement("button");
     create.type = "button";
     create.className = "text-button";
-    create.textContent = "New Task";
-    create.disabled = !machine.connected || taskActionBusy;
+    create.textContent = taskActionTarget?.machineId === machine.id && taskActionTarget.action === "create" ? "Creating…" : "New Task";
+    create.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget.action === "create");
     create.addEventListener("click", () => newTask(machine));
     if (!archived) heading.append(create);
     group.append(heading);
+    if (destinationCreateError?.machineId === machine.id) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: destinationCreateError.message }));
     // Auto-attach ownership failures belong to a task, not the machine catalog.
     // Only a failed manual selection surfaces ownership here, with its Retry target.
     if (machine.local && machine.connectionError
@@ -586,7 +590,7 @@ function renderDestinationSwitcher() {
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
-      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection) || taskActionBusy || task.archived;
+      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection) || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id) || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
       row.title = task.cwd || task.name || "Task";
       const check = document.createElement("span");
@@ -605,6 +609,7 @@ function renderDestinationSwitcher() {
       status.className = "destination-task-status";
       status.textContent = destinationSelection?.machineId === machine.id && destinationSelection?.threadId === task.id
         ? "Opening…"
+        : taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
         : destinationTaskStatus(machine, task, state);
       row.append(check, label, status);
       row.addEventListener("click", () => selectDestination(machine.id, task.id));
@@ -638,9 +643,9 @@ function renderDestinationSwitcher() {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
-        button.disabled = !machine.connected || taskActionBusy || task.status?.startsWith("active");
+        button.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id) || task.status?.startsWith("active");
         button.addEventListener("click", () => {
-          if (destinationSelection) return;
+          if (destinationSelection || taskActionBusy) return;
           if (action === "delete" && !confirm(`Delete task “${task.name}”? This permanently deletes its Codex conversation. Project files are not deleted.`)) return;
           performTaskAction({ machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action, confirmed: action === "delete" });
         });
@@ -664,14 +669,7 @@ function renderDestinationSwitcher() {
     empty.textContent = navigationErrors[slot] || (query ? "No matching tasks" : archived ? "No archived tasks" : "Task catalog unavailable");
     elements.destinationList.append(empty);
   }
-  if (destinationError) {
-    const error = document.createElement("div");
-    error.className = "destination-error";
-    const message = document.createElement("span");
-    message.textContent = destinationError;
-    error.append(message);
-    elements.destinationList.prepend(error);
-  }
+
 }
 
 async function refreshLoadedThreads() {
@@ -762,7 +760,7 @@ function closeDestinationSwitcher() {
   elements.destinationButton.setAttribute("aria-expanded", "false");
   document.body.classList.remove("destination-open");
   elements.destinationSearch.value = "";
-  destinationError = "";
+  destinationCreateError = null;
   destinationTaskError = null;
   return true;
 }
@@ -1191,6 +1189,8 @@ function renderImageThumbnails(container, images, removable = false) {
 
 async function addImages(files) {
   if (elements.attachImage.disabled || !files.length) return;
+  const imageTaskKey = draftKey(state?.machineId, state?.thread?.id);
+  const priorImages = [...selectedImages];
   readingImages = true;
   composerError = "";
   renderComposer();
@@ -1208,7 +1208,10 @@ async function addImages(files) {
       });
       images.push({ type: "image", url });
     }
-    selectedImages = imageInputs([...selectedImages, ...images]);
+    const nextImages = imageInputs([...priorImages, ...images]);
+    if (imageTaskKey !== draftKey(state?.machineId, state?.thread?.id)) {
+      if (imageTaskKey) composerDrafts.set(imageTaskKey, { text: composerDrafts.get(imageTaskKey)?.text || "", images: nextImages });
+    } else selectedImages = nextImages;
   } catch (error) {
     composerError = error.message;
   } finally {
@@ -1393,7 +1396,7 @@ function asyncQuestionNode(message, question, index) {
 }
 
 async function submitAsyncAnswer(message, index, draft) {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (draft.sending || draft.uncertain || !draft.text.trim()) return;
   const machineId = state.machineId, threadId = state.thread.id;
   draft.sending = true;
@@ -1808,7 +1811,18 @@ function applySnapshot(next, loadChangedHistory = true) {
   const nextMachineId = next?.machineId;
   const nextThreadId = next?.thread?.id;
   const taskChanged = previousMachineId !== nextMachineId || previousThreadId !== nextThreadId;
-  if (taskChanged) resetConversationState();
+  if (taskChanged) {
+    const oldKey = draftKey(previousMachineId, previousThreadId);
+    if (oldKey) composerDrafts.set(oldKey, { text: elements.messageText.value, images: [...selectedImages] });
+    resetConversationState();
+    const draft = composerDrafts.get(draftKey(nextMachineId, nextThreadId));
+    elements.messageText.value = draft?.text || "";
+    selectedImages = [...(draft?.images || [])];
+    imageDeliveryUnknown = false;
+    composerError = "";
+    composerNotice = "";
+    resizeComposer();
+  }
   mergeState(next, true);
   if (taskChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
 }
@@ -1859,7 +1873,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
 }
 
 async function newTask(machine) {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   const name = prompt(`New task on ${machine.name}: task name`);
   if (name === null || !name.trim()) return;
   const defaultCwd = machine.id === state?.machineId ? state?.thread?.cwd : machine.tasks?.find((task) => task.selected)?.cwd;
@@ -1869,46 +1883,55 @@ async function newTask(machine) {
 }
 
 async function performTaskAction(body) {
-  if (taskActionBusy || destinationSelection || switchingMachine || switchingThread) return;
+  if (taskActionBusy || destinationSelection || switchingMachine || switchingThread || submittingMessage || readingImages) return;
   taskActionBusy = true;
-  switchingThread = true;
-  destinationError = "";
+  const target = { machineId: body.machineId, threadId: body.threadId, action: body.action, events: [] };
+  taskActionTarget = target;
+  destinationCreateError = null;
   destinationTaskError = null;
-  renderState();
   renderDestinationSwitcher();
   let succeeded = false;
+  let snapshot = null;
+  let failure = "";
   try {
     const response = await apiFetch("/api/tasks", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...body, expectedMachineId: state?.machineId || "", expectedThreadId: state?.thread?.id || "" }),
     });
-    const snapshot = await response.json();
-    if (!response.ok) throw new Error(snapshot.error || "Task action failed");
-    applySnapshot(snapshot, false);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Task action failed");
+    snapshot = result;
     succeeded = true;
   } catch (error) {
     // Never repeat task creation or deletion after a lost response.
-    destinationError = error instanceof TypeError ? "Could not confirm the task action. Check the refreshed list before trying again." : error.message;
-    try { const response = await apiFetch("/api/state"); if (response.ok) applySnapshot(await response.json(), false); } catch {}
-  } finally {
-    switchingThread = false;
-    taskActionBusy = false;
+    failure = error instanceof TypeError ? "Could not confirm the task action. Check the refreshed list before trying again." : error.message;
+    try { const response = await apiFetch("/api/state"); if (response.ok) snapshot = await response.json(); } catch {}
   }
-  const error = destinationError;
+  taskActionBusy = false;
+  taskActionTarget = null;
+  const changed = snapshot && (snapshot.machineId !== state?.machineId || snapshot.thread?.id !== state?.thread?.id);
+  if (snapshot && (succeeded || changed)) {
+    applySnapshot(snapshot, false);
+    const lastSnapshot = target.events.findLastIndex(entry => entry.snapshot?.machineId === snapshot.machineId && entry.snapshot?.thread?.id === snapshot.thread?.id);
+    for (const entry of target.events.slice(lastSnapshot < 0 ? target.events.length : lastSnapshot + 1)) entry.deliver();
+  } else for (const entry of target.events) entry.deliver();
+  if (succeeded && body.action === "delete") composerDrafts.delete(draftKey(body.machineId, body.threadId));
+  if (failure) {
+    if (body.action === "create") destinationCreateError = { machineId: body.machineId, message: failure };
+    else destinationTaskError = { machineId: body.machineId, threadId: body.threadId, message: failure };
+  }
   invalidateNavigationCatalogs();
-  renderState();
   await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
-  destinationError = error;
   renderDestinationSwitcher();
   if (succeeded && body.action === "create") {
     closeDestinationSwitcher();
     elements.messageText.focus();
   }
-  if (state?.thread) await loadHistory(null, historyEpoch, true);
+  if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
 }
 
 async function selectDestination(machineId, threadId) {
-  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess) return;
+  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess || readingImages) return;
   destinationTaskError = null;
   if (machineId === state?.machineId && threadId === state?.thread?.id) {
     closeDestinationSwitcher();
@@ -1969,7 +1992,8 @@ async function selectDestination(machineId, threadId) {
 }
 
 async function submitMessage(action) {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
+  const sentDraftKey = draftKey(state?.machineId, state?.thread?.id);
   const text = elements.messageText.value;
   const images = selectedImages;
   if ((!text.trim() && !images.length) || readingImages || imageDeliveryUnknown || submittingMessage || switchingMachine || switchingThread || state?.queuedMessage) return;
@@ -1985,6 +2009,8 @@ async function submitMessage(action) {
   renderState();
   try {
     const result = await postMessageAction("/api/message", { machineId: state?.machineId, text, action, images });
+    composerDrafts.delete(sentDraftKey);
+    if (sentDraftKey !== draftKey(state?.machineId, state?.thread?.id)) return;
     selectedImages = [];
     imageDeliveryUnknown = false;
     elements.messageText.value = "";
@@ -2017,7 +2043,7 @@ async function submitMessage(action) {
 }
 
 async function cancelQueuedMessage() {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (submittingMessage || sendingQueuedMessage || cancellingQueue) return;
   cancellingQueue = true;
   renderQueue();
@@ -2038,7 +2064,7 @@ async function cancelQueuedMessage() {
 }
 
 async function sendQueuedMessage() {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (submittingMessage || cancellingQueue || sendingQueuedMessage || !state?.queuedMessage || switchingMachine || switchingThread) return;
   const action = state?.turn?.status === "inProgress" ? "steer" : "start";
   sendingQueuedMessage = true;
@@ -2060,7 +2086,7 @@ async function sendQueuedMessage() {
 }
 
 async function interruptTurn() {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (submittingInterrupt || switchingMachine || switchingThread || state?.turn?.status !== "inProgress") return;
   const machineId = state?.machineId;
   const expectedThreadId = state?.thread?.id;
@@ -2087,7 +2113,7 @@ async function interruptTurn() {
 }
 
 async function updateThreadSettings(model, effort) {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (updatingModel || switchingMachine || switchingThread || !state?.thread) return;
   updatingModel = true;
   composerError = "";
@@ -2110,7 +2136,7 @@ async function updateThreadSettings(model, effort) {
 }
 
 async function updateAccess(mode) {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (updatingAccess || switchingMachine || switchingThread || !state?.thread) return;
   updatingAccess = true;
   composerError = "";
@@ -2133,7 +2159,7 @@ async function updateAccess(mode) {
 }
 
 async function resolveApproval(requestId, decision) {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (resolvingApproval || switchingMachine || switchingThread || !requestId) return;
   resolvingApproval = true;
   composerError = "";
@@ -2163,7 +2189,7 @@ async function resolveApproval(requestId, decision) {
 }
 
 async function submitStructuredInput(pending) {
-  if (destinationSelection) return;
+  if (destinationSelection || taskActionBusy) return;
   if (!pending?.id || submittingInputRequestId || switchingMachine || switchingThread) return;
   const requestDraft = inputDrafts.get(pending.id) || new Map();
   const answers = [];
@@ -2240,8 +2266,9 @@ function connectEvents() {
   source?.close();
   source = new EventSource("/events");
   const on = (type, handler) => source.addEventListener(type, event => {
-    if (destinationSelection && type !== "open" && type !== "error") {
-      destinationSelection.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => handler(event) });
+    const pending = destinationSelection || taskActionTarget;
+    if (pending && type !== "open" && type !== "error") {
+      pending.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => handler(event) });
     } else handler(event);
   });
   on("open", () => setConnection(true));

@@ -847,3 +847,22 @@ test("assistant local images require thread-local protocol provenance, including
     await assert.rejects(runtime.messageImage("thread-4", "stale-path", 0), /Image unavailable/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("fresh history resolves async answers from exact question IDs without exposing wrapper text", async () => {
+  const runtime = activeRuntime();
+  const question = { id: "question-id", type: "agentMessage", delivery: "async", text: "Choose", questions: [{ title: "First?", options: [] }, { title: "Second?", options: [] }], createdAt: 100 };
+  const reply = { id: "reply-id", type: "userMessage", createdAt: 200, content: [{ type: "text", text: `<send_user_message_question_reply>${JSON.stringify([
+    { questionItemId: "question-id", question: "Second?", answer: "Two" },
+    { questionItemId: "question-id", question: "First?", answer: "One" },
+  ])}</send_user_message_question_reply>` }] };
+  runtime.rpc = { request: async method => method === "thread/turns/list" ? { data: [{ id: "turn-1", status: "completed" }] } : { data: [question, reply].map(item => ({ turnId: "turn-1", item })) } };
+  const messages = (await runtime.history(null, 1)).turns[0].messages;
+  assert.deepEqual(runtime.snapshot().asyncAnswers, {});
+  const normalizedQuestion = messages.find(m => m.id === question.id);
+  const normalizedReply = messages.find(m => m.id === reply.id);
+  assert.equal(normalizedReply.text, "Two\n\nOne");
+  assert.equal(resolvedAsyncAnswer(normalizedQuestion, 0, messages, {}), "One");
+  assert.equal(resolvedAsyncAnswer(normalizedQuestion, 1, messages, {}), "Two");
+  assert.equal(resolvedAsyncAnswer({ ...normalizedQuestion, id: "different-question" }, 0, messages, {}), null);
+  assert.equal(resolvedAsyncAnswer(normalizedQuestion, 0, messages, { "question-id": { 0: "Fast path" } }), "Fast path");
+});

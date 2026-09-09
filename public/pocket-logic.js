@@ -74,6 +74,12 @@ export function asyncAnswerText(title, answer) {
 export function resolvedAsyncAnswer(message, index, messages, answers = {}) {
   const recorded = answers[message.id]?.[index];
   if (recorded !== undefined) return recorded;
+  for (const candidate of messages) {
+    if (candidate.role !== "user" || !Array.isArray(candidate.questionReplies)) continue;
+    const reply = candidate.questionReplies.find(reply => reply.questionItemId === message.id
+      && (reply.question === message.questions[index].title || (reply.question === undefined && message.questions.length === 1)));
+    if (reply && typeof reply.answer === "string") return reply.answer;
+  }
   const prefix = asyncAnswerText(message.questions[index].title, "");
   const response = messages.find((candidate) => candidate.role === "user"
     && candidate.createdAt >= message.createdAt && candidate.text.startsWith(prefix));
