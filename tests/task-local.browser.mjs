@@ -42,6 +42,7 @@ const server=createServer(async(req,res)=>{
  if(mode==='lost'){req.socket.destroy();return;}
  return json(snapshot());
  }
+ if(u.pathname==='/api/message/queue'&&req.method==='DELETE')return json(runtime.cancelQueuedMessage());
  if(u.pathname==='/api/message'){for await(const c of req){};return json({accepted:true},202);}
  if(u.pathname==='/api/tasks'){
  let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(gate)await gate;if(failAction)return json({error:'Fixture action failed'},409);
@@ -49,7 +50,7 @@ const server=createServer(async(req,res)=>{
  if(b.action==='archive'){archived.push({...active.find(t=>t.id===b.threadId),archived:true});active=active.filter(t=>t.id!==b.threadId);}
  if(b.action==='unarchive'){active.push({...archived.find(t=>t.id===b.threadId),archived:false});archived=archived.filter(t=>t.id!==b.threadId);}
  if(b.action==='delete'){active=active.filter(t=>t.id!==b.threadId);archived=archived.filter(t=>t.id!==b.threadId);}
- if(b.action==='create'){const t={id:'new',name:b.name,cwd:b.cwd,status:'idle'};active.push(t);runtime.state.thread=t;}
+ if(b.action==='create'){const t={id:'new',name:b.name,cwd:b.cwd,status:'idle'};active.push(t);runtime.state.thread=t;return json({...snapshot(),warning:'Task created, but its name could not be saved. You can rename it later.'});}
  return json(snapshot());
  }
  const path=u.pathname==='/'?'/index.html':u.pathname;
@@ -249,6 +250,13 @@ try {
  assert.equal(await page.locator('img[src^="https://"], img[src^="http://"]').count(),0);
  assert((await page.locator('body').innerText()).includes('Remote image'));
  runtime.state.liveMessages=[];
+ runtime.state.queuedMessage={threadId:runtime.state.thread.id,text:'Already sending',images:[]};runtime.startingQueuedMessage=true;runtime.broadcast('snapshot',snapshot());
+ await page.locator('#queue-banner').waitFor();await page.locator('#cancel-queue').click();
+ await page.getByText('Queued message is already being sent.',{exact:true}).waitFor();
+ assert.equal(await page.locator('#queue-banner').isVisible(),true);assert.equal(await page.locator('#queue-text').textContent(),'Already sending');
+ assert.equal(runtime.state.queuedMessage.text,'Already sending');
+ runtime.startingQueuedMessage=false;await page.locator('#cancel-queue').click();
+ await page.getByText('Queued message cancelled.',{exact:true}).waitFor();assert.equal(await page.locator('#queue-banner').isVisible(),false);
  await input.fill('Draft A');await page.locator('#image-picker').setInputFiles({name:'a.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
  await select('Owned task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Draft B');await select('Current task');assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
@@ -304,7 +312,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.getByRole('button',{name:'Creating…',exact:true}).waitFor();assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('.destination-group').first().getByText('Fixture action failed',{exact:true}).waitFor();assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);

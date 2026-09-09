@@ -1965,6 +1965,7 @@ export class MachineRuntime {
   }
 
   cancelQueuedMessage(): JsonObject {
+    if (this.startingQueuedMessage) return { cancelled: false, queuedMessage: this.state.queuedMessage };
     if (!this.state.queuedMessage) return { cancelled: false, queuedMessage: null };
     this.state.queuedMessage = null;
     this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
@@ -2233,6 +2234,7 @@ export class MachineRuntime {
   private async loadModels(): Promise<void> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const models: PocketModel[] = [];
+    const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
       const page = await this.rpc.request("model/list", { cursor, limit: 100, includeHidden: false });
@@ -2253,6 +2255,8 @@ export class MachineRuntime {
         });
       }
       cursor = page?.nextCursor ? String(page.nextCursor) : null;
+      if (cursor && cursors.has(cursor)) throw new Error("Model catalog returned a repeated cursor");
+      if (cursor) cursors.add(cursor);
     } while (cursor);
     this.state.models = models;
   }
@@ -2271,6 +2275,7 @@ export class MachineRuntime {
   private async loadPermissionProfiles(cwd: string): Promise<PermissionProfileSummary[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const profiles: PermissionProfileSummary[] = [];
+    const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
       const page = await this.rpc.request("permissionProfile/list", { cwd, cursor, limit: 100 });
@@ -2283,6 +2288,8 @@ export class MachineRuntime {
         });
       }
       cursor = page?.nextCursor ? String(page.nextCursor) : null;
+      if (cursor && cursors.has(cursor)) throw new Error("Permission profile catalog returned a repeated cursor");
+      if (cursor) cursors.add(cursor);
     } while (cursor);
     this.permissionProfiles = profiles;
     return profiles;
@@ -2319,8 +2326,7 @@ export class MachineRuntime {
       await this.attachLoadedThread(id, true, started);
       this.options.thread = id;
       await this.refreshLoadedThreads();
-      if (nameError) throw new Error("Task created, but its name could not be saved. Open the created task before trying again.");
-      return this.snapshot();
+      return { ...this.snapshot(), ...(nameError ? { warning: "Task created, but its name could not be saved. You can rename it later." } : {}) };
     }
     if (!["rename", "archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
     const id = String(body.threadId ?? "");
@@ -3463,7 +3469,7 @@ export class PocketGateway {
       if (String(body.expectedMachineId ?? "") !== this.selectedMachineId || String(body.expectedThreadId ?? "") !== String(this.state.thread?.id ?? "")) throw new Error("Selected task changed; try again");
       const next = this.runtimes.get(String(body.machineId));
       if (!next) throw new Error("Machine is not configured");
-      await next.taskAction(body);
+      const result = await next.taskAction(body);
       if (body.action === "create" && this.selectedMachineId !== body.machineId) {
         const previous = this.selected();
         for (const response of this.subscribers) previous.removeSubscriber(response);
@@ -3475,7 +3481,7 @@ export class PocketGateway {
       }
       const snapshot = this.snapshot();
       for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
-      return snapshot;
+      return { ...snapshot, ...(result.warning ? { warning: result.warning } : {}) };
     });
   }
 

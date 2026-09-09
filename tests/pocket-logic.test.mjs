@@ -1237,3 +1237,69 @@ test("task context survives release as last known, refreshes authoritatively, an
   await runtime.attachLoadedThread('thread-1', false);
   assert.equal(runtime.state.context, null);
 });
+
+test('New Task naming failure still hands ownership to the destination machine', async () => {
+  const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
+  const a = gateway.runtimes.get('local'), b = gateway.runtimes.get('ssh:b');
+  const calls = [];
+  const created = { id: 'new-b', cwd: '/project', status: 'idle', canAcceptDirectInput: true };
+  for (const [label, runtime] of [['A', a], ['B', b]]) {
+    Object.assign(runtime.state, { connected: true, thread: label === 'A' ? { id: 'a' } : null, threadStatus: 'idle' });
+    runtime.rpc = { request: async (method, params) => {
+      calls.push(`${label}:${method}`);
+      if (method === 'thread/start') return { thread: created };
+      if (method === 'thread/name/set') throw new Error('Name save failed');
+      if (method === 'thread/loaded/list') return { data: ['new-b'] };
+      if (method === 'thread/read') return { thread: created };
+      return { data: [] };
+    } };
+  }
+  const result = await gateway.taskAction({ action: 'create', machineId: 'ssh:b', expectedMachineId: 'local', expectedThreadId: 'a', name: 'New name', cwd: '/project' });
+  assert.equal(result.machineId, 'ssh:b');
+  assert.equal(result.thread.id, 'new-b');
+  assert.match(result.warning, /created.*name.*rename/);
+  assert.equal(gateway.selectedMachineId, 'ssh:b');
+  assert.equal(a.state.thread, null);
+  assert.equal(a.state.connected, true);
+  assert.equal(a.autoAttach, false);
+  assert.equal(b.autoAttach, true);
+  assert(calls.indexOf('B:thread/start') < calls.indexOf('A:thread/unsubscribe'));
+  assert.deepEqual([...gateway.runtimes.values()].filter(r => r.state.thread).map(r => r.definition.id), ['ssh:b']);
+});
+
+test('Cancel cannot clear a queued message while automatic turn/start is in flight', async () => {
+  const runtime = activeRuntime();
+  await runtime.sendMessage('Queued text', 'queue');
+  const queued = runtime.state.queuedMessage;
+  let resolveStart;
+  runtime.rpc = { request: method => {
+    assert.equal(method, 'turn/start');
+    return new Promise(resolve => { resolveStart = resolve; });
+  } };
+  const delivery = runtime.startQueuedMessage('thread-1');
+  assert.equal(runtime.startingQueuedMessage, true);
+  assert.deepEqual(runtime.cancelQueuedMessage(), { cancelled: false, queuedMessage: queued });
+  assert.equal(runtime.state.queuedMessage, queued);
+  resolveStart({ turn: { id: 'delivered', status: 'inProgress' } });
+  assert.equal(await delivery, true);
+  assert.equal(runtime.state.queuedMessage, null);
+  assert.equal(runtime.state.turn.id, 'delivered');
+  assert.equal(runtime.startingQueuedMessage, false);
+});
+
+test('model and permission profile pagination reject repeated cursors without partial state', async () => {
+  for (const [method, load, field] of [['model/list', 'loadModels', 'models'], ['permissionProfile/list', 'loadPermissionProfiles', 'permissionProfiles']]) {
+    const runtime = activeRuntime();
+    const previous = [{ id: 'previous' }];
+    if (field === 'models') runtime.state.models = previous; else runtime.permissionProfiles = previous;
+    const cursors = [];
+    runtime.rpc = { request: async (name, params) => {
+      assert.equal(name, method); cursors.push(params.cursor);
+      assert(cursors.length <= 2, 'pagination must stop at the first repeated cursor');
+      return { data: [{ id: 'new', model: 'new' }], nextCursor: 'repeat' };
+    } };
+    await assert.rejects(runtime[load]('/project'), /returned a repeated cursor/);
+    assert.deepEqual(cursors, [null, 'repeat']);
+    assert.equal(field === 'models' ? runtime.state.models : runtime.permissionProfiles, previous);
+  }
+});

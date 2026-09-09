@@ -1955,6 +1955,7 @@ async function performTaskAction(body) {
     if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
     elements.messageText.focus();
   }
+  if (succeeded && snapshot?.warning) { composerNotice = snapshot.warning; renderComposer(); }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
 }
 
@@ -2081,8 +2082,10 @@ async function cancelQueuedMessage() {
     const response = await apiFetch(url, { method: "DELETE" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not cancel queued message");
-    mergeState({ queuedMessage: null });
-    composerNotice = "Queued message cancelled.";
+    if (result.cancelled === true) {
+      mergeState({ queuedMessage: null });
+      composerNotice = "Queued message cancelled.";
+    } else composerNotice = "Queued message is already being sent.";
   } catch (error) {
     composerError = error.message;
   } finally {
