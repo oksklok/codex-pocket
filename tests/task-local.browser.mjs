@@ -84,6 +84,23 @@ try {
  runtime.state.activities=[];runtime.state.liveMessages=[];runtime.state.thread=task;runtime.state.machineId='local';mode='success';active=[task,owned,...Array.from({length:9},(_,i)=>({...task,id:`draft-${i}`,name:`Draft task ${i}`}))];
  await page.setViewportSize({width,height:844});await page.goto(`http://127.0.0.1:${server.address().port}`);
  await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await page.evaluate(()=>{localStorage.removeItem('codex-pocket-enter-sends');localStorage.removeItem('codex-pocket-translucent-ui');});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ assert.equal(await page.locator('#enter-sends').isChecked(),width>860);
+ await page.setViewportSize({width:width>860?390:1280,height:844});assert.equal(await page.locator('#enter-sends').isChecked(),width>860);await page.setViewportSize({width,height:844});
+ for(const saved of [true,false]){
+ await page.locator('#enter-sends').evaluate((e,value)=>{e.checked=value;e.dispatchEvent(new Event('change'));},saved);
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ assert.equal(await page.locator('#enter-sends').isChecked(),saved);
+ }
+ await page.evaluate(()=>localStorage.removeItem('codex-pocket-enter-sends'));await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ const chromeColors=()=>page.locator('.topbar, .composer-zone').evaluateAll(es=>es.map(e=>getComputedStyle(e).backgroundColor));
+ assert.equal(await page.locator('#translucent-ui').isChecked(),true);assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
+ await page.locator('#settings-button').click();await page.locator('#translucent-ui').uncheck();
+ assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ assert.equal(await page.locator('#translucent-ui').isChecked(),false);assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
+ await page.locator('#settings-button').click();await page.locator('#translucent-ui').check();await page.locator('#settings-close').click();assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
  await page.evaluate(()=>localStorage.setItem('codex-pocket-info-display',JSON.stringify({commands:false})));
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  for(const key of ['command','tool','search','review'])assert.equal(await page.locator(`#display-${key}`).isChecked(),false);
@@ -211,6 +228,29 @@ try {
  assert.deepEqual(await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`))),sidebarPreferences);
  await page.locator(width<861?'#inspector-close':'#inspector-button').click();await dismissTasks();await closed();
  await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
+ if(width<861){
+ const cdp=await page.context().newCDPSession(page);
+ const touch=(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points.map(([x,y,id=1])=>({x,y,id}))});
+ const center=()=>page.locator('#viewer-image').evaluate(e=>{const r=e.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2];});
+ const scale=()=>page.locator('#viewer-image').evaluate(e=>new DOMMatrix(getComputedStyle(e).transform).a);
+ const reopen=async()=>{await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();await page.waitForTimeout(30);};
+ for(const dy of [55,-55,130,-130]){
+ const [x,y]=await center();const top=(await page.locator('#viewer-image').boundingBox()).y;
+ await touch('touchStart',[[x,y]]);await touch('touchMove',[[x,y+dy]]);
+ assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-top-dy)<2);
+ await touch('touchEnd',[]);
+ if(Math.abs(dy)>100){assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);await reopen();}
+ else {assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);assert(Math.abs((await page.locator('#viewer-image').boundingBox()).y-top)<2);}
+ }
+ const doubleTap=async()=>{for(let i=0;i<2;i++){const [x,y]=await center();await touch('touchStart',[[x,y]]);await touch('touchEnd',[]);}};
+ await doubleTap();assert.equal(await scale(),2.5);
+ let [x,y]=await center();await touch('touchStart',[[x,y]]);await touch('touchMove',[[x,y-150]]);await touch('touchEnd',[]);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);assert.equal(await scale(),2.5);
+ await doubleTap();assert.equal(await scale(),1);
+ [x,y]=await center();await touch('touchStart',[[x-4,y,1],[x+4,y,2]]);await touch('touchMove',[[x-8,y,1],[x+8,y,2]]);await touch('touchEnd',[]);
+ assert(await scale()>1);assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),true);
+ await cdp.detach();
+ }
  await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();await page.locator('#close-image').click();await card.locator('.activity-summary').click();
  }
  const geometry=()=>page.evaluate(()=>({

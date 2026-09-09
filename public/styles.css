@@ -639,3 +639,5 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 @media (max-width: 860px) {
   .settings-card input:not([type="checkbox"]), .settings-card select, .runtime-panel select, .destination-search input { font-size: 16px; }
 }
+
+:root[data-translucent="false"] { --topbar: var(--bg); --composer-bg: var(--bg); }

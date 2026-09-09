@@ -207,9 +207,16 @@ const composerDrafts = new Map();
 const draftKey = (machineId, threadId) => threadId ? JSON.stringify([machineId, threadId]) : null;
 let readingImages = false;
 let imageDeliveryUnknown = false;
-let enterSends = true;
-try { enterSends = localStorage.getItem("codex-pocket-enter-sends") !== "false"; } catch {}
+let enterSends = !matchMedia("(max-width: 860px)").matches;
+try { const saved = localStorage.getItem("codex-pocket-enter-sends"); if (saved !== null) enterSends = saved !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
+const translucentUI = document.querySelector("#translucent-ui");
+try { translucentUI.checked = localStorage.getItem("codex-pocket-translucent-ui") !== "false"; } catch {}
+document.documentElement.dataset.translucent = String(translucentUI.checked);
+translucentUI.addEventListener("change", () => {
+  document.documentElement.dataset.translucent = String(translucentUI.checked);
+  try { localStorage.setItem("codex-pocket-translucent-ui", String(translucentUI.checked)); } catch {}
+});
 for (const [toggle, meter, key] of [[elements.showContext, elements.context, "context"], [elements.showQuota, elements.quota, "quota"]]) {
   try { toggle.checked = localStorage.getItem(`codex-pocket-show-${key}`) !== "false"; } catch {}
   meter.hidden = !toggle.checked;
@@ -2855,7 +2862,8 @@ function setupImageViewer(dialog, image, close) {
     dialog.close();
   });
   let opener;
-  let scale = 1, x = 0, y = 0;
+  let scale = 1, x = 0, y = 0, dragY = 0;
+  let lastTap = null;
   let gesture = null;
   const pointers = new Map();
   const points = () => [...pointers.values()];
@@ -2866,10 +2874,11 @@ function setupImageViewer(dialog, image, close) {
     const limitY = Math.max(0, (image.offsetHeight * scale - dialog.clientHeight) / 2);
     x = Math.max(-limitX, Math.min(limitX, x));
     y = Math.max(-limitY, Math.min(limitY, y));
-    image.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`;
+    image.style.transform = `translate(-50%, -50%) translate(${x}px, ${y + dragY}px) scale(${scale})`;
     image.style.cursor = scale > 1 ? 'grab' : 'default';
   }
   function begin(multi = false) {
+    if (multi) lastTap = null;
     const [a, b] = points();
     gesture = a ? { a, distance: b ? distance(a, b) : 0, center: b ? midpoint(a, b) : null, scale, x, y, moved: multi, multi } : null;
   }
@@ -2885,6 +2894,7 @@ function setupImageViewer(dialog, image, close) {
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     const [a, b] = points();
     if (b && gesture.center) {
+      dragY = 0;
       scale = Math.max(1, Math.min(6, gesture.scale * distance(a, b) / Math.max(1, gesture.distance)));
       const center = midpoint(a, b);
       x = center.x - (gesture.center.x - gesture.x) * scale / gesture.scale;
@@ -2893,6 +2903,7 @@ function setupImageViewer(dialog, image, close) {
       const dx = a.x - gesture.a.x, dy = a.y - gesture.a.y;
       if (Math.hypot(dx, dy) > 8) gesture.moved = true;
       if (scale > 1) { x = gesture.x + dx; y = gesture.y + dy; }
+      else if (!gesture.multi) dragY = Math.abs(dy) > Math.abs(dx) * 1.5 ? dy : 0;
     }
     paint();
   });
@@ -2903,15 +2914,32 @@ function setupImageViewer(dialog, image, close) {
     const rect = image.getBoundingClientRect();
     const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
     const dismiss = event.type === 'pointerup' && last && !gesture.multi && (
-      (!gesture.moved && outside) || (scale === 1 && dy > 100 && dy > Math.abs(dx) * 1.5));
+      (!gesture.moved && outside) || (scale === 1 && Math.abs(dy) > 100 && Math.abs(dy) > Math.abs(dx) * 1.5));
+    const tap = event.type === 'pointerup' && event.pointerType === 'touch' && last && !gesture.multi && !gesture.moved && !outside;
+    const previousTap = lastTap;
     pointers.delete(event.pointerId);
     if (dialog.hasPointerCapture(event.pointerId)) dialog.releasePointerCapture(event.pointerId);
     begin(true); // A pinch becoming one finger must never become a dismiss gesture.
+    dragY = 0;
+    if (tap) {
+      const now = performance.now();
+      if (previousTap && now - previousTap.time < 300 && Math.hypot(event.clientX - previousTap.x, event.clientY - previousTap.y) < 24) {
+        if (scale > 1) { scale = 1; x = 0; y = 0; }
+        else {
+          scale = 2.5;
+          x = (event.clientX - dialog.clientWidth / 2) * (1 - scale);
+          y = (event.clientY - dialog.clientHeight / 2) * (1 - scale);
+        }
+        lastTap = null;
+      } else lastTap = { time: now, x: event.clientX, y: event.clientY };
+    }
+    paint();
     if (dismiss) dialog.close();
   }
   dialog.addEventListener('pointerup', finish);
   dialog.addEventListener('pointercancel', finish);
   dialog.addEventListener('wheel', event => {
+    lastTap = null;
     event.preventDefault();
     const previous = scale;
     scale = Math.max(1, Math.min(6, scale * Math.exp(-event.deltaY * .002)));
@@ -2931,7 +2959,7 @@ function setupImageViewer(dialog, image, close) {
   });
   return { open(source) {
     opener = source;
-    scale = 1; x = 0; y = 0;
+    scale = 1; x = 0; y = 0; dragY = 0; lastTap = null;
     pointers.clear(); gesture = null;
     image.src = source.src;
     image.alt = source.alt;
