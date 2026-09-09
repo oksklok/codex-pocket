@@ -114,6 +114,13 @@ try {
  }
  await page.locator('#settings-button').click();
  await page.locator('.machine-settings-row').first().waitFor();
+ for(const [theme, system, color] of [['light','dark','#f6f8fa'],['dark','light','#0d1117'],['system','light','#f6f8fa'],['system','dark','#0d1117']]){
+ await page.emulateMedia({colorScheme:system});await page.locator('#settings-theme').selectOption(theme);
+ await page.waitForFunction(color=>document.querySelector('meta[name="theme-color"]').content===color,color);
+ }
+ await page.emulateMedia({colorScheme:'light'});
+ await page.waitForFunction(()=>document.querySelector('meta[name="theme-color"]').content==='#f6f8fa');
+
  for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).isVisible(),width<600);
  assert.equal(await page.locator('.machine-settings-header').isVisible(),width>=600);
  if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Actions']);}

@@ -287,9 +287,11 @@ function loadTheme() {
 
 function applyTheme(theme = selectedTheme) {
   document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]').content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
 }
 
 applyTheme();
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => applyTheme());
 
 function loadDisplayPreferences() {
   const defaults = {
