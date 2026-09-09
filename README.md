@@ -14,7 +14,13 @@ Codex Pocket is an unofficial community project and is not affiliated with or en
 - Send images with text or on their own using the image picker or desktop clipboard paste. Removable thumbnails remain available in the fullscreen composer, and images travel with queued/steered messages. Sent images remain viewable from live messages and history where Codex exposes them. Input supports PNG, JPEG, GIF, and WebP: up to four images, 4 MB each and 8 MB combined.
 - View surfaced assistant images inline and in a fullscreen viewer, including supported local-file references fetched through the gateway or SSH. Remote Markdown images are not loaded; unavailable images show useful alt text.
 - See account quota and a **Ctx** chip showing context-window percentage used from authoritative app-server usage. Without usage replay or a live update, it shows **Ctx —**. Context and quota can each be hidden under Settings → Appearance for this browser.
-- Browse bounded, paginated history in a mobile-focused UI with themes, display toggles, a fullscreen composer, and a browser-local **Enter sends message** preference.
+- Browse bounded, paginated history in a mobile-focused UI with themes, display toggles, a fullscreen composer, and a browser-local **Enter Sends Message** preference.
+
+Settings changes take effect only on **Save**, including browser-local appearance and input preferences. Save is enabled only while values differ from those loaded; **Cancel**, **X**, and **Escape** discard unsaved edits. A successful save closes Settings unless a restart is required, when **Restart Pocket** is brought into view. Display controls in the inspector still apply immediately when Settings is closed.
+
+**Translucent UI** is available on mobile (up to 860px wide) and defaults on. **Enter Sends Message** defaults on for desktop and off for mobile on first use; an existing saved choice takes precedence and does not change on resize.
+
+The image viewer supports double-tap zoom/reset, pinch zoom, panning while zoomed, and desktop wheel zoom. Close it with **X**, **Escape**, or a tap outside the image. Dragging at 1× neither moves nor dismisses the image.
 
 While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion and stays parked after Stop. Steering clears it only after successful delivery. Queues live in gateway memory and are lost on task changes or gateway restart. They cannot be edited or expanded into multiple queued messages.
 
@@ -78,11 +84,11 @@ On each remote machine, authenticate Codex and start its shared app-server. From
 ssh -o BatchMode=yes devbox codex --version
 ```
 
-Then use **Settings → Machines → Add**, enter a display name and SSH alias such as `devbox`, save, and restart Pocket. Pocket launches `codex app-server proxy` through that alias and uses the host's existing SSH configuration, keys, and agent. It does not store SSH credentials. A remote Codex Desktop installation is unnecessary.
+Then use **Settings → Machines → Add Machine**, enter a display name and SSH alias such as `devbox`, save, and restart Pocket. Pocket launches `codex app-server proxy` through that alias and uses the host's existing SSH configuration, keys, and agent. It does not store SSH credentials. A remote Codex Desktop installation is unnecessary.
 
 Disconnected runtimes retry after 5, 10, 20, 30, then 60 seconds, staying at 60 seconds until a successful connection resets the delay. Transport establishment has a 15-second timeout.
 
-Settings are stored in the Git-ignored `.codex-pocket.local.json`. Local config, runtime records, and logs should stay private. If the Mac runtime is unavailable, check that its shared daemon is running; Pocket also shows a concise underlying connection or task-ownership error.
+Server-backed settings are stored in the Git-ignored `.codex-pocket.local.json`; appearance, input, and display preferences stay in each browser’s local storage. Local config, runtime records, and logs should stay private. If the Mac runtime is unavailable, check that its shared daemon is running; Pocket also shows a concise underlying connection or task-ownership error.
 
 ## Architecture and limits
 
