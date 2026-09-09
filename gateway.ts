@@ -1617,8 +1617,37 @@ export class MachineRuntime {
     };
   }
 
-  async start(): Promise<void> {
+  autoAttach = true;
+
+  async start(autoAttach = true): Promise<void> {
+    this.autoAttach = autoAttach;
     await this.connect();
+  }
+
+  releaseTask(): Promise<void> {
+    this.autoAttach = false;
+    this.state.queuedMessage = null;
+    const operation = this.selectionQueue.then(async () => {
+      this.permissionProfiles = [];
+      const threadId = this.state.thread?.id;
+      const rpc = this.rpc;
+      this.resetThreadState();
+      this.state.thread = null;
+      this.options.thread = undefined;
+      this.state.threadStatus = this.state.connected ? "idle" : "disconnected";
+      if (this.state.connected) this.state.connectionError = null;
+      this.state.phase = this.computePhase();
+      if (rpc && threadId && this.state.connected) {
+        try { await rpc.request("thread/unsubscribe", { threadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS); }
+        catch (error) {
+          this.technicalConnectionError = String(error);
+          this.state.connectionError = "Could not release the previous task attachment.";
+          console.warn(`${this.definition.name}: task release failed: ${compact(error, 180)}`);
+        }
+      }
+    });
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
   }
 
   async stop(): Promise<void> {
@@ -1993,18 +2022,19 @@ export class MachineRuntime {
       this.state.connected = true;
       this.state.connectionError = null;
       await this.refreshQuota();
-      if (!targetId) {
+      if (!targetId || !this.autoAttach) {
         this.resetThreadState();
         this.state.thread = null;
         this.state.threadStatus = "idle";
         this.state.connectionError = null;
         this.state.phase = "done";
         this.broadcast("snapshot", this.snapshot());
-        console.log(`${this.definition.name}: connected; no saved tasks`);
+        console.log(`${this.definition.name}: connected; ${targetId ? "catalog only" : "no saved tasks"}`);
         return;
       }
       try {
         await this.attachLoadedThread(String(targetId), false);
+        if (!this.autoAttach) { await this.releaseTask(); return; }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         if (!this.state.connected || this.rpc !== rpc || (this.definition.ssh && !/active writer/i.test(reason))) throw error;
@@ -2890,7 +2920,7 @@ export class MachineRuntime {
           && !this.startingQueuedMessage
           && this.state.thread
           && this.state.queuedMessage?.threadId === this.state.thread.id) {
-          const operation = this.selectionQueue.then(() => this.startQueuedMessage(this.state.thread!.id));
+          const operation = this.selectionQueue.then(() => this.state.thread ? this.startQueuedMessage(this.state.thread.id) : false);
           this.selectionQueue = operation.then(() => {}, () => {});
         }
         break;
@@ -3242,7 +3272,7 @@ export class PocketGateway {
   }
 
   async start(): Promise<void> {
-    await Promise.all([...this.runtimes.values()].map((runtime) => runtime.start()));
+    await Promise.all([...this.runtimes].map(([id, runtime]) => runtime.start(id === this.selectedMachineId)));
   }
 
   async stop(): Promise<void> {
@@ -3346,6 +3376,8 @@ export class PocketGateway {
         for (const response of this.subscribers) previous.removeSubscriber(response);
         this.selectedMachineId = String(body.machineId);
         for (const response of this.subscribers) next.addSubscriber(response, false);
+        next.autoAttach = true;
+        await previous.releaseTask();
         this.refreshQuotaSource();
       }
       const snapshot = this.snapshot();
@@ -3379,6 +3411,8 @@ export class PocketGateway {
         for (const response of this.subscribers) previous.removeSubscriber(response);
         this.selectedMachineId = requestedMachineId;
         for (const response of this.subscribers) next.addSubscriber(response, false);
+        next.autoAttach = true;
+        await previous.releaseTask();
         this.refreshQuotaSource();
         const snapshot = this.snapshot();
         for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
@@ -3397,6 +3431,8 @@ export class PocketGateway {
       for (const response of this.subscribers) previous.removeSubscriber(response);
       this.selectedMachineId = requestedId;
       for (const response of this.subscribers) next.addSubscriber(response, false);
+      next.autoAttach = true;
+      await previous.releaseTask();
       this.refreshQuotaSource();
       const snapshot = this.snapshot();
       for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);

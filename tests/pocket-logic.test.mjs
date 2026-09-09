@@ -866,3 +866,102 @@ test("fresh history resolves async answers from exact question IDs without expos
   assert.equal(resolvedAsyncAnswer({ ...normalizedQuestion, id: "different-question" }, 0, messages, {}), null);
   assert.equal(resolvedAsyncAnswer(normalizedQuestion, 0, messages, { "question-id": { 0: "Fast path" } }), "Fast path");
 });
+
+test("cross-machine selection releases only the previous task after target acceptance", async () => {
+  const gateway = new PocketGateway({ machines: [{ name: "B", ssh: "b" }] });
+  const a = gateway.runtimes.get("local"), b = gateway.runtimes.get("ssh:b");
+  const calls = [];
+  let rejectB = true, rejectA = false;
+  for (const [label, runtime] of [["A", a], ["B", b]]) {
+    Object.assign(runtime.state, { connected: true, thread: label === "A" ? { id: "a" } : null, threadStatus: "idle" });
+    runtime.rpc = { request: async (method, params) => {
+      calls.push(`${label}:${method}:${params?.threadId || ""}`);
+      if (method === "thread/list") return { data: [{ id: label.toLowerCase(), name: label, cwd: "/tmp", status: "idle" }] };
+      if (method === "thread/resume") {
+        if ((label === "B" && rejectB) || (label === "A" && rejectA)) throw new Error("already has an active writer");
+        return { thread: { id: label.toLowerCase(), name: label, cwd: "/tmp", status: "idle" } };
+      }
+      return { data: [] };
+    } };
+  }
+  a.state.queuedMessage = { threadId: "a", text: "Must not send in background" };
+  a.pendingServerRequests.set("approval", {});
+  a.itemCache.set("item", {});
+  const before = structuredClone(a.state);
+  await assert.rejects(gateway.selectDestination("ssh:b", "b", "local", "a"), /another Codex runtime/);
+  assert.deepEqual(a.state, before);
+  assert(!calls.includes("A:thread/unsubscribe:a"));
+  rejectB = false;
+  calls.length = 0;
+  await gateway.selectDestination("ssh:b", "b", "local", "a");
+  assert(calls.indexOf("A:thread/unsubscribe:a") > calls.indexOf("B:thread/resume:b"));
+  assert.equal(a.state.connected, true);
+  assert.equal(a.state.thread, null);
+  assert.equal(a.state.queuedMessage, null);
+  assert.equal(a.pendingServerRequests.size, 0);
+  assert.equal(a.itemCache.size, 0);
+  assert.equal((await a.listLoadedThreads())[0].id, "a");
+  rejectA = true;
+  const previousB = structuredClone(b.state);
+  await assert.rejects(gateway.selectDestination("local", "a", "ssh:b", "b"), /another Codex runtime/);
+  assert.deepEqual(b.state, previousB);
+  assert(!calls.includes("B:thread/unsubscribe:b"));
+  rejectA = false;
+  await gateway.selectDestination("local", "a", "ssh:b", "b");
+  assert.equal(gateway.state.thread.id, "a");
+  assert.equal(b.state.thread, null);
+  assert.equal(b.state.connected, true);
+});
+
+test("startup and background reconnect attach only the selected runtime while catalogs stay live", async (t) => {
+  const resumes = [];
+  t.mock.method(RpcClient.prototype, "connect", async function (_ws, alias) { this.testMachine = alias || "local"; });
+  t.mock.method(RpcClient.prototype, "notify", () => {});
+  t.mock.method(RpcClient.prototype, "close", () => {});
+  t.mock.method(RpcClient.prototype, "request", async function (method) {
+    const thread = { id: this.testMachine, name: this.testMachine, cwd: "/tmp", status: "idle" };
+    if (method === "thread/list") return { data: [thread] };
+    if (method === "thread/loaded/list") return { data: [thread.id] };
+    if (method === "thread/read") return { thread };
+    if (method === "thread/resume") { resumes.push(thread.id); return { thread }; }
+    return { data: [] };
+  });
+  const gateway = new PocketGateway({ machines: [{ name: "B", ssh: "b" }] });
+  try {
+    await gateway.start();
+    assert.deepEqual(resumes, ["local"]);
+    const b = gateway.runtimes.get("ssh:b");
+    assert.equal(b.state.connected, true);
+    assert.equal(b.state.thread, null);
+    assert.deepEqual((await b.listLoadedThreads()).map(t => t.id), ["b"]);
+    await b.connect();
+    assert.deepEqual(resumes, ["local"]);
+    await gateway.selectDestination("ssh:b", "b", "local", "local");
+    const a = gateway.runtimes.get("local");
+    assert.equal(a.autoAttach, false);
+    await a.connect();
+    assert.deepEqual(resumes, ["local", "b"]);
+    const catalog = await gateway.navigationCatalog();
+    assert(catalog.machines.every(m => m.connected && m.catalogAvailable && m.tasks.length));
+    let quotaRefreshes = 0;
+    a.scheduleQuotaRefresh = () => quotaRefreshes++;
+    a.handleNotification({ method: "account/rateLimits/updated", params: {} });
+    assert.equal(quotaRefreshes, 1);
+  } finally { await gateway.stop(); }
+});
+
+test("release cancels a waiting queue and clears state after existing task operations settle", async () => {
+  const runtime = activeRuntime();
+  runtime.state.queuedMessage = { threadId: "thread-1", text: "Cancel on leave" };
+  let finish;
+  runtime.selectionQueue = new Promise(resolve => { finish = resolve; }).then(() => {
+    runtime.state.liveMessages = [{ id: "late", role: "assistant", text: "Late operation result" }];
+  });
+  const released = runtime.releaseTask();
+  assert.equal(runtime.state.queuedMessage, null);
+  finish();
+  await released;
+  assert.equal(runtime.state.thread, null);
+  assert.deepEqual(runtime.state.liveMessages, []);
+  assert.equal(runtime.state.connected, true);
+});
