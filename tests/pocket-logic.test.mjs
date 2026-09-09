@@ -17,6 +17,7 @@ import {
   normalizeAsyncQuestions,
   reconcileSubmission,
   resolvedAsyncAnswer,
+  rememberComposerDraft,
 } from "../public/pocket-logic.js";
 import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient } from "../gateway.ts";
 
@@ -779,6 +780,18 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
     assert.equal((await post("/api/shutdown", { Origin: origin, Cookie: "codex_pocket_session=session" })).status, 202);
     assert.equal(quits, 3);
     options.host = "0.0.0.0";
+    for (const address of ["100.64.0.0", "100.127.255.255", "100.63.255.255", "100.128.0.0"]) {
+      const host = `${address}:8080`;
+      const allowed = address === "100.64.0.0" || address === "100.127.255.255";
+      options.host = "127.0.0.1";
+      assert.equal((await raw("/api/auth", { Host: host })).status, 403);
+      options.host = "0.0.0.0";
+      assert.equal((await raw("/api/auth", { Host: host })).status, allowed ? 200 : 403);
+      if (allowed) {
+        assert.equal((await post("/api/message/queue", { Host: host, Origin: `http://${host}`, "Content-Type": "application/json" }, "{}")).status, 401);
+        assert.equal((await post("/api/message/queue", { Host: host, Origin: "http://evil.example", "Content-Type": "application/json", Cookie: "codex_pocket_session=session" }, "{}")).status, 403);
+      }
+    }
     const publishedHost = "192.168.50.2:8080";
     assert.equal((await post("/api/shutdown", { Host: publishedHost, Origin: `http://${publishedHost}`, Cookie: "codex_pocket_session=session" })).status, 202);
     assert.equal((await post("/api/shutdown", { Host: evilHost, Origin: `http://${evilHost}`, Cookie: "codex_pocket_session=session" })).status, 403);
@@ -1110,4 +1123,39 @@ test("rename uses official API for running selected tasks and preserves task sta
   for (const name of ['', ' '.repeat(3), 'x'.repeat(181)]) await assert.rejects(runtime.taskAction({ action: 'rename', threadId: task.id, name }), /180/);
   await assert.rejects(runtime.taskAction({ action: 'rename', threadId: 'missing', name: 'Other' }), /no longer/);
   assert.equal(calls.length, 2);
+});
+
+
+test("draft memory restores A/B, touches recency, drops empty entries and evicts the ninth oldest", () => {
+  const drafts = new Map();
+  const a = { text: "Draft A", images: [{ url: "data:image/png;base64,large" }] };
+  const b = { text: "Draft B", images: [] };
+  rememberComposerDraft(drafts, "A", a);
+  rememberComposerDraft(drafts, "B", b);
+  assert.deepEqual(rememberComposerDraft(drafts, "A"), a);
+  assert.deepEqual(rememberComposerDraft(drafts, "B"), b);
+  rememberComposerDraft(drafts, "empty", { text: "", images: [] });
+  assert.equal(drafts.size, 2);
+  for (let i = 0; i < 7; i++) rememberComposerDraft(drafts, `task-${i}`, { text: String(i), images: [] });
+  assert.equal(drafts.size, 8);
+  assert.equal(rememberComposerDraft(drafts, "A"), undefined);
+  assert.deepEqual(rememberComposerDraft(drafts, "B"), b);
+  rememberComposerDraft(drafts, "task-7", { text: "7", images: [] });
+  assert.equal(drafts.has("B"), true);
+  assert.equal(drafts.has("task-0"), false);
+  rememberComposerDraft(drafts, "B", { text: "", images: [] });
+  assert.equal(drafts.has("B"), false);
+});
+
+test("phone URLs discover only local private or CGNAT IPv4 interfaces", async (t) => {
+  const os = (await import("node:os")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const addresses = ["100.64.0.0", "100.127.255.255", "100.63.255.255", "100.128.0.0", "192.168.50.2"];
+  const mock = t.mock.method(os, "networkInterfaces", () => ({ test: addresses.map(address => ({ address, family: "IPv4", internal: false })) }));
+  syncBuiltinESMExports();
+  try {
+    const gateway = new PocketGateway({ machines: [] });
+    assert.deepEqual(gateway.hostStatus({ host: "0.0.0.0", port: 4173 }).phoneUrls, ["http://100.127.255.255:4173", "http://100.64.0.0:4173", "http://192.168.50.2:4173"]);
+    assert.deepEqual(gateway.hostStatus({ host: "127.0.0.1", port: 4173 }).phoneUrls, []);
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });

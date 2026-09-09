@@ -67,9 +67,15 @@ try {
  const select=async name=>{await open();await row(name).locator('.destination-task').click();await closed();};
  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
  for(const width of [1280,390]){
- runtime.state.thread=task;runtime.state.machineId='local';mode='success';active=[task,owned];
+ runtime.state.thread=task;runtime.state.machineId='local';mode='success';active=[task,owned,...Array.from({length:9},(_,i)=>({...task,id:`draft-${i}`,name:`Draft task ${i}`}))];
  await page.setViewportSize({width,height:844});await page.goto(`http://127.0.0.1:${server.address().port}`);
  await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ runtime.state.liveMessages=[{id:'markdown-check',role:'assistant',text:'![Remote image](https://example.com/remote.png) ![HTTP image](http://example.com/remote.png) [Web link](https://example.com/)'}];
+ runtime.broadcast('snapshot',snapshot());
+ await page.getByRole('link',{name:'Web link',exact:true}).waitFor();
+ assert.equal(await page.locator('img[src^="https://"], img[src^="http://"]').count(),0);
+ assert((await page.locator('body').innerText()).includes('Remote image'));
+ runtime.state.liveMessages=[];
  await input.fill('Draft A');await page.locator('#image-picker').setInputFiles({name:'a.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
  await select('Owned task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Draft B');await select('Current task');assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
@@ -107,6 +113,8 @@ try {
  await page.locator('.destination-group').first().getByText('Fixture action failed',{exact:true}).waitFor();assert.equal(await page.locator('.destination-error').count(),0);
  failAction=false;await page.getByRole('button',{name:'New Task',exact:true}).first().click();await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
+ for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
+ await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  }
- assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty');
+ assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

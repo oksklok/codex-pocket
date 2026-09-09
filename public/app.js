@@ -7,6 +7,7 @@ import {
   reconcileSubmission,
   imageInputs, MAX_INPUT_IMAGES, MAX_INPUT_IMAGE_BYTES,
   resolvedAsyncAnswer,
+  rememberComposerDraft,
 } from "./pocket-logic.js";
 
 const elements = {
@@ -113,7 +114,7 @@ markdown.renderer.rules.image = (tokens, index, options, environment, renderer) 
     url.searchParams.set("messageId", environment.message.id);
     url.searchParams.set("index", imageIndex);
     token.attrSet("src", url.pathname + url.search);
-  } else if (!/^https?:\/\//i.test(src)) return markdown.utils.escapeHtml(token.content || "Image unavailable");
+  } else return markdown.utils.escapeHtml(token.content || "Image unavailable");
   return defaultImage(tokens, index, options, environment, renderer);
 };
 const defaultLinkOpen = markdown.renderer.rules.link_open
@@ -184,8 +185,6 @@ let destinationCreateError = null;
 let taskActionTarget = null;
 let destinationTaskError = null;
 let taskActionBusy = false;
-let switchingThread = false;
-let switchingMachine = false;
 let submittingMessage = false;
 let updatingModel = false;
 let updatingAccess = false;
@@ -491,7 +490,7 @@ function renderDestinationButton() {
   const taskName = selectedThread ? threadLabel(selectedThread) : state?.connected ? "No saved task" : "Unavailable";
   elements.destinationLabel.textContent = `${machineName} / ${taskName}`;
   elements.destinationButton.title = `${machineName} / ${taskName}`;
-  elements.destinationButton.disabled = switchingMachine || switchingThread || submittingMessage || updatingModel
+  elements.destinationButton.disabled = submittingMessage || updatingModel
     || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
 }
 
@@ -771,7 +770,6 @@ function closeDestinationSwitcher() {
 }
 
 function openDestinationSwitcher() {
-  if (switchingMachine || switchingThread) return;
   clearSelectionForOverlay();
   clearTimeout(destinationCloseTimer);
   elements.destinationSwitcher.inert = false;
@@ -823,7 +821,6 @@ function renderModelControls() {
     elements.effortSelect.append(option);
   }
   const enabled = Boolean(state?.connected && state?.thread && models.length)
-    && !switchingThread
     && !updatingModel
     && !updatingAccess
     && !resolvingApproval
@@ -861,8 +858,6 @@ function renderAccessControl() {
   }
   elements.accessSelect.disabled = !state?.connected
     || !state?.thread
-    || switchingMachine
-    || switchingThread
     || updatingAccess
     || resolvingApproval
     || submittingInputRequestId
@@ -906,7 +901,7 @@ function renderQueue() {
     elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
-    elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || switchingMachine || switchingThread;
+    elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue;
     elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : turnActive ? "Steer Now" : "Send";
     elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage;
   }
@@ -1113,8 +1108,6 @@ function renderComposer() {
   const stopping = submittingInterrupt || (turnActive && state?.stoppingTurnId === state?.turn?.id);
   const hasText = Boolean(elements.messageText.value.trim()) || selectedImages.length > 0;
   const allowed = Boolean(capability?.allowed)
-    && !switchingMachine
-    && !switchingThread
     && !submittingMessage
     && !updatingAccess
     && !resolvingApproval
@@ -1124,8 +1117,6 @@ function renderComposer() {
     && !imageDeliveryUnknown;
   elements.messageText.disabled = !state?.connected
     || !state?.thread
-    || switchingMachine
-    || switchingThread
     || submittingMessage
     || stopping;
   elements.attachImage.disabled = elements.messageText.disabled || readingImages || Boolean(state?.queuedMessage) || imageDeliveryUnknown;
@@ -1133,7 +1124,7 @@ function renderComposer() {
     elements.sendMessage.dataset.action = "stop";
     elements.sendMessage.textContent = stopping ? "Stopping…" : "Stop";
     elements.sendMessage.classList.add("stop-action");
-    elements.sendMessage.disabled = stopping || switchingMachine || switchingThread;
+    elements.sendMessage.disabled = stopping;
   } else {
     elements.sendMessage.dataset.action = turnActive ? "queue" : "start";
     elements.sendMessage.textContent = "Send";
@@ -1154,7 +1145,7 @@ function renderComposer() {
         ? "Updating access…"
     : composerError
       || composerNotice
-      || (switchingMachine ? "Switching machines…" : switchingThread ? "Switching tasks…" : capability?.reason)
+      || capability?.reason
       || "";
   elements.composerStatus.textContent = status;
   elements.composerStatus.hidden = !status;
@@ -1215,7 +1206,7 @@ async function addImages(files) {
     }
     const nextImages = imageInputs([...priorImages, ...images]);
     if (imageTaskKey !== draftKey(state?.machineId, state?.thread?.id)) {
-      if (imageTaskKey) composerDrafts.set(imageTaskKey, { text: composerDrafts.get(imageTaskKey)?.text || "", images: nextImages });
+      if (imageTaskKey) rememberComposerDraft(composerDrafts, imageTaskKey, { text: composerDrafts.get(imageTaskKey)?.text || "", images: nextImages });
     } else selectedImages = nextImages;
   } catch (error) {
     composerError = error.message;
@@ -1818,9 +1809,9 @@ function applySnapshot(next, loadChangedHistory = true) {
   const taskChanged = previousMachineId !== nextMachineId || previousThreadId !== nextThreadId;
   if (taskChanged) {
     const oldKey = draftKey(previousMachineId, previousThreadId);
-    if (oldKey) composerDrafts.set(oldKey, { text: elements.messageText.value, images: [...selectedImages] });
+    if (oldKey) rememberComposerDraft(composerDrafts, oldKey, { text: elements.messageText.value, images: [...selectedImages] });
     resetConversationState();
-    const draft = composerDrafts.get(draftKey(nextMachineId, nextThreadId));
+    const draft = rememberComposerDraft(composerDrafts, draftKey(nextMachineId, nextThreadId));
     elements.messageText.value = draft?.text || "";
     selectedImages = [...(draft?.images || [])];
     imageDeliveryUnknown = false;
@@ -1888,7 +1879,7 @@ async function newTask(machine) {
 }
 
 async function performTaskAction(body) {
-  if (taskActionBusy || destinationSelection || switchingMachine || switchingThread || submittingMessage || readingImages) return;
+  if (taskActionBusy || destinationSelection || submittingMessage || readingImages) return;
   taskActionBusy = true;
   const target = { machineId: body.machineId, threadId: body.threadId, action: body.action, events: [] };
   taskActionTarget = target;
@@ -1936,7 +1927,7 @@ async function performTaskAction(body) {
 }
 
 async function selectDestination(machineId, threadId) {
-  if (!machineId || !threadId || switchingMachine || switchingThread || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess || readingImages) return;
+  if (!machineId || !threadId || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess || readingImages) return;
   destinationTaskError = null;
   if (machineId === state?.machineId && threadId === state?.thread?.id) {
     closeDestinationSwitcher();
@@ -2001,7 +1992,7 @@ async function submitMessage(action) {
   const sentDraftKey = draftKey(state?.machineId, state?.thread?.id);
   const text = elements.messageText.value;
   const images = selectedImages;
-  if ((!text.trim() && !images.length) || readingImages || imageDeliveryUnknown || submittingMessage || switchingMachine || switchingThread || state?.queuedMessage) return;
+  if ((!text.trim() && !images.length) || readingImages || imageDeliveryUnknown || submittingMessage || state?.queuedMessage) return;
   submittingMessage = true;
   composerError = "";
   composerNotice = "";
@@ -2070,7 +2061,7 @@ async function cancelQueuedMessage() {
 
 async function sendQueuedMessage() {
   if (destinationSelection || taskActionBusy) return;
-  if (submittingMessage || cancellingQueue || sendingQueuedMessage || !state?.queuedMessage || switchingMachine || switchingThread) return;
+  if (submittingMessage || cancellingQueue || sendingQueuedMessage || !state?.queuedMessage) return;
   const action = state?.turn?.status === "inProgress" ? "steer" : "start";
   sendingQueuedMessage = true;
   composerError = "";
@@ -2092,7 +2083,7 @@ async function sendQueuedMessage() {
 
 async function interruptTurn() {
   if (destinationSelection || taskActionBusy) return;
-  if (submittingInterrupt || switchingMachine || switchingThread || state?.turn?.status !== "inProgress") return;
+  if (submittingInterrupt || state?.turn?.status !== "inProgress") return;
   const machineId = state?.machineId;
   const expectedThreadId = state?.thread?.id;
   const expectedTurnId = state?.turn?.id;
@@ -2119,7 +2110,7 @@ async function interruptTurn() {
 
 async function updateThreadSettings(model, effort) {
   if (destinationSelection || taskActionBusy) return;
-  if (updatingModel || switchingMachine || switchingThread || !state?.thread) return;
+  if (updatingModel || !state?.thread) return;
   updatingModel = true;
   composerError = "";
   composerNotice = "Updating model settings…";
@@ -2142,7 +2133,7 @@ async function updateThreadSettings(model, effort) {
 
 async function updateAccess(mode) {
   if (destinationSelection || taskActionBusy) return;
-  if (updatingAccess || switchingMachine || switchingThread || !state?.thread) return;
+  if (updatingAccess || !state?.thread) return;
   updatingAccess = true;
   composerError = "";
   composerNotice = "Updating access…";
@@ -2165,7 +2156,7 @@ async function updateAccess(mode) {
 
 async function resolveApproval(requestId, decision) {
   if (destinationSelection || taskActionBusy) return;
-  if (resolvingApproval || switchingMachine || switchingThread || !requestId) return;
+  if (resolvingApproval || !requestId) return;
   resolvingApproval = true;
   composerError = "";
   composerNotice = decision === "approve" ? "Approving…" : "Denying…";
@@ -2195,7 +2186,7 @@ async function resolveApproval(requestId, decision) {
 
 async function submitStructuredInput(pending) {
   if (destinationSelection || taskActionBusy) return;
-  if (!pending?.id || submittingInputRequestId || switchingMachine || switchingThread) return;
+  if (!pending?.id || submittingInputRequestId) return;
   const requestDraft = inputDrafts.get(pending.id) || new Map();
   const answers = [];
   for (const question of pending.questions || []) {
@@ -2278,25 +2269,23 @@ function connectEvents() {
   });
   on("open", () => setConnection(true));
   on("error", handleEventError);
-  on("snapshot", (event) => { if (!switchingThread) applySnapshot(parseEvent(event)); });
-  on("status", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  on("thread", (event) => { if (!switchingThread) mergeState({ thread: parseEvent(event) }); });
-  on("settings", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  on("queue", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  on("control", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  on("context", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
-  on("answers", (event) => { if (!switchingThread) mergeState(parseEvent(event), true); });
+  on("snapshot", (event) => { applySnapshot(parseEvent(event)); });
+  on("status", (event) => { mergeState(parseEvent(event)); });
+  on("thread", (event) => { mergeState({ thread: parseEvent(event) }); });
+  on("settings", (event) => { mergeState(parseEvent(event)); });
+  on("queue", (event) => { mergeState(parseEvent(event)); });
+  on("control", (event) => { mergeState(parseEvent(event)); });
+  on("context", (event) => { mergeState(parseEvent(event)); });
+  on("answers", (event) => { mergeState(parseEvent(event), true); });
   on("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
   on("turn", (event) => {
-    if (switchingThread) return;
     const value = parseEvent(event);
     if (value.turn?.status && value.turn.status !== "inProgress") composerNotice = "";
     mergeState(value);
   });
-  on("plan", (event) => { if (!switchingThread) mergeState({ plan: parseEvent(event) }); });
-  on("request", (event) => { if (!switchingThread) mergeState(parseEvent(event)); });
+  on("plan", (event) => { mergeState({ plan: parseEvent(event) }); });
+  on("request", (event) => { mergeState(parseEvent(event)); });
   on("activity", (event) => {
-    if (switchingThread) return;
     const activity = parseEvent(event);
     const activities = [...(state.activities || [])];
     const index = activities.findIndex((candidate) => candidate.id === activity.id);
@@ -2307,14 +2296,12 @@ function connectEvents() {
     if (expandByDefault && !activityDetails.has(activity.id)) loadActivityDetail(activity);
   });
   on("message", (event) => {
-    if (switchingThread) return;
     const message = parseEvent(event);
     const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
     liveMessages.set(message.id, preserveMessageCreatedAt(existing, message));
     renderConversation();
   });
   on("assistant_delta", (event) => {
-    if (switchingThread) return;
     const value = parseEvent(event);
     const known = liveMessages.get(value.id) || historyMessages.get(value.id);
     const message = known

@@ -200,3 +200,12 @@ export function createSelectionHold(onRelease, timers = globalThis) {
     },
   };
 }
+
+// Map insertion order keeps the eight most recently saved or restored non-empty drafts.
+export function rememberComposerDraft(drafts, key, draft = drafts.get(key)) {
+  drafts.delete(key);
+  if (!key || !draft || (!draft.text && !draft.images.length)) return undefined;
+  drafts.set(key, draft);
+  while (drafts.size > 8) drafts.delete(drafts.keys().next().value);
+  return draft;
+}

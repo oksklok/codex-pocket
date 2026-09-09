@@ -440,10 +440,11 @@ function restartUrlForRequest(request: IncomingMessage, config: LocalConfig, fal
   return fallback;
 }
 
-function isPrivateIpv4(address: string): boolean {
+function isPhoneIpv4(address: string): boolean {
   const parts = address.split(".").map(Number);
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  return parts[0] === 10
+  return (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127)
+    || parts[0] === 10
     || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
     || (parts[0] === 192 && parts[1] === 168);
 }
@@ -454,11 +455,11 @@ function phoneUrls(config: LocalConfig): string[] {
 
 function phoneUrlsFor(host: string, port: number): string[] {
   if (isLoopbackHost(host)) return [];
-  const addresses = host !== "0.0.0.0" && isPrivateIpv4(host)
+  const addresses = host !== "0.0.0.0" && isPhoneIpv4(host)
     ? [host]
     : Object.values(networkInterfaces())
       .flatMap((entries) => entries ?? [])
-      .filter((entry) => entry.family === "IPv4" && !entry.internal && isPrivateIpv4(entry.address))
+      .filter((entry) => entry.family === "IPv4" && !entry.internal && isPhoneIpv4(entry.address))
       .map((entry) => entry.address);
   return [...new Set(addresses)].sort().map((address) => `http://${address}:${port}`);
 }
@@ -2097,7 +2098,7 @@ export class MachineRuntime {
       const technicalError = error instanceof Error ? error.message : String(error);
       this.technicalConnectionError = technicalError;
       this.state.connectionError = this.definition.ssh
-        ? `Could not connect to ${this.definition.name}. Make sure “ssh ${this.definition.ssh}” works from this Mac.`
+        ? `Could not connect to ${this.definition.name}. Make sure “ssh ${this.definition.ssh}” works from this Pocket host.`
         : localRuntimeReason(technicalError);
       this.state.connected = false;
       this.loadedThreads = [];
@@ -3481,25 +3482,6 @@ export class PocketGateway {
     });
   }
 
-  selectMachine(machineId: unknown): Promise<JsonObject> {
-    return this.enqueue(async () => {
-      const requestedId = String(machineId ?? "").trim();
-      const next = this.runtimes.get(requestedId);
-      if (!next) throw new Error("selected machine is not configured");
-      if (requestedId === this.selectedMachineId) return this.snapshot();
-      const previous = this.selected();
-      for (const response of this.subscribers) previous.removeSubscriber(response);
-      this.selectedMachineId = requestedId;
-      for (const response of this.subscribers) next.addSubscriber(response, false);
-      next.autoAttach = true;
-      await previous.releaseTask();
-      this.refreshQuotaSource();
-      const snapshot = this.snapshot();
-      for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
-      return snapshot;
-    });
-  }
-
   async history(cursor: string | null, limit: number, machineId?: unknown): Promise<JsonObject> {
     return this.requireSelected(machineId).history(cursor, limit);
   }
@@ -3763,7 +3745,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
 const JSON_POST_ROUTES = new Set([
   "/api/login", "/api/settings", "/api/tasks", "/api/message", "/api/turn/interrupt",
   "/api/message/queue", "/api/thread/settings", "/api/thread/access", "/api/approval",
-  "/api/input", "/api/thread", "/api/navigation/select", "/api/machine",
+  "/api/input", "/api/thread", "/api/navigation/select",
 ]);
 
 function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
@@ -3775,9 +3757,9 @@ function allowedBrowserHost(request: IncomingMessage, options: Options): boolean
     const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
     if (isLoopbackHost(host)) return true;
     if (isLoopbackHost(options.host)) return false;
-    // LAN/private IP literals also cover Docker's published host address and port.
+    // LAN/private and CGNAT IP literals also cover Docker's published host address and port.
     // Never resolve a supplied hostname to decide whether it is trusted.
-    return isPrivateIpv4(host)
+    return isPhoneIpv4(host)
       || host === options.host.toLowerCase()
       || host === hostname().toLowerCase()
       || host === `${hostname().replace(/\.local$/i, "").toLowerCase()}.local`
@@ -4040,15 +4022,6 @@ export async function handleRequest(
         body.expectedMachineId,
         body.expectedThreadId,
       ), gateway);
-    } catch (error) {
-      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
-    }
-    return;
-  }
-  if (method === "POST" && url.pathname === "/api/machine") {
-    try {
-      const body = await readJsonBody(request);
-      sendJson(response, 200, await gateway.selectMachine(body.machineId), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }

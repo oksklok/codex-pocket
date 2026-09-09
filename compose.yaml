@@ -9,4 +9,4 @@ services:
       CODEX_POCKET_HEADLESS: "1"
     volumes:
       - ./data:/data
-      - ./ssh:/home/node/.ssh
+      - ./ssh:/home/node/.ssh:ro
