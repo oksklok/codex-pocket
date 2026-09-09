@@ -83,6 +83,27 @@ try {
  for(const key of ['command','tool','search','review'])assert.equal(await page.locator(`#display-${key}`).isChecked(),false);
  assert.equal(await page.locator('#display-files').isChecked(),true);
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-info-display'));await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ const reloadReady=async()=>{await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));await page.waitForTimeout(210);};
+ if(width>=1100){
+ assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'false');
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');
+ await open();await page.locator('#inspector-button').click();await reloadReady();
+ assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'false');
+ await page.locator('#inspector-button').click();await reloadReady();
+ assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/restored-both.png`});
+ await dismissTasks();await closed();await reloadReady();
+ assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'false');
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');
+ }else{
+ await page.evaluate(()=>{localStorage.setItem('codex-pocket-tasks-open','true');localStorage.setItem('codex-pocket-details-open','true');});
+ await reloadReady();
+ for(const id of ['destination-button','inspector-button'])assert.equal(await page.locator(`#${id}`).getAttribute('aria-expanded'),'false');
+ await open();await dismissTasks();await closed();await page.locator('#inspector-button').click();await page.locator('#inspector-close').click();
+ assert.deepEqual(await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`))),['true','true']);
+ }
  await page.locator('#settings-button').click();
  await page.locator('.machine-settings-row').first().waitFor();
  for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).isVisible(),width<600);
@@ -92,6 +113,15 @@ try {
  assert.equal(await page.getByRole('button',{name:'Move PC 1 down',exact:true}).isDisabled(),true);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('button').allTextContents(),['↑','↓','×']);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40]);
+ const valueSize=width>=861?'14px':'16px';
+ assert((await page.locator('.settings-card input:not([type="checkbox"]), .settings-card select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize))).every(s=>s===valueSize));
+ const gaps=await page.locator('.settings-card .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom));
+ assert(gaps.every(g=>g===6));
+ assert.deepEqual(await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>getComputedStyle(e).gap)),['6px','6px','6px','6px']);
+ if(width<600)assert((await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom))).every(g=>g===6));
+ assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).display),'flex');
+ assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).fontSize),'13px');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-top-${width}.png`});
  await page.locator('.machine-settings-row').first().scrollIntoViewIfNeeded();
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
  await page.locator('#settings-close').click();
@@ -100,6 +130,11 @@ try {
  assert.deepEqual(await page.locator('#effort-select option').allTextContents(),['Light','Medium','High','Extra High','Max','Ultra']);
  assert.equal(await page.locator('#effort-select').inputValue(),'low');
  assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40,40]);
+ assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize)),[valueSize,valueSize,valueSize]);
+ assert.deepEqual(await page.locator('.runtime-panel .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom)),[6,6,6]);
+ await page.locator('#access-select').evaluate(e=>e.classList.add('full-access'));
+ assert.equal(await page.locator('#access-select').evaluate(e=>getComputedStyle(e).fontSize),valueSize);
+ await page.locator('#access-select').evaluate(e=>e.classList.remove('full-access'));
  assert.equal(await page.locator('#inspector-close').isVisible(),width<861);
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/display-${width}.png`});
  const categories=[['reasoning','reasoning','Reasoning'],['command','command','Command'],['tool','tool','Tool'],['search','search','Search'],['files','files','File Changes'],['collaboration','collaboration','Subagents'],['image','images','Image'],['review','review','Review'],['compaction','compaction','Context Compaction']];

@@ -119,12 +119,12 @@
             <section class="secondary-panel runtime-panel" aria-labelledby="runtime-title">
               <div class="panel-heading"><h3 id="runtime-title">Runtime</h3></div>
               <p class="field-help error-text" id="runtime-reason" hidden></p>
-              <label for="model-select">Model</label>
-              <select id="model-select" aria-label="Model" disabled><option>Model</option></select>
-              <label for="effort-select">Reasoning Effort</label>
-              <select id="effort-select" aria-label="Reasoning Effort" disabled><option>Effort</option></select>
-              <label for="access-select">Access</label>
-              <select id="access-select" aria-label="Access" disabled><option>Access</option></select>
+              <div class="form-field"><label for="model-select">Model</label>
+              <select id="model-select" aria-label="Model" disabled><option>Model</option></select></div>
+              <div class="form-field"><label for="effort-select">Reasoning Effort</label>
+              <select id="effort-select" aria-label="Reasoning Effort" disabled><option>Effort</option></select></div>
+              <div class="form-field"><label for="access-select">Access</label>
+              <select id="access-select" aria-label="Access" disabled><option>Access</option></select></div>
             </section>
             <section class="secondary-panel" id="plan-panel" aria-labelledby="plan-title" hidden>
               <div class="panel-heading"><h3 id="plan-title">Current Plan</h3><span class="count-badge" id="plan-count">0/0</span></div>
@@ -158,21 +158,21 @@
           <h3 id="settings-network-title">Network</h3>
           <label class="checkbox-row" for="settings-lan-enabled"><input id="settings-lan-enabled" type="checkbox"><span>Enable Access from Local Network</span></label>
           <div class="network-fields">
-            <div><label for="settings-host">Bind Address</label><input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required></div>
-            <div><label for="settings-port">Port</label><input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required></div>
+            <div class="form-field"><label for="settings-host">Bind Address</label><input id="settings-host" type="text" maxlength="253" autocomplete="off" spellcheck="false" required></div>
+            <div class="form-field"><label for="settings-port">Port</label><input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required></div>
           </div>
           <p class="field-help" id="settings-network-help">Use 0.0.0.0 for all local-network interfaces.</p>
           <div class="phone-urls" id="phone-urls" hidden><span>Open on Your Phone</span><div id="phone-url-list"></div></div>
         </section>
         <section class="settings-section" aria-labelledby="settings-security-title">
           <h3 id="settings-security-title">Security</h3>
-          <label for="settings-pin">4-digit PIN</label><input id="settings-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="Leave blank to keep current PIN">
+          <div class="form-field"><label for="settings-pin">4-digit PIN</label><input id="settings-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="new-password" placeholder="Leave blank to keep current PIN"></div>
           <p class="field-help" id="settings-pin-state">No PIN configured.</p>
         </section>
         <section class="settings-section" aria-labelledby="settings-appearance-title">
           <h3 id="settings-appearance-title">Appearance</h3>
-          <label for="settings-theme">Theme</label>
-          <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+          <div class="form-field"><label for="settings-theme">Theme</label>
+          <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
           <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show Project Names in Tasks</label>
           <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show Context Usage</label>
           <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show Quota</label>
@@ -182,8 +182,8 @@
         <section class="settings-section" aria-labelledby="settings-machines-title">
           <h3 id="settings-machines-title">Machines</h3>
           <div id="settings-local-machine">
-            <label for="settings-local-name">Local Machine Display Name</label>
-            <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname">
+            <div class="form-field"><label for="settings-local-name">Local Machine Display Name</label>
+            <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname"></div>
             <p class="field-help">Optional. This changes only the name shown in Pocket.</p>
           </div>
           <h4>SSH Machines</h4>

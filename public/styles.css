@@ -94,7 +94,7 @@ h3 { margin: 0; font-size: .82rem; }
 }
 .login-prompt { margin: 7px 0 15px; color: var(--muted); font-size: .88rem; }
 .stopped-card p:last-child { margin-bottom: 18px; color: var(--muted); font-size: .84rem; line-height: 1.5; }
-.login-card label, .settings-card label { display: block; margin-bottom: 7px; color: var(--muted); font-size: .72rem; font-weight: 700; }
+.login-card label { display: block; margin-bottom: 7px; color: var(--muted); font-size: .72rem; font-weight: 700; }
 .login-card input, .settings-card input, .composer textarea, select {
   width: 100%; border: 1px solid var(--line); border-radius: 9px;
   background: var(--surface-strong); color: var(--text);
@@ -198,8 +198,6 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .quota-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent-strong); }
 .runtime-panel { display: grid; gap: 8px; }
 .runtime-panel .panel-heading { margin-bottom: 0; }
-.runtime-panel label { color: var(--muted); font-size: 13px; font-weight: 500; }
-.runtime-panel select { min-height: 36px; padding: 6px 22px 6px 9px; font-size: .72rem; }
 #access-select.full-access {
   border-color: rgba(255,139,139,.48); background: rgba(255,139,139,.12); color: var(--danger); font-weight: 750;
 }
@@ -453,12 +451,11 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .settings-section:first-of-type { border-top: 0; padding-top: 2px; }
 .settings-section h3 { margin-bottom: 3px; }
 .settings-section h4 { margin: 6px 0 0; color: var(--muted); font-size: .68rem; }
-.settings-card input { min-height: 39px; padding: 8px 10px; }
 .network-fields { display: grid; grid-template-columns: minmax(0,1fr) 110px; gap: 8px; }
 .settings-machines { display: grid; gap: 8px; }
 .machine-settings-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 7px; align-items: center; padding: 10px; border: 1px solid var(--line-soft); border-radius: 9px; }
 .machine-settings-row input { min-width: 0; }
-.settings-card .machine-settings-field { display: grid; gap: 5px; margin: 0; min-width: 0; }
+.form-field, .settings-card .machine-settings-field { display: grid; gap: 6px; margin: 0; min-width: 0; }
 .machine-settings-empty { margin: 2px 0; color: var(--subtle); font-size: .7rem; }
 .machine-add { justify-self: start; }
 .checkbox-row { display: flex !important; align-items: center; gap: 9px; }
@@ -582,10 +579,9 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .machine-row-actions button { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); padding: 0; font-size: 1rem; }
 .machine-remove { color: var(--danger); }
 .settings-card { font-size: 14px; }
-.settings-card label { font-size: 13px; font-weight: 500; margin-bottom: 0; }
+.settings-card label, .runtime-panel label { color: var(--muted); font-size: 13px; font-weight: 500; margin: 0; }
 .settings-card h3 { font-size: 14px; }
 .settings-card h4 { font-size: 13px; }
-.settings-card input:not([type="checkbox"]), .settings-card select { height: var(--control-height); min-height: var(--control-height); font-size: 16px; padding: 8px; }
 .settings-section { gap: 8px; padding: 16px 0; }
 .settings-card .enter-preference { margin-top: 0; }
 .settings-card .field-help { font-size: 12px; line-height: 1.4; margin: 0; }
@@ -619,7 +615,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 
 /* Shared sizing for peer form controls, without changing composer or status surfaces. */
 .settings-card input:not([type="checkbox"]), .settings-card select, .runtime-panel select, .destination-search input {
-  height: var(--control-height); min-height: var(--control-height); border-radius: var(--control-radius); padding: 8px; font-size: 16px;
+  height: var(--control-height); min-height: var(--control-height); border-radius: var(--control-radius); padding: 8px; font-size: 14px;
 }
 .secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button { border-radius: var(--control-radius); }
 .settings-actions button, .settings-restart button, .machine-add { min-height: var(--control-height); }
@@ -634,3 +630,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .task-actions summary { width: var(--icon-size); height: var(--icon-size); }
 .task-action-menu { padding: 4px; border-radius: var(--control-radius); }
 .task-actions button { min-height: 36px; padding: 8px; }
+
+@media (max-width: 860px) {
+  .settings-card input:not([type="checkbox"]), .settings-card select, .runtime-panel select, .destination-search input { font-size: 16px; }
+}

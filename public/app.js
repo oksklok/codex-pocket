@@ -763,6 +763,14 @@ document.addEventListener("pointerdown", (event) => closeTaskMenus(event.target.
 elements.destinationList.addEventListener("scroll", () => closeTaskMenus());
 window.addEventListener("resize", () => closeTaskMenus());
 
+function saveSidebarPreference(sidebar, open) {
+  if (!matchMedia("(min-width: 1100px)").matches) return;
+  try { localStorage.setItem(`codex-pocket-${sidebar}-open`, String(open)); } catch {}
+}
+function sidebarPreference(sidebar, fallback) {
+  try { const value = localStorage.getItem(`codex-pocket-${sidebar}-open`); return value === null ? fallback : value === "true"; } catch { return fallback; }
+}
+
 let destinationCloseTimer;
 function closeDestinationSwitcher() {
   if (destinationSelection || taskActionBusy) return false;
@@ -777,6 +785,7 @@ function closeDestinationSwitcher() {
   }, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 180);
   elements.destinationButton.setAttribute("aria-expanded", "false");
   document.body.classList.remove("destination-open");
+  saveSidebarPreference("tasks", false);
   elements.destinationSearch.value = "";
   destinationCreateError = null;
   destinationTaskError = null;
@@ -793,6 +802,7 @@ function openDestinationSwitcher() {
   elements.destinationButton.setAttribute("aria-expanded", "true");
   void elements.destinationSwitcher.offsetWidth; // Establish the closed position before transitioning.
   document.body.classList.add("destination-open");
+  saveSidebarPreference("tasks", true);
   refreshNavigationCatalog(elements.showArchived.checked, true);
   renderDestinationSwitcher();
 }
@@ -2343,6 +2353,7 @@ function updateInspectorButtonState() {
   elements.inspectorButton.classList.toggle("active", open);
 }
 function openInspector() {
+  saveSidebarPreference("details", true);
   if (isMobileInspector()) {
     elements.appShell.classList.remove("inspector-closed");
     elements.appShell.classList.add("inspector-open");
@@ -2353,6 +2364,7 @@ function openInspector() {
   updateInspectorButtonState();
 }
 function closeInspector() {
+  saveSidebarPreference("details", false);
   elements.appShell.classList.remove("inspector-open");
   elements.inspectorBackdrop.hidden = true;
   if (!isMobileInspector()) elements.appShell.classList.add("inspector-closed");
@@ -2795,7 +2807,12 @@ async function startApp() {
   elements.loginScreen.hidden = true;
   elements.stoppedScreen.hidden = true;
   elements.appShell.hidden = false;
-  if (isMobileInspector()) closeInspector(); else openInspector();
+  if (matchMedia("(min-width: 1100px)").matches) {
+    if (sidebarPreference("details", true)) openInspector(); else closeInspector();
+    if (sidebarPreference("tasks", false)) openDestinationSwitcher();
+  } else {
+    closeInspector();
+  }
   try {
     const response = await apiFetch("/api/state");
     applySnapshot(await response.json(), false);
