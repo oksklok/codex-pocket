@@ -59,7 +59,12 @@ const server=createServer(async(req,res)=>{
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const browser=await chromium.launch({headless:true});
-const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+const page=await browser.newPage();
+await page.addInitScript(()=>{
+ window.taskDrawerTransitions=0;
+ document.addEventListener('transitionrun',event=>{if(event.target.id==='destination-switcher'&&event.propertyName==='transform')window.taskDrawerTransitions++;});
+});
+const errors=[];page.on('pageerror',e=>errors.push(e.message));
 const open=async()=>{if(await page.locator('#destination-button').getAttribute('aria-expanded')!=='true')await page.locator('#destination-button').click();await page.waitForTimeout(210);assert.notEqual(await page.evaluate(()=>document.activeElement?.id),'destination-search');assert.equal(await page.locator('#destination-close').isVisible(),page.viewportSize().width<1100);};
 const dismissTasks=()=>page.locator(page.viewportSize().width>=1100?'#destination-button':'#destination-close').click();
 const closed=()=>page.waitForFunction(()=>document.querySelector('#destination-switcher').hidden);
@@ -87,10 +92,12 @@ try {
  if(width>=1100){
  assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'false');
  assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');
- await open();await page.locator('#inspector-button').click();await reloadReady();
+ await open();assert.equal(await page.evaluate(()=>window.taskDrawerTransitions),1);await page.locator('#inspector-button').click();await reloadReady();
+ assert.equal(await page.evaluate(()=>window.taskDrawerTransitions),0);
  assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');
  assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'false');
  await page.locator('#inspector-button').click();await reloadReady();
+ assert.equal(await page.evaluate(()=>window.taskDrawerTransitions),0);
  assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');
  assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'true');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/restored-both.png`});

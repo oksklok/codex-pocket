@@ -792,11 +792,13 @@ function closeDestinationSwitcher() {
   return true;
 }
 
-function openDestinationSwitcher() {
+function openDestinationSwitcher(animate = true) {
   elements.destinationSwitcher.setAttribute("role", matchMedia("(min-width: 1100px)").matches ? "navigation" : "dialog");
   clearSelectionForOverlay();
   clearTimeout(destinationCloseTimer);
   elements.destinationSwitcher.inert = false;
+  // Restore the saved open position before revealing the drawer on startup.
+  if (!animate) document.body.classList.add("destination-open");
   elements.destinationSwitcher.hidden = false;
   elements.destinationBackdrop.hidden = false;
   elements.destinationButton.setAttribute("aria-expanded", "true");
@@ -2809,7 +2811,7 @@ async function startApp() {
   elements.appShell.hidden = false;
   if (matchMedia("(min-width: 1100px)").matches) {
     if (sidebarPreference("details", true)) openInspector(); else closeInspector();
-    if (sidebarPreference("tasks", false)) openDestinationSwitcher();
+    if (sidebarPreference("tasks", false)) openDestinationSwitcher(false);
   } else {
     closeInspector();
   }
