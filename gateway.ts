@@ -2165,22 +2165,35 @@ export class MachineRuntime {
     }, 150);
   }
 
+  private async listTaskPages(method: "thread/list" | "thread/loaded/list", params: JsonObject): Promise<any[]> {
+    if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const data: any[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      const page = await this.rpc.request(method, { ...params, cursor });
+      data.push(...(Array.isArray(page?.data) ? page.data : []));
+      cursor = page?.nextCursor ?? null;
+      if (cursor && cursors.has(cursor)) throw new Error("Task catalog returned a repeated cursor");
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    return data;
+  }
+
   private async refreshLoadedThreads(): Promise<LoadedThreadSummary[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const [listed, loaded] = await Promise.all([
-      this.rpc.request("thread/list", {
+      this.listTaskPages("thread/list", {
         limit: 100,
         sortKey: "recency_at",
         sortDirection: "desc",
       }),
-      this.rpc.request("thread/loaded/list", { limit: 100 }),
+      this.listTaskPages("thread/loaded/list", { limit: 100 }),
     ]);
-    const threads = Array.isArray(listed?.data) ? listed.data : [];
-    const loadedIds = new Set<string>(Array.isArray(loaded?.data)
-      ? loaded.data.map((value: any) => String(value?.id ?? value))
-      : []);
+    const threads = listed;
+    const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)));
     const listedIds = new Set(threads.map((thread: any) => String(thread.id)));
-    for (const id of [...loadedIds].filter((id) => !listedIds.has(id)).slice(0, 50)) {
+    for (const id of [...loadedIds].filter((id) => !listedIds.has(id))) {
       try {
         const result = await this.rpc.request("thread/read", { threadId: id, includeTurns: false });
         if (result.thread) threads.push(result.thread);
@@ -2257,8 +2270,8 @@ export class MachineRuntime {
 
   async listArchivedThreads(): Promise<LoadedThreadSummary[]> {
     if (!this.rpc || !this.state.connected) return [];
-    const page = await this.rpc.request("thread/list", { limit: 50, archived: true, sortKey: "recency_at", sortDirection: "desc" });
-    return (page.data || []).filter(isUserFacingThread).map((thread: any) => loadedThreadSummary(thread, String(thread.id), false));
+    const threads = await this.listTaskPages("thread/list", { limit: 50, archived: true, sortKey: "recency_at", sortDirection: "desc" });
+    return threads.filter(isUserFacingThread).map((thread: any) => loadedThreadSummary(thread, String(thread.id), false));
   }
 
   taskAction(body: JsonObject): Promise<JsonObject> {
@@ -2289,12 +2302,20 @@ export class MachineRuntime {
       if (nameError) throw new Error("Task created, but its name could not be saved. Open the created task before trying again.");
       return this.snapshot();
     }
-    if (!["archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
+    if (!["rename", "archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
     const id = String(body.threadId ?? "");
     if (!id || id.length > 512) throw new Error("Invalid task");
     const catalog = body.archived === true ? await this.listArchivedThreads() : await this.refreshLoadedThreads();
     const task = catalog.find((task) => task.id === id);
     if (!task) throw new Error("Task no longer appears in this list; refresh and try again");
+    if (action === "rename") {
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
+      await this.rpc.request("thread/name/set", { threadId: id, name });
+      if (this.state.thread?.id === id) this.state.thread.name = name;
+      await this.refreshLoadedThreads();
+      return this.snapshot();
+    }
     if ((action === "unarchive") !== (body.archived === true) && action !== "delete") throw new Error("Task archive state changed; refresh and try again");
     if (task.status.startsWith("active") || (this.state.thread?.id === id && this.state.turn?.status === "inProgress")) throw new Error("Stop or finish this task before archiving or deleting it");
     if (action === "delete" && body.confirmed !== true) throw new Error("Confirm task deletion first");

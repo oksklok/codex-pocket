@@ -1055,3 +1055,59 @@ test("proxy handshake is bounded and timeout enters normal reconnect; success an
   const established = new RpcClient();const opening = established.connect("ws://127.0.0.1:1234");const directTimer = timers.at(-1);
   socket.dispatchEvent(new Event("open"));await opening;assert(directTimer.cancelled);established.close();
 });
+
+test("complete task catalogs page active, archived and loaded IDs without changing ordering", async () => {
+  const runtime = activeRuntime();
+  const make = (prefix, count) => Array.from({ length: count }, (_, i) => ({ id: `${prefix}-${i}`, name: `${prefix} ${i}`, cwd: '/tmp', status: 'idle', updatedAt: 1000 - i, canAcceptDirectInput: true }));
+  const active = make('active', 103), archived = make('archived', 53), empty = make('empty', 105);
+  const calls = [];
+  runtime.rpc = { request: async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/list' || method === 'thread/loaded/list') {
+      const all = method === 'thread/loaded/list' ? empty.map(t => t.id) : params.archived ? archived : active;
+      const offset = Number(params.cursor || 0), end = offset + params.limit;
+      return { data: all.slice(offset, end), nextCursor: end < all.length ? String(end) : null };
+    }
+    if (method === 'thread/read' || method === 'thread/resume') return { thread: [...active, ...empty].find(t => t.id === params.threadId) };
+    return { data: [] };
+  } };
+  const catalog = await runtime.listLoadedThreads();
+  assert.equal(catalog.length, 208);
+  assert.deepEqual(catalog.filter(t => t.id.startsWith('active')).map(t => t.id), active.map(t => t.id));
+  assert.deepEqual(catalog.filter(t => t.id.startsWith('empty')).map(t => t.id), empty.map(t => t.id));
+  assert.deepEqual((await runtime.listArchivedThreads()).map(t => t.id), archived.map(t => t.id));
+  await runtime.selectThread('active-102');
+  assert.equal(runtime.state.thread.id, 'active-102');
+  assert(calls.some(c => c.method === 'thread/resume' && c.params.threadId === 'active-102'));
+  await runtime.taskAction({ action: 'rename', threadId: 'archived-52', archived: true, name: 'Archived rename' });
+  assert(calls.some(c => c.method === 'thread/name/set' && c.params.threadId === 'archived-52'));
+  assert.equal(runtime.state.thread.id, 'active-102');
+});
+
+test("rename uses official API for running selected tasks and preserves task state on failure", async () => {
+  const runtime = activeRuntime();
+  const task = { id: 'thread-1', name: 'Original', cwd: '/tmp', status: 'active' };
+  runtime.state.thread.name = task.name;
+  const calls = []; let fail = false;
+  runtime.rpc = { request: async (method, params) => {
+    if (method === 'thread/list') return { data: [task] };
+    if (method === 'thread/name/set') {
+      calls.push(params);
+      if (fail) throw new Error('Rename failed');
+      task.name = params.name;
+    }
+    return { data: [] };
+  } };
+  const turn = runtime.state.turn, messages = runtime.state.messages;
+  await runtime.taskAction({ action: 'rename', threadId: task.id, name: ' Renamed ' });
+  assert.deepEqual(calls, [{ threadId: task.id, name: 'Renamed' }]);
+  assert.equal(runtime.state.thread.name, 'Renamed');
+  assert.equal(runtime.state.turn, turn);
+  assert.equal(runtime.state.messages, messages);
+  const before = runtime.snapshot(); fail = true;
+  await assert.rejects(runtime.taskAction({ action: 'rename', threadId: task.id, name: 'Other' }), /Rename failed/);
+  assert.deepEqual(runtime.snapshot(), before);
+  for (const name of ['', ' '.repeat(3), 'x'.repeat(181)]) await assert.rejects(runtime.taskAction({ action: 'rename', threadId: task.id, name }), /180/);
+  await assert.rejects(runtime.taskAction({ action: 'rename', threadId: 'missing', name: 'Other' }), /no longer/);
+  assert.equal(calls.length, 2);
+});

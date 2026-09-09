@@ -42,6 +42,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/message'){for await(const c of req){};return json({accepted:true},202);}
  if(u.pathname==='/api/tasks'){
  let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(gate)await gate;if(failAction)return json({error:'Fixture action failed'},409);
+ if(b.action==='rename'){const t=[...active,...archived].find(t=>t.id===b.threadId);t.name=b.name;}
  if(b.action==='archive'){archived.push({...active.find(t=>t.id===b.threadId),archived:true});active=active.filter(t=>t.id!==b.threadId);}
  if(b.action==='unarchive'){active.push({...archived.find(t=>t.id===b.threadId),archived:false});archived=archived.filter(t=>t.id!==b.threadId);}
  if(b.action==='delete'){active=active.filter(t=>t.id!==b.threadId);archived=archived.filter(t=>t.id!==b.threadId);}
@@ -59,7 +60,8 @@ const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors
 const open=async()=>{await page.locator('#destination-button').click();await page.waitForTimeout(210);};
 const closed=()=>page.waitForFunction(()=>document.querySelector('#destination-switcher').hidden);
 try {
- page.on('dialog',d=>d.accept(d.type()==='prompt'?(d.message().includes('task name')?'New test task':'/project'):undefined));
+ const defaultDialog=d=>d.accept(d.type()==='prompt'?(d.message().includes('task name')?'New test task':'/project'):undefined);
+ page.on('dialog',defaultDialog);
  const input=page.locator('#message-text');
  const row=name=>page.locator('.destination-entry').filter({has:page.getByText(name,{exact:true})});
  const select=async name=>{await open();await row(name).locator('.destination-task').click();await closed();};
@@ -75,20 +77,36 @@ try {
  mode='success';await page.locator('#send-message').click();await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
  await select('Owned task');assert.equal(await input.inputValue(),'Draft B');await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Stable action draft');await open();
- for(const action of ['Archive','Delete']){
+ for(const action of ['Rename','Archive','Delete']){
  failAction=true;gate=new Promise(r=>release=r);
  const before=await input.boundingBox();const signature=await page.locator('#model-select').evaluate(e=>e.outerHTML);
  await row('Owned task').locator('summary').click();await row('Owned task').getByRole('button',{name:action,exact:true}).click();
- await page.getByText(action==='Archive'?'Archiving…':'Deleting…',{exact:true}).waitFor();
+ await page.getByText(action==='Rename'?'Renaming…':action==='Archive'?'Archiving…':'Deleting…',{exact:true}).waitFor();
  assert.deepEqual(await input.boundingBox(),before);assert.equal(await page.locator('#model-select').evaluate(e=>e.outerHTML),signature);
  assert(!(await page.locator('#composer').innerText()).includes('Switching'));
  release();gate=null;await row('Owned task').locator('.task-selection-error').waitFor();
  assert.equal(await page.locator('.destination-error').count(),0);assert.equal(await input.inputValue(),'Stable action draft');
  }
+ page.off('dialog',defaultDialog);
+ for(const answer of [null,'   ','Current task']){
+ const before=calls.filter(c=>c==='/api/tasks').length;
+ page.once('dialog',async d=>{assert.equal(d.defaultValue(),'Current task');if(answer===null)await d.dismiss();else await d.accept(answer);});
+ await row('Current task').locator('summary').click();await row('Current task').getByRole('button',{name:'Rename',exact:true}).click();
+ await page.waitForTimeout(50);assert.equal(calls.filter(c=>c==='/api/tasks').length,before);
+ await row('Current task').locator('summary').click();
+ }
+ page.on('dialog',defaultDialog);
+ failAction=false;gate=new Promise(r=>release=r);
+ await row('Current task').locator('summary').click();await row('Current task').getByRole('button',{name:'Rename',exact:true}).click();
+ await row('Current task').getByText('Renaming…',{exact:true}).waitFor();assert.equal(await page.getByText('Renaming…',{exact:true}).count(),1);
+ release();gate=null;await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));
+ assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);assert.equal(await input.inputValue(),'Stable action draft');
+ task.name='Current task';await page.locator('#destination-close').click();await closed();await open();
+ failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.getByRole('button',{name:'Creating…',exact:true}).waitFor();assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('.destination-group').first().getByText('Fixture action failed',{exact:true}).waitFor();assert.equal(await page.locator('.destination-error').count(),0);
  failAction=false;await page.getByRole('button',{name:'New Task',exact:true}).first().click();await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  }
- assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Archive/Delete/Create busy and failures, new task empty');
+ assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

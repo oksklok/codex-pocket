@@ -609,7 +609,7 @@ function renderDestinationSwitcher() {
       status.className = "destination-task-status";
       status.textContent = destinationSelection?.machineId === machine.id && destinationSelection?.threadId === task.id
         ? "Opening…"
-        : taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
+        : taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "rename" ? "Renaming" : taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
         : destinationTaskStatus(machine, task, state);
       row.append(check, label, status);
       row.addEventListener("click", () => selectDestination(machine.id, task.id));
@@ -639,15 +639,20 @@ function renderDestinationSwitcher() {
         menu.style.left = `${Math.max(drawer.left + 8, Math.min(anchor.right - menu.offsetWidth, drawer.right - menu.offsetWidth - 8))}px`;
         menu.style.top = `${Math.max(bounds.top, Math.min(top, bounds.bottom - menu.offsetHeight))}px`;
       });
-      for (const [action, label] of [[task.archived ? "unarchive" : "archive", task.archived ? "Unarchive" : "Archive"], ["delete", "Delete"]]) {
+      for (const [action, label] of [["rename", "Rename"], [task.archived ? "unarchive" : "archive", task.archived ? "Unarchive" : "Archive"], ["delete", "Delete"]]) {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
-        button.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id) || task.status?.startsWith("active");
+        button.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id) || (action !== "rename" && task.status?.startsWith("active"));
         button.addEventListener("click", () => {
           if (destinationSelection || taskActionBusy) return;
+          let name;
+          if (action === "rename") {
+            name = prompt("Enter task name", task.name)?.trim();
+            if (!name || name === task.name) return;
+          }
           if (action === "delete" && !confirm(`Delete task “${task.name}”? This permanently deletes its Codex conversation. Project files are not deleted.`)) return;
-          performTaskAction({ machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action, confirmed: action === "delete" });
+          performTaskAction({ machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action, name, confirmed: action === "delete" });
         });
         menu.append(button);
       }
