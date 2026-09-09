@@ -1209,3 +1209,31 @@ test("only an exact local missing socket starts the daemon once before reconnect
     }
   } finally { starter.mock.restore(); syncBuiltinESMExports(); }
 });
+
+test("task context survives release as last known, refreshes authoritatively, and stays bounded", async () => {
+  const runtime = activeRuntime();
+  const usage = tokens => ({ last: { totalTokens: tokens }, modelContextWindow: 100000 });
+  const update = (id, value) => runtime.handleNotification({ method: 'thread/tokenUsage/updated', params: { threadId: id, tokenUsage: value } });
+  update('thread-1', usage(41000));
+  runtime.loadedThreads = [{ id: 'thread-1', name: 'A', cwd: '/tmp', status: 'idle' }];
+  runtime.rpc = { request: async (method, params) => method === 'thread/resume' ? { thread: { id: params.threadId, status: 'idle' } } : { data: [] } };
+  await runtime.releaseTask();
+  assert.equal(runtime.state.context, null);
+  await runtime.attachLoadedThread('thread-1', false);
+  assert.deepEqual(runtime.state.context, { usedTokens: 41000, contextWindow: 100000, usedPercent: 41, lastKnown: true });
+  update('other', usage(99000));
+  update('thread-1', { last: { totalTokens: -1 }, modelContextWindow: 100000 });
+  assert.equal(runtime.state.context.usedPercent, 41);
+  assert.equal(runtime.state.context.lastKnown, true);
+  update('thread-1', usage(42000));
+  assert.equal(runtime.state.context.usedPercent, 42);
+  assert.equal(runtime.state.context.lastKnown, undefined);
+  for (let i = 0; i < 32; i++) {
+    runtime.state.thread = { id: `cached-${i}` };
+    update(`cached-${i}`, usage(i));
+  }
+  assert.equal(runtime.contextByThread.size, 32);
+  assert.equal(runtime.contextByThread.has('thread-1'), false);
+  await runtime.attachLoadedThread('thread-1', false);
+  assert.equal(runtime.state.context, null);
+});

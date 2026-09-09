@@ -38,16 +38,7 @@
             <span id="destination-label">Connecting…</span>
             <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg>
           </button>
-          <button class="destination-backdrop" id="destination-backdrop" type="button" aria-label="Close task switcher" hidden></button>
-          <section class="destination-switcher" id="destination-switcher" role="dialog" aria-label="Choose a task" hidden>
-            <div class="destination-switcher-head">
-              <strong>Tasks</strong>
-              <button class="icon-button destination-close" id="destination-close" type="button" aria-label="Close task switcher" title="Close">×</button>
-            </div>
-            <label class="destination-search"><span class="sr-only">Search tasks</span><input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…"></label>
-            <label class="destination-archived"><input type="checkbox" id="show-archived"> Archived Tasks</label>
-            <div class="destination-list" id="destination-list" aria-live="polite"></div>
-          </section>
+
         </div>
         <div class="phase-row">
           <span class="phase-pill" id="phase-pill">Connecting</span>
@@ -69,6 +60,16 @@
       </header>
 
       <div class="workspace" id="workspace">
+          <button class="destination-backdrop" id="destination-backdrop" type="button" aria-label="Close task switcher" hidden></button>
+          <section class="destination-switcher" id="destination-switcher" role="dialog" aria-label="Choose a task" hidden>
+            <div class="destination-switcher-head">
+              <strong>Tasks</strong>
+              <button class="icon-button destination-close" id="destination-close" type="button" aria-label="Close task switcher" title="Close">×</button>
+            </div>
+            <label class="destination-search"><span class="sr-only">Search tasks</span><input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…"></label>
+            <label class="destination-archived"><input type="checkbox" id="show-archived"> Archived Tasks</label>
+            <div class="destination-list" id="destination-list" aria-live="polite"></div>
+          </section>
         <section class="chat-panel" aria-label="Codex conversation">
           <div class="history-status" id="history-status" aria-live="polite" hidden></div>
           <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state">Loading recent messages…</p></div>
@@ -131,11 +132,14 @@
             </section>
             <section class="secondary-panel display-panel" aria-labelledby="display-title">
               <div class="panel-heading"><h3 id="display-title">Display</h3></div>
-              <label class="display-option"><input id="display-files" type="checkbox" checked><span>File Changes</span></label>
-              <label class="display-option"><input id="display-commands" type="checkbox" checked><span>Tool Calls</span></label>
               <label class="display-option"><input id="display-reasoning" type="checkbox" checked><span>Reasoning</span></label>
+              <label class="display-option"><input id="display-command" type="checkbox" checked><span>Command</span></label>
+              <label class="display-option"><input id="display-tool" type="checkbox" checked><span>Tool</span></label>
+              <label class="display-option"><input id="display-search" type="checkbox" checked><span>Search</span></label>
+              <label class="display-option"><input id="display-files" type="checkbox" checked><span>File Changes</span></label>
               <label class="display-option"><input id="display-collaboration" type="checkbox" checked><span>Subagents</span></label>
-              <label class="display-option"><input id="display-images" type="checkbox" checked><span>Images</span></label>
+              <label class="display-option"><input id="display-images" type="checkbox" checked><span>Image</span></label>
+              <label class="display-option"><input id="display-review" type="checkbox" checked><span>Review</span></label>
               <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context Compaction</span></label>
               <div class="display-divider" role="separator"></div>
               <label class="display-option"><input id="expand-commands" type="checkbox"><span>Expand Commands by Default</span></label>

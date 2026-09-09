@@ -52,7 +52,10 @@ const elements = {
   planList: document.querySelector("#plan-list"),
   planCount: document.querySelector("#plan-count"),
   displayFiles: document.querySelector("#display-files"),
-  displayCommands: document.querySelector("#display-commands"),
+  displayCommands: document.querySelector("#display-command"),
+  displayTool: document.querySelector("#display-tool"),
+  displaySearch: document.querySelector("#display-search"),
+  displayReview: document.querySelector("#display-review"),
   displayReasoning: document.querySelector("#display-reasoning"),
   displayCollaboration: document.querySelector("#display-collaboration"),
   displayImages: document.querySelector("#display-images"),
@@ -289,11 +292,15 @@ applyTheme();
 
 function loadDisplayPreferences() {
   const defaults = {
-    commands: true, files: true, reasoning: true, collaboration: true, images: true, compaction: true,
+    command: true, tool: true, search: true, review: true, files: true, reasoning: true, collaboration: true, images: true, compaction: true,
     expandCommands: false, expandFiles: false,
   };
   try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) || "{}") };
+    const saved = JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) || "{}") || {};
+    for (const key of ["command", "tool", "search", "review"]) {
+      if (!Object.hasOwn(saved, key)) saved[key] = saved.commands ?? true;
+    }
+    return { ...defaults, ...saved };
   } catch {
     return defaults;
   }
@@ -309,7 +316,11 @@ function activityVisible(activity) {
   if (activity.kind === "collaboration") return displayPreferences.collaboration;
   if (activity.kind === "image") return displayPreferences.images;
   if (activity.kind === "compaction") return displayPreferences.compaction;
-  return displayPreferences.commands;
+  if (activity.kind === "command") return displayPreferences.command;
+  if (activity.kind === "tool") return displayPreferences.tool;
+  if (activity.kind === "search") return displayPreferences.search;
+  if (activity.kind === "review") return displayPreferences.review;
+  return false;
 }
 
 function activityExpandsByDefault(activity) {
@@ -781,6 +792,7 @@ function closeDestinationSwitcher() {
 }
 
 function openDestinationSwitcher() {
+  elements.destinationSwitcher.setAttribute("role", matchMedia("(min-width: 1100px)").matches ? "navigation" : "dialog");
   clearSelectionForOverlay();
   clearTimeout(destinationCloseTimer);
   elements.destinationSwitcher.inert = false;
@@ -895,7 +907,10 @@ function renderPlan() {
 
 function renderDisplayControls() {
   elements.displayFiles.checked = displayPreferences.files;
-  elements.displayCommands.checked = displayPreferences.commands;
+  elements.displayCommands.checked = displayPreferences.command;
+  elements.displayTool.checked = displayPreferences.tool;
+  elements.displaySearch.checked = displayPreferences.search;
+  elements.displayReview.checked = displayPreferences.review;
   elements.displayReasoning.checked = displayPreferences.reasoning;
   elements.displayCollaboration.checked = displayPreferences.collaboration;
   elements.displayImages.checked = displayPreferences.images;
@@ -1278,9 +1293,9 @@ function renderState() {
   renderDisplayControls();
   renderQuota();
   const context = state.context;
-  elements.contextPercent.textContent = context ? `${context.usedPercent}%` : "—";
+  elements.contextPercent.textContent = context ? `${context.lastKnown ? "~" : ""}${context.usedPercent}%` : "—";
   elements.contextFill.style.width = `${context?.usedPercent ?? 0}%`;
-  elements.context.title = context ? `${context.usedPercent}% context used · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
+  elements.context.title = context ? `${context.lastKnown ? "Last known · " : ""}${context.usedPercent}% context used · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
   elements.runtimeReason.textContent = state.machineId === "local" ? state.connectionError || "" : "";
   elements.runtimeReason.hidden = !elements.runtimeReason.textContent;
   renderComposer();
@@ -1606,7 +1621,7 @@ function activityNode(activity) {
   kind.className = "activity-kind";
   const labels = {
     command: "Command", tool: "Tool", search: "Search", files: "File Changes",
-    reasoning: "Reasoning", collaboration: "Subagents", image: "Image", compaction: "Context", review: "Review",
+    reasoning: "Reasoning", collaboration: "Subagents", image: "Image", compaction: "Context Compaction", review: "Review",
   };
   kind.textContent = labels[activity.kind] || "Activity";
   const activityStatus = document.createElement("span");
@@ -1933,7 +1948,7 @@ async function performTaskAction(body) {
   await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
   renderDestinationSwitcher();
   if (succeeded && body.action === "create") {
-    closeDestinationSwitcher();
+    if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
     elements.messageText.focus();
   }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
@@ -1943,7 +1958,7 @@ async function selectDestination(machineId, threadId) {
   if (!machineId || !threadId || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess || readingImages) return;
   destinationTaskError = null;
   if (machineId === state?.machineId && threadId === state?.thread?.id) {
-    closeDestinationSwitcher();
+    if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
     return;
   }
   const expectedMachineId = state?.machineId || "";
@@ -1988,7 +2003,7 @@ async function selectDestination(machineId, threadId) {
     // The response covers events through the final selection snapshot. Preserve later deltas.
     const lastSnapshot = token.events.findLastIndex(entry => entry.snapshot?.machineId === accepted.machineId && entry.snapshot?.thread?.id === accepted.thread?.id);
     for (const entry of token.events.slice(lastSnapshot < 0 ? token.events.length : lastSnapshot + 1)) entry.deliver();
-    closeDestinationSwitcher();
+    if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
     await loadHistory(null, historyEpoch, true);
     await Promise.allSettled([refreshMachines(), refreshLoadedThreads()]);
   } else {
@@ -2380,6 +2395,11 @@ function renderMachineSettings(values) {
     elements.settingsMachines.append(empty);
     return;
   }
+  const header = document.createElement("div");
+  header.className = "machine-settings-header";
+  header.setAttribute("aria-hidden", "true");
+  for (const text of ["Display Name", "SSH Alias", "Actions"]) header.append(Object.assign(document.createElement("span"), { textContent: text }));
+  elements.settingsMachines.append(header);
   configured.forEach((machine, index) => {
     const row = document.createElement("div");
     row.className = "machine-settings-row";
@@ -2520,22 +2540,31 @@ elements.messageText.addEventListener("paste", (event) => {
 });
 elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
-let viewportBottomTimer = null;
-function cancelViewportBottom() {
-  clearTimeout(viewportBottomTimer);
-  viewportBottomTimer = null;
+let previousViewportHeight = window.visualViewport?.height ?? innerHeight;
+let viewportReconcileTimer;
+function cancelViewportReconciliation() { clearTimeout(viewportReconcileTimer); }
+function viewportReconciliationBlocked() {
+  const focused = document.activeElement;
+  const editing = focused?.matches("textarea, input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]), [contenteditable]:not([contenteditable=false])");
+  return transcriptScroller() !== document.scrollingElement || composerExpanded || editing || selectionHold.active || transcriptSelectionActive();
 }
 window.visualViewport?.addEventListener("resize", () => {
-  if (transcriptScroller() !== document.scrollingElement || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive()) return;
-  cancelViewportBottom();
-  viewportBottomTimer = setTimeout(() => {
-    viewportBottomTimer = null;
-    if (transcriptScroller() !== document.scrollingElement || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive()) return;
-    transcriptScroller().scrollTop = transcriptScroller().scrollHeight;
+  const height = window.visualViewport.height;
+  const decrease = previousViewportHeight - height;
+  previousViewportHeight = height;
+  cancelViewportReconciliation();
+  if (decrease <= 0 || viewportReconciliationBlocked()) return;
+  const scroller = document.scrollingElement;
+  const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  if (distance > decrease + 80) return;
+  viewportReconcileTimer = setTimeout(() => {
+    if (viewportReconciliationBlocked()) return;
+    scroller.scrollTop = scroller.scrollHeight;
+    shouldFollowConversation = true;
     updateJumpLatest();
   }, 120);
 });
-for (const type of ["touchstart", "wheel", "keydown"]) document.addEventListener(type, cancelViewportBottom, { passive: true });
+for (const type of ["touchstart", "wheel", "keydown"]) document.addEventListener(type, cancelViewportReconciliation, { passive: true });
 window.visualViewport?.addEventListener("resize", fitExpandedComposer);
 window.visualViewport?.addEventListener("scroll", fitExpandedComposer);
 let composerWidth = 0;
@@ -2586,8 +2615,7 @@ elements.modelSelect.addEventListener("change", () => {
 elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 function handleTranscriptScroll() {
-  // A viewport resize may emit scroll before reconciliation; preserve its prior follow state.
-  if (viewportBottomTimer === null) shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < 80;
+  shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < 80;
   updateJumpLatest();
   if (!shouldFollowConversation && transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 }
@@ -2601,10 +2629,14 @@ elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
 window.addEventListener("resize", () => {
   updateInspectorButtonState();
+  elements.destinationSwitcher.setAttribute("role", matchMedia("(min-width: 1100px)").matches ? "navigation" : "dialog");
 });
 for (const [element, key] of [
   [elements.displayFiles, "files"],
-  [elements.displayCommands, "commands"],
+  [elements.displayCommands, "command"],
+  [elements.displayTool, "tool"],
+  [elements.displaySearch, "search"],
+  [elements.displayReview, "review"],
   [elements.displayReasoning, "reasoning"],
   [elements.displayCollaboration, "collaboration"],
   [elements.displayImages, "images"],

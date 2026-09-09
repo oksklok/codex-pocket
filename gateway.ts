@@ -178,7 +178,7 @@ type PocketState = {
   models: PocketModel[];
   access: PocketAccess;
   queuedMessage: QueuedMessage | null;
-  context: null | { usedTokens: number; contextWindow: number; usedPercent: number };
+  context: null | { usedTokens: number; contextWindow: number; usedPercent: number; lastKnown?: boolean };
   stoppingTurnId: string | null;
   threadStatus: string;
   phase: "connecting" | "unavailable" | "working" | "waiting_input" | "waiting_permission" | "done" | "stopped" | "failed";
@@ -1597,6 +1597,7 @@ export class MachineRuntime {
   private daemonStart: ReturnType<typeof execFile> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelayIndex = 0;
+  private contextByThread = new Map<string, { usedTokens: number; contextWindow: number; usedPercent: number }>();
   private trustedImagePaths = new Set<string>();
   private selectionQueue: Promise<void> = Promise.resolve();
   private pendingAttachment: { threadId: string; replay: Array<() => void> } | null = null;
@@ -2731,6 +2732,14 @@ export class MachineRuntime {
       cwd: String(thread.cwd ?? summary.cwd),
       source: String(thread.source ?? "unknown"),
     };
+    if (changed) {
+      const cached = this.contextByThread.get(threadId);
+      if (cached) {
+        this.contextByThread.delete(threadId);
+        this.contextByThread.set(threadId, cached);
+        this.state.context = { ...cached, lastKnown: true };
+      }
+    }
     this.canAcceptDirectInput = thread.canAcceptDirectInput === true;
     this.state.threadStatus = statusText(thread.status ?? summary.status);
     this.updateModel(resumed);
@@ -2910,8 +2919,13 @@ export class MachineRuntime {
     switch (method) {
       case "thread/tokenUsage/updated":
         if (!this.state.thread || params.threadId !== this.state.thread.id) break;
-        this.state.context = contextSnapshot(params.tokenUsage);
-        this.broadcast("context", { context: this.state.context });
+        const context = contextSnapshot(params.tokenUsage);
+        if (!context) break;
+        this.contextByThread.delete(params.threadId);
+        this.contextByThread.set(params.threadId, context);
+        while (this.contextByThread.size > 32) this.contextByThread.delete(this.contextByThread.keys().next().value!);
+        this.state.context = context;
+        this.broadcast("context", { context });
         break;
       case "thread/status/changed":
         this.state.threadStatus = statusText(params.status);
