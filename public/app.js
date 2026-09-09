@@ -2533,10 +2533,6 @@ elements.showArchived.addEventListener("change", () => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && composerExpanded) { event.preventDefault(); toggleComposer(); return; }
-  if (event.key === "Escape" && !elements.destinationSwitcher.hidden) {
-    event.preventDefault();
-    if (closeDestinationSwitcher()) elements.destinationButton.focus();
-  }
 });
 elements.attachImage.addEventListener("click", () => elements.imagePicker.click());
 elements.imagePicker.addEventListener("change", () => addImages([...elements.imagePicker.files]));
@@ -2707,7 +2703,7 @@ elements.settingsCancel.addEventListener("click", closeSettings);
 elements.settingsScreen.addEventListener("click", (event) => { if (event.target === elements.settingsScreen) closeSettings(); });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (!elements.settingsScreen.hidden) closeSettings(); else closeInspector();
+  if (!elements.settingsScreen.hidden) closeSettings();
 });
 elements.settingsLanEnabled.addEventListener("change", () => {
   if (elements.settingsLanEnabled.checked && elements.settingsHost.value === "127.0.0.1") elements.settingsHost.value = "0.0.0.0";

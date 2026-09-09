@@ -190,6 +190,12 @@ try {
  // Set up both underlying panels even on mobile, where their backdrops cover the topbar.
  await page.locator('#inspector-button').evaluate(e=>e.click());await page.waitForTimeout(210);
  const sidebarPreferences=await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`)));
+ await page.locator('#settings-button').evaluate(e=>e.click());await page.locator('#settings-screen').waitFor();
+ await page.keyboard.press('Escape');assert.equal(await page.locator('#settings-screen').isVisible(),false);
+ for(const id of ['destination-button','inspector-button'])assert.equal(await page.locator(`#${id}`).getAttribute('aria-expanded'),'true');
+ await page.keyboard.press('Escape');await page.waitForTimeout(210);
+ for(const id of ['destination-button','inspector-button'])assert.equal(await page.locator(`#${id}`).getAttribute('aria-expanded'),'true');
+ assert.deepEqual(await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`))),sidebarPreferences);
  await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
  await page.keyboard.press('Escape');await page.waitForTimeout(210);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
