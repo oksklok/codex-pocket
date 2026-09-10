@@ -139,13 +139,14 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   overflow: hidden; display: grid; grid-template-rows: auto auto auto minmax(0,1fr); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
   border: 1px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 0 18px 55px rgba(0,0,0,.42);
 }
-.destination-switcher-head { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; }
+.destination-switcher-head { display: flex; align-items: center; gap: 8px; }
 .destination-search { display: block; padding: 12px 12px 0; }
 .destination-search input {
   min-width: 0; width: 100%; height: 38px; min-height: 38px; padding: 7px 10px;
   border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text);
 }
 .destination-switcher-head .destination-close { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); display: grid; place-items: center; padding: 0; font-size: 1.2rem; }
+#destination-refresh { margin-left: auto; }
 .destination-list { min-height: 80px; overflow-y: auto; padding: 0 12px 12px; }
 .destination-group { display: grid; gap: 2px; padding: 4px 0 8px; }
 .destination-group:first-child { padding-top: 0; }
@@ -158,7 +159,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-group.unavailable .destination-group-heading span { color: var(--warning); }
 .destination-task {
   width: 100%; min-width: 0; min-height: 40px; display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
-  align-items: start; align-content: start; gap: 3px 8px; padding: 8px; border: 1px solid transparent; border-radius: 8px;
+  align-items: start; align-content: start; gap: 3px 8px; padding: 11px 8px 5px; border: 1px solid transparent; border-radius: 8px;
   background: transparent; color: var(--muted); cursor: pointer; text-align: left; font-size: .72rem;
 }
 .destination-task:hover:not(:disabled), .destination-task:focus-visible { background: var(--surface-strong); color: var(--text); }
@@ -448,7 +449,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .display-divider { height: 1px; margin: 2px 0; background: var(--line-soft); }
 .inspector-backdrop { display: none; }
 
-@media (min-width: 861px) {
+@media (min-width: 1100px) {
   .inspector { position: absolute; z-index: 9; inset: 0 0 0 auto; width: 340px; height: 100%; transition: transform 160ms ease; }
 }
 
@@ -499,15 +500,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .topbar-actions .secondary-button { padding: 5px 8px; }
   .workspace { display: block; position: relative; }
   .chat-panel { height: 100%; }
-  .inspector {
-    position: fixed; z-index: 12; top: 0; right: 0; bottom: 0; width: min(88vw, 340px);
-    transform: translateX(100%); box-shadow: none; transition: transform .16s ease, box-shadow .16s ease;
-  }
-  .shell.inspector-open .inspector { transform: translateX(0); box-shadow: -20px 0 55px rgba(0,0,0,.4); pointer-events: auto; }
-  .shell.inspector-closed .inspector { transform: translateX(100%); }
-  .inspector-heading .icon-button { display: block; }
-  .inspector-backdrop { position: fixed; z-index: 11; inset: 0; width: 100%; border: 0; background: rgba(4,7,11,.62); }
-  .shell.inspector-open .inspector-backdrop { display: block; }
   .conversation { padding-inline: 12px; }
   .composer-zone { padding-inline: 9px; }
   .jump-latest { right: 13px; }
@@ -549,6 +541,18 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 @media (max-width: 420px) {
   .machine-settings-row { grid-template-columns: minmax(0,1fr); }
   .machine-settings-row [data-machine-name], .machine-settings-row [data-machine-ssh] { grid-column: 1; }
+}
+
+@media (max-width: 1099px) {
+  .inspector {
+    position: fixed; z-index: 12; top: 0; right: 0; bottom: 0; width: min(88vw, 340px);
+    transform: translateX(100%); box-shadow: none; transition: transform .16s ease, box-shadow .16s ease;
+  }
+  .shell.inspector-open .inspector { transform: translateX(0); box-shadow: -20px 0 55px rgba(0,0,0,.4); pointer-events: auto; }
+  .shell.inspector-closed .inspector { transform: translateX(100%); }
+  .inspector-heading .icon-button { display: block; }
+  .inspector-backdrop { position: fixed; z-index: 11; inset: 0; width: 100%; border: 0; background: rgba(4,7,11,.62); }
+  .shell.inspector-open .inspector-backdrop { display: block; }
 }
 
 @media (prefers-reduced-motion: reduce) {

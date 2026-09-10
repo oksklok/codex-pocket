@@ -1,6 +1,6 @@
 {
   "name": "Codex Pocket",
-  "short_name": "Pocket",
+  "short_name": "Codex Pocket",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

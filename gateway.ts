@@ -2186,13 +2186,15 @@ export class MachineRuntime {
     }, 150);
   }
 
-  private async listTaskPages(method: "thread/list" | "thread/loaded/list", params: JsonObject): Promise<any[]> {
+  private async listTaskPages(method: "thread/list" | "thread/loaded/list", params: JsonObject, deadline = Date.now() + 5_000): Promise<any[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const data: any[] = [];
     const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
-      const page = await this.rpc.request(method, { ...params, cursor });
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("Task catalog timed out");
+      const page = await this.rpc.request(method, { ...params, cursor }, remaining);
       data.push(...(Array.isArray(page?.data) ? page.data : []));
       cursor = page?.nextCursor ?? null;
       if (cursor && cursors.has(cursor)) throw new Error("Task catalog returned a repeated cursor");
@@ -2203,22 +2205,28 @@ export class MachineRuntime {
 
   private async refreshLoadedThreads(): Promise<LoadedThreadSummary[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const deadline = Date.now() + 5_000;
     const [listed, loaded] = await Promise.all([
       this.listTaskPages("thread/list", {
         limit: 100,
         sortKey: "recency_at",
         sortDirection: "desc",
-      }),
-      this.listTaskPages("thread/loaded/list", { limit: 100 }),
+      }, deadline),
+      this.listTaskPages("thread/loaded/list", { limit: 100 }, deadline),
     ]);
     const threads = listed;
     const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)));
     const listedIds = new Set(threads.map((thread: any) => String(thread.id)));
     for (const id of [...loadedIds].filter((id) => !listedIds.has(id))) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("Task catalog timed out");
       try {
-        const result = await this.rpc.request("thread/read", { threadId: id, includeTurns: false });
+        const result = await this.rpc.request("thread/read", { threadId: id, includeTurns: false }, remaining);
         if (result.thread) threads.push(result.thread);
-      } catch { /* A live task may unload between listing and metadata read. */ }
+      } catch (error) {
+        if (Date.now() >= deadline) throw error;
+        // A live task may unload between listing and metadata read.
+      }
     }
     this.loadedThreads = threads
       .filter(isUserFacingThread)
@@ -3299,7 +3307,7 @@ export class MachineRuntime {
     if (this.state.pending.some((request) => request.kind === "input" && request.blocking !== false)) {
       return { allowed: false, mode: null, reason: "Answer the structured input request first" };
     }
-    if (this.state.phase === "failed") return { allowed: false, mode: null, reason: "This task cannot accept a message while failed" };
+    if (this.state.phase === "failed" && this.state.turn?.status !== "failed" && this.state.turn?.status !== "completed") return { allowed: false, mode: null, reason: "This task cannot accept a message while failed" };
     if (!this.canAcceptDirectInput) {
       return { allowed: false, mode: null, reason: "This task does not accept direct input" };
     }

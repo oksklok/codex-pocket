@@ -73,6 +73,7 @@ const elements = {
   closeImage: document.querySelector("#close-image"),
   messageText: document.querySelector("#message-text"),
   sendMessage: document.querySelector("#send-message"),
+  destinationRefresh: document.querySelector("#destination-refresh"),
   composerStatus: document.querySelector("#composer-status"),
   attentionBanner: document.querySelector("#attention-banner"),
   queueBanner: document.querySelector("#queue-banner"),
@@ -532,6 +533,8 @@ function renderDestinationSwitcher() {
   const slot = Number(archived);
   const navigationCatalog = navigationCatalogs[slot];
   const navigationRequest = navigationRequests[slot];
+  elements.destinationRefresh.disabled = Boolean(navigationRequest);
+  elements.destinationRefresh.textContent = navigationRequest ? "Refreshing…" : "Refresh";
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
     navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
@@ -733,7 +736,7 @@ async function refreshNavigationCatalog(archived = elements.showArchived.checked
   const epoch = navigationEpoch;
   const request = (async () => {
     try {
-      const response = await apiFetch(`/api/navigation?archived=${archived}`);
+      const response = await apiFetch(`/api/navigation?archived=${archived}`, { signal: AbortSignal.timeout(7_000) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error || "Task catalog unavailable");
       if (epoch !== navigationEpoch) return;
@@ -1137,6 +1140,7 @@ function renderAttention() {
 
 function renderComposer() {
   const capability = state?.message;
+  const turnError = state?.phase === "failed" && state?.turn?.status !== "inProgress" ? state?.turn?.error : "";
   const turnActive = state?.turn?.status === "inProgress" && Boolean(state?.turn?.id);
   const stopping = submittingInterrupt || (turnActive && state?.stoppingTurnId === state?.turn?.id);
   const hasText = Boolean(elements.messageText.value.trim()) || selectedImages.length > 0;
@@ -1177,12 +1181,13 @@ function renderComposer() {
       : updatingAccess
         ? "Updating access…"
     : composerError
+      || turnError
       || composerNotice
       || capability?.reason
       || "";
   elements.composerStatus.textContent = status;
   elements.composerStatus.hidden = !status;
-  elements.composerStatus.classList.toggle("error-text", Boolean(composerError));
+  elements.composerStatus.classList.toggle("error-text", Boolean(composerError || turnError));
   renderAttention();
   renderQueue();
   renderImageThumbnails(elements.composerImages, selectedImages, true);
@@ -2350,7 +2355,10 @@ function connectEvents() {
   });
 }
 
-function isMobileInspector() { return matchMedia("(max-width: 860px)").matches; }
+function isMobileInspector() { return matchMedia("(max-width: 1099px)").matches; }
+matchMedia("(max-width: 1099px)").addEventListener("change", () => {
+  if (!elements.appShell.classList.contains("inspector-closed")) openInspector(); else closeInspector();
+});
 function updateInspectorButtonState() {
   const open = isMobileInspector()
     ? elements.appShell.classList.contains("inspector-open")
@@ -2365,7 +2373,8 @@ function openInspector() {
     elements.appShell.classList.add("inspector-open");
     elements.inspectorBackdrop.hidden = false;
   } else {
-    elements.appShell.classList.remove("inspector-closed");
+    elements.appShell.classList.remove("inspector-open", "inspector-closed");
+    elements.inspectorBackdrop.hidden = true;
   }
   updateInspectorButtonState();
 }
@@ -2373,7 +2382,7 @@ function closeInspector() {
   saveSidebarPreference("details", false);
   elements.appShell.classList.remove("inspector-open");
   elements.inspectorBackdrop.hidden = true;
-  if (!isMobileInspector()) elements.appShell.classList.add("inspector-closed");
+  elements.appShell.classList.add("inspector-closed");
   updateInspectorButtonState();
 }
 function toggleInspector() {
@@ -2603,6 +2612,7 @@ elements.destinationButton.addEventListener("click", () => {
   if (elements.destinationButton.getAttribute("aria-expanded") !== "true") openDestinationSwitcher();
   else closeDestinationSwitcher();
 });
+elements.destinationRefresh.addEventListener("click", () => refreshNavigationCatalog(elements.showArchived.checked, true));
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
 elements.destinationSearch.addEventListener("input", renderDestinationSwitcher);
@@ -2931,6 +2941,7 @@ function setupImageViewer(dialog, image, close) {
   let scale = 1, x = 0, y = 0;
   let lastTap = null;
   let gesture = null;
+  let ignoreClick = false;
   const pointers = new Map();
   const points = () => [...pointers.values()];
   const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -2951,8 +2962,9 @@ function setupImageViewer(dialog, image, close) {
   dialog.addEventListener('pointerdown', event => {
     if (event.target.closest('button') || event.button !== 0) return;
     event.preventDefault();
+    if (!pointers.size) ignoreClick = false;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    dialog.setPointerCapture(event.pointerId);
+    event.target.setPointerCapture(event.pointerId);
     begin(pointers.size > 1);
   });
   dialog.addEventListener('pointermove', event => {
@@ -2974,13 +2986,11 @@ function setupImageViewer(dialog, image, close) {
   function finish(event) {
     if (!pointers.has(event.pointerId)) return;
     const last = pointers.size === 1;
-    const rect = image.getBoundingClientRect();
-    const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
-    const dismiss = event.type === 'pointerup' && last && !gesture.multi && !gesture.moved && outside;
-    const tap = event.type === 'pointerup' && event.pointerType === 'touch' && last && !gesture.multi && !gesture.moved && !outside;
+    ignoreClick = gesture.moved || gesture.multi || event.type === 'pointercancel';
+    const tap = event.type === 'pointerup' && event.pointerType === 'touch' && last && !ignoreClick && event.target === image;
     const previousTap = lastTap;
     pointers.delete(event.pointerId);
-    if (dialog.hasPointerCapture(event.pointerId)) dialog.releasePointerCapture(event.pointerId);
+    if (event.target.hasPointerCapture(event.pointerId)) event.target.releasePointerCapture(event.pointerId);
     begin(true); // A pinch becoming one finger must never become a dismiss gesture.
     if (tap) {
       const now = performance.now();
@@ -2995,8 +3005,12 @@ function setupImageViewer(dialog, image, close) {
       } else lastTap = { time: now, x: event.clientX, y: event.clientY };
     }
     paint();
-    if (dismiss) dialog.close();
   }
+  dialog.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.target === dialog && !ignoreClick) dialog.close();
+  });
   dialog.addEventListener('pointerup', finish);
   dialog.addEventListener('pointercancel', finish);
   dialog.addEventListener('wheel', event => {

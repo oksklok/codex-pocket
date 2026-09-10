@@ -145,9 +145,21 @@ test("retryable turn errors preserve Working and input until authoritative compl
   } });
   failed.handleNotification({ method: "serverRequest/resolved", params: { threadId: "thread-1", requestId: "late" } });
   assert.equal(failed.snapshot().phase, "failed");
-  assert.equal(failed.snapshot().message.allowed, false);
+  assert.deepEqual(failed.snapshot().message, { allowed: true, mode: "start", reason: null });
+  assert.equal(failed.state.turn.error, "Terminal failure");
+  failed.rpc = { request: async () => { throw new Error("Still exhausted"); } };
+  await assert.rejects(failed.sendMessage("Try again", "start"), /Still exhausted/);
+  assert.equal(failed.state.turn.error, "Terminal failure");
   assert.equal(failed.state.turn.status, "failed");
+  const calls = [];
+  failed.rpc = { request: async method => { calls.push(method); return { turn: { id: "turn-2", status: "inProgress" } }; } };
+  assert.equal((await failed.sendMessage("Try again", "start")).accepted, true);
+  assert.deepEqual(calls, ["turn/start"]);
+  assert.equal(failed.state.turn.status, "inProgress");
   assert.equal(failed.state.connectionError, null);
+  failed.handleNotification({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-2", status: "inProgress" } } });
+  assert.equal(failed.snapshot().phase, "working");
+  assert.equal(failed.state.turn.error, null);
 });
 
 test("activity IDs survive final answers, thin completion snapshots, and history hydration", async () => {
@@ -1381,6 +1393,7 @@ test('PWA manifest and branded PNG icons are served as public static assets', as
     assert.equal(response.headers.get('content-type'), 'application/manifest+json');
     const manifest = await response.json();
     assert.equal(manifest.name, 'Codex Pocket');
+    assert.equal(manifest.short_name, 'Codex Pocket');
     assert.equal(manifest.start_url, '/');
     assert.equal(manifest.scope, '/');
     assert.equal(manifest.display, 'standalone');
@@ -1396,4 +1409,39 @@ test('PWA manifest and branded PNG icons are served as public static assets', as
     const js = await (await fetch(`${origin}/app.js?viewportDebug=1`)).text();
     assert(!js.includes('viewportDebug'));
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
+
+test("navigation catalog timeouts are bounded and do not mark connected runtimes Offline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const gateway = new PocketGateway({ machines: [{ name: "Remote", ssh: "remote" }] });
+  const local = gateway.runtimes.get("local");
+  const remote = gateway.runtimes.get("ssh:remote");
+  local.state.connected = true;
+  const client = new RpcClient();
+  client.wire = { send() {}, close() {} };
+  local.rpc = client;
+  for (const archived of [false, true]) {
+    let done = false;
+    const pending = gateway.navigationCatalog(archived).then(value => { done = true; return value; });
+    await Promise.resolve();
+    t.mock.timers.tick(4_999); await Promise.resolve();
+    assert.equal(done, false);
+    t.mock.timers.tick(1);
+    const result = await pending;
+    assert.equal(result.machines[0].connected, true);
+    assert.equal(result.machines[0].catalogAvailable, false);
+    assert.equal(result.machines[1].connected, false);
+    assert.equal(remote.state.thread, null);
+    assert.equal(client.pending.size, 0);
+  }
+  // Pagination shares the deadline rather than granting each page another five seconds.
+  const budgets = [];
+  local.rpc = { request: async (method, params, timeout) => {
+    budgets.push(timeout);
+    if (!params.cursor) { t.mock.timers.tick(3_000); return { data: [], nextCursor: "next" }; }
+    return { data: [], nextCursor: null };
+  } };
+  await local.listArchivedThreads();
+  assert.deepEqual(budgets, [5_000, 2_000]);
 });

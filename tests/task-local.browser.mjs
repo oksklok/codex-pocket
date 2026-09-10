@@ -15,7 +15,7 @@ Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 let asyncAnswers={},historyFixture=null;
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
-let failSettings=false;
+let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
 const server=createServer(async(req,res)=>{
@@ -37,9 +37,9 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/machines')return json({machines:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
- if(u.pathname==='/api/activity/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
+ if(u.pathname==='/api/activity/image'||u.pathname==='/api/message/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json(historyFixture||{turns:[],nextCursor:null});
- if(u.pathname==='/api/navigation'){calls.push(u.search);return json({machines:[{id:'local',name:'Local',local:true,connected:true,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:true,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
+ if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
@@ -396,11 +396,13 @@ try {
  assert.equal(await row('Owned task').locator('.task-selection-error').textContent(),'Open elsewhere. Close it and retry.');
  const aligned=async target=>assert.deepEqual(await target.locator('.destination-check, .destination-task-label > span, .destination-task-status').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().top)),Array(3).fill(await target.locator('.destination-check').evaluate(e=>e.getBoundingClientRect().top)));
  await aligned(row('Current task'));await aligned(row('Owned task'));
+ const centered=async()=>assert(await row('Current task').evaluate(e=>{const a=e.querySelector('.destination-check').getBoundingClientRect(),b=e.querySelector('.task-actions > summary').getBoundingClientRect();return Math.abs((a.top+a.bottom-b.top-b.bottom)/2)<1;}));
+ await centered();
  if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
  const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading strong').getBoundingClientRect().top-document.querySelector('.destination-archived input').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
  assert(spacing.gap>=10&&spacing.gap<=16,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
  await settingsOpen();await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});await settingsSave();
- await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));
+ await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));await centered();
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/task-rows-${width}.png`});
  const attempts=calls.filter(c=>c==='/api/navigation/select').length;
  gate=new Promise(r=>release=r);await row('Owned task').locator('.destination-task').click();
@@ -522,6 +524,76 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.evaluate(()=>delete visualViewport.height);
 
  }
+ }
+ // Isolated browser checks use the same real frontend and synthetic server.
+ for(const width of [390,1080,1100,1280]){
+ await page.setViewportSize({width,height:844});
+ runtime.state.thread=task;runtime.state.machineId='local';runtime.state.liveMessages=[];runtime.state.activities=[];runtime.state.pending=[];
+ runtime.state.turn={id:'failed-turn',status:'failed',error:'Upstream capacity reached. Try again later.'};runtime.state.phase='failed';runtime.state.threadStatus='idle';
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await page.locator('#message-text').fill('Try again');
+ assert.equal(await page.locator('#send-message').isEnabled(),true);
+ assert.equal(await page.locator('#composer-status').textContent(),'Upstream capacity reached. Try again later.');
+ assert.equal(await page.locator('#phase-pill').textContent(),'Failed');
+ runtime.handleNotification({method:'turn/started',params:{threadId:'current',turn:{id:'next-turn',status:'inProgress'}}});
+ await page.waitForFunction(()=>document.querySelector('#phase-pill').textContent==='Working');
+ assert(!(await page.locator('#composer-status').textContent()).includes('Upstream capacity'));
+ await open();
+ let releaseCatalog; navigationGate=new Promise(r=>releaseCatalog=r);
+ const before=calls.filter(c=>c==='/api/navigation').length;
+ await page.locator('#destination-refresh').click();
+ await page.waitForFunction(()=>document.querySelector('#destination-refresh').disabled);
+ assert.equal(await page.locator('#destination-refresh').textContent(),'Refreshing…');
+ catalogAvailable=false;remoteConnected=false;releaseCatalog();navigationGate=null;
+ await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.equal(calls.filter(c=>c==='/api/navigation').length,before+1);
+ assert.equal(await page.locator('.destination-group.unavailable').getByText('Tasks unavailable',{exact:true}).count(),1);
+ assert.equal(await page.locator('.destination-group.offline').getByText('Offline',{exact:true}).count(),1);
+ catalogAvailable=true;remoteConnected=true;
+ await page.locator('#show-archived').check();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ const archivedBefore=calls.filter(c=>c==='?archived=true').length;
+ await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.equal(calls.filter(c=>c==='?archived=true').length,archivedBefore+1);
+ await page.locator('#show-archived').uncheck();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ if(width===390){
+ navigationGate=new Promise(r=>releaseCatalog=r);
+ const started=Date.now();await page.locator('#destination-refresh').click();
+ await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled,{},{timeout:9_000});
+ assert(Date.now()-started<9_000);
+ assert.equal(await page.locator('.destination-group.unavailable').count(),1); // Keep the last catalog on HTTP failure.
+ releaseCatalog();navigationGate=null;
+ await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ }
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/refresh-${width}.png`});
+ if(width<1100){assert.equal(await page.locator('#destination-backdrop').isVisible(),true);await page.locator('#destination-backdrop').click({position:{x:width-5,y:400}});await closed();}
+ else {assert.equal(await page.locator('#destination-backdrop').isVisible(),false);await dismissTasks();await closed();}
+ if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
+ await page.waitForTimeout(200);
+ assert.equal(await page.locator('#inspector-close').isVisible(),width<1100);
+ assert.equal(await page.locator('#inspector-backdrop').isVisible(),width<1100);
+ if(width<1100)assert.equal((await page.locator('.inspector').boundingBox()).y,0);
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/inspector-${width}.png`});
+ if(width<1100)await page.locator('#inspector-backdrop').click({position:{x:5,y:400}});else await page.locator('#inspector-button').click();
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'false');
+ // A backdrop click located over a different transcript image closes only the modal.
+ runtime.state.liveMessages=[{id:'two-images',role:'user',text:'Compare these screenshots',imageCount:2,createdAt:Date.now(),complete:true}];
+ runtime.broadcast('snapshot',snapshot());
+ const images=page.locator('.message-images img');await images.nth(1).waitFor();
+ await images.nth(1).scrollIntoViewIfNeeded();
+ const underneath=await images.nth(1).boundingBox();
+ await images.first().click();await page.locator('#image-viewer').waitFor();
+ const imageBox=await page.locator('#viewer-image').boundingBox();
+ const point={x:underneath.x+underneath.width/2,y:underneath.y+underneath.height/2};
+ assert(point.x<imageBox.x||point.x>imageBox.x+imageBox.width||point.y<imageBox.y||point.y>imageBox.y+imageBox.height);
+ if(width===390){
+ const touch=await page.context().newCDPSession(page);
+ await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:point.x,y:point.y,id:1}]});
+ await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await touch.detach();
+ }else await page.mouse.click(point.x,point.y);
+ await page.waitForTimeout(150);
+ assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
+ await images.nth(1).click();await page.locator('#image-viewer').waitFor();await page.keyboard.press('Escape');
  }
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
