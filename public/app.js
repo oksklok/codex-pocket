@@ -1355,67 +1355,66 @@ function asyncQuestionNode(message, question, index) {
   asyncDrafts.set(key, draft);
   const all = new Map([...historyMessages, ...liveMessages]);
   const answer = resolvedAsyncAnswer(message, index, [...all.values()], state?.asyncAnswers);
-  if (answer !== null) { draft.error = ""; draft.uncertain = false; }
+  if (answer !== null) {
+    draft.error = "";
+    draft.uncertain = false;
+    const questionText = document.createElement("p");
+    questionText.textContent = question.title;
+    return questionText;
+  }
   const form = document.createElement("form");
   form.className = "async-answer";
   const fields = document.createElement("div");
   fields.className = "async-question";
-  const disabled = answer !== null || draft.sending || draft.uncertain || !state?.message?.allowed;
+  const disabled = draft.sending || draft.uncertain || !state?.message?.allowed;
   const title = document.createElement("p");
   title.className = "async-title";
   title.textContent = question.title;
   fields.append(title);
-  if (answer !== null) {
-    const resolved = document.createElement("p");
-    resolved.className = "answer-resolved";
-    resolved.textContent = `Answered: ${answer}`;
-    fields.append(resolved);
-  } else {
-    const options = document.createElement("div");
-    options.className = "async-options";
-    for (const option of question.options) {
-      const choice = document.createElement("button");
-      choice.type = "button";
-      choice.disabled = disabled;
-      choice.textContent = option;
-      choice.classList.toggle("selected", draft.text === option);
-      choice.addEventListener("click", () => { draft.text = option; submitAsyncAnswer(message, index, draft); });
-      options.append(choice);
-    }
-    const input = document.createElement("textarea");
-    input.rows = 2;
-    input.disabled = disabled;
-    input.maxLength = 8000;
-    input.placeholder = "Or write your answer…";
-    input.setAttribute("aria-label", `Your answer: ${question.title}`);
-    input.value = draft.text;
-    input.addEventListener("input", () => { draft.text = input.value; draft.error = ""; });
-    const send = document.createElement("button");
-    send.type = "submit";
-    send.textContent = draft.sending ? "Sending…" : "Answer";
-    send.disabled = disabled;
-    const freeText = document.createElement("div");
-    freeText.className = "async-free-text";
-    freeText.hidden = question.options.length > 0 && !draft.otherOpen;
-    freeText.append(input, send);
-    fields.append(options);
-    if (question.options.length) {
-      const other = document.createElement("button");
-      other.type = "button";
-      other.className = "other-answer";
-      other.textContent = "Other Answer…";
-      other.disabled = disabled;
-      other.setAttribute("aria-expanded", String(!freeText.hidden));
-      other.addEventListener("click", () => {
-        draft.otherOpen = !draft.otherOpen;
-        freeText.hidden = !draft.otherOpen;
-        other.setAttribute("aria-expanded", String(draft.otherOpen));
-        if (draft.otherOpen) input.focus();
-      });
-      fields.append(other);
-    }
-    fields.append(freeText);
+  const options = document.createElement("div");
+  options.className = "async-options";
+  for (const option of question.options) {
+    const choice = document.createElement("button");
+    choice.type = "button";
+    choice.disabled = disabled;
+    choice.textContent = option;
+    choice.classList.toggle("selected", draft.text === option);
+    choice.addEventListener("click", () => { draft.text = option; submitAsyncAnswer(message, index, draft); });
+    options.append(choice);
   }
+  const input = document.createElement("textarea");
+  input.rows = 2;
+  input.disabled = disabled;
+  input.maxLength = 8000;
+  input.placeholder = question.options.length ? "Or write your answer…" : "Write your answer…";
+  input.setAttribute("aria-label", `Your answer: ${question.title}`);
+  input.value = draft.text;
+  input.addEventListener("input", () => { draft.text = input.value; draft.error = ""; });
+  const send = document.createElement("button");
+  send.type = "submit";
+  send.textContent = draft.sending ? "Sending…" : "Answer";
+  send.disabled = disabled;
+  const freeText = document.createElement("div");
+  freeText.className = "async-free-text";
+  freeText.hidden = question.options.length > 0 && !draft.otherOpen;
+  freeText.append(input, send);
+  fields.append(options);
+  if (question.options.length) {
+    const other = document.createElement("button");
+    other.type = "button";
+    other.className = "other-answer";
+    other.textContent = "Other Answer…";
+    other.disabled = disabled;
+    other.setAttribute("aria-expanded", String(!freeText.hidden));
+    other.addEventListener("click", () => {
+      draft.otherOpen = !draft.otherOpen;
+      freeText.hidden = !draft.otherOpen;
+      other.setAttribute("aria-expanded", String(draft.otherOpen));
+      if (draft.otherOpen) input.focus();
+    });
+    fields.append(other);
+  }
+  fields.append(freeText);
   const status = document.createElement("p");
   status.className = "form-status error-text";
   status.textContent = draft.error;

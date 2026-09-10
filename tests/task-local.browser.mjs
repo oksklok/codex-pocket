@@ -12,7 +12,8 @@ const task={id:'current',name:'Current task',cwd:'/project',status:'idle',projec
 const owned={...task,id:'owned',name:'Owned task'};
 let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:true}], fail=true, machineError=conflict;
 Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
-const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",message:{allowed:true,reason:"",canSteer:true}});
+let asyncAnswers={},historyFixture=null;
+const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let failSettings=false;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
@@ -37,7 +38,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/threads')return json({threads:active});
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
  if(u.pathname==='/api/activity/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
- if(u.pathname==='/api/history')return json({turns:[],nextCursor:null});
+ if(u.pathname==='/api/history')return json(historyFixture||{turns:[],nextCursor:null});
  if(u.pathname==='/api/navigation'){calls.push(u.search);return json({machines:[{id:'local',name:'Local',local:true,connected:true,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:true,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
@@ -53,7 +54,16 @@ const server=createServer(async(req,res)=>{
  return json(snapshot());
  }
  if(u.pathname==='/api/message/queue'&&req.method==='DELETE')return json(runtime.cancelQueuedMessage());
- if(u.pathname==='/api/message'){for await(const c of req){};return json({accepted:true},202);}
+ if(u.pathname==='/api/message'){
+ let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
+ if(body.question){
+ const q=body.question,source=runtime.state.liveMessages.find(m=>m.id===q.messageId);
+ asyncAnswers[q.messageId]={[q.index]:q.answer};
+ runtime.state.liveMessages.push({id:'reply-'+q.messageId,role:'user',text:q.answer,complete:true,createdAt:source.createdAt+1,questionReplies:[{questionItemId:q.messageId,question:source.questions[q.index].title,answer:q.answer}]});
+ return json({accepted:true,...snapshot()},202);
+ }
+ return json({accepted:true},202);
+ }
  if(u.pathname==='/api/tasks'){
  let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(gate)await gate;if(failAction)return json({error:'Fixture action failed'},409);
  if(b.action==='rename'){const t=[...active,...archived].find(t=>t.id===b.threadId);t.name=b.name;}
@@ -438,6 +448,47 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
+ // Async controls disappear on resolution; the normalized user reply remains the only answer.
+ const choice={id:'async-choice',role:'assistant',delivery:'async',text:'Which layout should we use?\n\n- Compact\n- Spacious',questions:[{title:'Which layout should we use?',options:['Compact','Spacious']}],complete:true,createdAt:1000};
+ const free={id:'async-free',role:'assistant',delivery:'async',text:'What should the empty state say?',questions:[{title:'What should the empty state say?',options:[]}],complete:true,createdAt:2000};
+ runtime.state.liveMessages=[choice,free];runtime.state.activities=[];asyncAnswers={};
+ await page.reload();await page.locator('[data-message-id="async-choice"] .async-answer').waitFor();
+ const choiceMessage=page.locator('[data-message-id="async-choice"]'),freeMessage=page.locator('[data-message-id="async-free"]');
+ assert.equal(await choiceMessage.getByRole('button',{name:'Compact',exact:true}).isVisible(),true);
+ assert.equal(await choiceMessage.getByRole('button',{name:'Other Answer…',exact:true}).isVisible(),true);
+ assert.equal(await freeMessage.getByRole('textbox').getAttribute('placeholder'),'Write your answer…');
+ assert.equal(await freeMessage.getByRole('button',{name:'Other Answer…',exact:true}).count(),0);
+ await choiceMessage.getByRole('button',{name:'Compact',exact:true}).click();
+ await page.waitForFunction(()=>!document.querySelector('[data-message-id="async-choice"] .async-answer'));
+ assert.equal(await choiceMessage.locator('.message-body').innerText(),'Which layout should we use?');
+ assert.equal(await page.locator('.message.user .message-body').filter({hasText:'Compact'}).count(),1);
+ await freeMessage.getByRole('textbox').fill('Your inventory is empty.');await freeMessage.getByRole('button',{name:'Answer',exact:true}).click();
+ await page.waitForFunction(()=>!document.querySelector('[data-message-id="async-free"] .async-answer'));
+ assert.equal(await freeMessage.locator('.message-body').innerText(),'What should the empty state say?');
+ assert.equal(await page.locator('#conversation').getByText('Your inventory is empty.',{exact:true}).count(),1);
+ assert.equal(await page.locator('#conversation').getByText('Answered:',{exact:false}).count(),0);
+ // Reconstruct through the real gateway normalizer, with no live answer cache.
+ const items=[choice,free].map(m=>({...m,type:'agentMessage'}));
+ items.push({id:'history-reply',type:'userMessage',createdAt:3000,content:[{type:'text',text:'<send_user_message_question_reply>'+JSON.stringify([
+ {questionItemId:choice.id,question:choice.questions[0].title,answer:'Compact'},
+ {questionItemId:free.id,question:free.questions[0].title,answer:'Your inventory is empty.'}
+ ])+'</send_user_message_question_reply>'}]});
+ runtime.rpc={request:async method=>method==='thread/turns/list'?{data:[{id:'async-turn',status:'completed'}]}:{data:items.map(item=>({turnId:'async-turn',item}))}};
+ historyFixture=await runtime.history(null,1);runtime.state.liveMessages=[];asyncAnswers={};
+ await page.reload();await page.locator('[data-message-id="history-reply"]').waitFor();
+ assert.equal(await page.locator('#conversation .async-answer').count(),0);
+ assert.equal(await choiceMessage.locator('.message-body').innerText(),'Which layout should we use?');
+ assert.equal(await freeMessage.locator('.message-body').innerText(),'What should the empty state say?');
+ const transcript=await page.locator('#conversation').innerText();
+ for(const answer of ['Compact','Your inventory is empty.'])assert.equal(transcript.split(answer).length-1,1);
+ for(const internal of ['Answered:','send_user_message_question_reply','questionItemId'])assert.equal(transcript.includes(internal),false);
+ // Blocking request_user_input still uses the separate Input Needed form.
+ runtime.state.pending=[{id:'blocking-input',kind:'input',supported:true,blocking:true,questions:[{id:'block-q',header:'Confirm',isOther:true,question:'Which test suite?',options:[{label:'Unit tests',description:'Run focused checks'},{label:'All tests',description:'Run every check'}]}]}];
+ runtime.broadcast('snapshot',snapshot());await page.getByText('Input Needed',{exact:true}).waitFor();
+ assert.equal(await page.locator('.structured-input-form input[type="radio"]').count(),3);
+ assert.equal(await page.getByText('Turn paused',{exact:true}).isVisible(),true);
+ runtime.state.pending=[];historyFixture=null;runtime.state.liveMessages=[];asyncAnswers={};
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  if(width===390){
  runtime.state.liveMessages=Array.from({length:50},(_,i)=>({id:`viewport-${i}`,role:'assistant',text:`Message ${i}\n\nEnough content to scroll the document.`}));runtime.broadcast('snapshot',snapshot());
  await page.getByText('Message 49',{exact:false}).waitFor();
