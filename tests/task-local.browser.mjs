@@ -222,14 +222,14 @@ try {
  assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('button').allTextContents(),['↑','↓','×']);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40]);
- const valueSize=width>=861?'14px':'16px';
+ const valueSize=width>=861?'13px':'16px';
  assert((await page.locator('.settings-card input:not([type="checkbox"]), .settings-card select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize))).every(s=>s===valueSize));
  const gaps=await page.locator('.settings-card .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom));
- assert(gaps.every(g=>g===6));
- assert.deepEqual(await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>getComputedStyle(e).gap)),['6px','6px','6px','6px']);
- if(width<600)assert((await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom))).every(g=>g===6));
+ assert(gaps.every(g=>g===4));
+ assert.deepEqual(await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>getComputedStyle(e).gap)),['4px','4px','4px','4px']);
+ if(width<600)assert((await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom))).every(g=>g===4));
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).display),'flex');
- assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).fontSize),'13px');
+ assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).fontSize),'12px');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-top-${width}.png`});
  await page.locator('.machine-settings-row').first().scrollIntoViewIfNeeded();
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
@@ -240,7 +240,7 @@ try {
  assert.equal(await page.locator('#effort-select').inputValue(),'low');
  assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40,40]);
  assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize)),[valueSize,valueSize,valueSize]);
- assert.deepEqual(await page.locator('.runtime-panel .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom)),[6,6,6]);
+ assert.deepEqual(await page.locator('.runtime-panel .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom)),[4,4,4]);
  await page.locator('#access-select').evaluate(e=>e.classList.add('full-access'));
  assert.equal(await page.locator('#access-select').evaluate(e=>getComputedStyle(e).fontSize),valueSize);
  await page.locator('#access-select').evaluate(e=>e.classList.remove('full-access'));
@@ -394,15 +394,19 @@ try {
  await input.fill('Draft B');await select('Current task');assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
  mode='reject';await open();await row('Owned task').locator('.destination-task').click();await row('Owned task').locator('.task-selection-error').waitFor();
  assert.equal(await row('Owned task').locator('.task-selection-error').textContent(),'Open elsewhere. Close it and retry.');
- const aligned=async target=>assert.deepEqual(await target.locator('.destination-check, .destination-task-label > span, .destination-task-status').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().top)),Array(3).fill(await target.locator('.destination-check').evaluate(e=>e.getBoundingClientRect().top)));
+ const aligned=async target=>{const centers=await target.locator('.destination-check, .destination-task-label > span, .destination-task-status').evaluateAll(es=>es.map(e=>{const r=e.getBoundingClientRect();return r.top+r.height/2;}));assert.deepEqual(centers,Array(3).fill(centers[0]));};
  await aligned(row('Current task'));await aligned(row('Owned task'));
  const centered=async()=>assert(await row('Current task').evaluate(e=>{const a=e.querySelector('.destination-check').getBoundingClientRect(),b=e.querySelector('.task-actions > summary').getBoundingClientRect();return Math.abs((a.top+a.bottom-b.top-b.bottom)/2)<1;}));
  await centered();
+ const oneLineHeight=await row('Current task').locator('.destination-task').evaluate(e=>e.getBoundingClientRect().height);
+ assert.equal(oneLineHeight,40);
  if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
  const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading strong').getBoundingClientRect().top-document.querySelector('.destination-archived input').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
  assert(spacing.gap>=10&&spacing.gap<=16,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
  await settingsOpen();await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});await settingsSave();
  await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));await centered();
+ assert(await row('Current task').locator('.destination-task').evaluate(e=>{const r=e.getBoundingClientRect(),name=e.querySelector('.destination-task-label > span').getBoundingClientRect(),sub=e.querySelector('small').getBoundingClientRect();return r.height>=58&&sub.top-name.bottom>=4&&r.bottom-sub.bottom>=8;}));
+ assert(await row('Owned task').locator('.destination-task').evaluate(e=>{const r=e.getBoundingClientRect(),sub=e.querySelector('small').getBoundingClientRect();return r.height>=58&&r.bottom-sub.bottom>=8;}));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/task-rows-${width}.png`});
  const attempts=calls.filter(c=>c==='/api/navigation/select').length;
  gate=new Promise(r=>release=r);await row('Owned task').locator('.destination-task').click();
@@ -544,7 +548,12 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const before=calls.filter(c=>c==='/api/navigation').length;
  await page.locator('#destination-refresh').click();
  await page.waitForFunction(()=>document.querySelector('#destination-refresh').disabled);
- assert.equal(await page.locator('#destination-refresh').textContent(),'Refreshing…');
+ assert.equal(await page.locator('#destination-refresh').getAttribute('aria-label'),'Refresh tasks');
+ assert.equal(await page.locator('#destination-refresh').getAttribute('title'),'Refresh tasks');
+ assert.equal(await page.locator('#destination-refresh svg').evaluate(e=>getComputedStyle(e).animationName),'refresh-spin');
+ await page.emulateMedia({reducedMotion:'reduce'});
+ assert.equal(await page.locator('#destination-refresh svg').evaluate(e=>getComputedStyle(e).animationName),'none');
+ await page.emulateMedia({reducedMotion:'no-preference'});
  catalogAvailable=false;remoteConnected=false;releaseCatalog();navigationGate=null;
  await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  assert.equal(calls.filter(c=>c==='/api/navigation').length,before+1);
@@ -565,7 +574,23 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  releaseCatalog();navigationGate=null;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  }
+ const refreshBox=await page.locator('#destination-refresh').boundingBox();
+ assert.equal(refreshBox.width,36);assert.equal(refreshBox.height,36);
+ if(width<1100){const closeBox=await page.locator('#destination-close').boundingBox();assert.equal(closeBox.y,refreshBox.y);assert.equal(closeBox.height,refreshBox.height);}
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/refresh-${width}.png`});
+ if(width===1080){
+ await page.locator("#destination-refresh").click();await page.waitForFunction(()=>!document.querySelector("#destination-refresh").disabled);
+ await settingsOpen();await page.locator('#show-projects').check();await settingsSave();
+ mode='reject';
+ const failedRow=page.locator('.destination-entry').filter({has:page.getByText('Owned task',{exact:true})});
+ await failedRow.locator('.destination-task').click();await failedRow.locator('.task-selection-error').waitFor();
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/task-rows-${width}.png`});
+ const error=failedRow.locator('.task-selection-error'),copy=await error.textContent();
+ await error.evaluate(e=>e.textContent+=' The task is still in use by another runtime. Please close that task before selecting it again.');
+ assert(await error.evaluate(e=>e.getBoundingClientRect().height>16&&e.scrollWidth<=e.clientWidth));
+ await error.evaluate((e,text)=>e.textContent=text,copy);
+ mode='success';await settingsOpen();await page.locator('#show-projects').uncheck();await settingsSave();
+ }
  if(width<1100){assert.equal(await page.locator('#destination-backdrop').isVisible(),true);await page.locator('#destination-backdrop').click({position:{x:width-5,y:400}});await closed();}
  else {assert.equal(await page.locator('#destination-backdrop').isVisible(),false);await dismissTasks();await closed();}
  if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
@@ -576,6 +601,14 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/inspector-${width}.png`});
  if(width<1100)await page.locator('#inspector-backdrop').click({position:{x:5,y:400}});else await page.locator('#inspector-button').click();
  assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'false');
+ await settingsOpen();
+ if(process.env.POCKET_SCREENSHOT_DIR){
+ await page.locator('.settings-card').evaluate(e=>e.scrollTop=0);
+ await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/appearance-${width}.png`});
+ await page.locator('#machine-add').scrollIntoViewIfNeeded();
+ await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/machines-${width}.png`});
+ }
+ await page.locator('#settings-close').click();
  // A backdrop click located over a different transcript image closes only the modal.
  runtime.state.liveMessages=[{id:'two-images',role:'user',text:'Compare these screenshots',imageCount:2,createdAt:Date.now(),complete:true}];
  runtime.broadcast('snapshot',snapshot());

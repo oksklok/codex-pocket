@@ -534,7 +534,6 @@ function renderDestinationSwitcher() {
   const navigationCatalog = navigationCatalogs[slot];
   const navigationRequest = navigationRequests[slot];
   elements.destinationRefresh.disabled = Boolean(navigationRequest);
-  elements.destinationRefresh.textContent = navigationRequest ? "Refreshing…" : "Refresh";
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
     navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
