@@ -533,6 +533,14 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  for(const width of [390,1080,1100,1280]){
  await page.setViewportSize({width,height:844});
  runtime.state.thread=task;runtime.state.machineId='local';runtime.state.liveMessages=[];runtime.state.activities=[];runtime.state.pending=[];
+ const savedRuntime={model:runtime.state.model,reasoningEffort:runtime.state.reasoningEffort,models:runtime.state.models,access:runtime.state.access};
+ for(const value of ['Not exposed','Not Exposed',null]){
+ Object.assign(runtime.state,{model:value,reasoningEffort:value,models:[],access:value?{mode:'unavailable',choices:{}}:null});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.selectedOptions[0]?.textContent)),['Unavailable','Unavailable','Unavailable']);
+ }
+ Object.assign(runtime.state,savedRuntime);
  runtime.state.turn={id:'failed-turn',status:'failed',error:'Upstream capacity reached. Try again later.'};runtime.state.phase='failed';runtime.state.threadStatus='idle';
  await page.goto(`http://127.0.0.1:${server.address().port}`);
  await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
@@ -574,12 +582,16 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  releaseCatalog();navigationGate=null;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  }
+ await page.mouse.move(0,0);
  assert(await page.locator('.destination-group-heading button').evaluateAll(buttons=>buttons.every(button=>{
- const rect=button.getBoundingClientRect(),icon=button.querySelector('svg').getBoundingClientRect();
+ const rect=button.getBoundingClientRect(),icon=button.querySelector('svg').getBoundingClientRect(),style=getComputedStyle(button);
  return button.getAttribute('aria-label')==='New task'&&button.title==='New task'&&rect.width===36&&rect.height===36
+   &&style.borderTopWidth==='0px'&&style.backgroundColor==='rgba(0, 0, 0, 0)'
    &&Math.abs(rect.x+18-icon.x-icon.width/2)<1&&Math.abs(rect.y+18-icon.y-icon.height/2)<1;
  })));
  if(width!==390)assert.equal(await page.locator('.destination-group.offline button').first().isDisabled(),true);
+ await page.keyboard.press('Tab');await page.getByRole('button',{name:'New task',exact:true}).first().focus();
+ assert(await page.getByRole('button',{name:'New task',exact:true}).first().evaluate(e=>{const s=getComputedStyle(e);return e.matches(':focus-visible')&&s.outlineStyle==='solid'&&parseFloat(s.outlineWidth)>=2;}));
  const refreshBox=await page.locator('#destination-refresh').boundingBox();
  assert.equal(refreshBox.width,36);assert.equal(refreshBox.height,36);
  if(width<1100){const closeBox=await page.locator('#destination-close').boundingBox();assert.equal(closeBox.y,refreshBox.y);assert.equal(closeBox.height,refreshBox.height);}

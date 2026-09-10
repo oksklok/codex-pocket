@@ -585,7 +585,8 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .task-action-menu { position: fixed; z-index: 10; width: max-content; min-width: 92px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 4px 16px rgba(0,0,0,.22); }
 .task-actions summary::-webkit-details-marker { display: none; }
 .task-actions button { display: block; width: 100%; min-height: 38px; padding: 6px 8px; border: 0; background: var(--surface-strong); color: var(--text); text-align: left; border-radius: 5px; }
-.destination-group-heading .icon-button { margin-left: auto; display: grid; place-items: center; flex: none; }
+.destination-group-heading .icon-button { margin-left: auto; display: grid; place-items: center; flex: none; border: 0; background: transparent; color: var(--muted); }
+.destination-group-heading .icon-button:hover:not(:disabled) { background: var(--surface-strong); }
 .destination-group-heading .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 
 .task-project { display: block; color: var(--subtle); font-size: var(--text-secondary); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }

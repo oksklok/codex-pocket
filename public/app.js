@@ -333,12 +333,12 @@ function activityExpandsByDefault(activity) {
 
 function effortLabel(value) {
   const normalized = String(value || "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
-  const labels = { none: "None", minimal: "Minimal", low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", "extra high": "Extra High", max: "Max", ultra: "Ultra" };
-  return labels[normalized] || normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Effort unavailable";
+  const labels = { "not exposed": "Unavailable", none: "None", minimal: "Minimal", low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", "extra high": "Extra High", max: "Max", ultra: "Ultra" };
+  return labels[normalized] || normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Unavailable";
 }
 
 function accessLabel(access) {
-  return ({ ask: "Ask for Approval", auto: "Approve for Me", full: "Full Access", custom: "Custom Access", unavailable: "Access unavailable" })[access?.mode] || "Access unavailable";
+  return ({ ask: "Ask for Approval", auto: "Approve for Me", full: "Full Access", custom: "Custom Access", unavailable: "Unavailable" })[access?.mode] || "Unavailable";
 }
 
 function showLogin(message = "") {
@@ -831,7 +831,7 @@ function renderModelControls() {
   }
   if (!models.length) {
     const option = document.createElement("option");
-    option.textContent = state?.model || "Model unavailable";
+    option.textContent = state?.model && !/^not exposed$/i.test(state.model) ? state.model : "Unavailable";
     elements.modelSelect.append(option);
   }
 
@@ -879,10 +879,10 @@ function renderAccessControl() {
     option.selected = access?.mode === mode.value;
     elements.accessSelect.append(option);
   }
-  if (access?.mode === "custom" || access?.mode === "unavailable") {
+  if (!access?.mode || access.mode === "custom" || access.mode === "unavailable") {
     const option = document.createElement("option");
-    option.value = access.mode;
-    option.textContent = access.mode === "custom" ? "Custom Access" : "Access unavailable";
+    option.value = access?.mode || "unavailable";
+    option.textContent = access?.mode === "custom" ? "Custom Access" : "Unavailable";
     option.selected = true;
     option.disabled = true;
     elements.accessSelect.prepend(option);
