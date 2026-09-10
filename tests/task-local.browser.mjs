@@ -592,6 +592,26 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  if(width!==390)assert.equal(await page.locator('.destination-group.offline button').first().isDisabled(),true);
  await page.keyboard.press('Tab');await page.getByRole('button',{name:'New task',exact:true}).first().focus();
  assert(await page.getByRole('button',{name:'New task',exact:true}).first().evaluate(e=>{const s=getComputedStyle(e);return e.matches(':focus-visible')&&s.outlineStyle==='solid'&&parseFloat(s.outlineWidth)>=2;}));
+ const plus=page.getByRole('button',{name:'New task',exact:true}).first();
+ await plus.hover();assert.equal(await plus.evaluate(e=>getComputedStyle(e).backgroundColor),'rgba(0, 0, 0, 0)');
+ const plusRect=await plus.boundingBox(),actionRect=await page.locator('.task-actions summary').first().boundingBox();
+ assert(Math.abs(plusRect.x+plusRect.width/2-actionRect.x-actionRect.width/2)<1);
+ for(const edge of ['first','last']){
+ const action=page.locator('.task-actions summary')[edge]();
+ await action.evaluate((e,edge)=>e.scrollIntoView({block:edge==='first'?'start':'end'}),edge);
+ await page.waitForTimeout(100);await action.click();
+ const placement=await action.evaluate(e=>{
+ const menu=e.parentElement.querySelector('.task-action-menu');
+ return {anchor:e.getBoundingClientRect().toJSON(),menu:menu.getBoundingClientRect().toJSON(),panel:document.querySelector('#destination-switcher').getBoundingClientRect().toJSON(),list:document.querySelector('#destination-list').getBoundingClientRect().toJSON(),viewport:innerHeight};
+ });
+ const {anchor,menu,panel,list,viewport}=placement;
+ assert(Math.abs(menu.right-anchor.right)<1,JSON.stringify(placement));
+ assert(Math.abs(edge==='first'?menu.top-anchor.bottom:menu.bottom-anchor.top)<1,JSON.stringify(placement));
+ assert(menu.left>=panel.left&&menu.right<=panel.right&&menu.top>=Math.max(0,list.top)&&menu.bottom<=Math.min(viewport,list.bottom),JSON.stringify(placement));
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/menu-${edge}-${width}.png`});
+ await action.click();
+ }
+ await page.locator('#destination-list').evaluate(e=>e.scrollTop=0);
  const refreshBox=await page.locator('#destination-refresh').boundingBox();
  assert.equal(refreshBox.width,36);assert.equal(refreshBox.height,36);
  if(width<1100){const closeBox=await page.locator('#destination-close').boundingBox();assert.equal(closeBox.y,refreshBox.y);assert.equal(closeBox.height,refreshBox.height);}

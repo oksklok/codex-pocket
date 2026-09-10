@@ -652,10 +652,14 @@ function renderDestinationSwitcher() {
         const anchor = summary.getBoundingClientRect();
         const drawer = elements.destinationSwitcher.getBoundingClientRect();
         const bounds = elements.destinationList.getBoundingClientRect();
-        const top = anchor.bottom + menu.offsetHeight <= bounds.bottom
+        const bottom = Math.min(bounds.bottom, window.innerHeight);
+        const top = anchor.bottom + menu.offsetHeight <= bottom
           ? anchor.bottom : anchor.top - menu.offsetHeight;
-        menu.style.left = `${Math.max(drawer.left + 8, Math.min(anchor.right - menu.offsetWidth, drawer.right - menu.offsetWidth - 8))}px`;
-        menu.style.top = `${Math.max(bounds.top, Math.min(top, bounds.bottom - menu.offsetHeight))}px`;
+        // The transformed drawer is the fixed menu's containing block, not the viewport.
+        const originX = drawer.left + elements.destinationSwitcher.clientLeft;
+        const originY = drawer.top + elements.destinationSwitcher.clientTop;
+        menu.style.left = `${Math.max(drawer.left + 8, 8, Math.min(anchor.right - menu.offsetWidth, drawer.right - menu.offsetWidth - 8, window.innerWidth - menu.offsetWidth - 8)) - originX}px`;
+        menu.style.top = `${Math.max(bounds.top, 0, Math.min(top, bottom - menu.offsetHeight)) - originY}px`;
       });
       for (const [action, label] of [["rename", "Rename"], [task.archived ? "unarchive" : "archive", task.archived ? "Unarchive" : "Archive"], ["delete", "Delete"]]) {
         const button = document.createElement("button");
