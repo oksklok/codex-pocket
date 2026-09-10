@@ -401,8 +401,8 @@ try {
  const oneLineHeight=await row('Current task').locator('.destination-task').evaluate(e=>e.getBoundingClientRect().height);
  assert.equal(oneLineHeight,40);
  if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
- const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading strong').getBoundingClientRect().top-document.querySelector('.destination-archived input').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
- assert(spacing.gap>=10&&spacing.gap<=16,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
+ const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading').getBoundingClientRect().top-document.querySelector('.destination-archived input').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
+ assert(spacing.gap>=0&&spacing.gap<=6,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
  await settingsOpen();await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});await settingsSave();
  await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));await centered();
  assert(await row('Current task').locator('.destination-task').evaluate(e=>{const r=e.getBoundingClientRect(),name=e.querySelector('.destination-task-label > span').getBoundingClientRect(),sub=e.querySelector('small').getBoundingClientRect();return r.height>=58&&sub.top-name.bottom>=4&&r.bottom-sub.bottom>=8;}));
@@ -448,9 +448,9 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);assert.equal(await input.inputValue(),'Stable action draft');
  task.name='Current task';await dismissTasks();await closed();await open();
  failAction=true;
- gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.getByRole('button',{name:'Creating…',exact:true}).waitFor();assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
+ gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('.destination-group').first().getByText('Fixture action failed',{exact:true}).waitFor();assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.getByRole('button',{name:'New Task',exact:true}).first().click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.getByRole('button',{name:'New task',exact:true}).first().click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
@@ -574,6 +574,12 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  releaseCatalog();navigationGate=null;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  }
+ assert(await page.locator('.destination-group-heading button').evaluateAll(buttons=>buttons.every(button=>{
+ const rect=button.getBoundingClientRect(),icon=button.querySelector('svg').getBoundingClientRect();
+ return button.getAttribute('aria-label')==='New task'&&button.title==='New task'&&rect.width===36&&rect.height===36
+   &&Math.abs(rect.x+18-icon.x-icon.width/2)<1&&Math.abs(rect.y+18-icon.y-icon.height/2)<1;
+ })));
+ if(width!==390)assert.equal(await page.locator('.destination-group.offline button').first().isDisabled(),true);
  const refreshBox=await page.locator('#destination-refresh').boundingBox();
  assert.equal(refreshBox.width,36);assert.equal(refreshBox.height,36);
  if(width<1100){const closeBox=await page.locator('#destination-close').boundingBox();assert.equal(closeBox.y,refreshBox.y);assert.equal(closeBox.height,refreshBox.height);}

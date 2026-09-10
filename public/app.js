@@ -585,8 +585,10 @@ function renderDestinationSwitcher() {
     }
     const create = document.createElement("button");
     create.type = "button";
-    create.className = "text-button";
-    create.textContent = taskActionTarget?.machineId === machine.id && taskActionTarget.action === "create" ? "Creating…" : "New Task";
+    create.className = "icon-button";
+    create.setAttribute("aria-label", "New task");
+    create.title = "New task";
+    create.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
     create.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget.action === "create");
     create.addEventListener("click", () => newTask(machine));
     if (!archived) heading.append(create);
