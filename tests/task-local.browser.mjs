@@ -574,6 +574,14 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  releaseCatalog();navigationGate=null;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  }
+ // Center the machine name and the button's actual text, including disabled buttons.
+ assert(await page.locator('.destination-group-heading').evaluateAll(headings=>headings.every(heading=>{
+ const button=heading.querySelector('button');if(!button)return true;
+ const center=rect=>rect.top+rect.height/2;
+ const name=heading.querySelector('strong'),text=document.createRange();text.selectNodeContents(button);
+ return Math.abs(center(name.getBoundingClientRect())-center(button.getBoundingClientRect()))<1
+   &&Math.abs(center(text.getBoundingClientRect())-center(button.getBoundingClientRect()))<1;
+ })));
  const refreshBox=await page.locator('#destination-refresh').boundingBox();
  assert.equal(refreshBox.width,36);assert.equal(refreshBox.height,36);
  if(width<1100){const closeBox=await page.locator('#destination-close').boundingBox();assert.equal(closeBox.y,refreshBox.y);assert.equal(closeBox.height,refreshBox.height);}
