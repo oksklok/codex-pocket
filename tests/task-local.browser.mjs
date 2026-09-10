@@ -34,12 +34,12 @@ const server=createServer(async(req,res)=>{
  }
  return json({settings});
  }
- if(u.pathname==='/api/machines')return json({machines:[runtime.machineSummary()]});
+ if(u.pathname==='/api/machines')return json({machines:settings.headless?[{id:'ssh:test',name:'Second machine',connected:remoteConnected}]:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
  if(u.pathname==='/api/activity/image'||u.pathname==='/api/message/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json(historyFixture||{turns:[],nextCursor:null});
- if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}]});}
+ if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}].filter(machine=>!settings.headless||!machine.local)});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
@@ -126,6 +126,7 @@ try {
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-enter-sends'));await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  const chromeColors=()=>page.locator('.topbar, .composer-zone').evaluateAll(es=>es.map(e=>getComputedStyle(e).backgroundColor));
  await settingsOpen();
+ assert.equal(await page.locator('label[for="settings-local-name"]').textContent(),'Host Machine Display Name');
  const save=page.locator('#settings-save');
  assert.equal(await save.isDisabled(),true);
  assert.equal(await page.locator('#translucent-ui').isVisible(),width<=860);
@@ -578,10 +579,19 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForFunction(()=>document.querySelector('#phase-pill').textContent==='Working');
  assert(!(await page.locator('#composer-status').textContent()).includes('Upstream capacity'));
  await open();
+ assert.equal(await page.locator('.machine-host-badge').count(),1);
+ assert.equal(await page.locator('.machine-host-badge').textContent(),'Host');
+ assert.equal(await page.locator('.destination-group').last().locator('.machine-host-badge').count(),0);
  let releaseCatalog; navigationGate=new Promise(r=>releaseCatalog=r);
  const before=calls.filter(c=>c==='/api/navigation').length;
  await page.locator('#destination-refresh').click();
  await page.waitForFunction(()=>document.querySelector('#destination-refresh').disabled);
+ // Refresh only disables Refresh; navigation and task actions remain available.
+ assert.equal(await page.locator('.destination-task').first().isEnabled(),true);
+ assert.equal(await page.locator('.destination-group-heading button').first().isEnabled(),true);
+ await page.locator('.task-actions summary').first().click();
+ for(const label of ['Rename','Archive','Delete'])assert.equal(await page.locator('.task-actions[open]').getByRole('button',{name:label,exact:true}).isEnabled(),true);
+ await page.locator('.task-actions summary').first().click();
  assert.equal(await page.locator('#destination-refresh').getAttribute('aria-label'),'Refresh tasks');
  assert.equal(await page.locator('#destination-refresh').getAttribute('title'),'Refresh tasks');
  assert.equal(await page.locator('#destination-refresh svg').evaluate(e=>getComputedStyle(e).animationName),'refresh-spin');
@@ -701,6 +711,18 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForTimeout(150);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
  await images.nth(1).click();await page.locator('#image-viewer').waitFor();await page.keyboard.press('Escape');
+ }
+ // Headless catalogs contain only SSH runtimes, and their settings omit the host-name field.
+ settings.headless=true;runtime.state.machineId='ssh:test';
+ for(const width of [390,1280]){
+ await page.setViewportSize({width,height:844});await page.reload();
+ await open();await page.locator('.destination-group').waitFor();
+ assert.equal(await page.locator('.destination-group').count(),1);
+ assert.equal(await page.locator('.machine-host-badge').count(),0);
+ await settingsOpen();
+ assert.equal(await page.locator('#settings-local-machine').isVisible(),false);
+ assert.equal(await page.getByLabel('Host Machine Display Name',{exact:true}).isVisible(),false);
+ await page.locator('#settings-close').click();
  }
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

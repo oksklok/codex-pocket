@@ -593,6 +593,12 @@ function renderDestinationSwitcher() {
     heading.className = "destination-group-heading";
     const name = document.createElement("strong");
     name.textContent = machine.name || "Machine";
+    if (machine.local === true) {
+      const badge = document.createElement("span");
+      badge.className = "machine-host-badge";
+      badge.textContent = "Host";
+      name.append(" ", badge);
+    }
     heading.append(name);
     if (availability) {
       const availabilityStatus = document.createElement("span");
