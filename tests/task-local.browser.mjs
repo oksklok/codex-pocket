@@ -12,7 +12,7 @@ const task={id:'current',name:'Current task',cwd:'/project',status:'idle',projec
 const owned={...task,id:'owned',name:'Owned task'};
 let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:true}], fail=true, machineError=conflict;
 Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
-let asyncAnswers={},historyFixture=null;
+let asyncAnswers={},historyFixture=null, messageUnknown=false, messageGate=null;
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
@@ -53,6 +53,11 @@ const server=createServer(async(req,res)=>{
  if(mode==='lost'){req.socket.destroy();return;}
  return json(snapshot());
  }
+ if(u.pathname==='/api/message/queue'&&req.method==='POST'){
+ if(messageGate)await messageGate;
+ if(messageUnknown){req.socket.destroy();return;}
+ runtime.state.queuedMessage=null;return json({accepted:true,mode:'steer',turnId:runtime.state.turn.id},202);
+ }
  if(u.pathname==='/api/message/queue'&&req.method==='DELETE')return json(runtime.cancelQueuedMessage());
  if(u.pathname==='/api/message'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
@@ -62,6 +67,7 @@ const server=createServer(async(req,res)=>{
  runtime.state.liveMessages.push({id:'reply-'+q.messageId,role:'user',text:q.answer,complete:true,createdAt:source.createdAt+1,questionReplies:[{questionItemId:q.messageId,question:source.questions[q.index].title,answer:q.answer}]});
  return json({accepted:true,...snapshot()},202);
  }
+ if(messageUnknown){req.socket.destroy();return;}
  return json({accepted:true},202);
  }
  if(u.pathname==='/api/tasks'){
@@ -468,7 +474,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForFunction(()=>!document.querySelector('[data-message-id="async-choice"] .async-answer'));
  assert.equal(await choiceMessage.locator('.message-body').innerText(),'Which layout should we use?');
  assert.equal(await page.locator('.message.user .message-body').filter({hasText:'Compact'}).count(),1);
- await freeMessage.getByRole('textbox').fill('Your inventory is empty.');await freeMessage.getByRole('button',{name:'Answer',exact:true}).click();
+ const desktopId=JSON.stringify(['request_user_input_async',free.id,0]).replaceAll('"','\\"');
+ runtime.handleNotification({method:'item/completed',params:{threadId:runtime.state.thread.id,turnId:'async-turn',item:{id:'desktop-live',type:'userMessage',content:[{type:'text',text:'<send_user_message_question_reply>'+JSON.stringify([{questionItemId:desktopId,question:free.questions[0].title,answer:'Your inventory is empty.'}])+'</send_user_message_question_reply>'}]}}});
  await page.waitForFunction(()=>!document.querySelector('[data-message-id="async-free"] .async-answer'));
  assert.equal(await freeMessage.locator('.message-body').innerText(),'What should the empty state say?');
  assert.equal(await page.locator('#conversation').getByText('Your inventory is empty.',{exact:true}).count(),1);
@@ -477,7 +484,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const items=[choice,free].map(m=>({...m,type:'agentMessage'}));
  items.push({id:'history-reply',type:'userMessage',createdAt:3000,content:[{type:'text',text:'<send_user_message_question_reply>'+JSON.stringify([
  {questionItemId:choice.id,question:choice.questions[0].title,answer:'Compact'},
- {questionItemId:free.id,question:free.questions[0].title,answer:'Your inventory is empty.'}
+ {questionItemId:desktopId,question:free.questions[0].title,answer:'Your inventory is empty.'}
  ])+'</send_user_message_question_reply>'}]});
  runtime.rpc={request:async method=>method==='thread/turns/list'?{data:[{id:'async-turn',status:'completed'}]}:{data:items.map(item=>({turnId:'async-turn',item}))}};
  historyFixture=await runtime.history(null,1);runtime.state.liveMessages=[];asyncAnswers={};
@@ -494,7 +501,26 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('.structured-input-form input[type="radio"]').count(),3);
  assert.equal(await page.getByText('Turn paused',{exact:true}).isVisible(),true);
  runtime.state.pending=[];historyFixture=null;runtime.state.liveMessages=[];asyncAnswers={};
+ runtime.state.turn={id:'steer-turn',status:'inProgress'};runtime.state.phase='working';runtime.broadcast('snapshot',snapshot());
+ runtime.state.queuedMessage={threadId:runtime.state.thread.id,text:'Check the loading screen.',createdAt:Date.now()};runtime.broadcast('queue',{queuedMessage:runtime.state.queuedMessage});
+ let releaseSteer;messageGate=new Promise(resolve=>releaseSteer=resolve);
+ await page.locator('#send-queue').click();
+ assert.equal(await page.locator('#conversation').getByText('Check the loading screen.',{exact:true}).count(),0);
+ releaseSteer();messageGate=null;
+ await page.locator('#conversation').getByText('Check the loading screen.',{exact:true}).waitFor();
+ const steerEcho={id:'steer-echo',role:'user',text:'Check the loading screen.',turnId:'steer-turn',createdAt:Date.now(),complete:true};
+ runtime.state.liveMessages.push(steerEcho);runtime.broadcast('message',steerEcho);
+ await page.waitForTimeout(100);
+ assert.equal(await page.locator('#conversation').getByText('Check the loading screen.',{exact:true}).count(),1);
+ runtime.broadcast('snapshot',snapshot());await page.waitForTimeout(100);
+ assert.equal(await page.locator('#conversation').getByText('Check the loading screen.',{exact:true}).count(),1);
+ messageUnknown=true;runtime.state.queuedMessage={threadId:runtime.state.thread.id,text:'Unconfirmed steer',createdAt:Date.now()};runtime.broadcast('queue',{queuedMessage:runtime.state.queuedMessage});await page.locator('#send-queue').click();
+ await page.waitForFunction(()=>document.querySelector('#composer-status').textContent.includes('unconfirmed'));
+ assert.equal(await page.locator('#conversation').getByText('Unconfirmed steer',{exact:true}).count(),0);
+ messageUnknown=false;runtime.state.queuedMessage=null;runtime.broadcast('queue',{queuedMessage:null});await page.locator('#message-text').fill('');
+
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ assert.equal(await page.locator('#conversation').getByText('Check the loading screen.',{exact:true}).count(),1);
  if(width===390){
  runtime.state.liveMessages=Array.from({length:50},(_,i)=>({id:`viewport-${i}`,role:'assistant',text:`Message ${i}\n\nEnough content to scroll the document.`}));runtime.broadcast('snapshot',snapshot());
  await page.getByText('Message 49',{exact:false}).waitFor();
@@ -565,8 +591,16 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  catalogAvailable=false;remoteConnected=false;releaseCatalog();navigationGate=null;
  await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  assert.equal(calls.filter(c=>c==='/api/navigation').length,before+1);
- assert.equal(await page.locator('.destination-group.unavailable').getByText('Tasks unavailable',{exact:true}).count(),1);
+ assert.equal(await page.locator('.destination-group.unavailable').getByText('Tasks Unavailable',{exact:true}).count(),1);
  assert.equal(await page.locator('.destination-group.offline').getByText('Offline',{exact:true}).count(),1);
+ assert.equal(await page.locator('.destination-group.offline button[title="New task"]').isDisabled(),true);
+ assert.equal(await page.locator('.destination-group.unavailable button[title="New task"]').isEnabled(),true);
+ runtime.broadcast('machines',{machines:[{...runtime.machineSummary(),connected:false}]});
+ await page.waitForFunction(()=>document.querySelectorAll('.destination-group.offline').length===2);
+ assert.equal(await page.locator('.destination-group.unavailable').count(),0);
+ assert.equal(await page.locator('.destination-group.offline button[title="New task"]').first().isDisabled(),true);
+ runtime.broadcast('machines',{machines:[runtime.machineSummary()]});
+ await page.locator('.destination-group.unavailable').waitFor();
  catalogAvailable=true;remoteConnected=true;
  await page.locator('#show-archived').check();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  const archivedBefore=calls.filter(c=>c==='?archived=true').length;
@@ -589,7 +623,9 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
    &&style.borderTopWidth==='0px'&&style.backgroundColor==='rgba(0, 0, 0, 0)'
    &&Math.abs(rect.x+18-icon.x-icon.width/2)<1&&Math.abs(rect.y+18-icon.y-icon.height/2)<1;
  })));
- if(width!==390)assert.equal(await page.locator('.destination-group.offline button').first().isDisabled(),true);
+ // The newer successful archived read restored connectivity even though active catalog data is cached.
+ assert.equal(await page.locator('.destination-group.offline').count(),0);
+ assert.equal(await page.locator('.destination-group-heading button').last().isEnabled(),true);
  await page.keyboard.press('Tab');await page.getByRole('button',{name:'New task',exact:true}).first().focus();
  assert(await page.getByRole('button',{name:'New task',exact:true}).first().evaluate(e=>{const s=getComputedStyle(e);return e.matches(':focus-visible')&&s.outlineStyle==='solid'&&parseFloat(s.outlineWidth)>=2;}));
  const plus=page.getByRole('button',{name:'New task',exact:true}).first();

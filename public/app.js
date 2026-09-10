@@ -5,6 +5,7 @@ import {
   orderTranscriptEntries,
   preserveMessageCreatedAt,
   reconcileSubmission,
+  reconcileConfirmedSteers,
   imageInputs, MAX_INPUT_IMAGES, MAX_INPUT_IMAGE_BYTES,
   resolvedAsyncAnswer,
   rememberComposerDraft,
@@ -375,6 +376,17 @@ async function postMessageAction(url, body) {
   const submissionId = `${state?.submissionEpoch}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
   const requested = { ...body, threadId: state?.thread?.id, turnId: state?.turn?.id,
     text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
+  const confirmed = (result) => {
+    if (requested.action === "steer" && requested.text && !requested.images?.length
+      && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) {
+      const id = `confirmed-steer-${submissionId}`;
+      liveMessages.set(id, { id, role: "user", text: requested.text.replace(/\r\n/g, "\n"),
+        turnId: result.turnId || requested.turnId, createdAt: Date.now(), complete: true,
+        confirmedSteer: { previousMessageIds: requested.previousMessageIds } });
+      renderConversation();
+    }
+    return result;
+  };
   let response, result;
   try {
     response = await apiFetch(url, {
@@ -398,7 +410,7 @@ async function postMessageAction(url, body) {
       throw failure;
     }
     const outcome = reconcileSubmission(submissionId, snapshot, requested);
-    if (outcome === "accepted") return { accepted: true, recovered: true };
+    if (outcome === "accepted") return confirmed({ accepted: true, recovered: true });
     const failure = new Error(outcome === "rejected"
       ? snapshot.submission.error || "Message was not sent. Please send again."
       : "Connection restored; delivery is still unconfirmed. Check the task before sending again.");
@@ -406,7 +418,7 @@ async function postMessageAction(url, body) {
     throw failure;
   }
   if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
-  return result;
+  return confirmed(result);
 }
 
 function projectName(cwd) {
@@ -512,12 +524,14 @@ function renderDestinationButton() {
 
 async function refreshMachines() {
   if (machinesRequest) return machinesRequest;
+  const machineStateAtStart = machines;
   machinesRequest = (async () => {
     const response = await apiFetch("/api/machines");
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || "Machines unavailable");
-    machines = Array.isArray(value.machines) ? value.machines : [];
+    if (machines === machineStateAtStart) machines = Array.isArray(value.machines) ? value.machines : [];
     renderDestinationButton();
+    renderDestinationSwitcher();
   })();
   try {
     await machinesRequest;
@@ -536,7 +550,7 @@ function renderDestinationSwitcher() {
   elements.destinationRefresh.disabled = Boolean(navigationRequest);
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
-    navigationCatalog, elements.destinationSearch.value, Boolean(navigationRequest),
+    navigationCatalog, machines.map(machine => [machine.id, machine.connected]), elements.destinationSearch.value, Boolean(navigationRequest),
     state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationCreateError, destinationTaskError, archived, projectsVisible, navigationErrors[slot],
   ]);
@@ -557,7 +571,9 @@ function renderDestinationSwitcher() {
     elements.destinationList.append(loading);
     return;
   }
-  for (const machine of catalogMachines) {
+  for (const catalogMachine of catalogMachines) {
+    const latest = machines.find(machine => machine.id === catalogMachine.id);
+    const machine = { ...catalogMachine, ...(latest ? { connected: latest.connected } : {}) };
     const machineMatches = `${machine.name || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
     const tasks = (Array.isArray(machine.tasks) ? machine.tasks : []).filter((task) => {
       if (!query || machineMatches) return true;
@@ -567,9 +583,9 @@ function renderDestinationSwitcher() {
 
     const catalogAvailable = machine.catalogAvailable !== false;
     const availability = !machine.connected
-      ? (machine.local ? "Runtime unavailable" : "Offline")
+      ? "Offline"
       : !catalogAvailable
-        ? "Tasks unavailable"
+        ? "Tasks Unavailable"
         : "";
     const group = document.createElement("section");
     group.className = `destination-group ${!machine.connected ? "offline" : !catalogAvailable ? "unavailable" : ""}`;
@@ -739,12 +755,17 @@ async function refreshNavigationCatalog(archived = elements.showArchived.checked
   if (navigationRequests[slot]) return navigationRequests[slot];
   if (navigationCatalogs[slot] && !force) return;
   const epoch = navigationEpoch;
+  const machineStateAtStart = machines;
   const request = (async () => {
     try {
       const response = await apiFetch(`/api/navigation?archived=${archived}`, { signal: AbortSignal.timeout(7_000) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error || "Task catalog unavailable");
       if (epoch !== navigationEpoch) return;
+      // A runtime event received during the read takes precedence over this catalog.
+      if (machines === machineStateAtStart && Array.isArray(value.machines)) {
+        machines = value.machines.map(machine => ({ ...machines.find(current => current.id === machine.id), ...machine }));
+      }
       navigationCatalogs[slot] = value;
       navigationErrors[slot] = "";
     } catch (error) {
@@ -1279,7 +1300,6 @@ function renderState() {
   if (!state) return;
   const selectedMachine = machines.find((machine) => machine.id === state.machineId);
   if (selectedMachine) {
-    selectedMachine.connected = Boolean(state.connected);
     selectedMachine.connectionError = state.connectionError || null;
     selectedMachine.selectedThreadId = state.thread?.id || null;
     selectedMachine.loadedTaskCount = loadedThreads.length;
@@ -1669,7 +1689,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   deferredTranscript = false;
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
-  const messages = [...all.values()].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  const messages = reconcileConfirmedSteers([...all.values()]).sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
   const allActivities = new Map(historyActivities);
   for (const [id, activity] of liveActivities) allActivities.set(id, activity);
   const activities = [...allActivities.values()].filter(activityVisible);
@@ -1800,6 +1820,11 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
   }
   if (next.message && !next.message.allowed) {
     composerNotice = "";
+  }
+  if (Array.isArray(next.machines)) machines = next.machines;
+  else if (Object.hasOwn(next, "connected") && (next.machineId || state?.machineId)) {
+    const id = next.machineId || state.machineId;
+    machines = machines.map(machine => machine.id === id ? { ...machine, connected: next.connected } : machine);
   }
   state = { ...(state || {}), ...next };
   if (Array.isArray(next.liveMessages)) {
@@ -2323,6 +2348,7 @@ function connectEvents() {
   on("control", (event) => { mergeState(parseEvent(event)); });
   on("context", (event) => { mergeState(parseEvent(event)); });
   on("answers", (event) => { mergeState(parseEvent(event), true); });
+  on("machines", (event) => { mergeState(parseEvent(event), false); });
   on("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
   on("turn", (event) => {
     const value = parseEvent(event);

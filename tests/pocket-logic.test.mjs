@@ -16,6 +16,7 @@ import {
   messageInputs,
   normalizeAsyncQuestions,
   reconcileSubmission,
+  reconcileConfirmedSteers,
   resolvedAsyncAnswer,
   rememberComposerDraft,
 } from "../public/pocket-logic.js";
@@ -1444,4 +1445,84 @@ test("navigation catalog timeouts are bounded and do not mark connected runtimes
   } };
   await local.listArchivedThreads();
   assert.deepEqual(budgets, [5_000, 2_000]);
+});
+
+
+test("successful core catalogs survive optional loaded metadata failures and deadlines", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const runtime = activeRuntime();
+  const core = { id: "core", name: "Core task", cwd: "/project", updatedAt: 100 };
+  const extra = { ...core, id: "extra", name: "Loaded empty task" };
+  runtime.rpc = { request: async method => method === "thread/list" ? { data: [core] }
+    : method === "thread/loaded/list" ? { data: ["core", "extra"] } : { thread: extra } };
+  const initial = await runtime.listLoadedThreads();
+  assert.equal(initial.length, 2);
+  for (const failure of ["read", "timeout", "loaded-list"]) {
+    runtime.rpc = { request: async method => {
+      if (method === "thread/list") return { data: [core] };
+      if (method === "thread/loaded/list" && failure !== "loaded-list") return { data: ["core", "extra"] };
+      if (failure === "timeout") t.mock.timers.tick(5_000);
+      throw new Error("Optional metadata failed");
+    } };
+    const catalog = await runtime.listLoadedThreads();
+    assert.equal(catalog.find(t => t.id === "core").name, "Core task");
+    assert.deepEqual(catalog.find(t => t.id === "extra"), initial.find(t => t.id === "extra"));
+    assert.equal(runtime.state.connected, true);
+    const gateway = new PocketGateway({ machines: [] });
+    gateway.runtimes.set("local", runtime);
+    const result = (await gateway.navigationCatalog()).machines[0];
+    assert.equal(result.catalogAvailable, true);
+    assert(result.tasks.some(task => task.id === "core"));
+  }
+});
+
+test("machine disconnection publishes current state independently of a failed catalog", async () => {
+  const gateway = new PocketGateway({ machines: [{ name: "Remote", ssh: "remote" }] });
+  const remote = gateway.runtimes.get("ssh:remote");
+  remote.state.connected = true;
+  remote.listLoadedThreads = async () => { throw new Error("Catalog failure"); };
+  assert.equal((await gateway.navigationCatalog()).machines[1].catalogAvailable, false);
+  const events = [];
+  gateway.subscribers.add({ write: payload => events.push(payload) });
+  remote.shuttingDown = false;
+  remote.scheduleReconnect = () => {};
+  remote.handleClose();
+  const event = events.find(event => event.startsWith("event: machines"));
+  assert.equal(JSON.parse(event.split("data: ")[1]).machines[1].connected, false);
+  assert.equal(gateway.snapshot().machines[1].connected, false);
+});
+
+test("confirmed Steers reconcile only to distinct new authoritative user items in their turn", () => {
+  const old = { id: "old", role: "user", turnId: "turn", text: "Continue" };
+  const confirmed = id => ({ ...old, id, confirmedSteer: { previousMessageIds: ["old"] } });
+  const a = confirmed("confirmed-a"), b = confirmed("confirmed-b");
+  const echo = { ...old, id: "echo" };
+  assert.deepEqual(reconcileConfirmedSteers([old, a]), [old, a]);
+  assert.deepEqual(reconcileConfirmedSteers([old, a, b, echo]), [old, b, echo]);
+  const second = { ...echo, id: "second" };
+  assert.deepEqual(reconcileConfirmedSteers([old, a, b, echo, second]), [old, echo, second]);
+  assert.deepEqual(reconcileConfirmedSteers([old, a, b, echo, second]), [old, echo, second]);
+  const wrongTurn = { ...echo, id: "wrong", turnId: "other" };
+  const c = confirmed("confirmed-c");
+  assert.deepEqual(reconcileConfirmedSteers([c, wrongTurn]), [c, wrongTurn]);
+});
+
+test("Desktop composite async reply IDs resolve the exact question index live and after history reload", async () => {
+  const runtime = activeRuntime();
+  const question = { id: "call_desktop", type: "agentMessage", delivery: "async", text: "Confirm", questions: [{ title: "Same?" }, { title: "Same?" }] };
+  for (const escaped of [false, true]) {
+    let id = JSON.stringify(["request_user_input_async", question.id, 1]);
+    if (escaped) id = id.replaceAll('"', '\\"');
+    const reply = { id: "desktop-reply", type: "userMessage", content: [{ type: "text", text: `<send_user_message_question_reply>${JSON.stringify([{ questionItemId: id, question: "Same?", answer: "All good." }])}</send_user_message_question_reply>` }] };
+    runtime.handleNotification({ method: "item/completed", params: { threadId: runtime.state.thread.id, turnId: "turn-1", item: question } });
+    runtime.handleNotification({ method: "item/completed", params: { threadId: runtime.state.thread.id, turnId: "turn-1", item: reply } });
+    runtime.rpc = { request: async method => method === "thread/turns/list" ? { data: [{ id: "turn-1", status: "completed" }] } : { data: [question, reply].map(item => ({ turnId: "turn-1", item })) } };
+    for (const messages of [runtime.snapshot().liveMessages, (await runtime.history(null, 1)).turns[0].messages]) {
+      const q = messages.find(m => m.id === question.id);
+      assert.equal(resolvedAsyncAnswer(q, 0, messages), null);
+      assert.equal(resolvedAsyncAnswer(q, 1, messages), "All good.");
+      assert.equal(messages.filter(m => m.text === "All good.").length, 1);
+      assert.equal(resolvedAsyncAnswer({ ...q, id: "other" }, 1, messages), null);
+    }
+  }
 });

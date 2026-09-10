@@ -2212,25 +2212,29 @@ export class MachineRuntime {
         sortKey: "recency_at",
         sortDirection: "desc",
       }, deadline),
-      this.listTaskPages("thread/loaded/list", { limit: 100 }, deadline),
+      this.listTaskPages("thread/loaded/list", { limit: 100 }, deadline)
+        .catch(() => this.loadedThreads.filter(thread => thread.loaded).map(thread => thread.id)),
     ]);
     const threads = listed;
+    const previousThreads = this.loadedThreads;
     const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)));
     const listedIds = new Set(threads.map((thread: any) => String(thread.id)));
     for (const id of [...loadedIds].filter((id) => !listedIds.has(id))) {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new Error("Task catalog timed out");
+      if (remaining <= 0) break;
       try {
         const result = await this.rpc.request("thread/read", { threadId: id, includeTurns: false }, remaining);
         if (result.thread) threads.push(result.thread);
       } catch (error) {
-        if (Date.now() >= deadline) throw error;
+        if (Date.now() >= deadline) break;
         // A live task may unload between listing and metadata read.
       }
     }
-    this.loadedThreads = threads
-      .filter(isUserFacingThread)
-      .map((thread: any) => loadedThreadSummary(thread, String(thread.id), loadedIds.has(String(thread.id))))
+    const currentThreads = threads.filter(isUserFacingThread)
+      .map((thread: any) => loadedThreadSummary(thread, String(thread.id), loadedIds.has(String(thread.id))));
+    // Keep already-normalized metadata for loaded tasks whose optional reads failed.
+    this.loadedThreads = [...currentThreads, ...previousThreads.filter(previous =>
+      loadedIds.has(previous.id) && !threads.some(thread => String(thread.id) === previous.id))]
       .sort((left, right) => {
         const leftPriority = left.status.startsWith("active") ? 2 : left.loaded ? 1 : 0;
         const rightPriority = right.status.startsWith("active") ? 2 : right.loaded ? 1 : 0;
@@ -3399,7 +3403,7 @@ export class PocketGateway {
   }
 
   snapshot(): JsonObject {
-    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota, submissionEpoch: this.submissions.epoch };
+    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota, submissionEpoch: this.submissions.epoch, machines: this.listMachines() };
   }
 
   hostStatus(options: Options): JsonObject {
@@ -3611,6 +3615,7 @@ export class PocketGateway {
   }
 
   private refreshQuotaSource(): void {
+    for (const response of this.subscribers) this.writeSse(response, "machines", { machines: this.listMachines() });
     const connected = [...this.runtimes.entries()].filter(([, runtime]) => {
       const quota = runtime.quotaSnapshot();
       return runtime.state.connected && quota?.fresh;

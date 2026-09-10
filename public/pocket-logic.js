@@ -71,12 +71,42 @@ export function asyncAnswerText(title, answer) {
   return `In response to: ${title}\n\n${answer}`;
 }
 
+function asyncReplyMatches(value, messageId, index) {
+  if (value === messageId) return true;
+  if (typeof value !== "string") return false;
+  try {
+    // Desktop serializes the tuple with escaped quotes inside questionItemId.
+    const id = JSON.parse(value.replace(/\\"/g, '"'));
+    return Array.isArray(id) && id.length === 3 && id[0] === "request_user_input_async"
+      && id[1] === messageId && Number.isInteger(id[2]) && id[2] === index;
+  } catch { return false; }
+}
+
+// Confirmed text Steers live in the existing message map until their Codex echo arrives.
+export function reconcileConfirmedSteers(messages) {
+  const confirmed = messages.filter(message => message.confirmedSteer);
+  const authoritative = messages.filter(message => !message.confirmedSteer);
+  const used = new Set(confirmed.map(message => message.confirmedSteer.matchedId).filter(Boolean));
+  return messages.filter(message => {
+    const receipt = message.confirmedSteer;
+    if (!receipt) return true;
+    if (receipt.matchedId) return false;
+    const echo = authoritative.find(candidate => candidate.role === "user" && !candidate.imageCount
+      && candidate.turnId === message.turnId && candidate.text === message.text
+      && !receipt.previousMessageIds.includes(candidate.id) && !used.has(candidate.id));
+    if (!echo) return true;
+    receipt.matchedId = echo.id;
+    used.add(echo.id);
+    return false;
+  });
+}
+
 export function resolvedAsyncAnswer(message, index, messages, answers = {}) {
   const recorded = answers[message.id]?.[index];
   if (recorded !== undefined) return recorded;
   for (const candidate of messages) {
     if (candidate.role !== "user" || !Array.isArray(candidate.questionReplies)) continue;
-    const reply = candidate.questionReplies.find(reply => reply.questionItemId === message.id
+    const reply = candidate.questionReplies.find(reply => asyncReplyMatches(reply.questionItemId, message.id, index)
       && (reply.question === message.questions[index].title || (reply.question === undefined && message.questions.length === 1)));
     if (reply && typeof reply.answer === "string") return reply.answer;
   }
