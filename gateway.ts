@@ -1598,7 +1598,7 @@ export class MachineRuntime {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
-  private compactionHints = new Map<string, { activity: PocketActivity; occurrence?: number }>();
+  private compactionHints = new Map<string, { activity: PocketActivity; occurrence?: number; baseline?: Promise<void> }>();
   private taskQueues = new Map<string, QueuedMessage>();
   private pendingTaskNames = new Map<string, { name: string; attempted: boolean }>();
   private options: Options;
@@ -2899,7 +2899,10 @@ export class MachineRuntime {
       this.compactionHints.delete(thread.id);
       return;
     }
-    if (hint.occurrence === undefined) return;
+    await hint.baseline;
+    if (hint.occurrence === undefined || !this.rpc || this.state.thread !== thread
+      || this.state.turn?.id !== activity.turnId || this.state.turn.status !== "inProgress"
+      || this.compactionHints.get(thread.id) !== hint) return;
     const completed = await this.completedCompactions(this.rpc, thread.id, activity.turnId!);
     if (!completed || this.state.thread !== thread || this.state.turn?.id !== activity.turnId
       || this.state.turn.status !== "inProgress" || this.compactionHints.get(thread.id) !== hint) return;
@@ -3346,12 +3349,11 @@ export class MachineRuntime {
     if (item.type === "contextCompaction" && this.state.thread) {
       if (phase === "start" && this.rpc) {
         const thread = this.state.thread;
-        const hint: { activity: PocketActivity; occurrence?: number } = { activity };
+        const hint: { activity: PocketActivity; occurrence?: number; baseline?: Promise<void> } = { activity };
         this.compactionHints.set(thread.id, hint);
         // History IDs differ from live IDs. Capture the count preceding this live occurrence.
-        void this.completedCompactions(this.rpc, thread.id, itemTurnId).then(completed => {
-          if (completed && this.state.thread === thread && this.state.turn?.id === itemTurnId
-            && this.state.turn.status === "inProgress" && this.compactionHints.get(thread.id) === hint) {
+        hint.baseline = this.completedCompactions(this.rpc, thread.id, itemTurnId).then(completed => {
+          if (completed && this.compactionHints.get(thread.id) === hint) {
             hint.occurrence = completed.length + 1;
           }
         });

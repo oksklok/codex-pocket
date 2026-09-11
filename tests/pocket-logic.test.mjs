@@ -2033,7 +2033,6 @@ test('Compaction alone survives release and is authoritatively reconciled on rea
     runtime.rpc={request:async()=>({data:['older-completion','second-completed-away'].includes(outcome)?[{item:older}]:[]})};
     runtime.handleNotification({method:'item/started',params:{threadId:'thread-1',turnId:'turn-1',item}});
     assert.equal(runtime.state.activities[0].label,'Compacting context');
-    await new Promise(setImmediate);
     await runtime.releaseTask();assert.equal(runtime.state.activities.length,0);
     const calls=[];
     runtime.rpc={request:async(method,params,timeout)=>{
@@ -2061,5 +2060,38 @@ test('Compaction alone survives release and is authoritatively reconciled on rea
     const reads=calls.filter(c=>c.method==='thread/items/list');
     assert.equal(reads.length,['different-turn','finished'].includes(outcome)?0:outcome==='incomplete'?2:1);
     if(reads.length){assert.equal(reads[0].params.turnId,'turn-1');assert(reads[0].timeout<=5000);}
+  }
+});
+
+test('Reattachment awaits the original compaction baseline after an immediate switch', async () => {
+  for (const invalidate of [false,true]) {
+    const runtime=activeRuntime();let releaseBaseline, enteredRestore;
+    const baseline=new Promise(resolve=>{releaseBaseline=resolve;});
+    const restoring=new Promise(resolve=>{enteredRestore=resolve;});
+    let baselineReads=0,reconcileReads=0;
+    runtime.rpc={request:async method=>{if(method==='thread/items/list'){baselineReads++;return baseline;}return {data:[]};}};
+    runtime.handleNotification({method:'item/started',params:{threadId:'thread-1',turnId:'turn-1',item:{id:'live-uuid',type:'contextCompaction'}}});
+    const hint=runtime.compactionHints.get('thread-1');
+    await runtime.releaseTask();
+    assert.equal(hint.occurrence,undefined);
+    runtime.rpc={request:async method=>{
+      if(method==='thread/turns/list')return {data:[{id:'turn-1',status:'inProgress'}]};
+      if(method==='thread/items/list'){reconcileReads++;return {data:[]};}
+      return {data:[]};
+    }};
+    runtime.loadedThreads=[{id:'thread-1',name:'Task',cwd:'/project',status:'active'}];
+    const restore=runtime.restoreCompactionHint.bind(runtime);
+    runtime.restoreCompactionHint=()=>{enteredRestore();return restore();};
+    const attaching=runtime.attachLoadedThread('thread-1',false,{thread:{id:'thread-1',cwd:'/project',status:'active',canAcceptDirectInput:true}});
+    await restoring;
+    assert.equal(reconcileReads,0);
+    if(invalidate)runtime.handleNotification({method:'turn/started',params:{threadId:'thread-1',turn:{id:'new-turn',status:'inProgress'}}});
+    releaseBaseline({data:[]});
+    await attaching;
+    assert.equal(baselineReads,1);
+    assert.equal(reconcileReads,invalidate?0:1);
+    assert.equal(runtime.state.activities.length,invalidate?0:1);
+    if(!invalidate)assert.equal(runtime.state.activities[0].label,'Compacting context');
+    else assert.equal(hint.occurrence,undefined);
   }
 });
