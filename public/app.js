@@ -390,6 +390,7 @@ async function postMessageAction(url, body) {
         confirmedSteer: { previousMessageIds: requested.previousMessageIds } });
       renderConversation();
     }
+    if (composerSubmission && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) jumpToLatest(true);
     return result;
   };
   let response, result;
@@ -601,6 +602,7 @@ async function refreshMachines() {
   }
 }
 
+const collapsedMachines = new Set();
 let destinationRenderKey = null;
 function renderDestinationSwitcher() {
   if (elements.destinationSwitcher.hidden) return;
@@ -611,7 +613,7 @@ function renderDestinationSwitcher() {
   elements.destinationRefresh.disabled = Boolean(navigationRequest);
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
-    navigationCatalog, machines.map(machine => [machine.id, machine.connected]), elements.destinationSearch.value, Boolean(navigationRequest),
+    [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected]), elements.destinationSearch.value, Boolean(navigationRequest),
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, archived, projectsVisible, navigationErrors[slot],
   ]);
@@ -660,7 +662,22 @@ function renderDestinationSwitcher() {
       badge.textContent = "Host";
       name.append(" ", badge);
     }
-    heading.append(name);
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "machine-toggle";
+    toggle.dataset.machineId = machine.id;
+    const collapsed = collapsedMachines.has(machine.id);
+    group.classList.toggle("collapsed", collapsed);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>';
+    toggle.append(name);
+    toggle.addEventListener("click", () => {
+      if (collapsedMachines.has(machine.id)) collapsedMachines.delete(machine.id);
+      else collapsedMachines.add(machine.id);
+      renderDestinationSwitcher();
+      [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
+    });
+    heading.append(toggle);
     if (availability) {
       const availabilityStatus = document.createElement("span");
       availabilityStatus.textContent = availability;
@@ -1882,11 +1899,11 @@ function updateJumpLatest() {
   elements.jumpLatest.hidden = distance < NEAR_BOTTOM_PX;
 }
 
-function jumpToLatest() {
+function jumpToLatest(instant = false) {
   shouldFollowConversation = true;
   transcriptScroller().scrollTo({
     top: transcriptScroller().scrollHeight,
-    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    behavior: instant || matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
   });
   updateJumpLatest();
 }
@@ -2792,7 +2809,7 @@ elements.destinationButton.addEventListener("click", () => {
 elements.destinationRefresh.addEventListener("click", () => refreshNavigationCatalog(elements.showArchived.checked, true));
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
-elements.destinationSearch.addEventListener("input", renderDestinationSwitcher);
+elements.destinationSearch.addEventListener("input", () => { collapsedMachines.clear(); renderDestinationSwitcher(); });
 elements.showArchived.addEventListener("change", () => {
   renderDestinationSwitcher();
   void refreshNavigationCatalog();
@@ -2887,7 +2904,7 @@ elements.conversation.addEventListener("scroll", handleTranscriptScroll);
 document.addEventListener("scroll", () => {
   if (transcriptScroller() === document.scrollingElement) handleTranscriptScroll();
 });
-elements.jumpLatest.addEventListener("click", jumpToLatest);
+elements.jumpLatest.addEventListener("click", () => jumpToLatest());
 elements.inspectorButton.addEventListener("click", toggleInspector);
 elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);

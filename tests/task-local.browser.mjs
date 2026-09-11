@@ -468,6 +468,18 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  release();gate=null;await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));
  assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);assert.equal(await input.inputValue(),'Stable action draft');
  task.name='Current task';await dismissTasks();await closed();await open();
+ const machineToggle=page.locator('.machine-toggle').first();
+ assert.equal(await machineToggle.getAttribute('aria-expanded'),'true');
+ await machineToggle.click();assert.equal(await machineToggle.getAttribute('aria-expanded'),'false');
+ assert.equal(await row('Current task').isVisible(),false);
+ runtime.broadcast('task-status',{machineId:'local',threadId:'current',status:'idle'});
+ await page.waitForTimeout(50);assert.equal(await machineToggle.getAttribute('aria-expanded'),'false');
+ await page.getByRole('button',{name:'New task',exact:true}).first().click();await page.locator('#new-task-cancel').click();
+ assert.equal(await machineToggle.getAttribute('aria-expanded'),'false');
+ await machineToggle.focus();await page.keyboard.press('Enter');assert.equal(await row('Current task').isVisible(),true);
+ await page.keyboard.press('Space');assert.equal(await machineToggle.getAttribute('aria-expanded'),'false');
+ await page.locator('#destination-search').fill('Current');assert.equal(await row('Current task').isVisible(),true);
+ await page.locator('#destination-search').fill('');
  await page.getByRole('button',{name:'New task',exact:true}).last().click();
  assert.equal(await page.locator('#new-task-title').textContent(),'New Task on Second machine');
  assert.equal(await page.locator('#new-task-cwd').inputValue(),'/remote/project');
@@ -480,7 +492,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByText('Enter an absolute project folder on this machine',{exact:true}).waitFor();
  await page.locator('#new-task-cwd').fill('/project');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/new-task-${width}.png`});
- await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
+ await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
  assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('.new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
  failAction=false;await page.locator('#new-task-create').click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
@@ -675,7 +687,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForFunction(()=>document.querySelector('#destination-refresh').disabled);
  // Refresh only disables Refresh; navigation and task actions remain available.
  assert.equal(await page.locator('.destination-task').first().isEnabled(),true);
- assert.equal(await page.locator('.destination-group-heading button').first().isEnabled(),true);
+ assert.equal(await page.locator('.destination-group-heading .icon-button').first().isEnabled(),true);
  await page.locator('.task-actions summary').first().click();
  for(const label of ['Rename','Archive','Delete'])assert.equal(await page.locator('.task-actions[open]').getByRole('button',{name:label,exact:true}).isEnabled(),true);
  await page.locator('.task-actions summary').first().click();
@@ -714,7 +726,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  }
  await page.mouse.move(0,0);
- assert(await page.locator('.destination-group-heading button').evaluateAll(buttons=>buttons.every(button=>{
+ assert(await page.locator('.destination-group-heading .icon-button').evaluateAll(buttons=>buttons.every(button=>{
  const rect=button.getBoundingClientRect(),icon=button.querySelector('svg').getBoundingClientRect(),style=getComputedStyle(button);
  return button.getAttribute('aria-label')==='New task'&&button.title==='New task'&&rect.width===36&&rect.height===36
    &&style.borderTopWidth==='0px'&&style.backgroundColor==='rgba(0, 0, 0, 0)'
@@ -722,7 +734,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  })));
  // The newer successful archived read restored connectivity even though active catalog data is cached.
  assert.equal(await page.locator('.destination-group.offline').count(),0);
- assert.equal(await page.locator('.destination-group-heading button').last().isEnabled(),true);
+ assert.equal(await page.locator('.destination-group-heading .icon-button').last().isEnabled(),true);
  await page.keyboard.press('Tab');await page.getByRole('button',{name:'New task',exact:true}).first().focus();
  assert(await page.getByRole('button',{name:'New task',exact:true}).first().evaluate(e=>{const s=getComputedStyle(e);return e.matches(':focus-visible')&&s.outlineStyle==='solid'&&parseFloat(s.outlineWidth)>=2;}));
  const plus=page.getByRole('button',{name:'New task',exact:true}).first();
@@ -798,6 +810,26 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForTimeout(150);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
  await images.nth(1).click();await page.locator('#image-viewer').waitFor();await page.keyboard.press('Escape');
+ }
+ // Confirmed sends follow latest from a deliberately scrolled-up transcript.
+ for(const width of [390,1280]) for(const outcome of ['success','reject','unknown','recovered']){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',pending:[],queuedMessage:null,liveMessages:[{id:'scroll-send',role:'assistant',text:'A useful progress update.\n\n'.repeat(100),complete:true,createdAt:Date.now()}]});
+ composerPost=outcome==='success'?'success':outcome==='reject'?'reject':'lost';recoveryMode=outcome==='unknown'||outcome==='recovered'?'unreachable':null;
+ await page.reload();await page.locator('[data-message-id="scroll-send"]').waitFor();
+ await page.locator('#message-text').fill('Check the next step');
+ await page.evaluate(()=>{document.activeElement?.blur();const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');s.scrollTop=s.scrollHeight-s.clientHeight-600;});await page.waitForTimeout(180);
+ const top=await page.evaluate(()=>(innerWidth<=860?document.scrollingElement:document.querySelector('#conversation')).scrollTop);
+ await page.locator('#composer').evaluate(form=>form.requestSubmit());
+ if(outcome==='success')await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
+ else if(outcome==='reject')await page.getByText('Send rejected',{exact:true}).waitFor();
+ else await page.getByText('Connection lost; delivery could not be confirmed. Check the task before sending again.',{exact:true}).waitFor();
+ if(outcome!=='success'){
+ await page.waitForTimeout(150);
+ assert(Math.abs(await page.evaluate(()=>(innerWidth<=860?document.scrollingElement:document.querySelector('#conversation')).scrollTop)-top)<3);
+ }
+ if(outcome==='recovered'){recoveryMode='accepted';for(const client of [...eventClients])client.end();}
+ if(outcome==='success'||outcome==='recovered')await page.waitForFunction(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');return s.scrollHeight-s.clientHeight-s.scrollTop<3;});
  }
  // Fullscreen collapses only on confirmed Start/Queue/Steer, including receipt recovery.
  for(const width of [390,1280]){
