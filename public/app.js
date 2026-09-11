@@ -382,7 +382,8 @@ async function postMessageAction(url, body) {
   const confirmed = (result) => {
     if (composerSubmission && composerExpanded && requested.machineId === state?.machineId
       && requested.threadId === state?.thread?.id) toggleComposer();
-    if (requested.action === "steer" && requested.text && !requested.images?.length
+    if ((requested.action === "steer" || (requested.action === "start" && url === "/api/message"))
+      && requested.text && !requested.images?.length
       && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) {
       const id = `confirmed-steer-${submissionId}`;
       liveMessages.set(id, { id, role: "user", text: requested.text.replace(/\r\n/g, "\n"),
@@ -417,7 +418,7 @@ async function postMessageAction(url, body) {
       throw failure;
     }
     const outcome = reconcileSubmission(submissionId, snapshot, requested);
-    if (outcome === "accepted") return confirmed({ accepted: true, recovered: true });
+    if (outcome === "accepted") return confirmed({ accepted: true, recovered: true, turnId: snapshot.submission?.turnId });
     const failure = new Error(outcome === "rejected"
       ? snapshot.submission.error || "Message was not sent. Please send again."
       : "Connection restored; delivery is still unconfirmed. Check the task before sending again.");
@@ -457,7 +458,7 @@ async function recoverUnresolvedSubmission() {
       imageDeliveryUnknown = false;
       queueDeliveryUnknown = false;
       if (outcome === "accepted") {
-        pending.confirmed({ accepted: true, recovered: true });
+        pending.confirmed({ accepted: true, recovered: true, turnId: snapshot.submission?.turnId });
         if (elements.messageText.value === requested.text
           && JSON.stringify(selectedImages) === JSON.stringify(requested.images || [])) {
           elements.messageText.value = "";
@@ -2590,10 +2591,7 @@ function connectEvents() {
     const value = parseEvent(event);
     const key = draftKey(state?.machineId, state?.thread?.id);
     const status = value.turn?.status;
-    if (status === "inProgress") taskTerminalResults.delete(key);
-    else if (["completed", "failed", "interrupted"].includes(status)) {
-      taskTerminalResults.set(key, status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : "Done");
-    }
+    if (["inProgress", "completed", "failed", "interrupted"].includes(status)) taskTerminalResults.delete(key);
     for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, {
       machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle",
     });
@@ -3002,7 +3000,7 @@ elements.accessSelect.addEventListener("change", () => updateAccess(elements.acc
 function handleTranscriptScroll() {
   shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < NEAR_BOTTOM_PX;
   updateJumpLatest();
-  if (!shouldFollowConversation && transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
+  if (transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 }
 elements.conversation.addEventListener("scroll", handleTranscriptScroll);
 document.addEventListener("scroll", () => {

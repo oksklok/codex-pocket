@@ -1498,7 +1498,8 @@ export class MessageSubmissions {
       await Promise.race([receipt.finished, new Promise((resolve) => { timer = setTimeout(resolve, 5000); })]);
       clearTimeout(timer);
     }
-    return { id, status: receipt.status, ...(receipt.error ? { error: receipt.error } : {}) };
+    return { id, status: receipt.status, ...(receipt.error ? { error: receipt.error } : {}),
+      ...(receipt.status === "accepted" && receipt.result?.turnId ? { turnId: receipt.result.turnId } : {}) };
   }
 
   private remember(receipt: JsonObject): void {
@@ -3187,9 +3188,8 @@ export class MachineRuntime {
           this.terminalReads.delete(id);
           this.taskStatuses.set(id, "idle");
           this.taskStatusObservations.set(id, {});
-          const result = status === "completed" ? "Done" : status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : null;
-          if (result) this.terminalResults[id] = result;
-          else delete this.terminalResults[id];
+          // The attached task's terminal event was witnessed in the current view.
+          delete this.terminalResults[id];
         }
         const turnId = String(turn.id ?? params.turnId ?? this.state.turn?.id ?? "");
         const alreadyTerminal = this.state.turn?.id === turnId && ["completed", "interrupted", "failed"].includes(this.state.turn.status);

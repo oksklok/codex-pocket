@@ -230,6 +230,7 @@ test("lost message/queue/steer responses reconcile once without repeating an act
   await receipts.run(startId, () => runtime.sendMessage("New turn", "start"));
   assert.equal(reconcileSubmission(startId, await recover(startId)), "accepted");
   assert.equal(starts, 1);
+  assert.equal((await receipts.recover(startId)).turnId, runtime.state.turn.id);
 
   const missingId = `${receipts.epoch}-missing`;
   assert.equal(reconcileSubmission(missingId, await recover(missingId)), "rejected");
@@ -1703,7 +1704,7 @@ test('New activity invalidates pending terminal reads; tasks retain independent 
   // Selected turn events retain their existing path, without a reconciliation read.
   runtime.finalizeTerminalMessages = async () => {};
   runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'selected-turn',status:'completed'}}});
-  assert.equal(runtime.snapshot().taskTerminalResults['thread-1'], 'Done');
+  assert.equal(runtime.snapshot().taskTerminalResults['thread-1'], undefined);
   notify('thread-1','idle');assert.equal(pending.has('thread-1'), false);
 });
 
@@ -1790,11 +1791,11 @@ test('Successful deliberate task entry acknowledges only its terminal marker and
     assert.equal(target.terminalResults.b, undefined);
     target.finalizeTerminalMessages = async () => {};
     target.handleNotification({ method: 'turn/completed', params: { threadId: 'b', turn: { id: 'later', status: 'completed' } } });
-    assert.equal(gateway.snapshot().taskTerminalResults.b, 'Done');
+    assert.equal(gateway.snapshot().taskTerminalResults.b, undefined);
     // Reload/snapshot and a redundant selection of the current task are not acknowledgment.
-    assert.equal(gateway.snapshot().taskTerminalResults.b, 'Done');
+    assert.equal(gateway.snapshot().taskTerminalResults.b, undefined);
     await gateway.selectDestination(targetId, 'b', targetId, 'b');
-    assert.equal(gateway.snapshot().taskTerminalResults.b, 'Done');
+    assert.equal(gateway.snapshot().taskTerminalResults.b, undefined);
   }
 });
 
@@ -2093,5 +2094,14 @@ test('Reattachment awaits the original compaction baseline after an immediate sw
     assert.equal(runtime.state.activities.length,invalidate?0:1);
     if(!invalidate)assert.equal(runtime.state.activities[0].label,'Compacting context');
     else assert.equal(hint.occurrence,undefined);
+  }
+});
+
+test('Selected terminal events clear attention markers for every terminal status', () => {
+  for(const status of ['completed','failed','interrupted']) {
+    const runtime=activeRuntime();runtime.terminalResults['thread-1']='Done';runtime.finalizeTerminalMessages=async()=>{};
+    runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'turn-1',status}}});
+    assert.equal(runtime.snapshot().taskTerminalResults['thread-1'],undefined);
+    assert.equal(runtime.state.turn.status,status);
   }
 });

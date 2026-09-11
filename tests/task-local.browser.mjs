@@ -29,7 +29,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/state'){
  if(u.searchParams.has('submissionId')&&recoveryMode){
  if(recoveryMode==='unreachable'){req.socket.destroy();return;}
- return json({...snapshot(),submission:{id:u.searchParams.get('submissionId'),status:recoveryMode,error:recoveryMode==='rejected'?'Upstream rejected this message':undefined}});
+ return json({...snapshot(),submission:{id:u.searchParams.get('submissionId'),status:recoveryMode,turnId:'accepted-start-turn',error:recoveryMode==='rejected'?'Upstream rejected this message':undefined}});
  }
  return json(snapshot());
  }
@@ -81,7 +81,7 @@ const server=createServer(async(req,res)=>{
  if(messageUnknown){req.socket.destroy();return;}
  if(composerPost==='lost'){res.writeHead(202,{'Content-Type':'application/json','Content-Length':'1000'});res.write('{');setTimeout(()=>req.socket.destroy(),10);return;}
  if(composerPost==='reject')return json({error:'Send rejected'},409);
- return json({accepted:true},202);
+ return json({accepted:true,turnId:'accepted-start-turn'},202);
  }
  if(u.pathname==='/api/tasks/options' && u.searchParams.get('cwd')==='/unavailable')return json({error:'Unavailable'},503);
  if(u.pathname==='/api/tasks/options')return json({models:[{model:'demo-model',displayName:'Demo Model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],access:{ask:true,auto:true,full:true}});
@@ -540,18 +540,18 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await open();assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
  const observe=async status=>{
  runtime.state.turn={id:'observed-turn',status,...(status==='interrupted'?{error:'Stopped by user'}:{})};runtime.state.phase=status==='inProgress'?'working':status==='failed'?'failed':status==='interrupted'?'stopped':'done';runtime.state.threadStatus=status==='inProgress'?'active':'idle';
- if(status==='inProgress')delete runtime.terminalResults[runtime.state.thread.id];else runtime.terminalResults[runtime.state.thread.id]=status==='failed'?'Failed':status==='interrupted'?'Stopped':'Done';
+ delete runtime.terminalResults[runtime.state.thread.id];
  runtime.broadcast('turn',{turn:runtime.state.turn,phase:runtime.state.phase,threadStatus:runtime.state.threadStatus});
  };
- await observe('completed');await row('Current task').getByText('Done',{exact:true}).waitFor();
+ await observe('completed');assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
  await select('Draft task 0');await open();assert.equal(await row('Draft task 0').locator('.destination-task-status').textContent(),'');
- await observe('completed');await row('Draft task 0').getByText('Done',{exact:true}).waitFor();
- assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'Done');
- await select('Current task');await open();assert.equal(await row('Draft task 0').locator('.destination-task-status').textContent(),'Done');
+ await observe('completed');assert.equal(await row('Draft task 0').locator('.destination-task-status').textContent(),'');
+ assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
+ await select('Current task');await open();assert.equal(await row('Draft task 0').locator('.destination-task-status').textContent(),'');
  await observe('inProgress');await row('Current task').getByText('Working',{exact:true}).waitFor();
  runtime.state.phase='done';runtime.state.threadStatus='idle';runtime.broadcast('status',{phase:'done',threadStatus:'idle'});
  await page.waitForFunction(()=>document.querySelector('.destination-task[aria-current="true"] .destination-task-status').textContent==='');
- for(const [status,label] of [['failed','Failed'],['interrupted','Stopped']]){await observe(status);await row('Current task').getByText(label,{exact:true}).waitFor();}
+ for(const [status,label] of [['failed','Failed'],['interrupted','Stopped']]){await observe(status);assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');}
  // Status broadcasts from another client invalidate a non-selected task's old Done.
  runtime.broadcast('task-status',{machineId:'local',threadId:'draft-0',status:'active'});
  await row('Draft task 0').getByText('Working',{exact:true}).waitFor();
@@ -910,6 +910,13 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  }
  if(outcome==='recovered'){recoveryMode='accepted';for(const client of [...eventClients])client.end();}
  if(outcome==='success'||outcome==='recovered')await page.waitForFunction(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');return s.scrollHeight-s.clientHeight-s.scrollTop<3;});
+ if(outcome==='success'||outcome==='recovered'){
+ await page.getByText('Check the next step',{exact:true}).waitFor();
+ runtime.broadcast('message',{id:'start-echo',role:'user',text:'Check the next step',turnId:'accepted-start-turn',createdAt:Date.now(),complete:true});
+ await page.locator('[data-message-id="start-echo"]').waitFor();
+ assert.equal(await page.getByText('Check the next step',{exact:true}).count(),1);
+ }else assert.equal(await page.locator('[data-message-id^="confirmed-steer-"]').count(),0);
+
  }
  // Fullscreen collapses only on confirmed Start/Queue/Steer, including receipt recovery.
  for(const width of [390,1280]){
@@ -998,5 +1005,37 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.getByLabel('Host Machine Display Name',{exact:true}).isVisible(),false);
  await page.locator('#settings-close').click();
  }
+ // Near-top pagination is independent of the near-bottom follow threshold.
+ settings.headless=false;composerPost='success';recoveryMode=null;
+ for(const width of [390,1280]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[],pending:[]});
+ historyFixture={machineId:'local',threadId:task.id,turns:[{id:'short',messages:[{id:'short-message',role:'assistant',text:'Recent content',complete:true}],activities:[]}],nextCursor:'older'};
+ await page.reload();await page.locator('[data-message-id="short-message"]').waitFor();
+ await page.evaluate(()=>{
+ const scroller=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');
+ const m=document.querySelector('[data-message-id="short-message"]');
+ m.style.minHeight=`${scroller.clientHeight+150}px`;
+ scroller.scrollTop=scroller.scrollHeight;
+ });
+ await page.waitForTimeout(100);
+ const before=calls.filter(c=>c==='/api/history').length;
+ await page.evaluate(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');s.scrollTop=145;});
+ await page.waitForTimeout(100);
+ assert.equal(calls.filter(c=>c==='/api/history').length,before);
+ // Make the full scroll range exactly 180px, then scroll to the top while still near bottom.
+ await page.evaluate(()=>{
+ const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');
+ const m=document.querySelector('[data-message-id="short-message"]');
+ m.style.minHeight=`${m.getBoundingClientRect().height-(s.scrollHeight-s.clientHeight)+180}px`;
+ });
+ const overflow=await page.evaluate(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');return s.scrollHeight-s.clientHeight;});
+ assert(overflow>0&&overflow<200,`short scroll range: ${overflow}`);
+ historyFixture={machineId:'local',threadId:task.id,turns:[{id:'older',messages:[{id:'older-message',role:'assistant',text:'Earlier history',complete:true}],activities:[]}],nextCursor:null};
+ await page.evaluate(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');s.scrollTop=0;});
+ await page.locator('[data-message-id="older-message"]').waitFor();
+ assert(calls.filter(c=>c==='/api/history').length>before);
+ }
+ historyFixture=null;
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
