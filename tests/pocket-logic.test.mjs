@@ -1709,3 +1709,49 @@ test('Live active wins over stale idle catalogs, while uncontested catalog activ
   assert.equal((await runtime.refreshLoadedThreads())[0].status,'active');
   assert.equal(runtime.snapshot().taskTerminalResults.other,undefined);
 });
+
+
+test('Successful deliberate task entry acknowledges only its terminal marker and invalidates older reads', async () => {
+  for (const crossMachine of [false, true]) for (const label of ['Done', 'Failed', 'Stopped']) {
+    const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
+    const a = gateway.runtimes.get('local');
+    const targetId = crossMachine ? 'ssh:b' : 'local';
+    const target = gateway.runtimes.get(targetId);
+    Object.assign(a.state, { connected: true, thread: { id: 'a' }, threadStatus: 'idle' });
+    target.state.connected = true;
+    a.terminalResults.a = 'Stopped';
+    target.terminalResults.b = label;
+    target.terminalResults.other = 'Failed';
+    let reject = true, finishRead;
+    target.rpc = { request: async (method) => {
+      if (method === 'thread/list') return { data: [{ id: 'b', name: 'B', cwd: '/tmp', status: 'idle' }] };
+      if (method === 'thread/resume') {
+        if (reject) throw new Error('already has an active writer');
+        return { thread: { id: 'b', name: 'B', cwd: '/tmp', status: 'idle' } };
+      }
+      if (method === 'thread/turns/list') return new Promise(resolve => { finishRead = resolve; });
+      return { data: [] };
+    } };
+    if (crossMachine) a.rpc = { request: async () => ({ data: [] }) };
+    await assert.rejects(gateway.selectDestination(targetId, 'b', 'local', 'a'), /another Codex runtime/);
+    assert.equal(target.snapshot().taskTerminalResults.b, label);
+    const pending = target.reconcileTaskTerminal('b');
+    target.terminalResults.b = label;
+    reject = false;
+    const accepted = await gateway.selectDestination(targetId, 'b', 'local', 'a');
+    assert.equal(accepted.thread.id, 'b');
+    assert.equal(accepted.taskTerminalResults.b, undefined);
+    assert.equal(a.terminalResults.a, 'Stopped');
+    assert.equal(target.terminalResults.other, 'Failed');
+    finishRead({ data: [{ status: 'completed' }] });
+    await pending;
+    assert.equal(target.terminalResults.b, undefined);
+    target.finalizeTerminalMessages = async () => {};
+    target.handleNotification({ method: 'turn/completed', params: { threadId: 'b', turn: { id: 'later', status: 'completed' } } });
+    assert.equal(gateway.snapshot().taskTerminalResults.b, 'Done');
+    // Reload/snapshot and a redundant selection of the current task are not acknowledgment.
+    assert.equal(gateway.snapshot().taskTerminalResults.b, 'Done');
+    await gateway.selectDestination(targetId, 'b', targetId, 'b');
+    assert.equal(gateway.snapshot().taskTerminalResults.b, 'Done');
+  }
+});

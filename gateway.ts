@@ -2953,6 +2953,12 @@ export class MachineRuntime {
     this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
   }
 
+  acknowledgeTaskTerminal(threadId: string): void {
+    this.terminalReads.delete(threadId);
+    delete this.terminalResults[threadId];
+    this.onTaskStatus({ machineId: this.definition.id, threadId, status: this.taskStatuses.get(threadId) ?? this.state.threadStatus, terminalResult: null });
+  }
+
   private async reconcileTaskTerminal(threadId: string): Promise<void> {
     const rpc = this.rpc;
     if (!rpc) return;
@@ -3606,6 +3612,9 @@ export class PocketGateway {
       if (!next.state.connected) throw new Error("selected machine is unavailable");
 
       await next.selectThread(requestedThreadId);
+      if (requestedMachineId !== expectedMachine || requestedThreadId !== expectedThread) {
+        next.acknowledgeTaskTerminal(requestedThreadId);
+      }
       if (requestedMachineId !== this.selectedMachineId) {
         const previous = this.selected();
         for (const response of this.subscribers) previous.removeSubscriber(response);
