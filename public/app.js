@@ -466,6 +466,11 @@ async function recoverUnresolvedSubmission() {
         }
         if (composerError === pending.warning) composerError = "";
       } else {
+        if (pending.restoreDraft && !elements.messageText.value && !selectedImages.length) {
+          elements.messageText.value = requested.text;
+          rememberComposerDraft(composerDrafts, draftKey(requested.machineId, requested.threadId), { text: requested.text, images: [] });
+          resizeComposer();
+        }
         composerError = snapshot.submission?.error || "Message was not sent. Please send again.";
       }
     }
@@ -1311,6 +1316,7 @@ function renderImageThumbnails(container, images, removable = false) {
 
 async function addImages(files) {
   if (elements.attachImage.disabled || !files.length) return;
+  if (unresolvedSubmission) unresolvedSubmission.restoreDraft = false;
   const imageTaskKey = draftKey(state?.machineId, state?.thread?.id);
   const priorImages = [...selectedImages];
   readingImages = true;
@@ -2156,6 +2162,7 @@ async function submitMessage(action) {
     if (error.deliveryUnknown) {
       imageDeliveryUnknown = images.length > 0;
       elements.messageText.value = images.length ? text : "";
+      if (!images.length && unresolvedSubmission) unresolvedSubmission.restoreDraft = true;
       queueDeliveryUnknown = action === "queue";
       resizeComposer();
     } else if (optimisticQueue) {
@@ -2773,6 +2780,7 @@ elements.composer.addEventListener("submit", (event) => {
 elements.sendQueue.addEventListener("click", sendQueuedMessage);
 elements.cancelQueue.addEventListener("click", cancelQueuedMessage);
 elements.messageText.addEventListener("input", () => {
+  if (unresolvedSubmission) unresolvedSubmission.restoreDraft = false;
   composerError = "";
   composerNotice = "";
   resizeComposer();

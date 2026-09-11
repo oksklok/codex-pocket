@@ -779,6 +779,23 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  }
  assert.equal(calls.filter(c=>c==='/api/message').length,postsBefore+1);
  }
+ // Rejected text drafts return only if the cleared composer was never edited.
+ for(const action of ['start','queue'])for(const edit of ['untouched','new text','typed then cleared']){
+ runtime.state.turn=action==='start'?null:{id:'draft-turn',status:'inProgress'};
+ runtime.state.queuedMessage=null;runtime.broadcast('snapshot',snapshot());
+ composerPost='lost';recoveryMode='unreachable';
+ const original=`Rejected ${action} draft`;
+ await page.locator('#message-text').fill(original);await page.locator('#send-message').click();
+ await page.waitForFunction(()=>document.querySelector('#composer-status').textContent.startsWith('Connection lost;'));
+ assert.equal(await page.locator('#message-text').inputValue(),'');
+ if(edit!=='untouched')await page.locator('#message-text').fill('Replacement draft');
+ if(edit==='typed then cleared')await page.locator('#message-text').fill('');
+ await page.waitForTimeout(200);recoveryMode='rejected';
+ for(const client of eventClients)client.end();
+ await page.getByText('Upstream rejected this message',{exact:true}).waitFor();
+ assert.equal(await page.locator('#message-text').inputValue(),edit==='untouched'?original:edit==='new text'?'Replacement draft':'');
+ }
+ runtime.state.turn=null;runtime.state.queuedMessage=null;runtime.broadcast('snapshot',snapshot());
  // A successful initial lost-response recovery also collapses immediately.
  recoveryMode='accepted';await expand();await page.locator('#send-message').click();await collapsed();
  composerPost='success';recoveryMode=null;
