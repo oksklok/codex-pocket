@@ -37,7 +37,7 @@ Settings changes take effect only on **Save**, including browser-local appearanc
 
 The image viewer supports double-tap zoom/reset, pinch zoom, panning while zoomed, and desktop wheel zoom. Close it with **X**, **Escape**, or a tap outside the image. Dragging at 1× neither moves nor dismisses the image.
 
-While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion and stays parked after Stop. Steering clears it only after successful delivery. Queues live in gateway memory and are lost on task changes or gateway restart. They cannot be edited or expanded into multiple queued messages.
+While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion and stays parked after Stop. Steering clears it only after successful delivery. Queues live in gateway memory and survive task switches, but are lost on gateway restart. A queue stays parked while its task is away; returning alone does not send it. They cannot be edited or expanded into multiple queued messages.
 
 Text and image drafts are task-scoped and kept only in browser memory: up to eight recent non-empty drafts. They do not survive a page reload.
 

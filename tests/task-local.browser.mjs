@@ -512,6 +512,13 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();
  await page.locator('#new-task-dialog').waitFor();assert.equal(await page.locator('label[for="new-task-cwd"]').textContent(),'Project Folder');assert.equal(await page.locator('#new-task-cwd').inputValue(),'/project');
+ assert.equal(await page.locator('label[for="new-task-effort"]').textContent(),'Reasoning Effort');
+ const settingsGeometry=await page.locator('.new-task-settings').evaluate(e=>{
+ const [model,effort,access]=[...e.children].map(c=>c.getBoundingClientRect());
+ return {rowGap:getComputedStyle(e).rowGap,columnGap:getComputedStyle(e).columnGap,vertical:effort.top-model.bottom,horizontal:access.left-effort.right,aligned:effort.top===access.top};
+ });
+ assert.equal(settingsGeometry.rowGap,'12px');assert.equal(settingsGeometry.columnGap,'8px');
+ if(width<=860){assert.equal(settingsGeometry.vertical,12);assert.equal(settingsGeometry.horizontal,8);assert(settingsGeometry.aligned);}
  await page.locator('#new-task-create').click();await page.getByText('Enter a task name up to 180 characters',{exact:true}).waitFor();
  await page.locator('#new-task-name').fill('New test task');await page.locator('#new-task-cwd').fill('relative/path');await page.locator('#new-task-create').click();
  await page.getByText('Enter an absolute project folder on this machine',{exact:true}).waitFor();

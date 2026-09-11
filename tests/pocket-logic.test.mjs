@@ -992,7 +992,7 @@ test("startup and background reconnect attach only the selected runtime while ca
   } finally { await gateway.stop(); }
 });
 
-test("release cancels a waiting queue and clears state after existing task operations settle", async () => {
+test("release preserves a waiting queue and clears attached state after existing operations settle", async () => {
   const runtime = activeRuntime();
   runtime.state.queuedMessage = { threadId: "thread-1", text: "Cancel on leave" };
   let finish;
@@ -1000,10 +1000,11 @@ test("release cancels a waiting queue and clears state after existing task opera
     runtime.state.liveMessages = [{ id: "late", role: "assistant", text: "Late operation result" }];
   });
   const released = runtime.releaseTask();
-  assert.equal(runtime.state.queuedMessage, null);
+  assert.equal(runtime.state.queuedMessage.text, "Cancel on leave");
   finish();
   await released;
   assert.equal(runtime.state.thread, null);
+  assert.equal(runtime.taskQueues.get("thread-1").text, "Cancel on leave");
   assert.deepEqual(runtime.state.liveMessages, []);
   assert.equal(runtime.state.connected, true);
 });
@@ -1854,4 +1855,77 @@ test('Unconfirmed fresh-task access never falls back to resuming the zero-turn t
   runtime.rpc = { request: async method => { calls.push(method); return {}; } };
   await assert.rejects(runtime.updateAccessNow('auto'), /could not be confirmed/);
   assert.deepEqual(calls, ['thread/settings/update']);
+});
+
+test('Task queues survive same-machine and cross-machine entry without background delivery', async () => {
+  for (const cross of [false, true]) {
+    const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
+    const a = gateway.runtimes.get('local'), b = gateway.runtimes.get(cross ? 'ssh:b' : 'local');
+    const bId = cross ? 'ssh:b' : 'local';
+    const calls = [];
+    for (const runtime of new Set([a,b])) {
+      runtime.state.connected = true;
+      runtime.canAcceptDirectInput = true;
+      runtime.rpc = { request: async (method, params) => {
+        calls.push({ method, params });
+        if (method === 'thread/list') return { data: ['a','b'].map(id=>({id,name:id,cwd:'/project',status:'idle'})) };
+        if (method === 'thread/resume') return { thread: {id:params.threadId,name:params.threadId,cwd:'/project',status:'idle',canAcceptDirectInput:true} };
+        if (method === 'turn/start') return { turn: { id: 'sent', status: 'inProgress' } };
+        return { data: [] };
+      } };
+      runtime.finalizeTerminalMessages = async () => {};
+    }
+    Object.assign(a.state,{thread:{id:'a'},threadStatus:'active',turn:{id:'a-turn',status:'inProgress'},phase:'working'});
+    await a.sendMessage('Queue A','queue',[png]);
+    const queueA = structuredClone(a.state.queuedMessage);
+    await gateway.selectDestination(bId,'b','local','a');
+    assert.equal(gateway.snapshot().queuedMessage,null);
+    assert.deepEqual(a.taskQueues.get('a'),queueA);
+    a.handleNotification({method:'turn/completed',params:{threadId:'a',turn:{id:'a-turn',status:'completed'}}});
+    await a.selectionQueue;
+    assert(!calls.some(c=>c.method==='turn/start'));
+    Object.assign(b.state,{threadStatus:'active',turn:{id:'b-turn',status:'inProgress'},phase:'working'});
+    await b.sendMessage('Queue B','queue');
+    await gateway.selectDestination('local','a',bId,'b');
+    assert.deepEqual(gateway.snapshot().queuedMessage,queueA); // A reload receives the restored images too.
+    assert.equal(b.taskQueues.get('b').text,'Queue B');
+    a.handleNotification({method:'turn/completed',params:{threadId:'a',turn:{id:'a-turn',status:'completed'}}});
+    await a.selectionQueue;
+    assert(!calls.some(c=>c.method==='turn/start'));
+    assert.equal(a.cancelQueuedMessage().cancelled,true);
+    assert.equal(a.state.queuedMessage,null);assert(!a.taskQueues.has('a'));
+    assert.equal(b.taskQueues.get('b').text,'Queue B');
+    Object.assign(a.state,{threadStatus:'active',turn:{id:'next',status:'inProgress'},phase:'working'});
+    await a.sendMessage('Send this','queue',[png]);
+    a.state.turn = null;a.state.threadStatus='idle';
+    await a.sendQueuedMessage('start');
+    assert.equal(a.state.queuedMessage,null);assert(!a.taskQueues.has('a'));
+    assert(calls.find(c=>c.method==='turn/start').params.input.some(item=>item.type==='image'));
+    await gateway.selectDestination(bId,'b','local','a');
+    assert.equal(b.state.queuedMessage.text,'Queue B');
+    await gateway.selectDestination('local','a',bId,'b');
+    await b.taskAction({action:'delete',threadId:'b',confirmed:true});
+    assert(!b.taskQueues.has('b'));
+  }
+});
+
+test('A delayed completion callback cannot send a restored queue after leaving and returning', async () => {
+  const runtime = activeRuntime();
+  await runtime.sendMessage('Wait for my return', 'queue');
+  const calls = [];
+  let finish;
+  runtime.selectionQueue = new Promise(resolve => { finish = resolve; });
+  runtime.finalizeTerminalMessages = async () => {};
+  runtime.rpc = { request: async method => { calls.push(method); return method === 'turn/start' ? { turn: { id: 'sent', status: 'inProgress' } } : { data: [] }; } };
+  runtime.loadedThreads = ['thread-1','b'].map(id=>({id,name:id,cwd:'/project',status:'idle'}));
+  runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'turn-1',status:'completed'}}});
+  for (const id of ['b','thread-1']) await runtime.attachLoadedThread(id,false,{thread:{id,cwd:'/project',status:'idle',canAcceptDirectInput:true}});
+  finish();await runtime.selectionQueue;
+  assert.equal(runtime.state.queuedMessage.text,'Wait for my return');
+  assert(!calls.includes('turn/start'));
+  runtime.handleNotification({method:'turn/started',params:{threadId:'thread-1',turn:{id:'new-turn',status:'inProgress'}}});
+  runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'new-turn',status:'completed'}}});
+  await runtime.selectionQueue;
+  assert.equal(calls.filter(method=>method==='turn/start').length,1);
+  assert.equal(runtime.state.queuedMessage,null);
 });

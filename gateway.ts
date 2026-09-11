@@ -1591,6 +1591,7 @@ export class MachineRuntime {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
+  private taskQueues = new Map<string, QueuedMessage>();
   private pendingTaskNames = new Map<string, { name: string; attempted: boolean }>();
   private options: Options;
   private definition: MachineDefinition;
@@ -1669,11 +1670,11 @@ export class MachineRuntime {
 
   releaseTask(): Promise<void> {
     this.autoAttach = false;
-    this.state.queuedMessage = null;
     const operation = this.selectionQueue.then(async () => {
       this.permissionProfiles = [];
       const threadId = this.state.thread?.id;
       const rpc = this.rpc;
+      this.parkTaskQueue();
       this.resetThreadState();
       this.state.thread = null;
       this.options.thread = undefined;
@@ -2415,7 +2416,7 @@ export class MachineRuntime {
     if (task.status.startsWith("active") || (this.state.thread?.id === id && this.state.turn?.status === "inProgress")) throw new Error("Stop or finish this task before archiving or deleting it");
     if (action === "delete" && body.confirmed !== true) throw new Error("Confirm task deletion first");
     await this.rpc.request(`thread/${action}`, { threadId: id });
-    if (action === "delete") this.pendingTaskNames.delete(id);
+    if (action === "delete") { this.pendingTaskNames.delete(id); this.taskQueues.delete(id); }
     if (action !== "unarchive" && this.state.thread?.id === id) {
       this.resetThreadState();
       this.state.thread = null;
@@ -2802,7 +2803,7 @@ export class MachineRuntime {
     const resumedId = String(thread.id ?? threadId);
     if (resumedId !== threadId) throw new Error("app-server resumed an unexpected thread");
     if (this.rpc !== rpc || !this.state.connected) throw new Error("Codex disconnected while opening the task");
-    if (changed) this.resetThreadState();
+    if (changed) { this.parkTaskQueue(); this.resetThreadState(); }
     this.state.connectionError = null;
     this.state.thread = {
       id: resumedId,
@@ -2837,6 +2838,10 @@ export class MachineRuntime {
     if (previousThreadId) {
       try { await rpc.request("thread/unsubscribe", { threadId: previousThreadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS); }
       catch (error) { console.warn(`${this.definition.name}: previous task unsubscribe skipped: ${compact(error, 180)}`); }
+    }
+    if (changed) {
+      this.state.queuedMessage = this.taskQueues.get(threadId) ?? null;
+      this.taskQueues.delete(threadId);
     }
     this.state.phase = this.computePhase();
     if (broadcastReset) this.broadcast("snapshot", this.snapshot());
@@ -3103,6 +3108,7 @@ export class MachineRuntime {
         });
         break;
       case "turn/completed": {
+        const wasActive = this.state.turn?.status === "inProgress";
         const turn = params.turn ?? {};
         this.updateModel(turn);
         const status = String(turn.status ?? "completed");
@@ -3147,11 +3153,13 @@ export class MachineRuntime {
           message: this.messageCapability(),
         });
         if (!alreadyTerminal) void this.finalizeTerminalMessages(this.state.turn.id);
-        if (status !== "interrupted"
+        if (status !== "interrupted" && wasActive && this.autoAttach
           && !this.startingQueuedMessage
           && this.state.thread
           && this.state.queuedMessage?.threadId === this.state.thread.id) {
-          const operation = this.selectionQueue.then(() => this.state.thread ? this.startQueuedMessage(this.state.thread.id) : false);
+          const thread = this.state.thread;
+          const queued = this.state.queuedMessage;
+          const operation = this.selectionQueue.then(() => this.autoAttach && this.state.thread === thread && this.state.queuedMessage === queued ? this.startQueuedMessage(thread.id) : false);
           this.selectionQueue = operation.then(() => {}, () => {});
         }
         break;
@@ -3331,6 +3339,11 @@ export class MachineRuntime {
 
   private flushAllAssistantDeltas(): void {
     for (const itemId of [...this.assistantFlushes.keys()]) this.flushAssistantDelta(itemId);
+  }
+
+  private parkTaskQueue(): void {
+    const queued = this.state.queuedMessage;
+    if (queued) this.taskQueues.set(queued.threadId, queued);
   }
 
   private resetThreadState(): void {
