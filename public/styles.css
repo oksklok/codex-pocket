@@ -110,7 +110,7 @@ h3 { margin: 0; font-size: .82rem; }
   background: rgba(69,200,138,.16); color: var(--accent); font-weight: 750; cursor: pointer;
 }
 .login-card button { width: 100%; margin-top: 12px; }
-#login-error { margin: 12px 0 0; font-size: .78rem; line-height: 1.45; text-align: center; }
+#login-error { margin: 12px 0 0; font-size: .78rem; line-height: 1.45; text-align: left; }
 button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: default; opacity: .52; }
 
 .shell { height: 100dvh; display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; }
