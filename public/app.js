@@ -1,5 +1,6 @@
 import {
   createSelectionHold,
+  enterSubmits,
   destinationTaskStatus,
   mergeActivities,
   orderTranscriptEntries,
@@ -815,6 +816,11 @@ function invalidateNavigationCatalogs() {
   navigationErrors.fill("");
 }
 
+function updateCatalogTaskStatus(catalog, { machineId, threadId, status }) {
+  const task = catalog?.machines?.find(machine => machine.id === machineId)?.tasks?.find(task => task.id === threadId);
+  if (task) { task.status = status; task.phase = null; }
+}
+
 async function refreshNavigationCatalog(archived = elements.showArchived.checked, force = false) {
   const slot = Number(archived);
   if (navigationRequests[slot]) return navigationRequests[slot];
@@ -831,6 +837,10 @@ async function refreshNavigationCatalog(archived = elements.showArchived.checked
       if (machines === machineStateAtStart && Array.isArray(value.machines)) {
         machines = value.machines.map(machine => ({ ...machines.find(current => current.id === machine.id), ...machine }));
       }
+      for (const status of request.taskStatuses) updateCatalogTaskStatus(value, status);
+      for (const machine of value.machines || []) for (const task of machine.tasks || []) {
+        if (task.status?.startsWith("active")) taskTerminalResults.delete(draftKey(machine.id, task.id));
+      }
       navigationCatalogs[slot] = value;
       navigationErrors[slot] = "";
     } catch (error) {
@@ -843,6 +853,7 @@ async function refreshNavigationCatalog(archived = elements.showArchived.checked
       }
     }
   })();
+  request.taskStatuses = [];
   navigationRequests[slot] = request;
   renderDestinationSwitcher();
   return request;
@@ -1484,6 +1495,15 @@ function asyncQuestionNode(message, question, index) {
   input.placeholder = question.options.length ? "Or write your answer…" : "Write your answer…";
   input.setAttribute("aria-label", `Your answer: ${question.title}`);
   input.value = draft.text;
+  let answerComposing = false;
+  input.addEventListener("compositionstart", () => { answerComposing = true; });
+  input.addEventListener("compositionend", () => { answerComposing = false; });
+  input.addEventListener("keydown", event => {
+    if (enterSubmits(event, enterSends, answerComposing) && input.value.trim() && !input.disabled) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
   input.addEventListener("input", () => { draft.text = input.value; draft.error = ""; });
   const send = document.createElement("button");
   send.type = "submit";
@@ -1940,6 +1960,7 @@ function applySnapshot(next, loadChangedHistory = true) {
   const previousThreadId = state?.thread?.id;
   const nextMachineId = next?.machineId;
   const nextThreadId = next?.thread?.id;
+  if (next?.threadStatus?.startsWith("active") || next?.turn?.status === "inProgress") taskTerminalResults.delete(draftKey(nextMachineId, nextThreadId));
   const taskChanged = previousMachineId !== nextMachineId || previousThreadId !== nextThreadId;
   if (taskChanged) {
     const oldKey = draftKey(previousMachineId, previousThreadId);
@@ -2429,13 +2450,20 @@ function connectEvents() {
   source = new EventSource("/events");
   const on = (type, handler) => source.addEventListener(type, event => {
     const pending = destinationSelection || taskActionTarget;
-    if (pending && type !== "open" && type !== "error") {
+    if (pending && type !== "open" && type !== "error" && type !== "task-status") {
       pending.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => handler(event) });
     } else handler(event);
   });
   on("open", () => { setConnection(true); void recoverUnresolvedSubmission(); });
   on("error", handleEventError);
   on("snapshot", (event) => { applySnapshot(parseEvent(event)); });
+  on("task-status", event => {
+    const value = parseEvent(event);
+    if (value.status?.startsWith("active")) taskTerminalResults.delete(draftKey(value.machineId, value.threadId));
+    for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, value);
+    for (const request of navigationRequests) request?.taskStatuses.push(value);
+    renderDestinationSwitcher();
+  });
   on("status", (event) => { mergeState(parseEvent(event)); });
   on("thread", (event) => { mergeState({ thread: parseEvent(event) }); });
   on("settings", (event) => { mergeState(parseEvent(event)); });
@@ -2451,8 +2479,11 @@ function connectEvents() {
     const status = value.turn?.status;
     if (status === "inProgress") taskTerminalResults.delete(key);
     else if (["completed", "failed", "interrupted"].includes(status)) {
-      taskTerminalResults.set(key, value.turn.error || status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : "Done");
+      taskTerminalResults.set(key, status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : "Done");
     }
+    for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, {
+      machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle",
+    });
     if (value.turn?.status && value.turn.status !== "inProgress") composerNotice = "";
     mergeState(value);
   });
@@ -2818,8 +2849,7 @@ elements.messageText.addEventListener("input", () => {
   renderComposer();
 });
 elements.messageText.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229
-    && (enterSends || event.ctrlKey || event.metaKey) && (elements.messageText.value.trim() || selectedImages.length)) {
+  if (enterSubmits(event, enterSends, composing) && (elements.messageText.value.trim() || selectedImages.length)) {
     event.preventDefault();
     elements.composer.requestSubmit();
   }

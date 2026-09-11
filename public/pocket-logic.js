@@ -1,8 +1,15 @@
+export function enterSubmits(event, enterSends, composing = false) {
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229
+    && (enterSends || event.ctrlKey || event.metaKey);
+}
+
 export function destinationTaskStatus(machine, task, currentState, terminalResult = "") {
   const selected = machine.id === currentState?.machineId && task.id === currentState?.thread?.id;
   const phase = selected ? currentState?.phase : task.phase;
+  const status = selected ? currentState?.threadStatus : task.status;
+  if (status?.startsWith("active:") && /waitingOnApproval|waitingOnUserInput/.test(status)) return "Waiting";
   if (phase === "waiting_permission" || phase === "waiting_input") return "Waiting";
-  if (phase === "working" || (selected ? currentState?.threadStatus : task.status)?.startsWith("active")) return "Working";
+  if (phase === "working" || status?.startsWith("active")) return "Working";
   return terminalResult;
 }
 

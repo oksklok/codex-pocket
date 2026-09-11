@@ -473,7 +473,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#new-task-cancel').click();
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();
- await page.locator('#new-task-dialog').waitFor();assert.equal(await page.locator('#new-task-cwd').inputValue(),'/project');
+ await page.locator('#new-task-dialog').waitFor();assert.equal(await page.locator('label[for="new-task-cwd"]').textContent(),'Project Folder');assert.equal(await page.locator('#new-task-cwd').inputValue(),'/project');
  await page.locator('#new-task-create').click();await page.getByText('Enter a task name up to 180 characters',{exact:true}).waitFor();
  await page.locator('#new-task-name').fill('New test task');await page.locator('#new-task-cwd').fill('relative/path');await page.locator('#new-task-create').click();
  await page.getByText('Enter an absolute project folder on this machine',{exact:true}).waitFor();
@@ -487,7 +487,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  // Terminal labels are observations, independent of the selected checkmark.
  await open();assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
  const observe=async status=>{
- runtime.state.turn={id:'observed-turn',status};runtime.state.phase=status==='inProgress'?'working':status==='failed'?'failed':status==='interrupted'?'stopped':'done';runtime.state.threadStatus=status==='inProgress'?'active':'idle';
+ runtime.state.turn={id:'observed-turn',status,...(status==='interrupted'?{error:'Stopped by user'}:{})};runtime.state.phase=status==='inProgress'?'working':status==='failed'?'failed':status==='interrupted'?'stopped':'done';runtime.state.threadStatus=status==='inProgress'?'active':'idle';
  runtime.broadcast('turn',{turn:runtime.state.turn,phase:runtime.state.phase,threadStatus:runtime.state.threadStatus});
  };
  await observe('completed');await row('Current task').getByText('Done',{exact:true}).waitFor();
@@ -499,6 +499,22 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  runtime.state.phase='done';runtime.state.threadStatus='idle';runtime.broadcast('status',{phase:'done',threadStatus:'idle'});
  await page.waitForFunction(()=>document.querySelector('.destination-task[aria-current="true"] .destination-task-status').textContent==='');
  for(const [status,label] of [['failed','Failed'],['interrupted','Stopped']]){await observe(status);await row('Current task').getByText(label,{exact:true}).waitFor();}
+ // Status broadcasts from another client invalidate a non-selected task's old Done.
+ runtime.broadcast('task-status',{machineId:'local',threadId:'draft-0',status:'active'});
+ await row('Draft task 0').getByText('Working',{exact:true}).waitFor();
+ await observe('inProgress');await row('Current task').getByText('Working',{exact:true}).waitFor();
+ assert.equal(await page.locator('.destination-task[aria-current="true"]').count(),1);
+ assert.equal(await row('Draft task 0').locator('.destination-task').getAttribute('aria-current'),null);
+ let finishStatusRefresh;navigationGate=new Promise(resolve=>finishStatusRefresh=resolve);
+ await page.getByRole('button',{name:'Refresh tasks',exact:true}).click();
+ runtime.broadcast('task-status',{machineId:'local',threadId:'draft-0',status:'active'});
+ await page.waitForTimeout(30);finishStatusRefresh();navigationGate=null;
+ await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.equal(await row('Draft task 0').locator('.destination-task-status').textContent(),'Working');
+ runtime.broadcast('task-status',{machineId:'local',threadId:'draft-0',status:'idle'});
+ await page.waitForFunction(()=>[...document.querySelectorAll('.destination-entry')].find(e=>e.textContent.includes('Draft task 0')).querySelector('.destination-task-status').textContent==='');
+ runtime.broadcast('task-status',{machineId:'ssh:test',threadId:'remote-owned',status:'active:waitingOnUserInput'});
+ await row('Remote owned task').getByText('Waiting',{exact:true}).waitFor();
  runtime.state.turn=null;runtime.state.phase='done';runtime.state.threadStatus='idle';runtime.broadcast('snapshot',snapshot());await dismissTasks();await closed();
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
@@ -522,6 +538,24 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await freeMessage.locator('.message-body').innerText(),'What should the empty state say?');
  assert.equal(await page.locator('#conversation').getByText('Your inventory is empty.',{exact:true}).count(),1);
  assert.equal(await page.locator('#conversation').getByText('Answered:',{exact:false}).count(),0);
+ // Async text uses the same saved Enter preference and composition guards as the composer.
+ for(const preference of [true,false]) for(const submitKey of [preference?'Enter':'Control+Enter','Meta+Enter','button']) {
+ const keyboardQuestion={...free,id:'keyboard-question'};
+ runtime.state.liveMessages=[keyboardQuestion];asyncAnswers={};
+ await page.evaluate(value=>localStorage.setItem('codex-pocket-enter-sends',JSON.stringify(value)),preference);
+ await page.reload();const answer=page.locator('[data-message-id="keyboard-question"] textarea');await answer.waitFor();
+ const before=calls.filter(c=>c==='/api/message').length;
+ await answer.press(preference?'Enter':'Control+Enter');assert.equal(calls.filter(c=>c==='/api/message').length,before);
+ await answer.fill('Keyboard answer');await answer.press('Shift+Enter');assert((await answer.inputValue()).includes('\n'));
+ if(!preference){await answer.press('Enter');assert((await answer.inputValue()).endsWith('\n\n'));}
+ for(const init of [{isComposing:true},{keyCode:229}])await answer.dispatchEvent('keydown',{key:'Enter',ctrlKey:true,...init});
+ await answer.dispatchEvent('compositionstart');await answer.press('Control+Enter');await answer.dispatchEvent('compositionend');
+ assert.equal(calls.filter(c=>c==='/api/message').length,before);
+ await answer.fill('Keyboard answer');
+ if(submitKey==='button')await page.locator('[data-message-id="keyboard-question"]').getByRole('button',{name:'Answer',exact:true}).click();else await answer.press(submitKey);
+ await page.waitForFunction(()=>!document.querySelector('[data-message-id="keyboard-question"] .async-answer'));
+ assert.equal(calls.filter(c=>c==='/api/message').length,before+1);
+ }
  // Reconstruct through the real gateway normalizer, with no live answer cache.
  const items=[choice,free].map(m=>({...m,type:'agentMessage'}));
  items.push({id:'history-reply',type:'userMessage',createdAt:3000,content:[{type:'text',text:'<send_user_message_question_reply>'+JSON.stringify([
@@ -619,6 +653,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  runtime.handleNotification({method:'turn/started',params:{threadId:'current',turn:{id:'next-turn',status:'inProgress'}}});
  await page.waitForFunction(()=>document.querySelector('#phase-pill').textContent==='Working');
  assert(!(await page.locator('#composer-status').textContent()).includes('Upstream capacity'));
+ // Finish the synthetic turn before checking idle-task archive/delete controls.
+ Object.assign(runtime.state,{turn:{id:'next-turn',status:'completed'},phase:'done',threadStatus:'idle'});runtime.broadcast('turn',{turn:runtime.state.turn,phase:'done',threadStatus:'idle'});
  await open();
  assert.equal(await page.locator('.machine-host-badge').count(),1);
  assert.equal(await page.locator('.machine-host-badge').textContent(),'Host');

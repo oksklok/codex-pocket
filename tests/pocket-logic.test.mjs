@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   createSelectionHold,
+  enterSubmits,
   destinationTaskStatus,
   historyTurnTimestamp,
   isUnsupportedMethodError,
@@ -1578,4 +1579,38 @@ test('Tasks labels require observed terminal results and active status takes pri
     assert.equal(destinationTaskStatus(machine, idle, {}, result), result);
     assert.equal(destinationTaskStatus(machine, { ...idle, status: 'active' }, {}, result), 'Working');
   }
+});
+
+
+test('Enter submission rule shares preference, modifiers, and composition protection', () => {
+  for (const preference of [true, false]) {
+    const event = { key: 'Enter' };
+    assert.equal(Boolean(enterSubmits(event, preference)), preference);
+    for (const modifier of ['ctrlKey', 'metaKey']) assert(enterSubmits({ ...event, [modifier]: true }, preference));
+    for (const guard of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      assert(!enterSubmits({ ...event, ctrlKey: true, ...guard }, preference));
+    }
+    assert(!enterSubmits({ ...event, metaKey: true }, preference, true));
+  }
+});
+
+test('Non-selected task status broadcasts reach browsers without changing attachment or turn state', () => {
+  const gateway = new PocketGateway({ machines: [{ name: 'Remote', ssh: 'remote' }] });
+  const a = gateway.runtimes.get('local'), b = gateway.runtimes.get('ssh:remote');
+  a.state.thread = { id: 'selected' };
+  const before = a.snapshot();
+  const messages = [];
+  gateway.subscribers.add({ write: message => messages.push(message) });
+  a.loadedThreads = [{ id: 'other', status: 'idle' }];
+  a.handleNotification({ method: 'thread/status/changed', params: { threadId: 'other', status: { type: 'active', activeFlags: [] } } });
+  b.handleNotification({ method: 'thread/status/changed', params: { threadId: 'remote-task', status: { type: 'active', activeFlags: ['waitingOnUserInput'] } } });
+  assert.equal(a.loadedThreads[0].status, 'active');
+  assert.equal(messages.length, 2);
+  assert(messages.every(message => message.startsWith('event: task-status')));
+  assert(messages[1].includes('active:waitingOnUserInput'));
+  assert.deepEqual(a.snapshot(), before);
+  assert.equal(b.state.thread, null);
+  a.handleNotification({ method: 'turn/started', params: { threadId: 'other', turn: { id: 'foreign', status: 'inProgress' } } });
+  assert.deepEqual(a.snapshot(), before);
+  assert.equal(destinationTaskStatus({ id: 'remote' }, { id: 'other', status: 'active:waitingOnApproval' }, {}, 'Done'), 'Waiting');
 });

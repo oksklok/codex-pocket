@@ -1615,12 +1615,14 @@ export class MachineRuntime {
   private quota: RuntimeQuota | null = null;
   private quotaRefreshTimer: NodeJS.Timeout | null = null;
   private onQuotaChange: () => void;
+  private onTaskStatus: (status: JsonObject) => void;
   private asyncAnswers: Record<string, Record<string, string>> = {};
 
-  constructor(options: Options, definition: MachineDefinition, onQuotaChange: () => void) {
+  constructor(options: Options, definition: MachineDefinition, onQuotaChange: () => void, onTaskStatus: (status: JsonObject) => void = () => {}) {
     this.options = options;
     this.definition = definition;
     this.onQuotaChange = onQuotaChange;
+    this.onTaskStatus = onTaskStatus;
     this.state = {
       connected: false,
       connectionError: null,
@@ -2945,6 +2947,14 @@ export class MachineRuntime {
       this.scheduleQuotaRefresh();
       return;
     }
+    // 0.153.4 broadcasts status changes independently of thread subscriptions.
+    if (method === "thread/status/changed") {
+      const threadId = String(params.threadId ?? "");
+      const status = statusText(params.status);
+      const task = this.loadedThreads.find(task => task.id === threadId);
+      if (task) task.status = status;
+      this.onTaskStatus({ machineId: this.definition.id, threadId, status });
+    }
     if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
     switch (method) {
       case "thread/tokenUsage/updated":
@@ -3386,7 +3396,9 @@ export class PocketGateway {
         ws: definition.id === "local" ? options.ws : undefined,
         thread: definition.id === "local" ? options.thread : undefined,
       };
-      this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition, () => this.refreshQuotaSource()));
+      this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition, () => this.refreshQuotaSource(), status => {
+        for (const response of this.subscribers) this.writeSse(response, "task-status", status);
+      }));
     }
   }
 
