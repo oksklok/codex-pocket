@@ -578,9 +578,11 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .message-body pre, .message-body pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 
-.archive-navigation { display: block; margin-top: 12px; padding: 8px; border: 0; background: transparent; color: var(--muted); font-size: var(--text-label); cursor: pointer; }
-.archive-navigation:hover { color: var(--text); }
-.archive-navigation:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tasks-archived { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--text-label); white-space: nowrap; }
+.tasks-archived input { margin: 0; }
+#task-dialog-delete-copy { font-size: var(--text-ui); line-height: 1.45; }
+#task-dialog-delete-copy p { margin-top: 8px; }
+#task-dialog-task-name { overflow-wrap: anywhere; }
 .destination-entry { position: relative; }
 .destination-entry > .destination-task { padding-right: 44px; }
 .task-actions { position: absolute; top: 0; right: 0; font-size: var(--text-label); }

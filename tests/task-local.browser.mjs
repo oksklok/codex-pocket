@@ -111,7 +111,7 @@ const closed=()=>page.waitForFunction(()=>document.querySelector('#destination-s
 const settingsOpen=async()=>{await page.locator('#settings-button').evaluate(e=>e.click());await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');};
 const settingsSave=async()=>{if(await page.locator('#settings-save').isEnabled())await page.locator('#settings-save').click();else await page.locator('#settings-close').click();await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);};
 try {
- const defaultDialog=d=>d.accept(d.type()==='prompt'?(d.message().includes('task name')?'New test task':'/project'):undefined);
+ const defaultDialog=d=>{throw new Error('Unexpected browser dialog: '+d.type());};
  page.on('dialog',defaultDialog);
  const input=page.locator('#message-text');
  const row=name=>page.locator('.destination-entry').filter({has:page.getByText(name,{exact:true})});
@@ -449,23 +449,38 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  failAction=true;gate=new Promise(r=>release=r);
  const before=await input.boundingBox();const signature=await page.locator('#model-select').evaluate(e=>e.outerHTML);
  await row('Owned task').locator('summary').click();await row('Owned task').getByRole('button',{name:action,exact:true}).click();
+ if(action==='Rename')await page.locator('#task-dialog-name').fill('New test task');
+ if(action==='Rename'||action==='Delete')await page.locator('#task-dialog-submit').click();
  await page.getByText(action==='Rename'?'Renaming…':action==='Archive'?'Archiving…':'Deleting…',{exact:true}).waitFor();
  assert.deepEqual(await input.boundingBox(),before);assert.equal(await page.locator('#model-select').evaluate(e=>e.outerHTML),signature);
  assert(!(await page.locator('#composer').innerText()).includes('Switching'));
  release();gate=null;await row('Owned task').locator('.task-selection-error').waitFor();
  assert.equal(await page.locator('.destination-error').count(),0);assert.equal(await input.inputValue(),'Stable action draft');
  }
- page.off('dialog',defaultDialog);
  for(const answer of [null,'   ','Current task']){
  const before=calls.filter(c=>c==='/api/tasks').length;
- page.once('dialog',async d=>{assert.equal(d.defaultValue(),'Current task');if(answer===null)await d.dismiss();else await d.accept(answer);});
- await row('Current task').locator('summary').click();await row('Current task').getByRole('button',{name:'Rename',exact:true}).click();
- await page.waitForTimeout(50);assert.equal(calls.filter(c=>c==='/api/tasks').length,before);
- await row('Current task').locator('summary').click();
+ if(!await row('Current task').getByRole('button',{name:'Rename',exact:true}).isVisible())await row('Current task').locator('summary').click();await row('Current task').getByRole('button',{name:'Rename',exact:true}).click();
+ assert.equal(await page.locator('#task-dialog-name').inputValue(),'Current task');
+ if(answer===null)await page.locator('#task-dialog-cancel').click();
+ else {await page.locator('#task-dialog-name').fill(answer);await page.locator('#task-dialog-submit').click();
+ if(!answer.trim()){await page.locator('#task-dialog-error').getByText('Enter a task name up to 180 characters').waitFor();await page.keyboard.press('Escape');}}
+ assert.equal(calls.filter(c=>c==='/api/tasks').length,before);
  }
- page.on('dialog',defaultDialog);
+ for(const cancel of ['button','escape']){
+ const before=calls.filter(c=>c==='/api/tasks').length;
+ if(!await row('Owned task').getByRole('button',{name:'Delete',exact:true}).isVisible())await row('Owned task').locator('summary').click();await row('Owned task').getByRole('button',{name:'Delete',exact:true}).click();
+ await page.getByRole('heading',{name:'Delete Task',exact:true}).waitFor();
+ assert.equal(await page.locator('#task-dialog-task-name').textContent(),'Owned task');
+ await page.getByText('This permanently deletes its Codex conversation. Project files will not be deleted.',{exact:true}).waitFor();
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/delete-${width}.png`});
+ if(cancel==='button')await page.locator('#task-dialog-cancel').click();else await page.keyboard.press('Escape');
+ assert.equal(calls.filter(c=>c==='/api/tasks').length,before);
+ }
  failAction=false;gate=new Promise(r=>release=r);
  await row('Current task').locator('summary').click();await row('Current task').getByRole('button',{name:'Rename',exact:true}).click();
+ await page.locator('#task-dialog-name').fill('New test task');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/rename-${width}.png`});
+ await page.locator('#task-dialog-submit').click();
  await row('Current task').getByText('Renaming…',{exact:true}).waitFor();assert.equal(await page.getByText('Renaming…',{exact:true}).count(),1);
  release();gate=null;await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));
  assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);assert.equal(await input.inputValue(),'Stable action draft');
@@ -496,7 +511,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/new-task-${width}.png`});
  await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
- assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('.new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
+ assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('#new-task-dialog .new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
  failAction=false;await page.locator('#new-task-create').click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  // Terminal labels are observations, independent of the selected checkmark.
@@ -713,21 +728,28 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  runtime.broadcast('machines',{machines:[runtime.machineSummary()]});
  await page.locator('.destination-group.unavailable').waitFor();
  catalogAvailable=true;remoteConnected=true;
- await page.getByRole('button',{name:'Archived',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
- assert.equal(await page.locator('#archive-navigation').textContent(),'Back to Tasks');
- assert(await page.locator('#archive-navigation').evaluate(e=>e===e.parentElement.lastElementChild));
+ await page.locator('#show-archived').check();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert(await page.locator('#show-archived').isChecked());
+ assert(await page.locator('.destination-switcher-head').evaluate(e=>{const r=e.getBoundingClientRect();return [...e.children].every(c=>{const b=c.getBoundingClientRect();return !b.width||(b.left>=r.left&&b.right<=r.right&&b.top>=r.top&&b.bottom<=r.bottom);});}));
  const archivedBefore=calls.filter(c=>c==='?archived=true').length;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  assert.equal(calls.filter(c=>c==='?archived=true').length,archivedBefore+1);
  await row('Old task').locator('summary').click();await row('Old task').getByRole('button',{name:'Unarchive',exact:true}).click();
  await row('Old task').waitFor({state:'detached'});assert(calls.includes('unarchive'));
- await page.getByRole('button',{name:'Back to Tasks',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
- await row('Old task').waitFor();assert.equal(await page.locator('#archive-navigation').textContent(),'Archived');
+ await page.locator('#show-archived').uncheck();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ await row('Old task').waitFor();assert.equal(await page.locator('#show-archived').isChecked(),false);
  await row('Old task').locator('summary').click();await row('Old task').getByRole('button',{name:'Archive',exact:true}).click();
  await row('Old task').waitFor({state:'detached'});
- await page.getByRole('button',{name:'Archived',exact:true}).click();await row('Old task').waitFor();
- await page.getByRole('button',{name:'Back to Tasks',exact:true}).click();await row('Old task').waitFor({state:'detached'});
+ await page.locator('#show-archived').check();await row('Old task').waitFor();
+ await page.locator('#show-archived').uncheck();await row('Old task').waitFor({state:'detached'});
  await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ await page.locator('#show-archived').check();await row('Old task').waitFor();
+ await row('Old task').locator('summary').click();await row('Old task').getByRole('button',{name:'Delete',exact:true}).click();
+ const deletes=calls.filter(c=>c==='delete').length;
+ await page.locator('#task-dialog-submit').click();await row('Old task').waitFor({state:'detached'});
+ assert.equal(calls.filter(c=>c==='delete').length,deletes+1);
+ archived.push({...task,id:'old',name:'Old task',archived:true});
+ await page.locator('#show-archived').uncheck();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  if(width===390){
  navigationGate=new Promise(r=>releaseCatalog=r);
  const started=Date.now();await page.locator('#destination-refresh').click();

@@ -42,7 +42,7 @@ const elements = {
   destinationBackdrop: document.querySelector("#destination-backdrop"),
   destinationSearch: document.querySelector("#destination-search"),
   destinationClose: document.querySelector("#destination-close"),
-  archiveNavigation: document.querySelector("#archive-navigation"),
+  showArchived: document.querySelector("#show-archived"),
   destinationList: document.querySelector("#destination-list"),
   modelSelect: document.querySelector("#model-select"),
   effortSelect: document.querySelector("#effort-select"),
@@ -608,7 +608,6 @@ let destinationRenderKey = null;
 function renderDestinationSwitcher() {
   if (elements.destinationSwitcher.hidden) return;
   const archived = archivedTasks;
-  elements.archiveNavigation.textContent = archived ? "Back to Tasks" : "Archived";
   const slot = Number(archived);
   const navigationCatalog = navigationCatalogs[slot];
   const navigationRequest = navigationRequests[slot];
@@ -769,13 +768,9 @@ function renderDestinationSwitcher() {
         button.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id) || (action !== "rename" && task.status?.startsWith("active"));
         button.addEventListener("click", () => {
           if (destinationSelection || taskActionBusy) return;
-          let name;
-          if (action === "rename") {
-            name = prompt("Enter task name", task.name)?.trim();
-            if (!name || name === task.name) return;
-          }
-          if (action === "delete" && !confirm(`Delete task “${task.name}”? This permanently deletes its Codex conversation. Project files are not deleted.`)) return;
-          performTaskAction({ machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action, name, confirmed: action === "delete" });
+          const body = { machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action };
+          if (action === "rename" || action === "delete") openTaskDialog(body, task.name);
+          else performTaskAction(body);
         });
         menu.append(button);
       }
@@ -797,8 +792,6 @@ function renderDestinationSwitcher() {
     empty.textContent = navigationErrors[slot] || (query ? "No matching tasks" : archived ? "No archived tasks" : "Task catalog unavailable");
     elements.destinationList.append(empty);
   }
-  elements.destinationList.append(elements.archiveNavigation);
-
 }
 
 async function refreshLoadedThreads() {
@@ -2093,6 +2086,45 @@ newTaskForm.addEventListener("submit", async event => {
   } finally { for (const control of newTaskForm.elements) control.disabled = false; }
 });
 
+const taskDialog = document.querySelector("#task-dialog");
+const taskDialogForm = document.querySelector("#task-dialog-form");
+const taskDialogName = document.querySelector("#task-dialog-name");
+const taskDialogError = document.querySelector("#task-dialog-error");
+let taskDialogAction = null;
+let taskDialogOriginalName = "";
+function openTaskDialog(body, name) {
+  taskDialogAction = body;
+  taskDialogOriginalName = name;
+  const deleting = body.action === "delete";
+  document.querySelector("#task-dialog-title").textContent = deleting ? "Delete Task" : "Rename Task";
+  document.querySelector("#task-dialog-name-field").hidden = deleting;
+  document.querySelector("#task-dialog-delete-copy").hidden = !deleting;
+  document.querySelector("#task-dialog-task-name").textContent = name;
+  const submit = document.querySelector("#task-dialog-submit");
+  submit.textContent = deleting ? "Delete" : "Rename";
+  submit.className = deleting ? "danger-button" : "primary-button";
+  taskDialogName.value = name;
+  taskDialogError.textContent = "";
+  taskDialog.showModal();
+  if (deleting) document.querySelector("#task-dialog-cancel").focus();
+  else { taskDialogName.focus(); taskDialogName.select(); }
+}
+taskDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
+taskDialog.addEventListener("close", () => { if (!taskDialog.open) taskDialogAction = null; });
+document.querySelector("#task-dialog-cancel").addEventListener("click", () => taskDialog.close());
+taskDialogForm.addEventListener("submit", event => {
+  event.preventDefault();
+  if (!taskDialogAction) return;
+  const body = { ...taskDialogAction };
+  if (body.action === "rename") {
+    body.name = taskDialogName.value.trim();
+    if (!body.name || body.name.length > 180) { taskDialogError.textContent = "Enter a task name up to 180 characters"; taskDialogName.focus(); return; }
+    if (body.name === taskDialogOriginalName) { taskDialog.close(); return; }
+  } else body.confirmed = true;
+  taskDialog.close();
+  void performTaskAction(body);
+});
+
 async function performTaskAction(body) {
   if (taskActionBusy || destinationSelection || submittingMessage || readingImages) return;
   taskActionBusy = true;
@@ -2813,10 +2845,9 @@ elements.destinationRefresh.addEventListener("click", () => refreshNavigationCat
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
 elements.destinationSearch.addEventListener("input", () => { collapsedMachines.clear(); renderDestinationSwitcher(); });
-elements.archiveNavigation.addEventListener("click", () => {
-  archivedTasks = !archivedTasks;
+elements.showArchived.addEventListener("change", () => {
+  archivedTasks = elements.showArchived.checked;
   renderDestinationSwitcher();
-  elements.archiveNavigation.focus();
   void refreshNavigationCatalog();
 });
 document.addEventListener("keydown", (event) => {
