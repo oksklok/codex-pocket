@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {MachineRuntime} from '../gateway.ts';
 const root=fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
 const conflict='This task is open in another Codex runtime. Close it there, then retry.';
-const runtime=new MachineRuntime({}, {id:'local',name:'Local',ssh:null},()=>{});
+const runtime=new MachineRuntime({}, {id:'local',name:'Local',ssh:null},()=>{},value=>runtime.broadcast('task-status',value));
 const task={id:'current',name:'Current task',cwd:'/project',status:'idle',project:'project'};
 const owned={...task,id:'owned',name:'Owned task'};
 let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:true}], fail=true, machineError=conflict;
@@ -121,6 +121,7 @@ try {
  await closed();};
 
  for(const width of [1280,390]){
+ runtime.terminalResults={};
  runtime.state.models=[{model:'test',displayName:'Test',supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort})),defaultReasoningEffort:'low'}];runtime.state.model='test';runtime.state.reasoningEffort='low';
  runtime.state.activities=[];runtime.state.liveMessages=[];runtime.state.thread=task;runtime.state.machineId='local';mode='success';active=[task,owned,...Array.from({length:9},(_,i)=>({...task,id:`draft-${i}`,name:`Draft task ${i}`}))];
  await page.setViewportSize({width,height:844});await page.goto(`http://127.0.0.1:${server.address().port}`);
@@ -488,6 +489,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await open();assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
  const observe=async status=>{
  runtime.state.turn={id:'observed-turn',status,...(status==='interrupted'?{error:'Stopped by user'}:{})};runtime.state.phase=status==='inProgress'?'working':status==='failed'?'failed':status==='interrupted'?'stopped':'done';runtime.state.threadStatus=status==='inProgress'?'active':'idle';
+ if(status==='inProgress')delete runtime.terminalResults[runtime.state.thread.id];else runtime.terminalResults[runtime.state.thread.id]=status==='failed'?'Failed':status==='interrupted'?'Stopped':'Done';
  runtime.broadcast('turn',{turn:runtime.state.turn,phase:runtime.state.phase,threadStatus:runtime.state.threadStatus});
  };
  await observe('completed');await row('Current task').getByText('Done',{exact:true}).waitFor();
@@ -516,6 +518,14 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  runtime.broadcast('task-status',{machineId:'ssh:test',threadId:'remote-owned',status:'active:waitingOnUserInput'});
  await row('Remote owned task').getByText('Waiting',{exact:true}).waitFor();
  runtime.state.turn=null;runtime.state.phase='done';runtime.state.threadStatus='idle';runtime.broadcast('snapshot',snapshot());await dismissTasks();await closed();
+ // A read-only non-selected completion survives a full browser reload.
+ const savedRpc=runtime.rpc;
+ runtime.rpc={request:async(method,params)=>{assert.equal(method,'thread/turns/list');assert.equal(params.itemsView,'notLoaded');assert.equal(params.limit,1);return {data:[{status:params.threadId==='draft-1'?'completed':'interrupted'}]};}};
+ for(const threadId of ['draft-1','draft-2'])for(const type of ['active','idle'])runtime.handleNotification({method:'thread/status/changed',params:{threadId,status:{type}}});
+ await open();await row('Draft task 1').getByText('Done',{exact:true}).waitFor();await row('Draft task 2').getByText('Stopped',{exact:true}).waitFor();
+ runtime.rpc=savedRpc;
+ await page.reload();await open();await row('Draft task 1').getByText('Done',{exact:true}).waitFor();await row('Draft task 2').getByText('Stopped',{exact:true}).waitFor();
+ assert.equal(await page.locator('.destination-task[aria-current="true"]').count(),1);await dismissTasks();await closed();
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  // Async controls disappear on resolution; the normalized user reply remains the only answer.

@@ -612,7 +612,7 @@ function renderDestinationSwitcher() {
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
     navigationCatalog, machines.map(machine => [machine.id, machine.connected]), elements.destinationSearch.value, Boolean(navigationRequest),
-    state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
+    [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, archived, projectsVisible, navigationErrors[slot],
   ]);
   if (renderKey === destinationRenderKey) {
@@ -1906,8 +1906,12 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
   if (next.message && !next.message.allowed) {
     composerNotice = "";
   }
-  if (Array.isArray(next.machines)) machines = next.machines;
-  else if (Object.hasOwn(next, "connected") && (next.machineId || state?.machineId)) {
+  if (Array.isArray(next.machines)) {
+    machines = next.machines;
+    for (const machine of machines) restoreTaskTerminalResults(machine.id, machine.terminalResults);
+  }
+  if (next.taskTerminalResults) restoreTaskTerminalResults(next.machineId || state?.machineId, next.taskTerminalResults);
+  if (!Array.isArray(next.machines) && Object.hasOwn(next, "connected") && (next.machineId || state?.machineId)) {
     const id = next.machineId || state.machineId;
     machines = machines.map(machine => machine.id === id ? { ...machine, connected: next.connected } : machine);
   }
@@ -2023,8 +2027,13 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   }
 }
 
-// Observed turn events only; retained when the selected conversation changes.
+// Runtime-backed terminal results, mirrored for Tasks rendering.
 const taskTerminalResults = new Map();
+function restoreTaskTerminalResults(machineId, results) {
+  if (!results) return;
+  for (const key of taskTerminalResults.keys()) if (JSON.parse(key)[0] === machineId) taskTerminalResults.delete(key);
+  for (const [threadId, result] of Object.entries(results)) taskTerminalResults.set(draftKey(machineId, threadId), result);
+}
 const newTaskDialog = document.querySelector("#new-task-dialog");
 const newTaskForm = document.querySelector("#new-task-form");
 const newTaskName = document.querySelector("#new-task-name");
@@ -2459,7 +2468,12 @@ function connectEvents() {
   on("snapshot", (event) => { applySnapshot(parseEvent(event)); });
   on("task-status", event => {
     const value = parseEvent(event);
-    if (value.status?.startsWith("active")) taskTerminalResults.delete(draftKey(value.machineId, value.threadId));
+    const key = draftKey(value.machineId, value.threadId);
+    if (Object.hasOwn(value, "terminalResult")) {
+      if (value.terminalResult) taskTerminalResults.set(key, value.terminalResult);
+      else taskTerminalResults.delete(key);
+    }
+    if (value.status?.startsWith("active")) taskTerminalResults.delete(key);
     for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, value);
     for (const request of navigationRequests) request?.taskStatuses.push(value);
     renderDestinationSwitcher();

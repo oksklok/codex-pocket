@@ -1615,6 +1615,9 @@ export class MachineRuntime {
   private quota: RuntimeQuota | null = null;
   private quotaRefreshTimer: NodeJS.Timeout | null = null;
   private onQuotaChange: () => void;
+  private terminalResults: Record<string, string> = {};
+  private taskStatuses = new Map<string, string>();
+  private terminalReads = new Map<string, object>();
   private onTaskStatus: (status: JsonObject) => void;
   private asyncAnswers: Record<string, Record<string, string>> = {};
 
@@ -1728,6 +1731,7 @@ export class MachineRuntime {
     delete snapshot.metrics;
     snapshot.message = this.messageCapability();
     snapshot.asyncAnswers = this.asyncAnswers;
+    snapshot.taskTerminalResults = { ...this.terminalResults };
     return snapshot;
   }
 
@@ -1892,6 +1896,7 @@ export class MachineRuntime {
       connected: this.state.connected,
       connectionError: this.state.connectionError,
       loadedTaskCount: this.loadedThreads.length,
+      terminalResults: { ...this.terminalResults },
       selectedThreadId: this.state.thread?.id ?? null,
     };
   }
@@ -2243,6 +2248,11 @@ export class MachineRuntime {
         const rightPriority = right.status.startsWith("active") ? 2 : right.loaded ? 1 : 0;
         return rightPriority - leftPriority || right.updatedAt - left.updatedAt;
       });
+    for (const task of this.loadedThreads) if (task.status.startsWith("active")) {
+      delete this.terminalResults[task.id];
+      this.terminalReads.delete(task.id);
+      this.taskStatuses.set(task.id, task.status);
+    }
     return this.loadedThreads;
   }
 
@@ -2935,6 +2945,27 @@ export class MachineRuntime {
     this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
   }
 
+  private async reconcileTaskTerminal(threadId: string): Promise<void> {
+    const rpc = this.rpc;
+    if (!rpc) return;
+    const token = {};
+    this.terminalReads.set(threadId, token);
+    delete this.terminalResults[threadId];
+    let status: string | undefined;
+    try {
+      const page = await rpc.request("thread/turns/list", {
+        threadId, cursor: null, limit: 1, sortDirection: "desc", itemsView: "notLoaded",
+      }, 5_000);
+      status = page?.data?.[0]?.status;
+    } catch { /* Unreadable is unknown, not a successful completion. */ }
+    if (this.terminalReads.get(threadId) !== token) return;
+    this.terminalReads.delete(threadId);
+    if (this.rpc !== rpc) return;
+    const result = status === "completed" ? "Done" : status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : null;
+    if (result) this.terminalResults[threadId] = result;
+    this.onTaskStatus({ machineId: this.definition.id, threadId, status: this.taskStatuses.get(threadId), terminalResult: result });
+  }
+
   private handleNotification(message: JsonObject): void {
     const attachment = this.pendingAttachment;
     if (attachment && String(message.params?.threadId ?? message.params?.conversationId ?? "") === attachment.threadId) {
@@ -2952,8 +2983,17 @@ export class MachineRuntime {
       const threadId = String(params.threadId ?? "");
       const status = statusText(params.status);
       const task = this.loadedThreads.find(task => task.id === threadId);
+      const previous = this.taskStatuses.get(threadId) ?? task?.status;
+      this.taskStatuses.set(threadId, status);
       if (task) task.status = status;
-      this.onTaskStatus({ machineId: this.definition.id, threadId, status });
+      if (status.startsWith("active")) {
+        delete this.terminalResults[threadId];
+        this.terminalReads.delete(threadId);
+      }
+      this.onTaskStatus({ machineId: this.definition.id, threadId, status, terminalResult: this.terminalResults[threadId] ?? null });
+      if (threadId !== this.state.thread?.id && previous?.startsWith("active") && ["idle", "notLoaded"].includes(status)) {
+        void this.reconcileTaskTerminal(threadId);
+      }
     }
     if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
     switch (method) {
@@ -2991,6 +3031,11 @@ export class MachineRuntime {
         });
         break;
       case "turn/started":
+        if (this.state.thread) {
+          delete this.terminalResults[this.state.thread.id];
+          this.terminalReads.delete(this.state.thread.id);
+          this.taskStatuses.set(this.state.thread.id, "active");
+        }
         this.updateModel(params.turn);
         this.state.stoppingTurnId = null;
         this.state.turn = {
@@ -3018,6 +3063,14 @@ export class MachineRuntime {
         this.updateModel(turn);
         const status = String(turn.status ?? "completed");
         const error = compact(turn.error?.message ?? turn.error, 400) || null;
+        if (this.state.thread) {
+          const id = this.state.thread.id;
+          this.terminalReads.delete(id);
+          this.taskStatuses.set(id, "idle");
+          const result = status === "completed" ? "Done" : status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : null;
+          if (result) this.terminalResults[id] = result;
+          else delete this.terminalResults[id];
+        }
         const turnId = String(turn.id ?? params.turnId ?? this.state.turn?.id ?? "");
         const alreadyTerminal = this.state.turn?.id === turnId && ["completed", "interrupted", "failed"].includes(this.state.turn.status);
         this.state.turn = {
@@ -3473,6 +3526,7 @@ export class PocketGateway {
         local: id === "local",
         connected: Boolean(runtime.state.connected),
         catalogAvailable,
+        terminalResults: runtime.machineSummary().terminalResults,
         connectionError: summary.connectionError,
         selected: id === this.selectedMachineId,
         tasks: tasks.map((task) => {

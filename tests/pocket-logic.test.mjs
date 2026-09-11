@@ -1614,3 +1614,53 @@ test('Non-selected task status broadcasts reach browsers without changing attach
   assert.deepEqual(a.snapshot(), before);
   assert.equal(destinationTaskStatus({ id: 'remote' }, { id: 'other', status: 'active:waitingOnApproval' }, {}, 'Done'), 'Waiting');
 });
+
+
+test('Non-selected terminal transitions reconcile one unhydrated latest turn and survive snapshots', async () => {
+  const gateway = new PocketGateway({ machines: [] });
+  const runtime = gateway.runtimes.get('local');
+  Object.assign(runtime.state, { connected: true, thread: { id: 'selected' } });
+  const before = runtime.snapshot().thread;
+  const calls = [];
+  let outcome;
+  runtime.rpc = { request: async (method, params, timeout) => {
+    calls.push(method);
+    assert.equal(method, 'thread/turns/list');
+    assert.deepEqual(params, { threadId: 'other', cursor: null, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
+    assert.equal(timeout, 5000);
+    if (outcome === 'unreadable') throw new Error('Read failed');
+    return { data: outcome ? [{ status: outcome }] : [] };
+  } };
+  const notify = status => runtime.handleNotification({ method: 'thread/status/changed', params: { threadId: 'other', status: { type: status } } });
+  notify('idle');assert.equal(calls.length, 0);
+  for (const [status, label] of [['completed','Done'],['failed','Failed'],['interrupted','Stopped'],['inProgress',undefined],[null,undefined],['unreadable',undefined]]) {
+    outcome = status;
+    notify('active');assert.equal(runtime.snapshot().taskTerminalResults.other, undefined);
+    const beforeCount = calls.length;
+    notify('idle');notify('notLoaded');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.length, beforeCount + 1);
+    assert.equal(runtime.snapshot().taskTerminalResults.other, label);
+    assert.equal(gateway.snapshot().machines[0].terminalResults.other, label);
+    assert.deepEqual(runtime.state.thread, before);
+  }
+});
+
+test('New activity invalidates pending terminal reads; tasks retain independent results', async () => {
+  const runtime = activeRuntime();
+  const pending = new Map();
+  runtime.rpc = { request: (method, params) => { assert.equal(method, 'thread/turns/list'); return new Promise(resolve => pending.set(params.threadId, resolve)); } };
+  const notify = (threadId, type) => runtime.handleNotification({ method: 'thread/status/changed', params: { threadId, status: { type } } });
+  for (const id of ['a','b']) { notify(id,'active'); notify(id,'idle'); }
+  notify('a','active');pending.get('a')({data:[{status:'completed'}]});pending.get('b')({data:[{status:'failed'}]});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(runtime.snapshot().taskTerminalResults, { b: 'Failed' });
+  notify('a','notLoaded');pending.get('a')({data:[{status:'interrupted'}]});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(runtime.snapshot().taskTerminalResults, { a: 'Stopped', b: 'Failed' });
+  // Selected turn events retain their existing path, without a reconciliation read.
+  runtime.finalizeTerminalMessages = async () => {};
+  runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'selected-turn',status:'completed'}}});
+  assert.equal(runtime.snapshot().taskTerminalResults['thread-1'], 'Done');
+  notify('thread-1','idle');assert.equal(pending.has('thread-1'), false);
+});
