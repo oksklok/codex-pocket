@@ -1567,7 +1567,7 @@ test("Desktop composite async reply IDs resolve the exact question index live an
 
 
 test('New live tasks never resume or name zero-turn threads on either machine', async () => {
-  for (const machineId of ['local', 'ssh:b']) {
+  for (const machineId of ['local', 'ssh:b']) for (const cwd of ['', '/project']) {
     const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
     const a = gateway.runtimes.get('local'), target = gateway.runtimes.get(machineId);
     Object.assign(a.state, { connected: true, thread: { id: 'a' }, threadStatus: 'idle' });
@@ -1576,17 +1576,18 @@ test('New live tasks never resume or name zero-turn threads on either machine', 
     let rejectTurn = true;
     const thread = { id: 'new', cwd: '/project', status: 'idle', canAcceptDirectInput: true };
     a.rpc = { request: async () => ({ data: [] }) };
-    target.rpc = { request: async (method) => {
+    target.rpc = { request: async (method, params) => {
       calls.push(method);
-      if (method === 'thread/start') return { thread: { ...thread } };
+      if (method === 'thread/start') { assert.deepEqual(params, cwd ? { cwd } : {}); return { thread: { ...thread } }; }
       if (method === 'thread/resume') throw new Error('no rollout found for thread id new (-32600)');
       if (method === 'thread/loaded/list') return { data: ['new'] };
       if (method === 'thread/read') throw new Error('no rollout found');
       if (method === 'turn/start') { if (rejectTurn) throw new Error('Turn rejected'); return { turn: { id: 'first', status: 'inProgress' } }; }
       return { data: [] };
     } };
-    const created = await gateway.taskAction({ action: 'create', machineId, expectedMachineId: 'local', expectedThreadId: 'a', name: 'Requested name', cwd: '/project' });
+    const created = await gateway.taskAction({ action: 'create', machineId, expectedMachineId: 'local', expectedThreadId: 'a', name: 'Requested name', cwd });
     assert.equal(created.thread.name, 'Requested name');
+    assert.equal(created.thread.cwd, '/project');
     assert.equal(gateway.selectedMachineId, machineId);
     assert.equal((await target.listLoadedThreads()).find(t => t.id === 'new').name, 'Requested name');
     assert(!calls.includes('thread/resume'));

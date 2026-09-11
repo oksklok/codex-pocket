@@ -497,6 +497,11 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.keyboard.press('Space');assert.equal(await machineToggle.getAttribute('aria-expanded'),'false');
  await page.locator('#destination-search').fill('Current');assert.equal(await row('Current task').isVisible(),true);
  await page.locator('#destination-search').fill('');
+ assert.equal(await machineToggle.getAttribute('aria-expanded'),'false');
+ await page.reload();await open();
+ await input.fill('Stable action draft');
+ assert.equal(await machineToggle.getAttribute('aria-expanded'),'false');
+ await machineToggle.click();
  await page.getByRole('button',{name:'New task',exact:true}).last().click();
  assert.equal(await page.locator('#new-task-title').textContent(),'New Task on Second machine');
  assert.equal(await page.locator('#new-task-cwd').inputValue(),'/remote/project');
@@ -512,7 +517,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
  assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('#new-task-dialog .new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  // Terminal labels are observations, independent of the selected checkmark.
  await open();assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
@@ -661,8 +666,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const readingTop=await page.evaluate(()=>document.scrollingElement.scrollTop);
  await page.evaluate(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,value:visualViewport.height-100});visualViewport.dispatchEvent(new Event('resize'));});await page.waitForTimeout(300);
  assert(Math.abs(await page.evaluate(()=>document.scrollingElement.scrollTop)-readingTop)<2);
- // A plausible keyboard resize must leave an editing user's position alone.
- await input.focus();await page.evaluate(()=>{const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-120);});await page.waitForTimeout(150);
+ // A keyboard resize must preserve deliberate scrolling away after focus.
+ await input.focus();await page.evaluate(()=>{const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-600);});await page.waitForTimeout(150);
  const editingTop=await page.evaluate(()=>document.scrollingElement.scrollTop);
  await page.evaluate(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,value:visualViewport.height-100});visualViewport.dispatchEvent(new Event('resize'));});await page.waitForTimeout(300);
  assert.equal(await page.evaluate(()=>document.scrollingElement.scrollTop),editingTop);
@@ -845,6 +850,25 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForTimeout(150);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
  await images.nth(1).click();await page.locator('#image-viewer').waitFor();await page.keyboard.press('Escape');
+ }
+ // Only main-composer mobile focus follows latest; keyboard resize preserves it.
+ for(const width of [390,1280]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',pending:[],queuedMessage:null,liveMessages:[{id:'focus-scroll',role:'assistant',text:'Progress update.\n\n'.repeat(100),complete:true,createdAt:Date.now()}]});
+ await page.reload();await page.locator('[data-message-id="focus-scroll"]').waitFor();
+ await page.evaluate(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');s.scrollTop=s.scrollHeight-s.clientHeight-600;});await page.waitForTimeout(150);
+ const before=await page.evaluate(()=>(innerWidth<=860?document.scrollingElement:document.querySelector('#conversation')).scrollTop);
+ await page.locator('#message-text').evaluate(e=>e.focus({preventScroll:true}));
+ if(width===390){
+ await page.waitForFunction(()=>document.scrollingElement.scrollHeight-document.scrollingElement.clientHeight-scrollY<3);
+ await page.setViewportSize({width,height:500});
+ await page.waitForTimeout(150);
+ assert(await page.evaluate(()=>document.scrollingElement.scrollHeight-document.scrollingElement.clientHeight-scrollY<3));
+ await page.evaluate(()=>{document.scrollingElement.scrollTop-=600;});await page.waitForTimeout(150);
+ const top=await page.evaluate(()=>scrollY);
+ await page.evaluate(()=>visualViewport.dispatchEvent(new Event('resize')));await page.waitForTimeout(100);
+ assert(Math.abs(await page.evaluate(()=>scrollY)-top)<3);
+ } else assert(Math.abs(await page.locator('#conversation').evaluate(e=>e.scrollTop)-before)<3);
  }
  // Confirmed sends follow latest from a deliberately scrolled-up transcript.
  for(const width of [390,1280]) for(const outcome of ['success','reject','unknown','recovered']){

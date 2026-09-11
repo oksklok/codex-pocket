@@ -604,6 +604,10 @@ async function refreshMachines() {
 
 let archivedTasks = false;
 const collapsedMachines = new Set();
+try {
+  const saved = JSON.parse(localStorage.getItem("codex-pocket-collapsed-machines") || "[]");
+  if (Array.isArray(saved) && saved.every(id => typeof id === "string")) for (const id of saved) collapsedMachines.add(id);
+} catch {}
 let destinationRenderKey = null;
 function renderDestinationSwitcher() {
   if (elements.destinationSwitcher.hidden) return;
@@ -667,7 +671,7 @@ function renderDestinationSwitcher() {
     toggle.type = "button";
     toggle.className = "machine-toggle";
     toggle.dataset.machineId = machine.id;
-    const collapsed = collapsedMachines.has(machine.id);
+    const collapsed = !query && collapsedMachines.has(machine.id);
     group.classList.toggle("collapsed", collapsed);
     toggle.setAttribute("aria-expanded", String(!collapsed));
     toggle.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>';
@@ -675,6 +679,7 @@ function renderDestinationSwitcher() {
     toggle.addEventListener("click", () => {
       if (collapsedMachines.has(machine.id)) collapsedMachines.delete(machine.id);
       else collapsedMachines.add(machine.id);
+      try { localStorage.setItem("codex-pocket-collapsed-machines", JSON.stringify([...collapsedMachines])); } catch {}
       renderDestinationSwitcher();
       [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
     });
@@ -2074,7 +2079,7 @@ newTaskForm.addEventListener("submit", async event => {
   event.preventDefault();
   const name = newTaskName.value.trim(), cwd = newTaskCwd.value.trim();
   if (!name || name.length > 180) { newTaskError.textContent = "Enter a task name up to 180 characters"; newTaskName.focus(); return; }
-  if (!cwd || cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd)) {
+  if (cwd && (cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd))) {
     newTaskError.textContent = "Enter an absolute project folder on this machine"; newTaskCwd.focus(); return;
   }
   newTaskError.textContent = "";
@@ -2844,7 +2849,7 @@ elements.destinationButton.addEventListener("click", () => {
 elements.destinationRefresh.addEventListener("click", () => refreshNavigationCatalog(archivedTasks, true));
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
-elements.destinationSearch.addEventListener("input", () => { collapsedMachines.clear(); renderDestinationSwitcher(); });
+elements.destinationSearch.addEventListener("input", () => renderDestinationSwitcher());
 elements.showArchived.addEventListener("change", () => {
   archivedTasks = elements.showArchived.checked;
   renderDestinationSwitcher();
@@ -2861,6 +2866,9 @@ elements.messageText.addEventListener("paste", (event) => {
 });
 elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
+elements.messageText.addEventListener("focus", () => {
+  if (matchMedia("(max-width: 860px)").matches) jumpToLatest(true);
+});
 let previousViewportHeight = window.visualViewport?.height ?? innerHeight;
 let viewportReconcileFrame;
 function cancelViewportReconciliation() { cancelAnimationFrame(viewportReconcileFrame); }
@@ -2874,6 +2882,13 @@ window.visualViewport?.addEventListener("resize", () => {
   const decrease = previousViewportHeight - height;
   previousViewportHeight = height;
   cancelViewportReconciliation();
+  if (document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches && shouldFollowConversation) {
+    jumpToLatest(true);
+    viewportReconcileFrame = requestAnimationFrame(() => {
+      if (document.activeElement === elements.messageText && shouldFollowConversation) jumpToLatest(true);
+    });
+    return;
+  }
   if (decrease <= 0 || viewportReconciliationBlocked()) return;
   const scroller = document.scrollingElement;
   const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;

@@ -2351,8 +2351,8 @@ export class MachineRuntime {
       const name = typeof body.name === "string" ? body.name.trim() : "";
       const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
       if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
-      if (!cwd || cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd)) throw new Error("Enter an absolute project folder on this machine");
-      const started = await this.rpc.request("thread/start", { cwd });
+      if (cwd && (cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd))) throw new Error("Enter an absolute project folder on this machine");
+      const started = await this.rpc.request("thread/start", cwd ? { cwd } : {});
       const id = String(started.thread?.id ?? "");
       if (!id) throw new Error("Codex did not return a new task");
       // Keep the live zero-turn thread; 0.153.4 may not have a resumable rollout yet.
