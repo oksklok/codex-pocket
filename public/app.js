@@ -42,7 +42,7 @@ const elements = {
   destinationBackdrop: document.querySelector("#destination-backdrop"),
   destinationSearch: document.querySelector("#destination-search"),
   destinationClose: document.querySelector("#destination-close"),
-  showArchived: document.querySelector("#show-archived"),
+  archiveNavigation: document.querySelector("#archive-navigation"),
   destinationList: document.querySelector("#destination-list"),
   modelSelect: document.querySelector("#model-select"),
   effortSelect: document.querySelector("#effort-select"),
@@ -602,11 +602,13 @@ async function refreshMachines() {
   }
 }
 
+let archivedTasks = false;
 const collapsedMachines = new Set();
 let destinationRenderKey = null;
 function renderDestinationSwitcher() {
   if (elements.destinationSwitcher.hidden) return;
-  const archived = elements.showArchived.checked;
+  const archived = archivedTasks;
+  elements.archiveNavigation.textContent = archived ? "Back to Tasks" : "Archived";
   const slot = Number(archived);
   const navigationCatalog = navigationCatalogs[slot];
   const navigationRequest = navigationRequests[slot];
@@ -795,6 +797,7 @@ function renderDestinationSwitcher() {
     empty.textContent = navigationErrors[slot] || (query ? "No matching tasks" : archived ? "No archived tasks" : "Task catalog unavailable");
     elements.destinationList.append(empty);
   }
+  elements.destinationList.append(elements.archiveNavigation);
 
 }
 
@@ -838,7 +841,7 @@ function updateCatalogTaskStatus(catalog, { machineId, threadId, status }) {
   if (task) { task.status = status; task.phase = null; }
 }
 
-async function refreshNavigationCatalog(archived = elements.showArchived.checked, force = false) {
+async function refreshNavigationCatalog(archived = archivedTasks, force = false) {
   const slot = Number(archived);
   if (navigationRequests[slot]) return navigationRequests[slot];
   if (navigationCatalogs[slot] && !force) return;
@@ -927,7 +930,7 @@ function openDestinationSwitcher(animate = true) {
   void elements.destinationSwitcher.offsetWidth; // Establish the closed position before transitioning.
   document.body.classList.add("destination-open");
   saveSidebarPreference("tasks", true);
-  refreshNavigationCatalog(elements.showArchived.checked, true);
+  refreshNavigationCatalog(archivedTasks, true);
   renderDestinationSwitcher();
 }
 
@@ -1654,7 +1657,7 @@ function renderRichActivityDetail(container, activity, value) {
     append(detailField("Runtime", [detail.model, detail.reasoningEffort].filter(Boolean).join(" · "), "detail-note"));
     append(detailField("Subagents", detail.subagents?.length ? `${detail.subagents.length}` : "", "detail-note"));
   } else if (detail.type === "imageView" || detail.type === "imageGeneration") {
-    append(detailField("Image", detail.name, "detail-note"));
+    if (detail.type === "imageGeneration") append(detailField("Image", detail.name, "detail-note"));
     append(detailField("Revised Prompt", detail.revisedPrompt));
     append(detailField("Failure", detail.failure));
     if (detail.imageAvailable) {
@@ -2806,12 +2809,14 @@ elements.destinationButton.addEventListener("click", () => {
   if (elements.destinationButton.getAttribute("aria-expanded") !== "true") openDestinationSwitcher();
   else closeDestinationSwitcher();
 });
-elements.destinationRefresh.addEventListener("click", () => refreshNavigationCatalog(elements.showArchived.checked, true));
+elements.destinationRefresh.addEventListener("click", () => refreshNavigationCatalog(archivedTasks, true));
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
 elements.destinationSearch.addEventListener("input", () => { collapsedMachines.clear(); renderDestinationSwitcher(); });
-elements.showArchived.addEventListener("change", () => {
+elements.archiveNavigation.addEventListener("click", () => {
+  archivedTasks = !archivedTasks;
   renderDestinationSwitcher();
+  elements.archiveNavigation.focus();
   void refreshNavigationCatalog();
 });
 document.addEventListener("keydown", (event) => {

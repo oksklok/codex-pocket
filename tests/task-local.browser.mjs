@@ -44,7 +44,7 @@ const server=createServer(async(req,res)=>{
  }
  if(u.pathname==='/api/machines')return json({machines:settings.headless?[{id:'ssh:test',name:'Second machine',connected:remoteConnected}]:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
- if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
+ if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'preview.png',revisedPrompt:u.searchParams.get('itemId')==='imageGeneration'?'A small moonlit garden':undefined}});
  if(u.pathname==='/api/activity/image'||u.pathname==='/api/message/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json(historyFixture||{turns:[],nextCursor:null});
  if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
@@ -304,11 +304,13 @@ try {
  if(width<860)await page.locator('#inspector-close').click();else await page.locator('#inspector-button').click();
  await page.waitForTimeout(200);
  for(const type of ['imageView','imageGeneration']){
- runtime.state.activities=[{id:type,kind:'image',label:'Image test',status:'completed',expandable:true}];runtime.broadcast('snapshot',snapshot());
+ runtime.state.activities=[{id:type,kind:'image',label:'Viewed preview.png',status:'completed',expandable:true}];runtime.broadcast('snapshot',snapshot());
  const card=page.locator(`[data-activity-id="${type}"]`);await card.locator('.activity-summary').click();
  await page.locator('.detail-image').scrollIntoViewIfNeeded();
  await page.waitForFunction(()=>document.querySelector('.detail-image')?.naturalWidth>0);
  const img=page.locator('.detail-image');
+ if(type==='imageView'){assert.equal(await card.locator('.detail-field').count(),0);assert.equal((await card.innerText()).split('preview.png').length-1,1);}
+ else await card.getByText('A small moonlit garden',{exact:true}).waitFor();
  await open();
  // Set up both underlying panels even on mobile, where their backdrops cover the topbar.
  await page.locator('#inspector-button').evaluate(e=>e.click());await page.waitForTimeout(210);
@@ -422,7 +424,7 @@ try {
  const oneLineHeight=await row('Current task').locator('.destination-task').evaluate(e=>e.getBoundingClientRect().height);
  assert.equal(oneLineHeight,40);
  if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
- const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading').getBoundingClientRect().top-document.querySelector('.destination-archived input').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
+ const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading').getBoundingClientRect().top-document.querySelector('#destination-search').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
  assert(spacing.gap>=0&&spacing.gap<=6,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
  await settingsOpen();await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});await settingsSave();
  await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));await centered();
@@ -711,17 +713,27 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  runtime.broadcast('machines',{machines:[runtime.machineSummary()]});
  await page.locator('.destination-group.unavailable').waitFor();
  catalogAvailable=true;remoteConnected=true;
- await page.locator('#show-archived').check();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ await page.getByRole('button',{name:'Archived',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.equal(await page.locator('#archive-navigation').textContent(),'Back to Tasks');
+ assert(await page.locator('#archive-navigation').evaluate(e=>e===e.parentElement.lastElementChild));
  const archivedBefore=calls.filter(c=>c==='?archived=true').length;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  assert.equal(calls.filter(c=>c==='?archived=true').length,archivedBefore+1);
- await page.locator('#show-archived').uncheck();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ await row('Old task').locator('summary').click();await row('Old task').getByRole('button',{name:'Unarchive',exact:true}).click();
+ await row('Old task').waitFor({state:'detached'});assert(calls.includes('unarchive'));
+ await page.getByRole('button',{name:'Back to Tasks',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ await row('Old task').waitFor();assert.equal(await page.locator('#archive-navigation').textContent(),'Archived');
+ await row('Old task').locator('summary').click();await row('Old task').getByRole('button',{name:'Archive',exact:true}).click();
+ await row('Old task').waitFor({state:'detached'});
+ await page.getByRole('button',{name:'Archived',exact:true}).click();await row('Old task').waitFor();
+ await page.getByRole('button',{name:'Back to Tasks',exact:true}).click();await row('Old task').waitFor({state:'detached'});
+ await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  if(width===390){
  navigationGate=new Promise(r=>releaseCatalog=r);
  const started=Date.now();await page.locator('#destination-refresh').click();
  await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled,{},{timeout:9_000});
  assert(Date.now()-started<9_000);
- assert.equal(await page.locator('.destination-group.unavailable').count(),1); // Keep the last catalog on HTTP failure.
+ assert.equal(await page.locator('.destination-group.unavailable').count(),0); // Keep the last successful action-refreshed catalog on HTTP failure.
  releaseCatalog();navigationGate=null;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  }
