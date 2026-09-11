@@ -2078,6 +2078,7 @@ async function loadNewTaskOptions() {
     const value = await response.json();
     if (request !== newTaskOptionsRequest || !newTaskDialog.open) return;
     if (!response.ok) throw new Error(value.error || "Starting settings unavailable");
+    if (newTaskError.textContent === "Starting settings unavailable. You can still create with Default settings.") newTaskError.textContent = "";
     const chosen = { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value };
     newTaskModel.replaceChildren(new Option("Default", ""));
     newTaskAccess.replaceChildren(new Option("Default", ""));
@@ -2101,7 +2102,7 @@ function newTask(machine) {
   newTaskName.value = "";
   newTaskCwd.value = (machine.id === state?.machineId ? state?.thread?.cwd : "")
     || machine.tasks?.find(task => task.selected && task.cwd?.trim())?.cwd
-    || machine.tasks?.find(task => task.cwd?.trim())?.cwd || "";
+    || "";
   newTaskError.textContent = "";
   newTaskModel.replaceChildren(new Option("Default", ""));
   newTaskAccess.replaceChildren(new Option("Default", ""));

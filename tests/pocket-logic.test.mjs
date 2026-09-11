@@ -780,6 +780,7 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
   const post = (path, headers = {}, body) => raw(path, headers, "POST", body);
   try {
     assert.equal((await post("/api/login", { Origin: origin, "Content-Type": "application/json; charset=utf-8", "Sec-Fetch-Site": "same-origin" }, "{}")).status, 200);
+    assert.equal((await post("/api/login", { Origin: origin.replace("http:","https:"), "Content-Type": "application/json" }, "{}")).status, 200);
     assert.equal((await post("/api/shutdown", { Origin: "https://attacker.example" })).status, 403);
     assert.equal((await post("/api/shutdown", { "Sec-Fetch-Site": "cross-site" })).status, 403);
     assert.equal((await post("/api/shutdown", { Origin: "null" })).status, 403);
@@ -1413,6 +1414,10 @@ test('restart preserves explicit launch overrides without freezing saved setting
   const request = { headers: { host: '192.168.1.100:4173' } };
   assert.equal(restartUrlForRequest(request, true, 'http://127.0.0.1:4888'), 'http://192.168.1.100:4888');
   assert.equal(restartUrlForRequest(request, false, 'http://127.0.0.1:4999'), 'http://127.0.0.1:4999');
+  request.headers.origin='https://192.168.1.100:4173';
+  assert.equal(restartUrlForRequest(request,true,'http://127.0.0.1:4888'),request.headers.origin);
+  request.headers.origin='https://attacker.example';
+  assert.equal(restartUrlForRequest(request,true,'http://127.0.0.1:4888'),'http://192.168.1.100:4888');
 });
 
 test('PWA manifest and branded PNG icons are served as public static assets', async () => {
@@ -1928,4 +1933,52 @@ test('A delayed completion callback cannot send a restored queue after leaving a
   await runtime.selectionQueue;
   assert.equal(calls.filter(method=>method==='turn/start').length,1);
   assert.equal(runtime.state.queuedMessage,null);
+});
+
+test('Only successful active completion automatically sends a queued message', async () => {
+  for (const status of ['completed','failed','interrupted',undefined]) {
+    const runtime=activeRuntime();await runtime.sendMessage('Follow up','queue',[png]);
+    let starts=0;runtime.finalizeTerminalMessages=async()=>{};
+    runtime.rpc={request:async method=>{if(method==='turn/start'){starts++;return {turn:{id:'next',status:'inProgress'}};}return {data:[]};}};
+    runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'turn-1',status}}});
+    await runtime.selectionQueue;
+    assert.equal(starts,status==='completed'?1:0);
+    assert.equal(Boolean(runtime.state.queuedMessage),status!=='completed');
+  }
+});
+
+test('Unexpected disconnect and failed reconnect preserve image queue without sending', async (t) => {
+  const runtime=activeRuntime();await runtime.sendMessage('Keep this','queue',[png]);
+  const queued=structuredClone(runtime.state.queuedMessage);
+  runtime.scheduleReconnect=()=>{};
+  runtime.handleClose(new Error('Connection lost'));
+  assert.deepEqual(runtime.taskQueues.get('thread-1'),queued);
+  let fail=true;const calls=[];
+  t.mock.method(RpcClient.prototype,'connect',async()=>{if(fail)throw new Error('Transport unavailable');});
+  t.mock.method(RpcClient.prototype,'close',()=>{});
+  t.mock.method(RpcClient.prototype,'notify',()=>{});
+  t.mock.method(RpcClient.prototype,'request',async method=>{
+    calls.push(method);
+    const thread={id:'thread-1',name:'Task',cwd:'/project',status:'idle',canAcceptDirectInput:true};
+    if(method==='thread/list')return {data:[thread]};
+    if(method==='thread/read'||method==='thread/resume')return {thread};
+    return {data:[]};
+  });
+  await runtime.connect();
+  assert.deepEqual(runtime.taskQueues.get('thread-1'),queued);
+  fail=false;await runtime.connect();
+  assert.deepEqual(runtime.snapshot().queuedMessage,queued);
+  assert(calls.includes('thread/resume'));
+  assert(!calls.includes('turn/start'));
+});
+
+test('Confirmed deletion removes all per-task runtime bookkeeping', async () => {
+  const runtime=activeRuntime();runtime.state.turn=null;runtime.state.threadStatus='idle';
+  const id='thread-1';
+  for(const key of ['taskQueues','pendingTaskNames','contextByThread','taskStatuses','taskStatusObservations','terminalReads'])runtime[key].set(id,{});
+  runtime.terminalResults[id]='Done';
+  runtime.refreshLoadedThreads=async()=>[{id,name:'Task',status:'idle'}];
+  await runtime.taskAction({action:'delete',threadId:id,confirmed:true});
+  for(const key of ['taskQueues','pendingTaskNames','contextByThread','taskStatuses','taskStatusObservations','terminalReads'])assert(!runtime[key].has(id),key);
+  assert.equal(runtime.terminalResults[id],undefined);
 });

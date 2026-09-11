@@ -83,6 +83,7 @@ const server=createServer(async(req,res)=>{
  if(composerPost==='reject')return json({error:'Send rejected'},409);
  return json({accepted:true},202);
  }
+ if(u.pathname==='/api/tasks/options' && u.searchParams.get('cwd')==='/unavailable')return json({error:'Unavailable'},503);
  if(u.pathname==='/api/tasks/options')return json({models:[{model:'demo-model',displayName:'Demo Model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],access:{ask:true,auto:true,full:true}});
  if(u.pathname==='/api/tasks'){
  let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(b.action==='create')calls.push({create:b});if(gate)await gate;if(failAction)return json({error:'Fixture action failed'},409);
@@ -505,7 +506,9 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await machineToggle.click();
  await page.getByRole('button',{name:'New task',exact:true}).last().click();
  assert.equal(await page.locator('#new-task-title').textContent(),'New Task on Second machine');
- assert.equal(await page.locator('#new-task-cwd').inputValue(),'/remote/project');
+ assert.equal(await page.locator('#new-task-cwd').inputValue(),'');
+ await page.locator('#new-task-cwd').fill('/unavailable');await page.locator('#new-task-cwd').blur();await page.getByText('Starting settings unavailable. You can still create with Default settings.',{exact:true}).waitFor();
+ await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.waitForFunction(()=>document.querySelector('#new-task-error').textContent==='');
  await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});
  await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('auto');
  await page.locator('#new-task-cancel').click();

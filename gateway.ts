@@ -433,6 +433,7 @@ export function restartUrlForRequest(request: IncomingMessage, lanEnabled: boole
   try {
     const requested = new URL(`http://${request.headers.host ?? ""}`);
     const host = requested.hostname.replace(/^\[|\]$/g, "");
+    if (request.headers.origin === `https://${requested.host}`) return request.headers.origin;
     if (!isLoopbackHost(host)) return `http://${host.includes(":") ? `[${host}]` : host}:${new URL(fallback).port || "80"}`;
   } catch {
     // Fall back to the gateway's local URL for malformed Host headers.
@@ -2137,6 +2138,7 @@ export class MachineRuntime {
       this.state.connected = false;
       this.loadedThreads = [];
       this.pendingTaskNames.clear();
+      this.parkTaskQueue();
       this.resetThreadState();
       this.state.thread = null;
       this.state.threadStatus = "disconnected";
@@ -2159,6 +2161,7 @@ export class MachineRuntime {
       : localRuntimeReason(this.technicalConnectionError);
     this.loadedThreads = [];
     this.pendingTaskNames.clear();
+    this.parkTaskQueue();
     this.resetThreadState();
     this.state.thread = null;
     this.state.threadStatus = "disconnected";
@@ -2416,7 +2419,15 @@ export class MachineRuntime {
     if (task.status.startsWith("active") || (this.state.thread?.id === id && this.state.turn?.status === "inProgress")) throw new Error("Stop or finish this task before archiving or deleting it");
     if (action === "delete" && body.confirmed !== true) throw new Error("Confirm task deletion first");
     await this.rpc.request(`thread/${action}`, { threadId: id });
-    if (action === "delete") { this.pendingTaskNames.delete(id); this.taskQueues.delete(id); }
+    if (action === "delete") {
+      this.pendingTaskNames.delete(id);
+      this.taskQueues.delete(id);
+      this.contextByThread.delete(id);
+      delete this.terminalResults[id];
+      this.taskStatuses.delete(id);
+      this.taskStatusObservations.delete(id);
+      this.terminalReads.delete(id);
+    }
     if (action !== "unarchive" && this.state.thread?.id === id) {
       this.resetThreadState();
       this.state.thread = null;
@@ -3153,7 +3164,7 @@ export class MachineRuntime {
           message: this.messageCapability(),
         });
         if (!alreadyTerminal) void this.finalizeTerminalMessages(this.state.turn.id);
-        if (status !== "interrupted" && wasActive && this.autoAttach
+        if (turn.status === "completed" && wasActive && this.autoAttach
           && !this.startingQueuedMessage
           && this.state.thread
           && this.state.queuedMessage?.threadId === this.state.thread.id) {
@@ -3999,7 +4010,7 @@ export async function handleRequest(
   if (url.pathname.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method)) {
     const origin = request.headers.origin;
     const ownOrigin = `http://${request.headers.host}`;
-    if ((origin !== undefined && origin !== ownOrigin) || request.headers["sec-fetch-site"] === "cross-site") {
+    if ((origin !== undefined && origin !== ownOrigin && origin !== `https://${request.headers.host}`) || request.headers["sec-fetch-site"] === "cross-site") {
       sendJson(response, 403, { error: "Same-origin request required" }, gateway);
       return;
     }
