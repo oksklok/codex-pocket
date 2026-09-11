@@ -1664,3 +1664,48 @@ test('New activity invalidates pending terminal reads; tasks retain independent 
   assert.equal(runtime.snapshot().taskTerminalResults['thread-1'], 'Done');
   notify('thread-1','idle');assert.equal(pending.has('thread-1'), false);
 });
+
+
+test('Catalog refresh respects newer live status observations and reconciled terminal results', async () => {
+  for (const [terminal, label] of [['completed','Done'],['failed','Failed'],['interrupted','Stopped']]) {
+    const runtime = activeRuntime();
+    let release;
+    const catalog = new Promise(resolve => { release = resolve; });
+    runtime.rpc = { request: async method => {
+      if (method === 'thread/list') return catalog;
+      if (method === 'thread/loaded/list') return { data: [] };
+      assert.equal(method, 'thread/turns/list');
+      return { data: [{ status: terminal }] };
+    } };
+    const notify = type => runtime.handleNotification({ method: 'thread/status/changed', params: { threadId: 'other', status: { type } } });
+    notify('active');
+    const refresh = runtime.refreshLoadedThreads();
+    notify('idle');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(runtime.snapshot().taskTerminalResults.other, label);
+    release({data:[{id:'other',cwd:'/project',source:'cli',status:{type:'active',activeFlags:[]}}]});
+    const tasks = await refresh;
+    assert.equal(tasks[0].status, 'idle');
+    assert.equal(runtime.taskStatuses.get('other'), 'idle');
+    assert.equal(runtime.snapshot().taskTerminalResults.other, label);
+    assert.equal(runtime.machineSummary().terminalResults.other, label);
+  }
+});
+
+test('Live active wins over stale idle catalogs, while uncontested catalog active clears stale labels', async () => {
+  const runtime = activeRuntime();
+  let release;
+  let catalog = new Promise(resolve => { release = resolve; });
+  runtime.rpc = { request: async method => method === 'thread/list' ? catalog : {data:[]} };
+  const notify = type => runtime.handleNotification({ method:'thread/status/changed',params:{threadId:'other',status:{type}} });
+  notify('active');
+  const refresh = runtime.refreshLoadedThreads();
+  // Same status value as at read start must still count as a newer observation.
+  notify('active');
+  release({data:[{id:'other',cwd:'/project',source:'cli',status:{type:'idle'}}]});
+  assert.equal((await refresh)[0].status,'active');
+  runtime.terminalResults.other = 'Done';
+  catalog = Promise.resolve({data:[{id:'other',cwd:'/project',source:'cli',status:{type:'active',activeFlags:[]}}]});
+  assert.equal((await runtime.refreshLoadedThreads())[0].status,'active');
+  assert.equal(runtime.snapshot().taskTerminalResults.other,undefined);
+});

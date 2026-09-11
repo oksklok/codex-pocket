@@ -1617,6 +1617,7 @@ export class MachineRuntime {
   private onQuotaChange: () => void;
   private terminalResults: Record<string, string> = {};
   private taskStatuses = new Map<string, string>();
+  private taskStatusObservations = new Map<string, object>();
   private terminalReads = new Map<string, object>();
   private onTaskStatus: (status: JsonObject) => void;
   private asyncAnswers: Record<string, Record<string, string>> = {};
@@ -2213,6 +2214,7 @@ export class MachineRuntime {
 
   private async refreshLoadedThreads(): Promise<LoadedThreadSummary[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const observationsAtStart = new Map(this.taskStatusObservations);
     const deadline = Date.now() + 5_000;
     const [listed, loaded] = await Promise.all([
       this.listTaskPages("thread/list", {
@@ -2243,6 +2245,12 @@ export class MachineRuntime {
     // Keep already-normalized metadata for loaded tasks whose optional reads failed.
     this.loadedThreads = [...currentThreads, ...previousThreads.filter(previous =>
       loadedIds.has(previous.id) && !threads.some(thread => String(thread.id) === previous.id))]
+      .map(task => {
+        // Live observations during this read take precedence, even after active -> idle -> active.
+        const observation = this.taskStatusObservations.get(task.id);
+        return observation && observation !== observationsAtStart.get(task.id)
+          ? { ...task, status: this.taskStatuses.get(task.id)! } : task;
+      })
       .sort((left, right) => {
         const leftPriority = left.status.startsWith("active") ? 2 : left.loaded ? 1 : 0;
         const rightPriority = right.status.startsWith("active") ? 2 : right.loaded ? 1 : 0;
@@ -2985,6 +2993,7 @@ export class MachineRuntime {
       const task = this.loadedThreads.find(task => task.id === threadId);
       const previous = this.taskStatuses.get(threadId) ?? task?.status;
       this.taskStatuses.set(threadId, status);
+      this.taskStatusObservations.set(threadId, {});
       if (task) task.status = status;
       if (status.startsWith("active")) {
         delete this.terminalResults[threadId];
@@ -3035,6 +3044,7 @@ export class MachineRuntime {
           delete this.terminalResults[this.state.thread.id];
           this.terminalReads.delete(this.state.thread.id);
           this.taskStatuses.set(this.state.thread.id, "active");
+          this.taskStatusObservations.set(this.state.thread.id, {});
         }
         this.updateModel(params.turn);
         this.state.stoppingTurnId = null;
@@ -3067,6 +3077,7 @@ export class MachineRuntime {
           const id = this.state.thread.id;
           this.terminalReads.delete(id);
           this.taskStatuses.set(id, "idle");
+          this.taskStatusObservations.set(id, {});
           const result = status === "completed" ? "Done" : status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : null;
           if (result) this.terminalResults[id] = result;
           else delete this.terminalResults[id];
