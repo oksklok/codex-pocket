@@ -682,3 +682,13 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .machine-toggle[aria-expanded="false"] svg { transform: none; }
 .machine-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .destination-group.collapsed .destination-entry, .destination-group.collapsed .destination-group-empty { display: none; }
+
+.new-task-settings { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 8px; margin-top: 12px; }
+.new-task-settings .form-field { min-width: 0; }
+.new-task-dialog .new-task-settings .form-field + .form-field { margin-top: 0; }
+.new-task-settings select { width: 100%; min-width: 0; min-height: 36px; padding: 6px; font-size: var(--text-ui); }
+@media (max-width: 860px) {
+  .new-task-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .new-task-settings .form-field:first-child { grid-column: 1 / -1; }
+  .new-task-settings select { font-size: 16px; }
+}

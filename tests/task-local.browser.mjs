@@ -46,7 +46,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/threads')return json({threads:active});
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'preview.png',revisedPrompt:u.searchParams.get('itemId')==='imageGeneration'?'A small moonlit garden':undefined}});
  if(u.pathname==='/api/activity/image'||u.pathname==='/api/message/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
- if(u.pathname==='/api/history')return json(historyFixture||{turns:[],nextCursor:null});
+ if(u.pathname==='/api/history')return json(historyFixture||{machineId:runtime.state.machineId,threadId:runtime.state.thread?.id,turns:[],nextCursor:null});
  if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
@@ -83,8 +83,9 @@ const server=createServer(async(req,res)=>{
  if(composerPost==='reject')return json({error:'Send rejected'},409);
  return json({accepted:true},202);
  }
+ if(u.pathname==='/api/tasks/options')return json({models:[{model:'demo-model',displayName:'Demo Model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],access:{ask:true,auto:true,full:true}});
  if(u.pathname==='/api/tasks'){
- let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(gate)await gate;if(failAction)return json({error:'Fixture action failed'},409);
+ let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(b.action==='create')calls.push({create:b});if(gate)await gate;if(failAction)return json({error:'Fixture action failed'},409);
  if(b.action==='rename'){const t=[...active,...archived].find(t=>t.id===b.threadId);t.name=b.name;}
  if(b.action==='archive'){archived.push({...active.find(t=>t.id===b.threadId),archived:true});active=active.filter(t=>t.id!==b.threadId);}
  if(b.action==='unarchive'){active.push({...archived.find(t=>t.id===b.threadId),archived:false});archived=archived.filter(t=>t.id!==b.threadId);}
@@ -505,6 +506,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByRole('button',{name:'New task',exact:true}).last().click();
  assert.equal(await page.locator('#new-task-title').textContent(),'New Task on Second machine');
  assert.equal(await page.locator('#new-task-cwd').inputValue(),'/remote/project');
+ await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});
+ await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('auto');
  await page.locator('#new-task-cancel').click();
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();
@@ -517,7 +520,11 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
  assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('#new-task-dialog .new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('ask');await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ const createdSettings=calls.findLast(c=>c?.create).create;
+ assert.deepEqual({model:createdSettings.model,effort:createdSettings.effort,access:createdSettings.access},{model:'demo-model',effort:'high',access:'ask'});
+ await page.getByText('No conversation history yet.',{exact:true}).waitFor();
+ await page.locator('#history-status').waitFor({state:'hidden'});
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  // Terminal labels are observations, independent of the selected checkmark.
  await open();assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
@@ -667,7 +674,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.evaluate(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,value:visualViewport.height-100});visualViewport.dispatchEvent(new Event('resize'));});await page.waitForTimeout(300);
  assert(Math.abs(await page.evaluate(()=>document.scrollingElement.scrollTop)-readingTop)<2);
  // A keyboard resize must preserve deliberate scrolling away after focus.
- await input.focus();await page.evaluate(()=>{const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-600);});await page.waitForTimeout(150);
+ await input.focus();await page.evaluate(()=>visualViewport.dispatchEvent(new Event('resize')));await page.waitForTimeout(100);await page.evaluate(()=>{const d=document.scrollingElement;window.scrollTo(0,d.scrollHeight-d.clientHeight-600);});await page.waitForTimeout(150);
  const editingTop=await page.evaluate(()=>document.scrollingElement.scrollTop);
  await page.evaluate(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,value:visualViewport.height-100});visualViewport.dispatchEvent(new Event('resize'));});await page.waitForTimeout(300);
  assert.equal(await page.evaluate(()=>document.scrollingElement.scrollTop),editingTop);
@@ -868,6 +875,10 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const top=await page.evaluate(()=>scrollY);
  await page.evaluate(()=>visualViewport.dispatchEvent(new Event('resize')));await page.waitForTimeout(100);
  assert(Math.abs(await page.evaluate(()=>scrollY)-top)<3);
+ await page.setViewportSize({width,height:844});await page.waitForTimeout(100);
+ await page.evaluate(()=>{document.scrollingElement.scrollTop-=600;});await page.waitForTimeout(100);
+ await page.setViewportSize({width,height:500});await page.waitForTimeout(150);
+ assert(await page.evaluate(()=>document.scrollingElement.scrollHeight-document.scrollingElement.clientHeight-scrollY<3));
  } else assert(Math.abs(await page.locator('#conversation').evaluate(e=>e.scrollTop)-before)<3);
  }
  // Confirmed sends follow latest from a deliberately scrolled-up transcript.

@@ -1755,6 +1755,10 @@ export class MachineRuntime {
       limit,
       sortDirection: "desc",
       itemsView: "summary",
+    }).catch(error => {
+      if (this.state.thread?.id === threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.attempted === false
+        && /not materialized yet[\s\S]*before (?:the )?first user message/i.test(String(error))) return { data: [], nextCursor: null };
+      throw error;
     });
     if (this.state.thread?.id !== threadId) throw new Error("The selected task changed");
     const rawTurns = Array.isArray(page?.data) ? page.data : [];
@@ -2309,13 +2313,13 @@ export class MachineRuntime {
     }
   }
 
-  private async loadPermissionProfiles(cwd: string): Promise<PermissionProfileSummary[]> {
+  private async loadPermissionProfiles(cwd: string, store = true): Promise<PermissionProfileSummary[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
     const profiles: PermissionProfileSummary[] = [];
     const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
-      const page = await this.rpc.request("permissionProfile/list", { cwd, cursor, limit: 100 });
+      const page = await this.rpc.request("permissionProfile/list", { ...(cwd ? { cwd } : {}), cursor, limit: 100 });
       for (const value of Array.isArray(page?.data) ? page.data : []) {
         if (!value?.id) continue;
         profiles.push({
@@ -2328,8 +2332,19 @@ export class MachineRuntime {
       if (cursor && cursors.has(cursor)) throw new Error("Permission profile catalog returned a repeated cursor");
       if (cursor) cursors.add(cursor);
     } while (cursor);
-    this.permissionProfiles = profiles;
+    if (store) this.permissionProfiles = profiles;
     return profiles;
+  }
+
+  async newTaskOptions(cwd: string): Promise<JsonObject> {
+    if (!this.rpc || !this.state.connected) throw new Error("Codex is disconnected");
+    const profiles = await this.loadPermissionProfiles(cwd, false);
+    const workspace = profiles.some(p => p.id === ":workspace" && p.allowed);
+    return { models: this.state.models, access: {
+      ask: workspace && (!this.allowedReviewers || this.allowedReviewers.includes("user")),
+      auto: workspace && (!this.allowedReviewers || this.allowedReviewers.includes("auto_review")),
+      full: profiles.some(p => [":danger-full-access", ":full-access"].includes(p.id) && p.allowed),
+    } };
   }
 
   async listArchivedThreads(): Promise<LoadedThreadSummary[]> {
@@ -2361,9 +2376,21 @@ export class MachineRuntime {
       this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
       await this.attachLoadedThread(id, true, started);
       this.options.thread = id;
+      const warnings: string[] = [];
+      if (body.model || body.effort) {
+        try {
+          const model = body.model || this.state.model;
+          const catalog = this.state.models.find(candidate => candidate.model === model);
+          await this.updateThreadSettingsNow(model, body.effort || catalog?.defaultReasoningEffort || this.state.reasoningEffort);
+        } catch (error) { warnings.push(`Model/effort: ${String(error)}`); }
+      }
+      if (body.access) {
+        try { await this.updateAccessNow(body.access); }
+        catch (error) { warnings.push(`Access: ${String(error)}`); }
+      }
       // The new task is already attached; catalog failure must not abort the handoff.
       try { await this.refreshLoadedThreads(); } catch {}
-      return this.snapshot();
+      return { ...this.snapshot(), ...(warnings.length ? { warning: `Task created. Some starting settings could not be applied: ${warnings.join("; ")}` } : {}) };
     }
     if (!["rename", "archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
     const id = String(body.threadId ?? "");
@@ -2532,6 +2559,7 @@ export class MachineRuntime {
     const confirmed = await this.waitForSettingsUpdate(revision);
     if (!confirmed) {
       if (this.state.thread?.id !== threadId || !this.rpc) throw new Error("selected task changed while access was updating");
+      if (this.pendingTaskNames.get(threadId)?.attempted === false) throw new Error("Access update could not be confirmed yet");
       const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
       this.updateAccessFromCodex(resumed);
       this.broadcast("settings", {
@@ -3643,6 +3671,12 @@ export class PocketGateway {
     });
   }
 
+  newTaskOptions(machineId: string, cwd: string): Promise<JsonObject> {
+    const runtime = this.runtimes.get(machineId);
+    if (!runtime) throw new Error("Machine is not configured");
+    return runtime.newTaskOptions(cwd);
+  }
+
   async history(cursor: string | null, limit: number, machineId?: unknown): Promise<JsonObject> {
     return this.requireSelected(machineId).history(cursor, limit);
   }
@@ -4078,6 +4112,11 @@ export async function handleRequest(
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
+    return;
+  }
+  if (url.pathname === "/api/tasks/options" && method === "GET") {
+    try { sendJson(response, 200, await gateway.newTaskOptions(url.searchParams.get("machineId") || "", url.searchParams.get("cwd") || ""), gateway); }
+    catch (error) { sendJson(response, 400, { error: String(error) }, gateway); }
     return;
   }
   if (method === "POST" && url.pathname === "/api/tasks") {

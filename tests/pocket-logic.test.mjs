@@ -1791,3 +1791,67 @@ test('Successful deliberate task entry acknowledges only its terminal marker and
     assert.equal(gateway.snapshot().taskTerminalResults.b, 'Done');
   }
 });
+
+test('Fresh task history only suppresses the specific unmaterialized condition before first use', async () => {
+  const runtime = activeRuntime();
+  runtime.state.turn = null;
+  runtime.pendingTaskNames.set('thread-1', { name: 'Fresh', attempted: false });
+  let error = 'thread thread-1 is not materialized yet; history unavailable before first user message';
+  runtime.rpc = { request: async () => { throw new Error(error); } };
+  assert.deepEqual((await runtime.history(null, 20)).turns, []);
+  error = 'Permission denied';
+  await assert.rejects(runtime.history(null, 20), /Permission denied/);
+  error = 'thread thread-1 is not materialized yet; history unavailable before first user message';
+  runtime.pendingTaskNames.get('thread-1').attempted = true;
+  await assert.rejects(runtime.history(null, 20), /not materialized/);
+});
+
+test('New Task starting settings use the target runtime and optional failures keep ownership handoff', async () => {
+  for (const settings of [{}, { model: 'target-model', effort: 'high', access: 'auto' }, { model: 'missing', access: 'full' }]) {
+    const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
+    const a = gateway.runtimes.get('local'), b = gateway.runtimes.get('ssh:b');
+    Object.assign(a.state, { connected: true, thread: { id: 'a' }, threadStatus: 'idle' });
+    b.state.connected = true;
+    b.state.models = [{ model: 'target-model', displayName: 'Target model', defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }];
+    const calls = [];
+    a.rpc = { request: async method => { assert.equal(method, 'thread/unsubscribe'); return {}; } };
+    b.waitForSettingsUpdate = async () => true;
+    b.rpc = { request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'thread/start') return { thread: { id: 'new', cwd: '/resolved', status: 'idle', canAcceptDirectInput: true }, model: 'target-model', reasoningEffort: 'high', activePermissionProfile: { id: ':workspace' }, approvalsReviewer: 'user' };
+      if (method === 'permissionProfile/list') return { data: [{ id: ':workspace', allowed: true }, { id: ':full-access', allowed: true }] };
+      if (method === 'thread/loaded/list') return { data: ['new'] };
+      if (method === 'thread/read') throw new Error('no rollout found');
+      if (method === 'thread/resume') throw new Error('Must not resume zero-turn task');
+      if (method === 'turn/start') return { turn: { id: 'real', status: 'inProgress' } };
+      return { data: [] };
+    } };
+    const options = await gateway.newTaskOptions('ssh:b', '/resolved');
+    assert.equal(options.models[0].model, 'target-model');
+    assert.deepEqual(options.access, { ask: true, auto: true, full: true });
+    assert.equal(b.permissionProfiles.length, 0); // Read-only options do not replace attached-task settings.
+    const result = await gateway.taskAction({ action: 'create', machineId: 'ssh:b', expectedMachineId: 'local', expectedThreadId: 'a', name: 'Fresh', ...settings });
+    assert.equal(result.machineId, 'ssh:b');assert.equal(a.state.thread, null);
+    assert.equal(result.thread.id, 'new');
+    assert(!calls.some(c => ['thread/resume', 'thread/name/set', 'turn/start'].includes(c.method)));
+    const updates = calls.filter(c => c.method === 'thread/settings/update').map(c => c.params);
+    if (!settings.model) assert.deepEqual(updates, []);
+    else if (settings.model === 'target-model') {
+      assert.deepEqual(updates, [{ threadId: 'new', model: 'target-model', effort: 'high' }, { threadId: 'new', approvalsReviewer: 'auto_review', approvalPolicy: 'on-request' }]);
+      assert.equal(result.warning, undefined);
+    } else { assert.match(result.warning, /Task created.*Model\/effort/);assert.equal(updates[0].permissions, ':full-access'); }
+    assert.equal((await b.sendMessage('Real first message', 'start')).accepted, true);
+    assert(calls.findIndex(c => c.method === 'turn/start') > calls.findLastIndex(c => c.method === 'thread/settings/update'));
+  }
+});
+
+test('Unconfirmed fresh-task access never falls back to resuming the zero-turn thread', async () => {
+  const runtime = activeRuntime();
+  runtime.pendingTaskNames.set('thread-1', { name: 'Fresh', attempted: false });
+  runtime.state.access = { mode: 'ask', choices: { auto: { available: true } } };
+  runtime.waitForSettingsUpdate = async () => false;
+  const calls = [];
+  runtime.rpc = { request: async method => { calls.push(method); return {}; } };
+  await assert.rejects(runtime.updateAccessNow('auto'), /could not be confirmed/);
+  assert.deepEqual(calls, ['thread/settings/update']);
+});

@@ -2058,6 +2058,40 @@ const newTaskName = document.querySelector("#new-task-name");
 const newTaskCwd = document.querySelector("#new-task-cwd");
 const newTaskError = document.querySelector("#new-task-error");
 const newTaskCreate = document.querySelector("#new-task-create");
+const newTaskModel = document.querySelector("#new-task-model");
+const newTaskEffort = document.querySelector("#new-task-effort");
+const newTaskAccess = document.querySelector("#new-task-access");
+let newTaskModels = [];
+let newTaskOptionsRequest = 0;
+function newTaskEfforts() {
+  newTaskEffort.replaceChildren(new Option("Default", ""));
+  const model = newTaskModels.find(model => model.model === newTaskModel.value);
+  for (const effort of model?.supportedReasoningEfforts || []) newTaskEffort.add(new Option(effortLabel(effort.reasoningEffort), effort.reasoningEffort));
+  newTaskEffort.disabled = !model;
+}
+async function loadNewTaskOptions() {
+  if (!newTaskDialog.open) return;
+  const request = ++newTaskOptionsRequest;
+  try {
+    const query = new URLSearchParams({ machineId: newTaskMachine.id, cwd: newTaskCwd.value.trim() });
+    const response = await apiFetch(`/api/tasks/options?${query}`);
+    const value = await response.json();
+    if (request !== newTaskOptionsRequest || !newTaskDialog.open) return;
+    if (!response.ok) throw new Error(value.error || "Starting settings unavailable");
+    const chosen = { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value };
+    newTaskModel.replaceChildren(new Option("Default", ""));
+    newTaskAccess.replaceChildren(new Option("Default", ""));
+    newTaskModels = value.models || [];
+    for (const model of newTaskModels) newTaskModel.add(new Option(model.displayName || model.model, model.model));
+    for (const [mode, label] of [["ask", "Ask"], ["auto", "Auto"], ["full", "Full"]]) if (value.access?.[mode]) newTaskAccess.add(new Option(label, mode));
+    if (newTaskModels.some(model => model.model === chosen.model)) newTaskModel.value = chosen.model;
+    newTaskEfforts();
+    if ([...newTaskEffort.options].some(option => option.value === chosen.effort)) newTaskEffort.value = chosen.effort;
+    if ([...newTaskAccess.options].some(option => option.value === chosen.access)) newTaskAccess.value = chosen.access;
+  } catch { if (request === newTaskOptionsRequest && newTaskDialog.open) newTaskError.textContent = "Starting settings unavailable. You can still create with Default settings."; }
+}
+newTaskModel.addEventListener("change", newTaskEfforts);
+newTaskCwd.addEventListener("change", loadNewTaskOptions);
 let newTaskMachine = null;
 
 function newTask(machine) {
@@ -2069,7 +2103,12 @@ function newTask(machine) {
     || machine.tasks?.find(task => task.selected && task.cwd?.trim())?.cwd
     || machine.tasks?.find(task => task.cwd?.trim())?.cwd || "";
   newTaskError.textContent = "";
+  newTaskModel.replaceChildren(new Option("Default", ""));
+  newTaskAccess.replaceChildren(new Option("Default", ""));
+  newTaskModels = [];
+  newTaskEfforts();
   newTaskDialog.showModal();
+  void loadNewTaskOptions();
   newTaskName.focus();
 }
 newTaskDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
@@ -2083,9 +2122,11 @@ newTaskForm.addEventListener("submit", async event => {
     newTaskError.textContent = "Enter an absolute project folder on this machine"; newTaskCwd.focus(); return;
   }
   newTaskError.textContent = "";
+  const startingSettings = { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value };
+  ++newTaskOptionsRequest;
   for (const control of newTaskForm.elements) control.disabled = true;
   try {
-    const result = await performTaskAction({ machineId: newTaskMachine.id, action: "create", name, cwd });
+    const result = await performTaskAction({ machineId: newTaskMachine.id, action: "create", name, cwd, ...startingSettings });
     if (result?.succeeded) { newTaskDialog.close(); elements.messageText.focus(); }
     else newTaskError.textContent = result?.failure || "Task creation is unavailable right now";
   } finally { for (const control of newTaskForm.elements) control.disabled = false; }
@@ -2871,6 +2912,8 @@ elements.messageText.addEventListener("focus", () => {
 });
 let previousViewportHeight = window.visualViewport?.height ?? innerHeight;
 let viewportReconcileFrame;
+let keyboardClosedHeight = previousViewportHeight;
+let composerKeyboardOpen = false;
 function cancelViewportReconciliation() { cancelAnimationFrame(viewportReconcileFrame); }
 function viewportReconciliationBlocked() {
   const focused = document.activeElement;
@@ -2882,6 +2925,15 @@ window.visualViewport?.addEventListener("resize", () => {
   const decrease = previousViewportHeight - height;
   previousViewportHeight = height;
   cancelViewportReconciliation();
+  const mobileComposer = document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches;
+  keyboardClosedHeight = Math.max(keyboardClosedHeight, height);
+  const keyboardOpen = mobileComposer && keyboardClosedHeight - height > 150;
+  const openingKeyboard = keyboardOpen && !composerKeyboardOpen;
+  const closingKeyboard = !keyboardOpen && composerKeyboardOpen;
+  composerKeyboardOpen = keyboardOpen;
+  if (!matchMedia("(max-width: 860px)").matches) keyboardClosedHeight = height;
+  if (closingKeyboard) return;
+  if (openingKeyboard) jumpToLatest(true);
   if (document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches && shouldFollowConversation) {
     jumpToLatest(true);
     viewportReconcileFrame = requestAnimationFrame(() => {
