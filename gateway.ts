@@ -1598,7 +1598,7 @@ export class MachineRuntime {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
-  private compactionHints = new Map<string, PocketActivity>();
+  private compactionHints = new Map<string, { activity: PocketActivity; occurrence?: number }>();
   private taskQueues = new Map<string, QueuedMessage>();
   private pendingTaskNames = new Map<string, { name: string; attempted: boolean }>();
   private options: Options;
@@ -2868,43 +2868,48 @@ export class MachineRuntime {
     console.log(`${this.definition.name}: attached to ${this.state.thread.id} (${this.state.thread.name})`);
   }
 
+  private async completedCompactions(rpc: RpcClient, threadId: string, turnId: string): Promise<any[] | null> {
+    const deadline = Date.now() + 5000;
+    let cursor: string | null = null;
+    const cursors = new Set<string>();
+    const items: any[] = [];
+    try {
+      for (let pageIndex = 0; pageIndex < DETAIL_ITEMS_MAX_PAGES; pageIndex++) {
+        if (Date.now() >= deadline) return null;
+        const page = await rpc.request("thread/items/list", {
+          threadId, turnId, cursor, limit: DETAIL_ITEMS_PAGE_LIMIT, sortDirection: "asc",
+        }, Math.max(1, deadline - Date.now()));
+        if (!Array.isArray(page?.data)) return null;
+        items.push(...page.data.filter((entry: any) => entry.item?.type === "contextCompaction").map((entry: any) => entry.item));
+        cursor = page?.nextCursor ? String(page.nextCursor) : null;
+        if (!cursor) return items;
+        if (cursors.has(cursor)) return null;
+        cursors.add(cursor);
+      }
+    } catch { /* An incomplete check cannot establish a compaction occurrence. */ }
+    return null;
+  }
+
   private async restoreCompactionHint(): Promise<void> {
     const thread = this.state.thread;
     const hint = thread && this.compactionHints.get(thread.id);
     if (!thread || !hint || !this.rpc) return;
-    if (this.state.turn?.id !== hint.turnId || this.state.turn.status !== "inProgress") {
+    const activity = hint.activity;
+    if (this.state.turn?.id !== activity.turnId || this.state.turn.status !== "inProgress") {
       this.compactionHints.delete(thread.id);
       return;
     }
-    const rpc = this.rpc;
-    const deadline = Date.now() + 5000;
-    let cursor: string | null = null;
-    const cursors = new Set<string>();
-    try {
-      for (let pageIndex = 0; pageIndex < DETAIL_ITEMS_MAX_PAGES; pageIndex++) {
-        if (Date.now() >= deadline) return;
-        const page = await rpc.request("thread/items/list", {
-          threadId: thread.id, turnId: hint.turnId, cursor,
-          limit: DETAIL_ITEMS_PAGE_LIMIT, sortDirection: "desc",
-        }, Math.max(1, deadline - Date.now()));
-        if (this.state.thread !== thread || this.state.turn?.id !== hint.turnId
-          || this.state.turn.status !== "inProgress" || this.compactionHints.get(thread.id) !== hint) return;
-        // Running compaction is live-only; its persisted item signals completion.
-        if (!Array.isArray(page?.data)) return;
-        const completed = page.data.find((entry: any) => entry.item?.type === "contextCompaction" && String(entry.item.id) === hint.id);
-        if (completed) {
-          this.handleItem(completed.item, hint.turnId, "done");
-          return;
-        }
-        cursor = page?.nextCursor ? String(page.nextCursor) : null;
-        if (!cursor) {
-          this.state.activities = mergeActivities(this.state.activities, [hint]).slice(-MAX_ACTIVITIES);
-          return;
-        }
-        if (cursors.has(cursor)) return;
-        cursors.add(cursor);
-      }
-    } catch { /* An incomplete check must not resurrect a potentially completed activity. */ }
+    if (hint.occurrence === undefined) return;
+    const completed = await this.completedCompactions(this.rpc, thread.id, activity.turnId!);
+    if (!completed || this.state.thread !== thread || this.state.turn?.id !== activity.turnId
+      || this.state.turn.status !== "inProgress" || this.compactionHints.get(thread.id) !== hint) return;
+    const item = completed[hint.occurrence - 1];
+    if (item) {
+      this.compactionHints.delete(thread.id);
+      this.handleItem(item, activity.turnId, "done");
+    } else {
+      this.state.activities = mergeActivities(this.state.activities, [activity]).slice(-MAX_ACTIVITIES);
+    }
   }
 
   private async loadActiveTurn(): Promise<void> {
@@ -3139,7 +3144,7 @@ export class MachineRuntime {
         break;
       case "turn/started":
         if (this.state.thread) {
-          if (this.compactionHints.get(this.state.thread.id)?.turnId !== String(params.turn?.id ?? "")) this.compactionHints.delete(this.state.thread.id);
+          if (this.compactionHints.get(this.state.thread.id)?.activity.turnId !== String(params.turn?.id ?? "")) this.compactionHints.delete(this.state.thread.id);
           delete this.terminalResults[this.state.thread.id];
           this.terminalReads.delete(this.state.thread.id);
           this.taskStatuses.set(this.state.thread.id, "active");
@@ -3339,8 +3344,18 @@ export class MachineRuntime {
     const activity = activityFromItem(item, phase, itemTurnId);
     if (!activity) return;
     if (item.type === "contextCompaction" && this.state.thread) {
-      if (phase === "start") this.compactionHints.set(this.state.thread.id, activity);
-      else if (this.compactionHints.get(this.state.thread.id)?.id === activity.id) this.compactionHints.delete(this.state.thread.id);
+      if (phase === "start" && this.rpc) {
+        const thread = this.state.thread;
+        const hint: { activity: PocketActivity; occurrence?: number } = { activity };
+        this.compactionHints.set(thread.id, hint);
+        // History IDs differ from live IDs. Capture the count preceding this live occurrence.
+        void this.completedCompactions(this.rpc, thread.id, itemTurnId).then(completed => {
+          if (completed && this.state.thread === thread && this.state.turn?.id === itemTurnId
+            && this.state.turn.status === "inProgress" && this.compactionHints.get(thread.id) === hint) {
+            hint.occurrence = completed.length + 1;
+          }
+        });
+      } else if (this.compactionHints.get(this.state.thread.id)?.activity.id === activity.id) this.compactionHints.delete(this.state.thread.id);
     }
     this.state.activities = mergeActivities(this.state.activities, [activity]).slice(-MAX_ACTIVITIES);
     const stored = this.state.activities.find((candidate) => candidate.id === activity.id);

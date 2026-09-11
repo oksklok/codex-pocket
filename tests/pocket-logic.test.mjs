@@ -2027,10 +2027,13 @@ test('Restart-required compares effective launch overrides and unmasked settings
 });
 
 test('Compaction alone survives release and is authoritatively reconciled on reattach', async () => {
-  for (const outcome of ['running','completed-away','different-turn','finished','unreadable','racing-completion','incomplete']) {
-    const runtime=activeRuntime();const item={id:'compact-1',type:'contextCompaction'};
+  for (const outcome of ['running','completed-away','different-turn','finished','unreadable','racing-completion','incomplete','older-completion','second-completed-away']) {
+    const runtime=activeRuntime();const item={id:'a750986f-933a-41cc-a30f-fec514d17671',type:'contextCompaction'};
+    const older={id:'item-3',type:'contextCompaction'};
+    runtime.rpc={request:async()=>({data:['older-completion','second-completed-away'].includes(outcome)?[{item:older}]:[]})};
     runtime.handleNotification({method:'item/started',params:{threadId:'thread-1',turnId:'turn-1',item}});
     assert.equal(runtime.state.activities[0].label,'Compacting context');
+    await new Promise(setImmediate);
     await runtime.releaseTask();assert.equal(runtime.state.activities.length,0);
     const calls=[];
     runtime.rpc={request:async(method,params,timeout)=>{
@@ -2040,19 +2043,19 @@ test('Compaction alone survives release and is authoritatively reconciled on rea
         if(outcome==='unreadable')throw new Error('Unavailable');
         if(outcome==='incomplete')return {data:[],nextCursor:'repeated'};
         if(outcome==='racing-completion')runtime.handleNotification({method:'item/completed',params:{threadId:'thread-1',turnId:'turn-1',item}});
-        return {data:outcome==='completed-away'?[{turnId:'turn-1',item}]:[]};
+        return {data:outcome==='second-completed-away'?[{turnId:'turn-1',item:older},{turnId:'turn-1',item:{...item,id:'item-7'}}]:outcome==='completed-away'?[{turnId:'turn-1',item:{...item,id:'item-7'}}]:outcome==='older-completion'?[{turnId:'turn-1',item:older}]:[]};
       }
       return {data:[]};
     }};
     runtime.loadedThreads=[{id:'thread-1',name:'Task',cwd:'/project',status:outcome==='finished'?'idle':'active'}];
     await runtime.attachLoadedThread('thread-1',false,{thread:{id:'thread-1',cwd:'/project',status:outcome==='finished'?'idle':'active',canAcceptDirectInput:true}});
     const activities=runtime.state.activities;
-    if(outcome==='running'){
+    if(outcome==='running'||outcome==='older-completion'){
       assert.equal(activities[0].label,'Compacting context');
       runtime.handleNotification({method:'item/completed',params:{threadId:'thread-1',turnId:'turn-1',item}});
       assert.equal(runtime.state.activities.length,1);assert.equal(runtime.state.activities[0].label,'Context compacted');
       assert(!runtime.compactionHints.has('thread-1'));
-    } else if(['completed-away','racing-completion'].includes(outcome)) {
+    } else if(['completed-away','second-completed-away','racing-completion'].includes(outcome)) {
       assert.equal(activities.length,1);assert.equal(activities[0].status,'completed');
     } else assert.equal(activities.length,0);
     const reads=calls.filter(c=>c.method==='thread/items/list');
