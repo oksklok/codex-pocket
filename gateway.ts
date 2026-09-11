@@ -1598,6 +1598,7 @@ export class MachineRuntime {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
+  private compactionHints = new Map<string, PocketActivity>();
   private taskQueues = new Map<string, QueuedMessage>();
   private pendingTaskNames = new Map<string, { name: string; attempted: boolean }>();
   private options: Options;
@@ -2429,6 +2430,7 @@ export class MachineRuntime {
       this.pendingTaskNames.delete(id);
       this.taskQueues.delete(id);
       this.contextByThread.delete(id);
+      this.compactionHints.delete(id);
       delete this.terminalResults[id];
       this.taskStatuses.delete(id);
       this.taskStatusObservations.delete(id);
@@ -2852,6 +2854,7 @@ export class MachineRuntime {
       try { await this.loadActiveTurn(); }
       catch (error) { console.warn(`${this.definition.name}: active turn details unavailable: ${compact(error, 180)}`); }
     }
+    await this.restoreCompactionHint();
     if (previousThreadId) {
       try { await rpc.request("thread/unsubscribe", { threadId: previousThreadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS); }
       catch (error) { console.warn(`${this.definition.name}: previous task unsubscribe skipped: ${compact(error, 180)}`); }
@@ -2863,6 +2866,45 @@ export class MachineRuntime {
     this.state.phase = this.computePhase();
     if (broadcastReset) this.broadcast("snapshot", this.snapshot());
     console.log(`${this.definition.name}: attached to ${this.state.thread.id} (${this.state.thread.name})`);
+  }
+
+  private async restoreCompactionHint(): Promise<void> {
+    const thread = this.state.thread;
+    const hint = thread && this.compactionHints.get(thread.id);
+    if (!thread || !hint || !this.rpc) return;
+    if (this.state.turn?.id !== hint.turnId || this.state.turn.status !== "inProgress") {
+      this.compactionHints.delete(thread.id);
+      return;
+    }
+    const rpc = this.rpc;
+    const deadline = Date.now() + 5000;
+    let cursor: string | null = null;
+    const cursors = new Set<string>();
+    try {
+      for (let pageIndex = 0; pageIndex < DETAIL_ITEMS_MAX_PAGES; pageIndex++) {
+        if (Date.now() >= deadline) return;
+        const page = await rpc.request("thread/items/list", {
+          threadId: thread.id, turnId: hint.turnId, cursor,
+          limit: DETAIL_ITEMS_PAGE_LIMIT, sortDirection: "desc",
+        }, Math.max(1, deadline - Date.now()));
+        if (this.state.thread !== thread || this.state.turn?.id !== hint.turnId
+          || this.state.turn.status !== "inProgress" || this.compactionHints.get(thread.id) !== hint) return;
+        // Running compaction is live-only; its persisted item signals completion.
+        if (!Array.isArray(page?.data)) return;
+        const completed = page.data.find((entry: any) => entry.item?.type === "contextCompaction" && String(entry.item.id) === hint.id);
+        if (completed) {
+          this.handleItem(completed.item, hint.turnId, "done");
+          return;
+        }
+        cursor = page?.nextCursor ? String(page.nextCursor) : null;
+        if (!cursor) {
+          this.state.activities = mergeActivities(this.state.activities, [hint]).slice(-MAX_ACTIVITIES);
+          return;
+        }
+        if (cursors.has(cursor)) return;
+        cursors.add(cursor);
+      }
+    } catch { /* An incomplete check must not resurrect a potentially completed activity. */ }
   }
 
   private async loadActiveTurn(): Promise<void> {
@@ -3097,6 +3139,7 @@ export class MachineRuntime {
         break;
       case "turn/started":
         if (this.state.thread) {
+          if (this.compactionHints.get(this.state.thread.id)?.turnId !== String(params.turn?.id ?? "")) this.compactionHints.delete(this.state.thread.id);
           delete this.terminalResults[this.state.thread.id];
           this.terminalReads.delete(this.state.thread.id);
           this.taskStatuses.set(this.state.thread.id, "active");
@@ -3125,6 +3168,7 @@ export class MachineRuntime {
         });
         break;
       case "turn/completed": {
+        if (this.state.thread) this.compactionHints.delete(this.state.thread.id);
         const wasActive = this.state.turn?.status === "inProgress";
         const turn = params.turn ?? {};
         this.updateModel(turn);
@@ -3294,6 +3338,10 @@ export class MachineRuntime {
     this.rememberItem(item, itemTurnId);
     const activity = activityFromItem(item, phase, itemTurnId);
     if (!activity) return;
+    if (item.type === "contextCompaction" && this.state.thread) {
+      if (phase === "start") this.compactionHints.set(this.state.thread.id, activity);
+      else if (this.compactionHints.get(this.state.thread.id)?.id === activity.id) this.compactionHints.delete(this.state.thread.id);
+    }
     this.state.activities = mergeActivities(this.state.activities, [activity]).slice(-MAX_ACTIVITIES);
     const stored = this.state.activities.find((candidate) => candidate.id === activity.id);
     if (stored) this.broadcast("activity", stored);
