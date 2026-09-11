@@ -1591,6 +1591,7 @@ export class MachineRuntime {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
+  private unmaterializedThreads = new Set<string>();
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
@@ -2215,9 +2216,9 @@ export class MachineRuntime {
       this.listTaskPages("thread/loaded/list", { limit: 100 }, deadline)
         .catch(() => this.loadedThreads.filter(thread => thread.loaded).map(thread => thread.id)),
     ]);
-    const threads = listed;
+    const threads = listed.filter(thread => !this.unmaterializedThreads.has(String(thread.id)));
     const previousThreads = this.loadedThreads;
-    const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)));
+    const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)).filter(id => !this.unmaterializedThreads.has(id)));
     const listedIds = new Set(threads.map((thread: any) => String(thread.id)));
     for (const id of [...loadedIds].filter((id) => !listedIds.has(id))) {
       const remaining = deadline - Date.now();
@@ -2330,12 +2331,22 @@ export class MachineRuntime {
       const started = await this.rpc.request("thread/start", { cwd });
       const id = String(started.thread?.id ?? "");
       if (!id) throw new Error("Codex did not return a new task");
-      // Keep even an empty task selectable from its live protocol metadata.
+      // Materialize the zero-turn rollout before naming it (Codex 0.153.4).
+      this.unmaterializedThreads.add(id);
+      let materialized: JsonObject;
+      try {
+        materialized = await this.rpc.request("thread/resume", { threadId: id, excludeTurns: false });
+        if (materialized.thread?.id !== id) throw new Error("Codex did not materialize the new task");
+      } catch (error) {
+        try { await this.rpc.request("thread/unsubscribe", { threadId: id }, THREAD_UNSUBSCRIBE_TIMEOUT_MS); } catch {}
+        throw error;
+      }
+      this.unmaterializedThreads.delete(id);
       let nameError: unknown;
-      try { await this.rpc.request("thread/name/set", { threadId: id, name }); started.thread.name = name; }
+      try { await this.rpc.request("thread/name/set", { threadId: id, name }); materialized.thread.name = name; }
       catch (error) { nameError = error; }
-      this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
-      await this.attachLoadedThread(id, true, started);
+      this.loadedThreads.push(loadedThreadSummary(materialized.thread, id, true));
+      await this.attachLoadedThread(id, true, materialized);
       this.options.thread = id;
       // The new task is already attached; catalog failure must not abort the handoff.
       try { await this.refreshLoadedThreads(); } catch {}

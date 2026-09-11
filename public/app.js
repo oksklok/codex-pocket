@@ -189,7 +189,6 @@ const navigationRequests = [null, null];
 const navigationErrors = ["", ""];
 let navigationEpoch = 0;
 let destinationSelection = null;
-let destinationCreateError = null;
 let taskActionTarget = null;
 let destinationTaskError = null;
 let taskActionBusy = false;
@@ -613,12 +612,12 @@ function renderDestinationSwitcher() {
   const renderKey = JSON.stringify([
     navigationCatalog, machines.map(machine => [machine.id, machine.connected]), elements.destinationSearch.value, Boolean(navigationRequest),
     state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
-    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationCreateError, destinationTaskError, archived, projectsVisible, navigationErrors[slot],
+    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, archived, projectsVisible, navigationErrors[slot],
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
     if (status && !destinationSelection) status.textContent = destinationTaskStatus(
-      { id: state?.machineId }, { id: state?.thread?.id }, state);
+      { id: state?.machineId }, { id: state?.thread?.id }, state, taskTerminalResults.get(draftKey(state?.machineId, state?.thread?.id)));
     return;
   }
   destinationRenderKey = renderKey;
@@ -676,7 +675,6 @@ function renderDestinationSwitcher() {
     create.addEventListener("click", () => newTask(machine));
     if (!archived) heading.append(create);
     group.append(heading);
-    if (destinationCreateError?.machineId === machine.id) group.append(Object.assign(document.createElement("p"), { className: "destination-empty error-text", textContent: destinationCreateError.message }));
     // Auto-attach ownership failures belong to a task, not the machine catalog.
     // Only a failed manual selection surfaces ownership here, with its Retry target.
     if (machine.local && machine.connectionError
@@ -711,7 +709,7 @@ function renderDestinationSwitcher() {
       status.textContent = destinationSelection?.machineId === machine.id && destinationSelection?.threadId === task.id
         ? "Opening…"
         : taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "rename" ? "Renaming" : taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
-        : destinationTaskStatus(machine, task, state);
+        : destinationTaskStatus(machine, task, state, taskTerminalResults.get(draftKey(machine.id, task.id)));
       row.append(check, label, status);
       row.addEventListener("click", () => selectDestination(machine.id, task.id));
       const entry = document.createElement("div");
@@ -884,7 +882,6 @@ function closeDestinationSwitcher() {
   document.body.classList.remove("destination-open");
   saveSidebarPreference("tasks", false);
   elements.destinationSearch.value = "";
-  destinationCreateError = null;
   destinationTaskError = null;
   return true;
 }
@@ -2005,22 +2002,52 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   }
 }
 
-async function newTask(machine) {
+// Observed turn events only; retained when the selected conversation changes.
+const taskTerminalResults = new Map();
+const newTaskDialog = document.querySelector("#new-task-dialog");
+const newTaskForm = document.querySelector("#new-task-form");
+const newTaskName = document.querySelector("#new-task-name");
+const newTaskCwd = document.querySelector("#new-task-cwd");
+const newTaskError = document.querySelector("#new-task-error");
+const newTaskCreate = document.querySelector("#new-task-create");
+let newTaskMachine = null;
+
+function newTask(machine) {
   if (destinationSelection || taskActionBusy) return;
-  const name = prompt(`New Task on ${machine.name}: task name`);
-  if (name === null || !name.trim()) return;
-  const defaultCwd = machine.id === state?.machineId ? state?.thread?.cwd : machine.tasks?.find((task) => task.selected)?.cwd;
-  const cwd = prompt("Project folder on this machine (absolute path)", defaultCwd || "");
-  if (cwd === null || !cwd.trim()) return;
-  await performTaskAction({ machineId: machine.id, action: "create", name, cwd });
+  newTaskMachine = machine;
+  document.querySelector("#new-task-title").textContent = `New Task on ${machine.name}`;
+  newTaskName.value = "";
+  newTaskCwd.value = (machine.id === state?.machineId ? state?.thread?.cwd : "")
+    || machine.tasks?.find(task => task.selected && task.cwd?.trim())?.cwd
+    || machine.tasks?.find(task => task.cwd?.trim())?.cwd || "";
+  newTaskError.textContent = "";
+  newTaskDialog.showModal();
+  newTaskName.focus();
 }
+newTaskDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
+newTaskDialog.addEventListener("cancel", event => { if (newTaskCreate.disabled) event.preventDefault(); });
+document.querySelector("#new-task-cancel").addEventListener("click", () => newTaskDialog.close());
+newTaskForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const name = newTaskName.value.trim(), cwd = newTaskCwd.value.trim();
+  if (!name || name.length > 180) { newTaskError.textContent = "Enter a task name up to 180 characters"; newTaskName.focus(); return; }
+  if (!cwd || cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd)) {
+    newTaskError.textContent = "Enter an absolute project folder on this machine"; newTaskCwd.focus(); return;
+  }
+  newTaskError.textContent = "";
+  for (const control of newTaskForm.elements) control.disabled = true;
+  try {
+    const result = await performTaskAction({ machineId: newTaskMachine.id, action: "create", name, cwd });
+    if (result?.succeeded) { newTaskDialog.close(); elements.messageText.focus(); }
+    else newTaskError.textContent = result?.failure || "Task creation is unavailable right now";
+  } finally { for (const control of newTaskForm.elements) control.disabled = false; }
+});
 
 async function performTaskAction(body) {
   if (taskActionBusy || destinationSelection || submittingMessage || readingImages) return;
   taskActionBusy = true;
   const target = { machineId: body.machineId, threadId: body.threadId, action: body.action, events: [] };
   taskActionTarget = target;
-  destinationCreateError = null;
   destinationTaskError = null;
   renderDestinationSwitcher();
   let succeeded = false;
@@ -2049,10 +2076,7 @@ async function performTaskAction(body) {
     for (const entry of target.events.slice(lastSnapshot < 0 ? target.events.length : lastSnapshot + 1)) entry.deliver();
   } else for (const entry of target.events) entry.deliver();
   if (succeeded && body.action === "delete") composerDrafts.delete(draftKey(body.machineId, body.threadId));
-  if (failure) {
-    if (body.action === "create") destinationCreateError = { machineId: body.machineId, message: failure };
-    else destinationTaskError = { machineId: body.machineId, threadId: body.threadId, message: failure };
-  }
+  if (failure && body.action !== "create") destinationTaskError = { machineId: body.machineId, threadId: body.threadId, message: failure };
   invalidateNavigationCatalogs();
   await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
   renderDestinationSwitcher();
@@ -2062,6 +2086,7 @@ async function performTaskAction(body) {
   }
   if (succeeded && snapshot?.warning) { composerNotice = snapshot.warning; renderComposer(); }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
+  return { succeeded, failure };
 }
 
 async function selectDestination(machineId, threadId) {
@@ -2422,6 +2447,12 @@ function connectEvents() {
   on("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
   on("turn", (event) => {
     const value = parseEvent(event);
+    const key = draftKey(state?.machineId, state?.thread?.id);
+    const status = value.turn?.status;
+    if (status === "inProgress") taskTerminalResults.delete(key);
+    else if (["completed", "failed", "interrupted"].includes(status)) {
+      taskTerminalResults.set(key, value.turn.error || status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : "Done");
+    }
     if (value.turn?.status && value.turn.status !== "inProgress") composerNotice = "";
     mergeState(value);
   });

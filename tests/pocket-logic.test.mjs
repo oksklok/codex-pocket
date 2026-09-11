@@ -35,7 +35,7 @@ test("selected task status trusts fresh live phase over stale catalog status", (
     machineId: "local",
     thread: { id: "thread-1" },
     phase: "done",
-  }), "Done");
+  }), "");
 });
 
 test("phase precedence favors blocking requests and a newer active turn", () => {
@@ -457,31 +457,45 @@ test("empty task creation selects returned ID without fake input; lifecycle and 
   const tasks = new Map();
   const calls = [];
   let serial = 0;
+  const materialized = new Set();
   runtime.rpc = { request: async (method, params) => {
     calls.push({ method, params });
     if (method === "thread/start") { const thread = { id: `new-${++serial}`, cwd: params.cwd, status: "idle", canAcceptDirectInput: true }; tasks.set(thread.id, thread); return { thread }; }
-    if (method === "thread/name/set") { tasks.get(params.threadId).name = params.name; return {}; }
+    if (method === "thread/name/set") { assert(materialized.has(params.threadId)); tasks.get(params.threadId).name = params.name; return {}; }
     if (method === "thread/list") return { data: [...tasks.values()].filter(t => t.archived === true && params.archived === true) }; // Empty live tasks are absent from persisted listing.
     if (method === "thread/loaded/list") return { data: [...tasks.values()].filter(t => !t.archived).map(t => t.id) };
     if (method === "thread/read") { assert.equal(params.includeTurns, false); return { thread: tasks.get(params.threadId) }; }
     if (method === "thread/archive") { tasks.get(params.threadId).archived = true; return {}; }
     if (method === "thread/unarchive") { tasks.get(params.threadId).archived = false; return {}; }
     if (method === "thread/delete") { tasks.delete(params.threadId); return {}; }
-    if (method === "thread/resume") { assert.equal(params.excludeTurns, true); return { thread: tasks.get(params.threadId) }; }
+    if (method === "thread/resume") {
+      if (params.excludeTurns === false) materialized.add(params.threadId);
+      assert(materialized.has(params.threadId), "missing source rollout");
+      return { thread: tasks.get(params.threadId) };
+    }
+    if (method === "thread/turns/list") { assert(materialized.has(params.threadId), "missing source rollout"); return { data: [] }; }
     return { data: [] };
   } };
   const create = () => runtime.taskAction({ action: "create", name: "Same name", cwd: "/tmp/pocket-test" });
   const first = await create();
   assert.equal(first.thread.id, "new-1");
   assert.equal(first.message.mode, "start");
+  assert.deepEqual((await runtime.history(null, 20)).turns, []);
   assert.ok((await runtime.listLoadedThreads()).some(t => t.id === first.thread.id));
-  assert.ok(!calls.some(c => c.method === "turn/start" || c.method === "thread/resume"));
+  assert.ok(!calls.some(c => c.method === "turn/start"));
+  assert.deepEqual(calls.slice(0, 3).map(c => c.method), ["thread/start", "thread/resume", "thread/name/set"]);
+  assert.equal(calls[1].params.excludeTurns, false);
+  await runtime.taskAction({ action: "create", name: "Other task", cwd: "/tmp/other-project" });
+  await runtime.selectThread(first.thread.id);
+  assert.equal(runtime.state.thread.id, first.thread.id);
+  assert.deepEqual((await runtime.history(null, 20)).turns, []);
   await assert.rejects(runtime.taskAction({ action: "delete", threadId: "new-1" }), /Confirm/);
   await runtime.taskAction({ action: "archive", threadId: "new-1" });
   assert.equal(runtime.state.thread, null);
   assert.equal((await runtime.listArchivedThreads())[0].id, "new-1");
   await runtime.taskAction({ action: "unarchive", threadId: "new-1", archived: true });
   await runtime.selectThread("new-1");
+  assert.deepEqual((await runtime.history(null, 20)).turns, []);
   await runtime.taskAction({ action: "delete", threadId: "new-1", confirmed: true });
   assert.equal(runtime.state.thread, null);
   const next = await create();
@@ -1260,7 +1274,7 @@ test('New Task naming failure still hands ownership to the destination machine',
     Object.assign(runtime.state, { connected: true, thread: label === 'A' ? { id: 'a' } : null, threadStatus: 'idle' });
     runtime.rpc = { request: async (method, params) => {
       calls.push(`${label}:${method}`);
-      if (method === 'thread/start') return { thread: created };
+      if (method === 'thread/start' || method === 'thread/resume') return { thread: created };
       if (method === 'thread/name/set') throw new Error('Name save failed');
       if (method === 'thread/loaded/list') return { data: ['new-b'] };
       if (method === 'thread/read') return { thread: created };
@@ -1325,7 +1339,7 @@ test('New Task catalog refresh failure after attachment cannot abort ownership h
     Object.assign(runtime.state, { connected: true, thread: label === 'A' ? { id: 'a' } : null, threadStatus: 'idle' });
     runtime.rpc = { request: async method => {
       calls.push(`${label}:${method}`);
-      if (method === 'thread/start') return { thread: { id: 'new-b', cwd: '/project', status: 'idle', canAcceptDirectInput: true } };
+      if (method === 'thread/start' || method === 'thread/resume') return { thread: { id: 'new-b', cwd: '/project', status: 'idle', canAcceptDirectInput: true } };
       return { data: [] };
     } };
   }
@@ -1524,5 +1538,44 @@ test("Desktop composite async reply IDs resolve the exact question index live an
       assert.equal(messages.filter(m => m.text === "All good.").length, 1);
       assert.equal(resolvedAsyncAnswer({ ...q, id: "other" }, 1, messages), null);
     }
+  }
+});
+
+
+test('New Task materialization failure preserves selection and never names or exposes the task', async () => {
+  for (const machineId of ['local', 'ssh:b']) {
+    const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
+    const a = gateway.runtimes.get('local'), b = gateway.runtimes.get(machineId);
+    Object.assign(a.state, { connected: true, thread: { id: 'a' }, threadStatus: 'idle' });
+    b.state.connected = true;
+    const before = structuredClone(a.state);
+    const calls = [];
+    b.rpc = { request: async (method, params) => {
+      calls.push(method);
+      if (method === 'thread/start') return { thread: { id: 'new' } };
+      if (method === 'thread/unsubscribe') { assert.equal(params.threadId, 'new'); return {}; }
+      if (method === 'thread/list') return { data: [{ id: 'new', source: 'cli', cwd: '/project' }] };
+      if (method === 'thread/loaded/list') return { data: ['new'] };
+      assert.equal(method, 'thread/resume');
+      assert.deepEqual(params, { threadId: 'new', excludeTurns: false });
+      throw new Error('Materialization failed');
+    } };
+    await assert.rejects(gateway.taskAction({ action: 'create', machineId, expectedMachineId: 'local', expectedThreadId: 'a', name: 'New', cwd: '/project' }), /Materialization failed/);
+    assert.equal(gateway.selectedMachineId, 'local');
+    assert.deepEqual(a.state, before);
+    assert(!b.loadedThreads.some(t => t.id === 'new'));
+    assert.deepEqual(calls, ['thread/start', 'thread/resume', 'thread/unsubscribe']);
+    assert.deepEqual(await b.refreshLoadedThreads(), []);
+  }
+});
+
+test('Tasks labels require observed terminal results and active status takes priority', () => {
+  const idle = { id: 'a', status: 'idle' };
+  const selected = { machineId: 'local', thread: idle, phase: 'done', threadStatus: 'idle' };
+  assert.equal(destinationTaskStatus(machine, idle, selected), '');
+  for (const result of ['Done', 'Failed', 'Stopped']) {
+    assert.equal(destinationTaskStatus(machine, idle, selected, result), result);
+    assert.equal(destinationTaskStatus(machine, idle, {}, result), result);
+    assert.equal(destinationTaskStatus(machine, { ...idle, status: 'active' }, {}, result), 'Working');
   }
 });

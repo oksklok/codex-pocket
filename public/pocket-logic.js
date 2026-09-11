@@ -1,17 +1,9 @@
-export function destinationTaskStatus(machine, task, currentState) {
+export function destinationTaskStatus(machine, task, currentState, terminalResult = "") {
   const selected = machine.id === currentState?.machineId && task.id === currentState?.thread?.id;
   const phase = selected ? currentState?.phase : task.phase;
   if (phase === "waiting_permission" || phase === "waiting_input") return "Waiting";
-  if (phase === "working") return "Working";
-  if (phase === "failed") return "Failed";
-  if (phase === "stopped") return "Stopped";
-  if (phase === "done") return "Done";
-  if (selected) return "";
-  const status = String(task.status || "");
-  if (status.startsWith("active")) return "Working";
-  if (/failed|error/i.test(status)) return "Failed";
-  if (/interrupted|stopped/i.test(status)) return "Stopped";
-  return "";
+  if (phase === "working" || (selected ? currentState?.threadStatus : task.status)?.startsWith("active")) return "Working";
+  return terminalResult;
 }
 
 export function preserveMessageCreatedAt(existing, incoming) {

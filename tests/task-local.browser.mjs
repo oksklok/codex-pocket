@@ -47,7 +47,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'Activity image'}});
  if(u.pathname==='/api/activity/image'||u.pathname==='/api/message/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json(historyFixture||{turns:[],nextCursor:null});
- if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task'}]}].filter(machine=>!settings.headless||!machine.local)});}
+ if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
@@ -467,11 +467,39 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  release();gate=null;await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));
  assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);assert.equal(await input.inputValue(),'Stable action draft');
  task.name='Current task';await dismissTasks();await closed();await open();
+ await page.getByRole('button',{name:'New task',exact:true}).last().click();
+ assert.equal(await page.locator('#new-task-title').textContent(),'New Task on Second machine');
+ assert.equal(await page.locator('#new-task-cwd').inputValue(),'/remote/project');
+ await page.locator('#new-task-cancel').click();
  failAction=true;
- gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
- await page.locator('.destination-group').first().getByText('Fixture action failed',{exact:true}).waitFor();assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.getByRole('button',{name:'New task',exact:true}).first().click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();
+ await page.locator('#new-task-dialog').waitFor();assert.equal(await page.locator('#new-task-cwd').inputValue(),'/project');
+ await page.locator('#new-task-create').click();await page.getByText('Enter a task name up to 180 characters',{exact:true}).waitFor();
+ await page.locator('#new-task-name').fill('New test task');await page.locator('#new-task-cwd').fill('relative/path');await page.locator('#new-task-create').click();
+ await page.getByText('Enter an absolute project folder on this machine',{exact:true}).waitFor();
+ await page.locator('#new-task-cwd').fill('/project');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/new-task-${width}.png`});
+ await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
+ await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
+ assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('.new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
+ failAction=false;await page.locator('#new-task-create').click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
+ // Terminal labels are observations, independent of the selected checkmark.
+ await open();assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
+ const observe=async status=>{
+ runtime.state.turn={id:'observed-turn',status};runtime.state.phase=status==='inProgress'?'working':status==='failed'?'failed':status==='interrupted'?'stopped':'done';runtime.state.threadStatus=status==='inProgress'?'active':'idle';
+ runtime.broadcast('turn',{turn:runtime.state.turn,phase:runtime.state.phase,threadStatus:runtime.state.threadStatus});
+ };
+ await observe('completed');await row('Current task').getByText('Done',{exact:true}).waitFor();
+ await select('Draft task 0');await open();assert.equal(await row('Draft task 0').locator('.destination-task-status').textContent(),'');
+ await observe('completed');await row('Draft task 0').getByText('Done',{exact:true}).waitFor();
+ assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'Done');
+ await select('Current task');await open();assert.equal(await row('Draft task 0').locator('.destination-task-status').textContent(),'Done');
+ await observe('inProgress');await row('Current task').getByText('Working',{exact:true}).waitFor();
+ runtime.state.phase='done';runtime.state.threadStatus='idle';runtime.broadcast('status',{phase:'done',threadStatus:'idle'});
+ await page.waitForFunction(()=>document.querySelector('.destination-task[aria-current="true"] .destination-task-status').textContent==='');
+ for(const [status,label] of [['failed','Failed'],['interrupted','Stopped']]){await observe(status);await row('Current task').getByText(label,{exact:true}).waitFor();}
+ runtime.state.turn=null;runtime.state.phase='done';runtime.state.threadStatus='idle';runtime.broadcast('snapshot',snapshot());await dismissTasks();await closed();
  for(let i=0;i<9;i++){await select(`Draft task ${i}`);await input.fill(`Draft ${i}`);}
  await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  // Async controls disappear on resolution; the normalized user reply remains the only answer.
