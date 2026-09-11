@@ -332,7 +332,7 @@ function validateMachines(value: unknown): MachineConfig[] {
   });
 }
 
-function validateLocalConfig(value: unknown): LocalConfig {
+function validateLocalConfig(value: unknown, overridePin: string | null | undefined = process.env.CODEX_POCKET_PIN): LocalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected a JSON object");
   const candidate = value as JsonObject;
   if (typeof candidate.lanEnabled !== "boolean") throw new Error("lanEnabled must be true or false");
@@ -343,7 +343,7 @@ function validateLocalConfig(value: unknown): LocalConfig {
   if (candidate.pin !== null && (typeof candidate.pin !== "string" || !/^\d{4}$/.test(candidate.pin))) {
     throw new Error("pin must be exactly four numeric digits or null");
   }
-  if (candidate.lanEnabled && !/^\d{4}$/.test(candidate.pin ?? "")) {
+  if (candidate.lanEnabled && !/^\d{4}$/.test(overridePin ?? candidate.pin ?? "")) {
     throw new Error("LAN access requires a four-digit PIN");
   }
   const localName = candidate.localName === undefined ? "" : candidate.localName;
@@ -372,7 +372,7 @@ function loadLocalSettings(): LocalSettings {
   }
 }
 
-export function saveLocalSettings(settings: LocalSettings, value: unknown, fallbackPin: string | null, headless = HEADLESS): LocalConfig {
+export function saveLocalSettings(settings: LocalSettings, value: unknown, overridePin: string | null | undefined = process.env.CODEX_POCKET_PIN, headless = HEADLESS): LocalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("settings must be a JSON object");
   const candidate = value as JsonObject;
   const submittedPin = candidate.pin;
@@ -381,7 +381,7 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, fallb
   }
   const pin = typeof submittedPin === "string" && submittedPin !== ""
     ? submittedPin
-    : settings.config.pin ?? fallbackPin;
+    : settings.config.pin;
   const config = validateLocalConfig({
     lanEnabled: headless ? settings.config.lanEnabled : candidate.lanEnabled,
     host: headless ? settings.config.host : candidate.host,
@@ -389,7 +389,7 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, fallb
     pin,
     localName: candidate.localName ?? settings.config.localName,
     machines: candidate.machines ?? settings.config.machines,
-  });
+  }, overridePin);
   if (headless && !config.machines.length) throw new Error("Headless Pocket requires at least one SSH machine");
   const temporaryPath = `${settings.path}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -413,14 +413,20 @@ function publicSettings(settings: LocalSettings, fallbackPin: string | null): Js
   };
 }
 
-function settingsNeedRestart(settings: LocalSettings, options: Options, auth: AuthConfig): boolean {
-  const desiredHost = settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host;
-  const desiredPin = settings.config.pin;
-  return desiredHost !== options.host
-    || settings.config.port !== options.port
-    || settings.config.localName !== options.localName
+export function settingsNeedRestart(settings: LocalSettings, options: Options, auth: AuthConfig, launchArgs: string[] = [], overridePin: string | undefined = process.env.CODEX_POCKET_PIN): boolean {
+  const desired = parseArgs(launchArgs, {
+    host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
+    port: settings.config.port,
+    localName: settings.config.localName,
+    machines: settings.config.machines,
+  });
+  const pin = overridePin ?? settings.config.pin;
+  const desiredPin = /^\d{4}$/.test(pin ?? "") ? pin : null;
+  return desired.host !== options.host
+    || desired.port !== options.port
+    || desired.localName !== options.localName
     || !secretMatches(desiredPin ?? "", auth.pin ?? "")
-    || JSON.stringify(settings.config.machines) !== JSON.stringify(options.machines);
+    || JSON.stringify(desired.machines) !== JSON.stringify(options.machines);
 }
 
 function browserUrl(host: string, port: number): string {
@@ -4000,6 +4006,7 @@ export async function handleRequest(
   restartPocket: () => Promise<{ localUrl: string; lanEnabled?: boolean }>,
   quitPocket: () => void,
   isShuttingDown: () => boolean,
+  launchArgs: string[] = [],
 ): Promise<void> {
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -4109,17 +4116,17 @@ export async function handleRequest(
     sendJson(response, 200, {
       settings: publicSettings(settings, auth.pin),
       effective: { host: options.host, port: options.port, pinRequired: auth.required },
-      restartRequired: settingsNeedRestart(settings, options, auth),
+      restartRequired: settingsNeedRestart(settings, options, auth, launchArgs),
     }, gateway);
     return;
   }
   if (url.pathname === "/api/settings" && method === "POST") {
     try {
-      const config = saveLocalSettings(settings, await readJsonBody(request), auth.pin);
+      saveLocalSettings(settings, await readJsonBody(request));
       sendJson(response, 200, {
         saved: true,
-        restartRequired: settingsNeedRestart(settings, options, auth),
-        settings: publicSettings(settings, config.pin),
+        restartRequired: settingsNeedRestart(settings, options, auth, launchArgs),
+        settings: publicSettings(settings, auth.pin),
       }, gateway);
     } catch (error) {
       sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, gateway);
@@ -4382,6 +4389,7 @@ async function main(): Promise<void> {
       () => restartPocket(),
       () => quitPocket(),
       () => shuttingDown,
+      launchArgs,
     ).catch((error) => {
       if (!response.headersSent) sendJson(response, 500, { error: compact(error, 400) }, gateway);
       else response.end();

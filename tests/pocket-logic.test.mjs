@@ -1982,3 +1982,46 @@ test('Confirmed deletion removes all per-task runtime bookkeeping', async () => 
   for(const key of ['taskQueues','pendingTaskNames','contextByThread','taskStatuses','taskStatusObservations','terminalReads'])assert(!runtime[key].has(id),key);
   assert.equal(runtime.terminalResults[id],undefined);
 });
+
+test('Settings preserve saved PIN without copying an environment override', async () => {
+  const {mkdtempSync,readFileSync,rmSync}=await import('node:fs');
+  const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+  const {saveLocalSettings,settingsNeedRestart}=await import('../gateway.ts');
+  const dir=mkdtempSync(join(tmpdir(),'pocket-pin-settings-'));
+  const previousPin=process.env.CODEX_POCKET_PIN;
+  process.env.CODEX_POCKET_PIN='9876';
+  const settings={path:join(dir,'config.json'),config:{lanEnabled:true,host:'0.0.0.0',port:4173,pin:null,localName:'',machines:[]}};
+  try {
+    saveLocalSettings(settings,{...settings.config,pin:'',localName:'Host'},undefined,false);
+    assert.equal(settings.config.pin,null);
+    assert.equal(JSON.parse(readFileSync(settings.path,'utf8')).pin,null);
+    assert(!readFileSync(settings.path,'utf8').includes('9876'));
+    assert.throws(()=>saveLocalSettings(settings,{...settings.config,pin:''},null,false),/LAN access requires/);
+    saveLocalSettings(settings,{...settings.config,pin:'1234'},'9876',false);
+    saveLocalSettings(settings,{...settings.config,pin:''},'9876',false);
+    assert.equal(settings.config.pin,'1234');
+    const options=parseArgs([],{...settings.config});
+    assert.equal(settingsNeedRestart(settings,options,{pin:'9876'},[],'9876'),false);
+    assert.equal(settingsNeedRestart(settings,options,{pin:'1234'},[],'9876'),true);
+  } finally {
+    if(previousPin===undefined)delete process.env.CODEX_POCKET_PIN;else process.env.CODEX_POCKET_PIN=previousPin;
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test('Restart-required compares effective launch overrides and unmasked settings', async () => {
+  const {settingsNeedRestart}=await import('../gateway.ts');
+  const settings={config:{lanEnabled:true,host:'0.0.0.0',port:4173,pin:'1234',localName:'Host',machines:[]}};
+  const args=['--host','127.0.0.1','--port','4888'];
+  const options=parseArgs(args,settings.config);
+  const auth={pin:'9876'};
+  assert.equal(settingsNeedRestart(settings,options,auth,args,'9876'),false);
+  settings.config.host='192.168.1.10';settings.config.port=5000;settings.config.pin='5678';
+  assert.equal(settingsNeedRestart(settings,options,auth,args,'9876'),false);
+  settings.config.localName='New host';
+  assert.equal(settingsNeedRestart(settings,options,auth,args,'9876'),true);
+  settings.config.localName='Host';settings.config.machines=[{name:'Remote',ssh:'remote'}];
+  assert.equal(settingsNeedRestart(settings,options,auth,args,'9876'),true);
+  settings.config.machines=[];
+  assert.equal(settingsNeedRestart(settings,options,auth,[],'9876'),true);
+});
