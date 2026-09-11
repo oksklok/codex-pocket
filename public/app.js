@@ -233,6 +233,7 @@ const selectionHold = createSelectionHold(() => {
   flushDeferredTranscript();
 });
 let queueDeliveryUnknown = false;
+let unresolvedSubmission = null;
 const asyncDrafts = new Map();
 
 function openImage(img) {
@@ -373,10 +374,14 @@ async function apiFetch(url, options) {
 }
 
 async function postMessageAction(url, body) {
+  const composerSubmission = ["start", "queue", "steer"].includes(body.action);
+  if (composerSubmission) unresolvedSubmission = null;
   const submissionId = `${state?.submissionEpoch}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
   const requested = { ...body, threadId: state?.thread?.id, turnId: state?.turn?.id,
     text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
   const confirmed = (result) => {
+    if (composerSubmission && composerExpanded && requested.machineId === state?.machineId
+      && requested.threadId === state?.thread?.id) toggleComposer();
     if (requested.action === "steer" && requested.text && !requested.images?.length
       && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) {
       const id = `confirmed-steer-${submissionId}`;
@@ -404,8 +409,9 @@ async function postMessageAction(url, body) {
       applySnapshot(snapshot);
       connectEvents();
     } catch {
-      connectEvents();
       const failure = new Error("Connection lost; delivery could not be confirmed. Check the task before sending again.");
+      if (composerSubmission) unresolvedSubmission = { submissionId, requested, confirmed, queued: url === "/api/message/queue" || body.action === "queue", warning: failure.message };
+      connectEvents();
       failure.deliveryUnknown = true;
       throw failure;
     }
@@ -415,10 +421,60 @@ async function postMessageAction(url, body) {
       ? snapshot.submission.error || "Message was not sent. Please send again."
       : "Connection restored; delivery is still unconfirmed. Check the task before sending again.");
     failure.deliveryUnknown = outcome === "unknown";
+    if (composerSubmission && failure.deliveryUnknown) unresolvedSubmission = { submissionId, requested, confirmed, queued: url === "/api/message/queue" || body.action === "queue", warning: failure.message };
     throw failure;
   }
   if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
   return confirmed(result);
+}
+
+// Recheck only the one unresolved composer submission, once per SSE reconnect.
+async function recoverUnresolvedSubmission() {
+  const pending = unresolvedSubmission;
+  if (!pending || pending.checking) return;
+  pending.checking = true;
+  try {
+    const response = await apiFetch(`/api/state?submissionId=${encodeURIComponent(pending.submissionId)}`, {
+      cache: "no-store", signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return;
+    const snapshot = await response.json();
+    if (unresolvedSubmission !== pending || destinationSelection || taskActionTarget) return;
+    const { requested } = pending;
+    if (requested.machineId !== state?.machineId || requested.threadId !== state?.thread?.id) return;
+    const outcome = reconcileSubmission(pending.submissionId, snapshot, requested);
+    applySnapshot(snapshot);
+    if (requested.machineId !== state?.machineId || requested.threadId !== state?.thread?.id) return;
+    if (outcome === "unknown") {
+      composerError = "Delivery unconfirmed. Check the task before sending again.";
+      pending.warning = "Delivery unconfirmed. Check the task before sending again.";
+      // Snapshot queue updates must not enable an ambiguously delivered queue/image again.
+      imageDeliveryUnknown = Boolean(requested.images?.length);
+      queueDeliveryUnknown = pending.queued;
+    } else {
+      unresolvedSubmission = null;
+      imageDeliveryUnknown = false;
+      queueDeliveryUnknown = false;
+      if (outcome === "accepted") {
+        pending.confirmed({ accepted: true, recovered: true });
+        if (elements.messageText.value === requested.text
+          && JSON.stringify(selectedImages) === JSON.stringify(requested.images || [])) {
+          elements.messageText.value = "";
+          selectedImages = [];
+          composerDrafts.delete(draftKey(requested.machineId, requested.threadId));
+          resizeComposer();
+        }
+        if (composerError === pending.warning) composerError = "";
+      } else {
+        composerError = snapshot.submission?.error || "Message was not sent. Please send again.";
+      }
+    }
+    renderState();
+  } catch {
+    // Keep the current warning; another actual reconnect may check again.
+  } finally {
+    pending.checking = false;
+  }
 }
 
 function projectName(cwd) {
@@ -1813,7 +1869,7 @@ function jumpToLatest() {
 }
 
 function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities)) {
-  if (Object.hasOwn(next, "queuedMessage") && !next.queuedMessage) queueDeliveryUnknown = false;
+  if (Object.hasOwn(next, "queuedMessage") && !next.queuedMessage && !unresolvedSubmission) queueDeliveryUnknown = false;
   const terminalTransitions = [];
   if (Array.isArray(next.activities)) {
     next = { ...next, activities: mergeActivities([...liveActivities.values()], next.activities) };
@@ -1848,6 +1904,7 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
 }
 
 function resetConversationState() {
+  unresolvedSubmission = null;
   selectionHold.reset();
   heldTranscriptNodes.clear();
   transcriptNodes.clear();
@@ -2344,7 +2401,7 @@ function connectEvents() {
       pending.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => handler(event) });
     } else handler(event);
   });
-  on("open", () => setConnection(true));
+  on("open", () => { setConnection(true); void recoverUnresolvedSubmission(); });
   on("error", handleEventError);
   on("snapshot", (event) => { applySnapshot(parseEvent(event)); });
   on("status", (event) => { mergeState(parseEvent(event)); });

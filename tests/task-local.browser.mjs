@@ -13,6 +13,8 @@ const owned={...task,id:'owned',name:'Owned task'};
 let active=[task,owned], archived=[{...task,id:'old',name:'Old task',archived:true}], fail=true, machineError=conflict;
 Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 let asyncAnswers={},historyFixture=null, messageUnknown=false, messageGate=null;
+let composerPost="success", recoveryMode=null;
+const eventClients=new Set();
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
@@ -22,9 +24,15 @@ const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
  const json=(value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
  try{
- if(u.pathname==='/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);runtime.addSubscriber(res,false);req.on('close',()=>runtime.removeSubscriber(res));return;}
+ if(u.pathname==='/events'){eventClients.add(res);req.on('close',()=>eventClients.delete(res));res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(`retry: 50\nevent: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);runtime.addSubscriber(res,false);req.on('close',()=>runtime.removeSubscriber(res));return;}
  if(u.pathname==='/api/auth')return json({required:false,authenticated:true});
- if(u.pathname==='/api/state')return json(snapshot());
+ if(u.pathname==='/api/state'){
+ if(u.searchParams.has('submissionId')&&recoveryMode){
+ if(recoveryMode==='unreachable'){req.socket.destroy();return;}
+ return json({...snapshot(),submission:{id:u.searchParams.get('submissionId'),status:recoveryMode,error:recoveryMode==='rejected'?'Upstream rejected this message':undefined}});
+ }
+ return json(snapshot());
+ }
  if(u.pathname==='/api/settings'){
  if(req.method==='POST'){
  if(failSettings)return json({error:'Settings save failed'},500);
@@ -53,9 +61,12 @@ const server=createServer(async(req,res)=>{
  if(mode==='lost'){req.socket.destroy();return;}
  return json(snapshot());
  }
+ if(u.pathname==='/api/turn/interrupt')return json({accepted:true});
  if(u.pathname==='/api/message/queue'&&req.method==='POST'){
  if(messageGate)await messageGate;
  if(messageUnknown){req.socket.destroy();return;}
+ if(composerPost==='lost'){res.writeHead(202,{'Content-Type':'application/json','Content-Length':'1000'});res.write('{');setTimeout(()=>req.socket.destroy(),10);return;}
+ if(composerPost==='reject')return json({error:'Send rejected'},409);
  runtime.state.queuedMessage=null;return json({accepted:true,mode:'steer',turnId:runtime.state.turn.id},202);
  }
  if(u.pathname==='/api/message/queue'&&req.method==='DELETE')return json(runtime.cancelQueuedMessage());
@@ -68,6 +79,8 @@ const server=createServer(async(req,res)=>{
  return json({accepted:true,...snapshot()},202);
  }
  if(messageUnknown){req.socket.destroy();return;}
+ if(composerPost==='lost'){res.writeHead(202,{'Content-Type':'application/json','Content-Length':'1000'});res.write('{');setTimeout(()=>req.socket.destroy(),10);return;}
+ if(composerPost==='reject')return json({error:'Send rejected'},409);
  return json({accepted:true},202);
  }
  if(u.pathname==='/api/tasks'){
@@ -711,6 +724,64 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForTimeout(150);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
  await images.nth(1).click();await page.locator('#image-viewer').waitFor();await page.keyboard.press('Escape');
+ }
+ // Fullscreen collapses only on confirmed Start/Queue/Steer, including receipt recovery.
+ for(const width of [390,1280]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',pending:[],queuedMessage:null,liveMessages:[]});
+ composerPost='success';recoveryMode=null;await page.reload();
+ await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ const expand=async()=>{
+ await page.locator('#message-text').fill('Composer test\n'.repeat(8));
+ await page.locator('#expand-composer').click();
+ assert.equal(await page.locator('#expand-composer').getAttribute('aria-expanded'),'true');
+ };
+ const collapsed=()=>page.waitForFunction(()=>document.querySelector('#expand-composer').getAttribute('aria-expanded')==='false');
+ for(const action of ['start','queue','steer']){
+ runtime.state.turn=action==='start'?null:{id:'composer-turn',status:'inProgress'};
+ runtime.state.queuedMessage=null;runtime.broadcast('snapshot',snapshot());
+ await expand();
+ if(action==='steer'){
+ runtime.state.queuedMessage={threadId:task.id,text:'Steer from fullscreen',createdAt:Date.now()};runtime.broadcast('queue',{queuedMessage:runtime.state.queuedMessage});
+ await page.locator('#send-queue').click();
+ }else await page.locator('#send-message').click();
+ await collapsed();runtime.state.queuedMessage=null;runtime.broadcast('queue',{queuedMessage:null});
+ }
+ await expand();await page.locator('#message-text').fill('');
+ await page.locator('#send-message').click();
+ await page.waitForFunction(()=>!document.querySelector('#composer-status').textContent.includes('Stopping'));
+ assert.equal(await page.locator('#expand-composer').getAttribute('aria-expanded'),'true');
+ await page.locator('#expand-composer').click();
+ runtime.state.turn=null;runtime.broadcast('snapshot',snapshot());composerPost='reject';
+ await expand();await page.locator('#send-message').click();
+ await page.getByText('Send rejected',{exact:true}).waitFor();
+ assert.equal(await page.locator('#expand-composer').getAttribute('aria-expanded'),'true');
+ await page.locator('#expand-composer').click();
+ // Initial lost-response recovery cannot connect; SSE reconnect later checks the same receipt.
+ for(const outcome of ['accepted','unknown','rejected']){
+ composerPost='lost';recoveryMode='unreachable';
+ await expand();
+ const postsBefore=calls.filter(c=>c==='/api/message').length;
+ await page.locator('#send-message').click();
+ await page.waitForFunction(()=>document.querySelector('#composer-status').textContent.startsWith('Connection lost;'));
+ assert.equal(await page.locator('#expand-composer').getAttribute('aria-expanded'),'true');
+ // Let the first automatic SSE reconnect also fail its read before restoring the gateway.
+ await page.waitForTimeout(200);
+ recoveryMode=outcome;
+ for(const client of eventClients)client.end();
+ if(outcome==='accepted'){
+ await collapsed();assert.equal(await page.locator('#composer-status').textContent(),'');
+ }else{
+ const warning=outcome==='unknown'?'Delivery unconfirmed. Check the task before sending again.':'Upstream rejected this message';
+ await page.getByText(warning,{exact:true}).waitFor();
+ assert.equal(await page.locator('#expand-composer').getAttribute('aria-expanded'),'true');
+ await page.locator('#expand-composer').click();
+ }
+ assert.equal(calls.filter(c=>c==='/api/message').length,postsBefore+1);
+ }
+ // A successful initial lost-response recovery also collapses immediately.
+ recoveryMode='accepted';await expand();await page.locator('#send-message').click();await collapsed();
+ composerPost='success';recoveryMode=null;
  }
  // Headless catalogs contain only SSH runtimes, and their settings omit the host-name field.
  settings.headless=true;runtime.state.machineId='ssh:test';
