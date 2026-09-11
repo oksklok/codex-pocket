@@ -89,7 +89,7 @@ const server=createServer(async(req,res)=>{
  if(b.action==='archive'){archived.push({...active.find(t=>t.id===b.threadId),archived:true});active=active.filter(t=>t.id!==b.threadId);}
  if(b.action==='unarchive'){active.push({...archived.find(t=>t.id===b.threadId),archived:false});archived=archived.filter(t=>t.id!==b.threadId);}
  if(b.action==='delete'){active=active.filter(t=>t.id!==b.threadId);archived=archived.filter(t=>t.id!==b.threadId);}
- if(b.action==='create'){const t={id:'new',name:b.name,cwd:b.cwd,status:'idle'};active.push(t);runtime.state.thread=t;return json({...snapshot(),warning:'Task created, but its name could not be saved. You can rename it later.'});}
+ if(b.action==='create'){const t={id:'new',name:b.name,cwd:b.cwd,status:'idle'};active.push(t);runtime.state.thread=t;return json(snapshot());}
  return json(snapshot());
  }
  const path=u.pathname==='/'?'/index.html':u.pathname;
@@ -512,7 +512,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
  assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('#new-task-dialog .new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.locator('#new-task-create').click();await page.getByText('Task created, but its name could not be saved. You can rename it later.',{exact:true}).waitFor();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  await select('Current task');assert.equal(await input.inputValue(),'Stable action draft');
  // Terminal labels are observations, independent of the selected checkmark.
  await open();assert.equal(await row('Current task').locator('.destination-task-status').textContent(),'');
@@ -730,6 +730,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  catalogAvailable=true;remoteConnected=true;
  await page.locator('#show-archived').check();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  assert(await page.locator('#show-archived').isChecked());
+ assert(await page.locator('.tasks-archived').evaluate(e=>{const a=e.getBoundingClientRect(),r=document.querySelector('#destination-refresh').getBoundingClientRect();return Math.abs(r.left-a.right-8)<1;}));
  assert(await page.locator('.destination-switcher-head').evaluate(e=>{const r=e.getBoundingClientRect();return [...e.children].every(c=>{const b=c.getBoundingClientRect();return !b.width||(b.left>=r.left&&b.right<=r.right&&b.top>=r.top&&b.bottom<=r.bottom);});}));
  const archivedBefore=calls.filter(c=>c==='?archived=true').length;
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);

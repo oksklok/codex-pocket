@@ -565,7 +565,7 @@ function renderQuota() {
 }
 
 function threadLabel(thread) {
-  return thread.name || "Untitled task";
+  return thread.name || "Untitled Task";
 }
 
 function setConnection(connected, failed = false) {

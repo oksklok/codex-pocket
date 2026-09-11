@@ -704,7 +704,7 @@ function loadedThreadSummary(thread: any, id: string, loaded: boolean): LoadedTh
   const project = cwd.split(/[\\/]/).filter(Boolean).at(-1) || "Unknown project";
   return {
     id,
-    name: compact(thread?.name, 180) || preview || "Untitled task",
+    name: compact(thread?.name, 180) || preview || "Untitled Task",
     preview,
     cwd,
     project,
@@ -1591,7 +1591,7 @@ export class MachineRuntime {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
-  private unmaterializedThreads = new Set<string>();
+  private pendingTaskNames = new Map<string, string>();
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
@@ -2131,6 +2131,7 @@ export class MachineRuntime {
         : localRuntimeReason(technicalError);
       this.state.connected = false;
       this.loadedThreads = [];
+      this.pendingTaskNames.clear();
       this.resetThreadState();
       this.state.thread = null;
       this.state.threadStatus = "disconnected";
@@ -2152,6 +2153,7 @@ export class MachineRuntime {
       ? `Connection to ${this.definition.name} dropped. Pocket will retry automatically.`
       : localRuntimeReason(this.technicalConnectionError);
     this.loadedThreads = [];
+    this.pendingTaskNames.clear();
     this.resetThreadState();
     this.state.thread = null;
     this.state.threadStatus = "disconnected";
@@ -2225,9 +2227,9 @@ export class MachineRuntime {
       this.listTaskPages("thread/loaded/list", { limit: 100 }, deadline)
         .catch(() => this.loadedThreads.filter(thread => thread.loaded).map(thread => thread.id)),
     ]);
-    const threads = listed.filter(thread => !this.unmaterializedThreads.has(String(thread.id)));
+    const threads = listed;
     const previousThreads = this.loadedThreads;
-    const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)).filter(id => !this.unmaterializedThreads.has(id)));
+    const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)));
     const listedIds = new Set(threads.map((thread: any) => String(thread.id)));
     for (const id of [...loadedIds].filter((id) => !listedIds.has(id))) {
       const remaining = deadline - Date.now();
@@ -2246,6 +2248,8 @@ export class MachineRuntime {
     this.loadedThreads = [...currentThreads, ...previousThreads.filter(previous =>
       loadedIds.has(previous.id) && !threads.some(thread => String(thread.id) === previous.id))]
       .map(task => {
+        const pendingName = this.pendingTaskNames.get(task.id);
+        if (pendingName) task = { ...task, name: pendingName };
         // Live observations during this read take precedence, even after active -> idle -> active.
         const observation = this.taskStatusObservations.get(task.id);
         return observation && observation !== observationsAtStart.get(task.id)
@@ -2351,26 +2355,15 @@ export class MachineRuntime {
       const started = await this.rpc.request("thread/start", { cwd });
       const id = String(started.thread?.id ?? "");
       if (!id) throw new Error("Codex did not return a new task");
-      // Materialize the zero-turn rollout before naming it (Codex 0.153.4).
-      this.unmaterializedThreads.add(id);
-      let materialized: JsonObject;
-      try {
-        materialized = await this.rpc.request("thread/resume", { threadId: id, excludeTurns: false });
-        if (materialized.thread?.id !== id) throw new Error("Codex did not materialize the new task");
-      } catch (error) {
-        try { await this.rpc.request("thread/unsubscribe", { threadId: id }, THREAD_UNSUBSCRIBE_TIMEOUT_MS); } catch {}
-        throw error;
-      }
-      this.unmaterializedThreads.delete(id);
-      let nameError: unknown;
-      try { await this.rpc.request("thread/name/set", { threadId: id, name }); materialized.thread.name = name; }
-      catch (error) { nameError = error; }
-      this.loadedThreads.push(loadedThreadSummary(materialized.thread, id, true));
-      await this.attachLoadedThread(id, true, materialized);
+      // Keep the live zero-turn thread; 0.153.4 may not have a resumable rollout yet.
+      this.pendingTaskNames.set(id, name);
+      started.thread = { ...started.thread, name };
+      this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
+      await this.attachLoadedThread(id, true, started);
       this.options.thread = id;
       // The new task is already attached; catalog failure must not abort the handoff.
       try { await this.refreshLoadedThreads(); } catch {}
-      return { ...this.snapshot(), ...(nameError ? { warning: "Task created, but its name could not be saved. You can rename it later." } : {}) };
+      return this.snapshot();
     }
     if (!["rename", "archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
     const id = String(body.threadId ?? "");
@@ -2381,7 +2374,8 @@ export class MachineRuntime {
     if (action === "rename") {
       const name = typeof body.name === "string" ? body.name.trim() : "";
       if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
-      await this.rpc.request("thread/name/set", { threadId: id, name });
+      if (this.pendingTaskNames.has(id)) this.pendingTaskNames.set(id, name);
+      else await this.rpc.request("thread/name/set", { threadId: id, name });
       if (this.state.thread?.id === id) this.state.thread.name = name;
       await this.refreshLoadedThreads();
       return this.snapshot();
@@ -2390,6 +2384,7 @@ export class MachineRuntime {
     if (task.status.startsWith("active") || (this.state.thread?.id === id && this.state.turn?.status === "inProgress")) throw new Error("Stop or finish this task before archiving or deleting it");
     if (action === "delete" && body.confirmed !== true) throw new Error("Confirm task deletion first");
     await this.rpc.request(`thread/${action}`, { threadId: id });
+    if (action === "delete") this.pendingTaskNames.delete(id);
     if (action !== "unarchive" && this.state.thread?.id === id) {
       this.resetThreadState();
       this.state.thread = null;
@@ -2691,6 +2686,7 @@ export class MachineRuntime {
     if (action !== "start" || capability.mode !== "start") throw new Error("This task is not idle");
 
     const result = await this.rpc.request("turn/start", { threadId, input });
+    void this.savePendingTaskName(threadId);
     const turn = result?.turn ?? {};
     this.state.turn = {
       id: String(turn.id ?? ""),
@@ -3328,6 +3324,15 @@ export class MachineRuntime {
     this.canAcceptDirectInput = false;
   }
 
+  private async savePendingTaskName(threadId: string): Promise<void> {
+    const name = this.pendingTaskNames.get(threadId);
+    const rpc = this.rpc;
+    if (!name || !rpc) return;
+    this.pendingTaskNames.delete(threadId);
+    // The real turn is already accepted. Naming cannot change its delivery result.
+    try { await rpc.request("thread/name/set", { threadId, name }); } catch {}
+  }
+
   private async startQueuedMessage(threadId: string): Promise<boolean> {
     if (this.startingQueuedMessage) return false;
     const queued = this.state.queuedMessage;
@@ -3336,6 +3341,7 @@ export class MachineRuntime {
     try {
       const input = messageInputs(queued.text, queued.images);
       const result = await this.rpc.request("turn/start", { threadId, input });
+      void this.savePendingTaskName(threadId);
       if (this.state.thread?.id !== threadId || this.state.queuedMessage !== queued) return;
       this.state.queuedMessage = null;
       const turn = result?.turn ?? {};

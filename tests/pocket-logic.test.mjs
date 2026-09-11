@@ -469,8 +469,8 @@ test("empty task creation selects returned ID without fake input; lifecycle and 
     if (method === "thread/archive") { tasks.get(params.threadId).archived = true; return {}; }
     if (method === "thread/unarchive") { tasks.get(params.threadId).archived = false; return {}; }
     if (method === "thread/delete") { tasks.delete(params.threadId); return {}; }
+    if (method === "turn/start") { materialized.add(params.threadId); return { turn: { id: "first", status: "inProgress" } }; }
     if (method === "thread/resume") {
-      if (params.excludeTurns === false) materialized.add(params.threadId);
       assert(materialized.has(params.threadId), "missing source rollout");
       return { thread: tasks.get(params.threadId) };
     }
@@ -481,11 +481,12 @@ test("empty task creation selects returned ID without fake input; lifecycle and 
   const first = await create();
   assert.equal(first.thread.id, "new-1");
   assert.equal(first.message.mode, "start");
-  assert.deepEqual((await runtime.history(null, 20)).turns, []);
+  assert.equal(first.thread.name, "Same name");
   assert.ok((await runtime.listLoadedThreads()).some(t => t.id === first.thread.id));
   assert.ok(!calls.some(c => c.method === "turn/start"));
-  assert.deepEqual(calls.slice(0, 3).map(c => c.method), ["thread/start", "thread/resume", "thread/name/set"]);
-  assert.equal(calls[1].params.excludeTurns, false);
+  assert(!calls.some(c => ["thread/resume", "thread/name/set"].includes(c.method)));
+  await runtime.sendMessage("Real first message", "start");
+  assert.equal(tasks.get(first.thread.id).name, "Same name");
   await runtime.taskAction({ action: "create", name: "Other task", cwd: "/tmp/other-project" });
   await runtime.selectThread(first.thread.id);
   assert.equal(runtime.state.thread.id, first.thread.id);
@@ -1266,7 +1267,7 @@ test("task context survives release as last known, refreshes authoritatively, an
   assert.equal(runtime.state.context, null);
 });
 
-test('New Task naming failure still hands ownership to the destination machine', async () => {
+test('New Task hands off ownership before deferred naming; naming failure cannot fail an accepted message', async () => {
   const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
   const a = gateway.runtimes.get('local'), b = gateway.runtimes.get('ssh:b');
   const calls = [];
@@ -1277,6 +1278,7 @@ test('New Task naming failure still hands ownership to the destination machine',
       calls.push(`${label}:${method}`);
       if (method === 'thread/start' || method === 'thread/resume') return { thread: created };
       if (method === 'thread/name/set') throw new Error('Name save failed');
+      if (method === 'turn/start') return { turn: { id: 'real', status: 'inProgress' } };
       if (method === 'thread/loaded/list') return { data: ['new-b'] };
       if (method === 'thread/read') return { thread: created };
       return { data: [] };
@@ -1285,7 +1287,11 @@ test('New Task naming failure still hands ownership to the destination machine',
   const result = await gateway.taskAction({ action: 'create', machineId: 'ssh:b', expectedMachineId: 'local', expectedThreadId: 'a', name: 'New name', cwd: '/project' });
   assert.equal(result.machineId, 'ssh:b');
   assert.equal(result.thread.id, 'new-b');
-  assert.match(result.warning, /created.*name.*rename/);
+  assert.equal(result.thread.name, 'New name');
+  assert(!calls.includes('B:thread/name/set'));
+  const sent = await b.sendMessage('Real input', 'start');
+  assert.equal(sent.accepted, true);
+  assert(calls.includes('B:thread/name/set'));
   assert.equal(gateway.selectedMachineId, 'ssh:b');
   assert.equal(a.state.thread, null);
   assert.equal(a.state.connected, true);
@@ -1543,30 +1549,42 @@ test("Desktop composite async reply IDs resolve the exact question index live an
 });
 
 
-test('New Task materialization failure preserves selection and never names or exposes the task', async () => {
+test('New live tasks never resume or name zero-turn threads on either machine', async () => {
   for (const machineId of ['local', 'ssh:b']) {
     const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
-    const a = gateway.runtimes.get('local'), b = gateway.runtimes.get(machineId);
+    const a = gateway.runtimes.get('local'), target = gateway.runtimes.get(machineId);
     Object.assign(a.state, { connected: true, thread: { id: 'a' }, threadStatus: 'idle' });
-    b.state.connected = true;
-    const before = structuredClone(a.state);
+    target.state.connected = true;
     const calls = [];
-    b.rpc = { request: async (method, params) => {
+    let rejectTurn = true;
+    const thread = { id: 'new', cwd: '/project', status: 'idle', canAcceptDirectInput: true };
+    a.rpc = { request: async () => ({ data: [] }) };
+    target.rpc = { request: async (method) => {
       calls.push(method);
-      if (method === 'thread/start') return { thread: { id: 'new' } };
-      if (method === 'thread/unsubscribe') { assert.equal(params.threadId, 'new'); return {}; }
-      if (method === 'thread/list') return { data: [{ id: 'new', source: 'cli', cwd: '/project' }] };
+      if (method === 'thread/start') return { thread: { ...thread } };
+      if (method === 'thread/resume') throw new Error('no rollout found for thread id new (-32600)');
       if (method === 'thread/loaded/list') return { data: ['new'] };
-      assert.equal(method, 'thread/resume');
-      assert.deepEqual(params, { threadId: 'new', excludeTurns: false });
-      throw new Error('Materialization failed');
+      if (method === 'thread/read') throw new Error('no rollout found');
+      if (method === 'turn/start') { if (rejectTurn) throw new Error('Turn rejected'); return { turn: { id: 'first', status: 'inProgress' } }; }
+      return { data: [] };
     } };
-    await assert.rejects(gateway.taskAction({ action: 'create', machineId, expectedMachineId: 'local', expectedThreadId: 'a', name: 'New', cwd: '/project' }), /Materialization failed/);
-    assert.equal(gateway.selectedMachineId, 'local');
-    assert.deepEqual(a.state, before);
-    assert(!b.loadedThreads.some(t => t.id === 'new'));
-    assert.deepEqual(calls, ['thread/start', 'thread/resume', 'thread/unsubscribe']);
-    assert.deepEqual(await b.refreshLoadedThreads(), []);
+    const created = await gateway.taskAction({ action: 'create', machineId, expectedMachineId: 'local', expectedThreadId: 'a', name: 'Requested name', cwd: '/project' });
+    assert.equal(created.thread.name, 'Requested name');
+    assert.equal(gateway.selectedMachineId, machineId);
+    assert.equal((await target.listLoadedThreads()).find(t => t.id === 'new').name, 'Requested name');
+    assert(!calls.includes('thread/resume'));
+    assert(!calls.includes('thread/name/set'));
+    assert(!calls.includes('turn/start'));
+    if (machineId !== 'local') assert.equal(a.state.thread, null);
+    await assert.rejects(target.sendMessage('First real input', 'start'), /Turn rejected/);
+    assert(!calls.includes('thread/name/set'));
+    assert.equal(target.pendingTaskNames.get('new'), 'Requested name');
+    rejectTurn = false;
+    const sent = await target.sendMessage('First real input', 'start');
+    assert.equal(sent.accepted, true);
+    assert(calls.indexOf('thread/name/set') > calls.indexOf('turn/start'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(target.pendingTaskNames.size, 0);
   }
 });
 
