@@ -1292,6 +1292,23 @@ test('New Task hands off ownership before deferred naming; naming failure cannot
   const sent = await b.sendMessage('Real input', 'start');
   assert.equal(sent.accepted, true);
   assert(calls.includes('B:thread/name/set'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await b.listLoadedThreads()).find(t => t.id === 'new-b').name, 'New name');
+  assert.equal(b.pendingTaskNames.get('new-b').name, 'New name');
+  await b.attachLoadedThread('new-b', false, { thread: { ...created, preview: 'Generated preview' } });
+  assert.equal(b.state.thread.name, 'New name');
+  const namingCalls = calls.filter(c => c === 'B:thread/name/set').length;
+  await b.savePendingTaskName('new-b');
+  assert.equal(calls.filter(c => c === 'B:thread/name/set').length, namingCalls);
+  b.rpc.request = async (method, params) => {
+    if (method === 'thread/name/set') { created.name = params.name; return {}; }
+    if (method === 'thread/loaded/list') return { data: ['new-b'] };
+    if (method === 'thread/read') return { thread: created };
+    return { data: [] };
+  };
+  await b.taskAction({ action: 'rename', threadId: 'new-b', name: 'Renamed explicitly' });
+  assert.equal(b.pendingTaskNames.has('new-b'), false);
+  assert.equal(b.state.thread.name, 'Renamed explicitly');
   assert.equal(gateway.selectedMachineId, 'ssh:b');
   assert.equal(a.state.thread, null);
   assert.equal(a.state.connected, true);
@@ -1578,7 +1595,7 @@ test('New live tasks never resume or name zero-turn threads on either machine', 
     if (machineId !== 'local') assert.equal(a.state.thread, null);
     await assert.rejects(target.sendMessage('First real input', 'start'), /Turn rejected/);
     assert(!calls.includes('thread/name/set'));
-    assert.equal(target.pendingTaskNames.get('new'), 'Requested name');
+    assert.equal(target.pendingTaskNames.get('new').name, 'Requested name');
     rejectTurn = false;
     const sent = await target.sendMessage('First real input', 'start');
     assert.equal(sent.accepted, true);

@@ -1591,7 +1591,7 @@ export class MachineRuntime {
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
   private loadedThreads: LoadedThreadSummary[] = [];
-  private pendingTaskNames = new Map<string, string>();
+  private pendingTaskNames = new Map<string, { name: string; attempted: boolean }>();
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
@@ -2249,7 +2249,7 @@ export class MachineRuntime {
       loadedIds.has(previous.id) && !threads.some(thread => String(thread.id) === previous.id))]
       .map(task => {
         const pendingName = this.pendingTaskNames.get(task.id);
-        if (pendingName) task = { ...task, name: pendingName };
+        if (pendingName) task = { ...task, name: pendingName.name };
         // Live observations during this read take precedence, even after active -> idle -> active.
         const observation = this.taskStatusObservations.get(task.id);
         return observation && observation !== observationsAtStart.get(task.id)
@@ -2356,7 +2356,7 @@ export class MachineRuntime {
       const id = String(started.thread?.id ?? "");
       if (!id) throw new Error("Codex did not return a new task");
       // Keep the live zero-turn thread; 0.153.4 may not have a resumable rollout yet.
-      this.pendingTaskNames.set(id, name);
+      this.pendingTaskNames.set(id, { name, attempted: false });
       started.thread = { ...started.thread, name };
       this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
       await this.attachLoadedThread(id, true, started);
@@ -2374,8 +2374,12 @@ export class MachineRuntime {
     if (action === "rename") {
       const name = typeof body.name === "string" ? body.name.trim() : "";
       if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
-      if (this.pendingTaskNames.has(id)) this.pendingTaskNames.set(id, name);
-      else await this.rpc.request("thread/name/set", { threadId: id, name });
+      const pendingName = this.pendingTaskNames.get(id);
+      if (pendingName && !pendingName.attempted) this.pendingTaskNames.set(id, { name, attempted: false });
+      else {
+        await this.rpc.request("thread/name/set", { threadId: id, name });
+        this.pendingTaskNames.delete(id);
+      }
       if (this.state.thread?.id === id) this.state.thread.name = name;
       await this.refreshLoadedThreads();
       return this.snapshot();
@@ -2774,7 +2778,7 @@ export class MachineRuntime {
     this.state.connectionError = null;
     this.state.thread = {
       id: resumedId,
-      name: compact(thread.name ?? thread.preview, 180) || summary.name,
+      name: this.pendingTaskNames.get(threadId)?.name || compact(thread.name ?? thread.preview, 180) || summary.name,
       cwd: String(thread.cwd ?? summary.cwd),
       source: String(thread.source ?? "unknown"),
     };
@@ -3325,12 +3329,15 @@ export class MachineRuntime {
   }
 
   private async savePendingTaskName(threadId: string): Promise<void> {
-    const name = this.pendingTaskNames.get(threadId);
+    const pending = this.pendingTaskNames.get(threadId);
     const rpc = this.rpc;
-    if (!name || !rpc) return;
-    this.pendingTaskNames.delete(threadId);
-    // The real turn is already accepted. Naming cannot change its delivery result.
-    try { await rpc.request("thread/name/set", { threadId, name }); } catch {}
+    if (!pending || pending.attempted || !rpc) return;
+    pending.attempted = true;
+    // Keep the display name on failure, but never retry it automatically.
+    try {
+      await rpc.request("thread/name/set", { threadId, name: pending.name });
+      if (this.pendingTaskNames.get(threadId) === pending) this.pendingTaskNames.delete(threadId);
+    } catch {}
   }
 
   private async startQueuedMessage(threadId: string): Promise<boolean> {
