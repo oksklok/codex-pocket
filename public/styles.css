@@ -653,7 +653,9 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   border-color: var(--blue); outline: 2px solid var(--blue); outline-offset: 2px;
 }
 :is(.secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button, .task-actions summary):focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-:is(.secondary-button, .icon-button, .text-button):hover:not(:disabled):not(.active) { border-color: var(--muted); }
+@media (hover: hover) {
+  :is(.secondary-button, .icon-button, .text-button):hover:not(:disabled):not(.active) { border-color: var(--muted); }
+}
 .task-actions { top: 2px; }
 .task-actions summary { width: var(--icon-size); height: var(--icon-size); }
 .task-action-menu { padding: 4px; border-radius: var(--control-radius); }

@@ -512,7 +512,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();
  await page.locator('#new-task-dialog').waitFor();assert.equal(await page.locator('label[for="new-task-cwd"]').textContent(),'Project Folder');assert.equal(await page.locator('#new-task-cwd').inputValue(),'/project');
- assert.equal(await page.locator('label[for="new-task-effort"]').textContent(),'Reasoning Effort');
+ assert.equal(await page.locator('label[for="new-task-effort"]').textContent(),'Effort');
  const settingsGeometry=await page.locator('.new-task-settings').evaluate(e=>{
  const [model,effort,access]=[...e.children].map(c=>c.getBoundingClientRect());
  return {rowGap:getComputedStyle(e).rowGap,columnGap:getComputedStyle(e).columnGap,vertical:effort.top-model.bottom,horizontal:access.left-effort.right,aligned:effort.top===access.top};
