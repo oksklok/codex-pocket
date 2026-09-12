@@ -1037,5 +1037,29 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert(calls.filter(c=>c==='/api/history').length>before);
  }
  historyFixture=null;
+ // Native Android handle behavior is covered by physical A/B; verify the hold-driven workaround.
+ for(const width of [390,1280]){
+ await page.setViewportSize({width,height:844});
+ historyFixture={machineId:'local',threadId:task.id,turns:[{id:'selection-turn',messages:[{id:'selection-message',role:'assistant',text:'Select this synthetic transcript text.',complete:true}],activities:[]}],nextCursor:null};
+ await page.reload();await page.locator('#conversation .message-body').first().waitFor();
+ const hitTesting=()=>page.locator('.topbar').evaluate(e=>getComputedStyle(e).pointerEvents);
+ assert.equal(await hitTesting(),'auto');
+ const selectText=()=>page.locator('#conversation .message-body').first().evaluate(e=>{
+  const range=document.createRange();range.selectNodeContents(e);
+  const selection=getSelection();selection.removeAllRanges();selection.addRange(range);
+  document.dispatchEvent(new Event('selectionchange'));
+ });
+ const collapse=()=>page.evaluate(()=>{getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'));});
+ await selectText();
+ assert.equal(await hitTesting(),width<=860?'none':'auto');
+ await collapse();await page.waitForTimeout(150);
+ assert.equal(await hitTesting(),width<=860?'none':'auto');
+ // A second handle drag renews the same hold, rather than letting its old timer release it.
+ await selectText();await page.waitForTimeout(550);
+ assert.equal(await hitTesting(),width<=860?'none':'auto');
+ await collapse();await page.waitForFunction(()=>!document.querySelector('#app-shell').classList.contains('transcript-selection-held'));
+ assert.equal(await hitTesting(),'auto');
+ }
+ historyFixture=null;
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

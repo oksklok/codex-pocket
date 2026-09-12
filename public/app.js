@@ -229,6 +229,7 @@ const viewer = setupImageViewer(elements.imageViewer, elements.viewerImage, elem
 const transcriptNodes = new Map();
 const heldTranscriptNodes = new Set();
 const selectionHold = createSelectionHold(() => {
+  elements.appShell.classList.remove("transcript-selection-held");
   heldTranscriptNodes.clear();
   flushDeferredTranscript();
 });
@@ -1872,6 +1873,7 @@ function transcriptSelectionActive() {
 function observeTranscriptSelection() {
   const selected = transcriptSelectionActive();
   selectionHold.observe(selected);
+  elements.appShell.classList.toggle("transcript-selection-held", selectionHold.active);
   if (!selected) return;
   const selection = window.getSelection();
   for (const node of elements.conversation.children) {
@@ -1884,6 +1886,7 @@ function observeTranscriptSelection() {
 function clearSelectionForOverlay() {
   window.getSelection()?.removeAllRanges();
   selectionHold.reset();
+  elements.appShell.classList.remove("transcript-selection-held");
   heldTranscriptNodes.clear();
   flushDeferredTranscript();
 }
@@ -1952,6 +1955,7 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
 function resetConversationState() {
   unresolvedSubmission = null;
   selectionHold.reset();
+  elements.appShell.classList.remove("transcript-selection-held");
   heldTranscriptNodes.clear();
   transcriptNodes.clear();
   deferredTranscript = false;

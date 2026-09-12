@@ -500,6 +500,8 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .shell .chat-panel { flex: 1; height: auto; display: flex; flex-direction: column; }
   .shell .conversation { flex: 1; overflow: visible; overscroll-behavior: auto; }
   .shell .topbar { position: sticky; top: 0; flex-shrink: 0; }
+  /* Keep the sticky header out of Android selection-handle hit-testing during the hold. */
+  .shell.transcript-selection-held .topbar { pointer-events: none; }
   .composer-zone:not(.expanded-composer) { position: sticky; bottom: 0; z-index: 3; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .topbar { grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; padding: 7px 9px; }
   .brand { display: none; }
