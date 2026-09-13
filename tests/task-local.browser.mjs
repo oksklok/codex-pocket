@@ -113,6 +113,30 @@ const closed=()=>page.waitForFunction(()=>document.querySelector('#destination-s
 const settingsOpen=async()=>{await page.locator('#settings-button').evaluate(e=>e.click());await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');};
 const settingsSave=async()=>{if(await page.locator('#settings-save').isEnabled())await page.locator('#settings-save').click();else await page.locator('#settings-close').click();await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);};
 try {
+ // A semantically last final answer displays monotonic time without changing source timestamps.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ const start=new Date(2026,0,1,0,8).getTime();
+ const messages=[
+ {id:'time-user',role:'user',createdAt:start},
+ {id:'time-final',role:'assistant',phase:'final_answer',createdAt:start+60000},
+ ];
+ for(const message of messages)Object.assign(message,{turnId:'time-turn',text:message.id,complete:true});
+ Object.assign(runtime.state,{thread:task,turn:null,phase:'done',liveMessages:messages,activities:[]});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.locator('[data-message-id="time-final"] time').waitFor();
+ const displayed=()=>page.locator('#conversation .message time').evaluateAll(nodes=>nodes.map(node=>({time:Date.parse(node.dateTime),text:node.textContent})));
+ assert.deepEqual((await displayed()).map(value=>value.time),[start,start+60000]);
+ // Arriving later must invalidate the final answer's render signature even though it is unchanged.
+ messages.push({id:'time-later',role:'assistant',phase:'commentary',turnId:'time-turn',text:'Later update',complete:true,createdAt:start+120000});
+ runtime.broadcast('snapshot',snapshot());
+ await page.waitForFunction(expected=>Date.parse(document.querySelector('[data-message-id="time-final"] time').dateTime)===expected,start+120000);
+ assert.deepEqual(await page.locator('#conversation .message').evaluateAll(nodes=>nodes.map(node=>node.dataset.messageId)),['time-user','time-later','time-final']);
+ const times=await displayed();
+ assert.deepEqual(times.map(value=>value.time),[start,start+120000,start+120000]);
+ assert.equal(times[2].text,times[1].text);
+ assert.equal(messages[1].createdAt,start+60000);
+ }
  const defaultDialog=d=>{throw new Error('Unexpected browser dialog: '+d.type());};
  page.on('dialog',defaultDialog);
  const input=page.locator('#message-text');

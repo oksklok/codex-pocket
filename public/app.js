@@ -1442,7 +1442,7 @@ function renderState() {
   renderComposer();
 }
 
-function messageNode(message) {
+function messageNode(message, displayCreatedAt) {
   const article = document.createElement("article");
   article.className = `message ${message.role} ${message.complete ? "" : "streaming"}`;
   article.dataset.messageId = message.id;
@@ -1451,9 +1451,9 @@ function messageNode(message) {
   const role = document.createElement("span");
   role.textContent = message.role === "assistant" ? "Codex" : "You";
   const time = document.createElement("time");
-  if (message.createdAt) {
-    time.dateTime = new Date(message.createdAt).toISOString();
-    time.textContent = new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (displayCreatedAt) {
+    time.dateTime = new Date(displayCreatedAt).toISOString();
+    time.textContent = new Date(displayCreatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
   meta.append(role, time);
   const body = document.createElement("div");
@@ -1811,6 +1811,11 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
     ...messages.map((value) => ({ type: "message", value })),
     ...activities.map((value) => ({ type: "activity", value })),
   ]);
+  let displayCreatedAt = 0;
+  for (const entry of timeline) {
+    displayCreatedAt = Math.max(displayCreatedAt, entry.value.createdAt || 0);
+    entry.displayCreatedAt = entry.value.createdAt ? displayCreatedAt : null;
+  }
   const desired = timeline.length ? timeline : [{ type: "empty", value: { id: "empty" } }];
   const desiredKeys = new Set(desired.map(entry => `${entry.type}:${entry.value.id}`));
   // Keep selected entries (and an answer being edited) intact; update other entries normally.
@@ -1819,6 +1824,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   // Include UI state that changes an entry without changing its protocol payload.
   const signature = entry => JSON.stringify([
     entry.value,
+    entry.displayCreatedAt,
     entry.type === "activity" ? [activityDetails.get(entry.value.id), activityExpandsByDefault(entry.value), entry.value.kind === "files" ? displayPreferences.wrapFiles : null] : null,
     entry.type === "message" && entry.value.questions?.length ? [
       state?.message?.allowed,
@@ -1843,7 +1849,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
       if (record && protectedNode(record.node)) {
         deferredTranscript = true;
       } else {
-        const node = entry.type === "message" ? messageNode(entry.value)
+        const node = entry.type === "message" ? messageNode(entry.value, entry.displayCreatedAt)
           : entry.type === "activity" ? activityNode(entry.value)
           : Object.assign(document.createElement("p"), { className: "empty-state", textContent: "No conversation history yet." });
         node.dataset.timelineKey = key;
