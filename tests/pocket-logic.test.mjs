@@ -490,6 +490,7 @@ test("empty task creation selects returned ID without fake input; lifecycle and 
   await runtime.sendMessage("Real first message", "start");
   assert.equal(tasks.get(first.thread.id).name, "Same name");
   await runtime.taskAction({ action: "create", name: "Other task", cwd: "/tmp/other-project" });
+  await runtime.sendMessage("Other real first message", "start");
   await runtime.selectThread(first.thread.id);
   assert.equal(runtime.state.thread.id, first.thread.id);
   assert.deepEqual((await runtime.history(null, 20)).turns, []);
@@ -2114,4 +2115,103 @@ test("Known usage-limit copy is concise without rewriting unrelated errors", () 
   assert.equal(usageLimitMessage(raw, 2025), "Usage limit reached. Try again Sep 17, 2026 at 1:07 PM.");
   const unrelated = "Upstream capacity reached. Try again later.";
   assert.equal(usageLimitMessage(unrelated) || unrelated, unrelated);
+});
+
+function freshTaskGateway() {
+  const gateway = new PocketGateway({ machines: [{ name: 'B', ssh: 'b' }] });
+  const calls = [];
+  for (const [machineId, runtime] of gateway.runtimes) {
+    const tasks = [{ id: 'fresh', name: 'Fresh', cwd: '/project', status: 'idle', canAcceptDirectInput: true },
+      { id: 'other', name: 'Other', cwd: '/project', status: 'idle', canAcceptDirectInput: true }];
+    Object.assign(runtime.state, { connected: true, thread: machineId === 'local' ? { ...tasks[0] } : null, turn: null, threadStatus: 'idle', phase: 'idle' });
+    runtime.canAcceptDirectInput = true;
+    runtime.rpc = { request: async (method, params) => {
+      calls.push({ machineId, method, params });
+      if (method === 'thread/list') return { data: tasks };
+      if (method === 'thread/loaded/list') return { data: tasks.map(t => t.id) };
+      if (method === 'thread/read' || method === 'thread/resume') {
+        if (method === 'thread/resume') { assert.equal(params.excludeTurns, true); assert.notEqual(params.threadId, 'fresh'); }
+        return { thread: tasks.find(t => t.id === params.threadId) };
+      }
+      if (method === 'turn/start') {
+        if (runtime.rejectStart) throw new Error('First send failed');
+        return { turn: { id: 'accepted', status: 'inProgress' } };
+      }
+      if (method === 'thread/delete') tasks.splice(tasks.findIndex(t => t.id === params.threadId), 1);
+      assert.notEqual(method, 'thread/start', 'must reject before creating another thread');
+      return { data: [] };
+    } };
+  }
+  const runtime = gateway.runtimes.get('local');
+  runtime.pendingTaskNames.set('fresh', { name: 'Fresh', attempted: false });
+  return { gateway, runtime, calls };
+}
+const freshTaskError = { message: 'Send the first message before leaving this new task.' };
+
+test('fresh task blocks both same-machine selection routes and preserves current state', async () => {
+  const { gateway, runtime, calls } = freshTaskGateway();
+  const before = gateway.snapshot();
+  await assert.rejects(gateway.selectThread('local', 'other'), freshTaskError);
+  await assert.rejects(gateway.selectDestination('local', 'other', 'local', 'fresh'), freshTaskError);
+  assert.deepEqual(gateway.snapshot(), before);
+  assert.deepEqual(calls, []);
+  await gateway.selectDestination('local', 'fresh', 'local', 'fresh');
+  assert.equal(runtime.state.thread.id, 'fresh');
+  assert(!calls.some(c => ['thread/resume', 'thread/unsubscribe'].includes(c.method)));
+});
+
+test('fresh task blocks cross-machine selection before any destination attach or release', async () => {
+  const { gateway, calls } = freshTaskGateway();
+  const before = gateway.snapshot();
+  await assert.rejects(gateway.selectDestination('ssh:b', 'other', 'local', 'fresh'), freshTaskError);
+  assert.deepEqual(gateway.snapshot(), before);
+  assert.equal(gateway.runtimes.get('ssh:b').state.thread, null);
+  assert.deepEqual(calls, []);
+});
+
+test('fresh task blocks New Task on either machine before thread/start', async () => {
+  const { gateway, runtime, calls } = freshTaskGateway();
+  for (const machineId of ['local', 'ssh:b']) {
+    await assert.rejects(gateway.taskAction({ action: 'create', machineId, expectedMachineId: 'local', expectedThreadId: 'fresh', name: 'Next' }), freshTaskError);
+  }
+  await assert.rejects(runtime.taskAction({ action: 'create', name: 'Next' }), freshTaskError);
+  assert.equal(runtime.state.thread.id, 'fresh');
+  assert.deepEqual(calls, []);
+});
+
+test('fresh task Rename remains in memory, Archive is blocked, and Delete discards it', async () => {
+  const { gateway, runtime, calls } = freshTaskGateway();
+  const action = (action, extra = {}) => gateway.taskAction({ action, machineId: 'local', expectedMachineId: 'local', expectedThreadId: 'fresh', threadId: 'fresh', ...extra });
+  await action('rename', { name: 'Renamed' });
+  assert.deepEqual(runtime.pendingTaskNames.get('fresh'), { name: 'Renamed', attempted: false });
+  assert.equal(runtime.state.thread.name, 'Renamed');
+  assert(!calls.some(c => ['thread/name/set', 'thread/resume', 'turn/start'].includes(c.method)));
+  calls.length = 0;
+  await assert.rejects(action('archive'), freshTaskError);
+  assert.deepEqual(calls, []);
+  await action('delete', { confirmed: true });
+  assert.equal(runtime.state.thread, null);
+  assert.equal(runtime.pendingTaskNames.has('fresh'), false);
+  assert(calls.some(c => c.method === 'thread/delete'));
+});
+
+test('failed first Start keeps the guard; accepted Start restores destination-before-authority switching', async () => {
+  for (const destination of ['local', 'ssh:b']) {
+    const { gateway, runtime, calls } = freshTaskGateway();
+    runtime.rejectStart = true;
+    await assert.rejects(gateway.sendMessage('local', 'Real input', 'start'), /First send failed/);
+    assert.equal(runtime.pendingTaskNames.get('fresh').attempted, false);
+    assert.equal(runtime.state.turn, null);
+    await assert.rejects(gateway.selectDestination(destination, 'other', 'local', 'fresh'), freshTaskError);
+    assert(!calls.some(c => ['thread/resume', 'thread/name/set'].includes(c.method)));
+    runtime.rejectStart = false;
+    assert.equal((await gateway.sendMessage('local', 'Real input', 'start')).accepted, true);
+    await gateway.selectDestination(destination, 'other', 'local', 'fresh');
+    assert.equal(gateway.state.thread.id, 'other');
+    assert.equal(gateway.selectedMachineId, destination);
+    const attach = calls.findIndex(c => c.method === 'thread/resume');
+    const release = calls.findIndex(c => c.method === 'thread/unsubscribe');
+    assert(attach >= 0 && release > attach);
+    assert(calls.filter(c => c.method === 'thread/resume').every(c => c.params.excludeTurns === true));
+  }
 });

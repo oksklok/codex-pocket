@@ -2365,6 +2365,13 @@ export class MachineRuntime {
     return threads.filter(isUserFacingThread).map((thread: any) => loadedThreadSummary(thread, String(thread.id), false));
   }
 
+  assertCanLeaveNewTask(): void {
+    const threadId = this.state.thread?.id;
+    if (threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.attempted === false) {
+      throw new Error("Send the first message before leaving this new task.");
+    }
+  }
+
   taskAction(body: JsonObject): Promise<JsonObject> {
     const operation = this.selectionQueue.then(() => this.taskActionNow(body));
     this.selectionQueue = operation.then(() => {}, () => {});
@@ -2375,6 +2382,7 @@ export class MachineRuntime {
     if (!this.rpc || !this.state.connected) throw new Error("Codex is disconnected");
     const action = String(body.action ?? "");
     if (action === "create") {
+      this.assertCanLeaveNewTask();
       const name = typeof body.name === "string" ? body.name.trim() : "";
       const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
       if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
@@ -2407,6 +2415,7 @@ export class MachineRuntime {
     if (!["rename", "archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
     const id = String(body.threadId ?? "");
     if (!id || id.length > 512) throw new Error("Invalid task");
+    if (action === "archive" && id === this.state.thread?.id) this.assertCanLeaveNewTask();
     const catalog = body.archived === true ? await this.listArchivedThreads() : await this.refreshLoadedThreads();
     const task = catalog.find((task) => task.id === id);
     if (!task) throw new Error("Task no longer appears in this list; refresh and try again");
@@ -2453,6 +2462,7 @@ export class MachineRuntime {
   private async selectThreadNow(threadId: string): Promise<JsonObject> {
     const requestedId = String(threadId ?? "").trim();
     if (!requestedId) throw new Error("threadId is required");
+    if (requestedId !== this.state.thread?.id) this.assertCanLeaveNewTask();
     const availableThreads = await this.refreshLoadedThreads();
     if (!availableThreads.some((thread) => thread.id === requestedId)) {
       throw new Error("selected task is not available in this Codex runtime");
@@ -3710,6 +3720,7 @@ export class PocketGateway {
   taskAction(body: JsonObject): Promise<JsonObject> {
     return this.enqueue(async () => {
       if (String(body.expectedMachineId ?? "") !== this.selectedMachineId || String(body.expectedThreadId ?? "") !== String(this.state.thread?.id ?? "")) throw new Error("Selected task changed; try again");
+      if (body.action === "create") this.selected().assertCanLeaveNewTask();
       const next = this.runtimes.get(String(body.machineId));
       if (!next) throw new Error("Machine is not configured");
       const result = await next.taskAction(body);
@@ -3743,6 +3754,7 @@ export class PocketGateway {
       if (expectedMachine !== this.selectedMachineId || expectedThread !== String(this.state.thread?.id ?? "")) {
         throw new Error("selected task changed; refresh and try again");
       }
+      if (requestedMachineId !== this.selectedMachineId || requestedThreadId !== this.state.thread?.id) this.selected().assertCanLeaveNewTask();
       const next = this.runtimes.get(requestedMachineId);
       if (!next) throw new Error("selected machine is not configured");
       if (!next.state.connected) throw new Error("selected machine is unavailable");
