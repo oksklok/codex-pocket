@@ -1144,12 +1144,24 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
   const controls=e.querySelector('.machine-header-controls');
   const boxes=[...controls.children].map(node=>node.getBoundingClientRect());
   const name=e.querySelector('.machine-toggle').getBoundingClientRect();
+  let visibleGaps=null;
+  if(controls.children.length===3){
+   const text=document.createRange();text.selectNodeContents(controls.children[0]);
+   const wake=controls.querySelector('.wake-action svg').getBoundingClientRect();
+   const create=controls.querySelector('.wake-action + .icon-button svg').getBoundingClientRect();
+   visibleGaps=[wake.left-text.getBoundingClientRect().right,create.left-wake.right];
+  }
   return {count:boxes.length,gaps:boxes.slice(1).map((box,i)=>box.left-boxes[i].right),
+   visibleGaps,hitTargets:[...controls.querySelectorAll('.icon-button')].map(node=>{const box=node.getBoundingClientRect();return [box.width,box.height];}),
    fits:boxes.every(box=>box.left>=0&&box.right<=innerWidth)&&name.right<=controls.getBoundingClientRect().left,
    centers:boxes.map(box=>(box.top+box.bottom)/2)};
  });
  assert.equal(layout.count,expectedCount);assert.equal(layout.fits,true);
- assert(layout.gaps.every(gap=>Math.abs(gap-8)<1));
+ if(expectedCount===3){
+ assert(Math.abs(layout.gaps[0]-8)<1);assert(Math.abs(layout.gaps[1])<1);
+ assert(Math.abs(layout.visibleGaps[0]-layout.visibleGaps[1])<=1,JSON.stringify(layout.visibleGaps));
+ }
+ assert(layout.hitTargets.every(([width,height])=>width===36&&height===36));
  assert(layout.centers.every(center=>Math.abs(center-layout.centers[0])<1));
  };
  await checkHeader(heading,3);
