@@ -686,11 +686,12 @@ function renderDestinationSwitcher() {
       renderDestinationSwitcher();
       [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
     });
-    heading.append(toggle);
+    const controls = Object.assign(document.createElement("div"), { className: "machine-header-controls" });
+    heading.append(toggle, controls);
     if (availability) {
       const availabilityStatus = document.createElement("span");
       availabilityStatus.textContent = availability;
-      heading.append(availabilityStatus);
+      controls.append(availabilityStatus);
     }
     if (!machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
       const wakeAction = Object.assign(document.createElement("div"), { className: "wake-action" });
@@ -713,7 +714,7 @@ function renderDestinationSwitcher() {
         finally { wake.disabled = false; }
       });
       wakeAction.append(wake);
-      heading.append(wakeAction);
+      controls.append(wakeAction);
     }
     const create = document.createElement("button");
     create.type = "button";
@@ -723,7 +724,7 @@ function renderDestinationSwitcher() {
     create.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
     create.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget.action === "create");
     create.addEventListener("click", () => newTask(machine));
-    if (!archived) heading.append(create);
+    if (!archived) controls.append(create);
     group.append(heading);
     // Auto-attach ownership failures belong to a task, not the machine catalog.
     // Only a failed manual selection surfaces ownership here, with its Retry target.

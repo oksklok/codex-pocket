@@ -159,14 +159,15 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-group { display: grid; gap: 2px; padding: 4px 0 8px; }
 .destination-group:first-child { padding-top: 0; }
 .destination-group + .destination-group { border-top: 1px solid var(--line-soft); padding-top: 12px; }
-.destination-group-heading { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0 4px 8px; }
+.destination-group-heading { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 8px; }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-label); }
 .destination-group-heading .machine-host-badge { margin-left: 4px; padding: 1px 4px; border: 1px solid var(--line-soft); border-radius: 4px; color: var(--muted); font-size: var(--text-meta); font-weight: 400; white-space: nowrap; }
-.destination-group-heading > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
-.wake-action { position: relative; display: flex; flex: none; margin-left: auto; }
+.machine-header-controls > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
+.machine-header-controls { display: flex; align-items: center; flex: none; gap: 8px; }
+.wake-action { position: relative; display: flex; flex: none; }
 .wake-feedback { position: absolute; z-index: 1; top: 100%; right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--text-meta); overflow-wrap: anywhere; }
 .destination-group.unavailable { opacity: .78; }
-.destination-group.unavailable .destination-group-heading > span { color: var(--warning); }
+.destination-group.unavailable .machine-header-controls > span { color: var(--warning); }
 .destination-task {
   width: 100%; min-width: 0; min-height: 40px; display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
   grid-template-rows: 22px; align-items: center; align-content: start; gap: 4px 8px; padding: 8px; border: 1px solid transparent; border-radius: 8px;
@@ -594,7 +595,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .task-action-menu { position: fixed; z-index: 10; width: max-content; min-width: 92px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 4px 16px rgba(0,0,0,.22); }
 .task-actions summary::-webkit-details-marker { display: none; }
 .task-actions button { display: block; width: 100%; min-height: 38px; padding: 6px 8px; border: 0; background: var(--surface-strong); color: var(--text); text-align: left; border-radius: 5px; }
-.destination-group-heading .icon-button { margin-left: auto; display: grid; place-items: center; flex: none; border: 0; background: transparent; color: var(--muted); }
+.destination-group-heading .icon-button { display: grid; place-items: center; flex: none; border: 0; background: transparent; color: var(--muted); }
 .destination-group-heading .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 
 .task-project { display: block; color: var(--subtle); font-size: var(--text-secondary); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
@@ -684,6 +685,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .new-task-actions button { min-height: 40px; padding: 7px 11px; font-size: var(--text-ui); }
 
 .machine-toggle { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; min-height: 32px; padding: 0; border: 0; background: transparent; text-align: left; color: var(--muted); }
+.machine-toggle strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .machine-toggle svg { width: 10px; height: 10px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; transform: rotate(90deg); }
 .machine-toggle[aria-expanded="false"] svg { transform: none; }
 .machine-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

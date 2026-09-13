@@ -1139,6 +1139,24 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await wake.locator('svg[aria-hidden="true"]').count(),1);
  const group=wake.locator('xpath=ancestor::section[contains(@class,"destination-group")]');
  const heading=group.locator('.destination-group-heading');
+ const checkHeader=async(header,expectedCount)=>{
+ const layout=await header.evaluate(e=>{
+  const controls=e.querySelector('.machine-header-controls');
+  const boxes=[...controls.children].map(node=>node.getBoundingClientRect());
+  const name=e.querySelector('.machine-toggle').getBoundingClientRect();
+  return {count:boxes.length,gaps:boxes.slice(1).map((box,i)=>box.left-boxes[i].right),
+   fits:boxes.every(box=>box.left>=0&&box.right<=innerWidth)&&name.right<=controls.getBoundingClientRect().left,
+   centers:boxes.map(box=>(box.top+box.bottom)/2)};
+ });
+ assert.equal(layout.count,expectedCount);assert.equal(layout.fits,true);
+ assert(layout.gaps.every(gap=>Math.abs(gap-8)<1));
+ assert(layout.centers.every(center=>Math.abs(center-layout.centers[0])<1));
+ };
+ await checkHeader(heading,3);
+ await heading.locator('.machine-toggle strong').evaluate(e=>e.textContent='A very long machine name that must fit without displacing controls');
+ await checkHeader(heading,3);
+ assert.equal(await heading.locator('.machine-toggle strong').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
+ await checkHeader(page.locator('.destination-group-heading').first(),1);
  const newTask=heading.getByRole('button',{name:'New task',exact:true});
  assert.equal(await wake.isEnabled(),true);
  assert.equal(await wake.evaluate(e=>{let opacity=1;for(let node=e;node;node=node.parentElement)opacity*=Number(getComputedStyle(node).opacity);return opacity;}),1);
