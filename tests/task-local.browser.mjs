@@ -1068,6 +1068,38 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert(calls.filter(c=>c==='/api/history').length>before);
  }
  historyFixture=null;
+ // Desktop transcript selections clamp escaped endpoints; composer-owned selections still work.
+ for(const width of [1280,860]){
+ await page.setViewportSize({width,height:844});
+ historyFixture={machineId:'local',threadId:task.id,turns:[{id:'clamp-turn',messages:[{id:'clamp-message',role:'assistant',text:'Select this transcript text.',complete:true}],activities:[]}],nextCursor:null};
+ await page.reload();await page.locator('[data-message-id="clamp-message"] .message-body p').waitFor();
+ for(const target of ['#message-text','.topbar']){
+ const result=await page.evaluate(target=>{
+  const transcript=document.querySelector('#conversation');
+  const text=document.querySelector('[data-message-id="clamp-message"] .message-body p').firstChild;
+  const endpoint=document.querySelector(target);
+  const selection=getSelection();
+  selection.setBaseAndExtent(text,2,text,8);
+  selection.extend(endpoint,0);
+  document.dispatchEvent(new Event('selectionchange'));
+  return {anchorPreserved:selection.anchorNode===text&&selection.anchorOffset===2,
+   inside:transcript.contains(selection.focusNode),offset:selection.focusOffset,
+   boundary:target==='#message-text'?transcript.childNodes.length:0,collapsed:selection.isCollapsed};
+ },target);
+ assert.equal(result.anchorPreserved,true);
+ assert.equal(result.collapsed,false);
+ assert.equal(result.inside,width>860);
+ if(width>860)assert.equal(result.offset,result.boundary);
+ }
+ await page.evaluate(()=>{getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'));});
+ await input.fill('Intentional composer selection');await input.click();
+ await input.evaluate(e=>e.setSelectionRange(0,11));
+ await page.waitForTimeout(50);
+ assert.deepEqual(await input.evaluate(e=>({focused:document.activeElement===e,text:e.value.slice(e.selectionStart,e.selectionEnd)})),{focused:true,text:'Intentional'});
+ await page.keyboard.type('Normal');assert.equal(await input.inputValue(),'Normal composer selection');
+ await input.fill('');
+ }
+ historyFixture=null;
  // Native Android handle behavior is covered by physical A/B; verify the hold-driven workaround.
  for(const width of [390,1280]){
  await page.setViewportSize({width,height:844});

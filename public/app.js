@@ -1886,11 +1886,18 @@ function transcriptSelectionActive() {
 }
 
 function observeTranscriptSelection() {
+  const selection = window.getSelection();
+  if (!matchMedia("(max-width: 860px)").matches && selection && !selection.isCollapsed
+    && elements.conversation.contains(selection.anchorNode) && !elements.conversation.contains(selection.focusNode)) {
+    const bounds = document.createRange();
+    bounds.selectNodeContents(elements.conversation);
+    const above = bounds.comparePoint(selection.focusNode, selection.focusOffset) < 0;
+    selection.extend(elements.conversation, above ? 0 : elements.conversation.childNodes.length);
+  }
   const selected = transcriptSelectionActive();
   selectionHold.observe(selected);
   elements.appShell.classList.toggle("transcript-selection-held", selectionHold.active);
   if (!selected) return;
-  const selection = window.getSelection();
   for (const node of elements.conversation.children) {
     for (let index = 0; index < selection.rangeCount; index++) {
       if (selection.getRangeAt(index).intersectsNode(node)) heldTranscriptNodes.add(node);
