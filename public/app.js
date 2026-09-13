@@ -1,5 +1,6 @@
 import {
   createSelectionHold,
+  usageLimitMessage,
   enterSubmits,
   destinationTaskStatus,
   mergeActivities,
@@ -1306,7 +1307,15 @@ function renderComposer() {
       || composerNotice
       || capability?.reason
       || "";
-  elements.composerStatus.textContent = status;
+  const usageLimit = usageLimitMessage(status);
+  elements.composerStatus.textContent = usageLimit || status;
+  if (usageLimit) {
+    const credits = Object.assign(document.createElement("a"), {
+      className: "composer-credits", textContent: "Buy credits",
+      href: "https://chatgpt.com/codex/settings/usage", target: "_blank", rel: "noopener noreferrer",
+    });
+    elements.composerStatus.append(" ", credits);
+  }
   elements.composerStatus.hidden = !status;
   elements.composerStatus.classList.toggle("error-text", Boolean(composerError || turnError));
   renderAttention();

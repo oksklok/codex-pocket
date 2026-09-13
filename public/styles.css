@@ -388,6 +388,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .settings-card .enter-preference input { width: 18px; height: 18px; }
 .form-status { grid-column: 1 / -1; margin: 0; color: var(--subtle); font-size: var(--text-secondary); line-height: 1.25; }
 .form-status:empty { display: none; }
+.composer-credits { margin-left: 4px; color: var(--muted); text-decoration: underline; }
 .form-status.error-text, .error-text { color: var(--danger); }
 .attention-banner, .queue-banner { width: min(100%, 780px); margin: 0 auto 7px; padding: 7px 9px; border-radius: 8px; font-size: .7rem; }
 .attention-banner { display: grid; gap: 5px; border: 1px solid rgba(240,195,106,.25); background: rgba(240,195,106,.1); color: var(--warning); }

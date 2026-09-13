@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   createSelectionHold,
+  usageLimitMessage,
   enterSubmits,
   destinationTaskStatus,
   historyTurnTimestamp,
@@ -2104,4 +2105,13 @@ test('Selected terminal events clear attention markers for every terminal status
     assert.equal(runtime.snapshot().taskTerminalResults['thread-1'],undefined);
     assert.equal(runtime.state.turn.status,status);
   }
+});
+
+
+test("Known usage-limit copy is concise without rewriting unrelated errors", () => {
+  const raw = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 17th, 2026 1:07 PM.";
+  assert.equal(usageLimitMessage(raw, 2026), "Usage limit reached. Try again Sep 17 at 1:07 PM.");
+  assert.equal(usageLimitMessage(raw, 2025), "Usage limit reached. Try again Sep 17, 2026 at 1:07 PM.");
+  const unrelated = "Upstream capacity reached. Try again later.";
+  assert.equal(usageLimitMessage(unrelated) || unrelated, unrelated);
 });

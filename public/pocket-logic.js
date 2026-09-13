@@ -1,3 +1,12 @@
+// Display-only copy for Codex's known credits/usage-limit error.
+export function usageLimitMessage(error, currentYear = new Date().getFullYear()) {
+  const match = /^You've hit your usage limit\. Visit https:\/\/chatgpt\.com\/codex\/settings\/usage to purchase more credits or try again at (.+)\.$/.exec(error);
+  if (!match) return null;
+  const date = /^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?) (\d{1,2})(?:st|nd|rd|th)?, (\d{4}) (\d{1,2}:\d{2} [AP]M)$/.exec(match[1]);
+  const retry = date ? `${date[1].slice(0, 3)} ${date[2]}${Number(date[3]) === currentYear ? "" : `, ${date[3]}`} at ${date[4]}` : match[1];
+  return `Usage limit reached. Try again ${retry}.`;
+}
+
 export function enterSubmits(event, enterSends, composing = false) {
   return event.key === "Enter" && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229
     && (enterSends || event.ctrlKey || event.metaKey);

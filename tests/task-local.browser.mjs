@@ -711,9 +711,16 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('#send-message').isEnabled(),true);
  assert.equal(await page.locator('#composer-status').textContent(),'Upstream capacity reached. Try again later.');
  assert.equal(await page.locator('#phase-pill').textContent(),'Failed');
+ const rawUsage=`You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 17th, ${new Date().getFullYear()} 1:07 PM.`;
+ runtime.state.turn.error=rawUsage;runtime.broadcast('turn',{turn:runtime.state.turn,phase:'failed',threadStatus:'idle'});
+ await page.getByRole('link',{name:'Buy credits',exact:true}).waitFor();
+ assert.equal(await page.locator('#composer-status').textContent(),'Usage limit reached. Try again Sep 17 at 1:07 PM. Buy credits');
+ assert.equal(await page.getByRole('link',{name:'Buy credits',exact:true}).getAttribute('href'),'https://chatgpt.com/codex/settings/usage');
+ assert.equal(runtime.state.turn.error,rawUsage);
  runtime.handleNotification({method:'turn/started',params:{threadId:'current',turn:{id:'next-turn',status:'inProgress'}}});
  await page.waitForFunction(()=>document.querySelector('#phase-pill').textContent==='Working');
  assert(!(await page.locator('#composer-status').textContent()).includes('Upstream capacity'));
+ assert.equal(await page.getByRole('link',{name:'Buy credits',exact:true}).count(),0);
  // Finish the synthetic turn before checking idle-task archive/delete controls.
  Object.assign(runtime.state,{turn:{id:'next-turn',status:'completed'},phase:'done',threadStatus:'idle'});runtime.broadcast('turn',{turn:runtime.state.turn,phase:'done',threadStatus:'idle'});
  await open();
