@@ -1137,13 +1137,30 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await wake.getAttribute('title'),'Wake Second machine');
  assert.equal(await wake.getAttribute('class'),'icon-button');
  assert.equal(await wake.locator('svg[aria-hidden="true"]').count(),1);
+ const group=wake.locator('xpath=ancestor::section[contains(@class,"destination-group")]');
+ const heading=group.locator('.destination-group-heading');
+ const newTask=heading.getByRole('button',{name:'New task',exact:true});
+ assert.equal(await wake.isEnabled(),true);
+ assert.equal(await wake.evaluate(e=>{let opacity=1;for(let node=e;node;node=node.parentElement)opacity*=Number(getComputedStyle(node).opacity);return opacity;}),1);
+ assert.equal(await newTask.isDisabled(),true);
+ assert.equal(await newTask.evaluate(e=>getComputedStyle(e).opacity),'0.52');
+ const groupRows=await group.locator(':scope > *').count();
+ const headingHeight=(await heading.boundingBox()).height;
+ const localFeedback=async()=>{
+ assert.equal(await heading.locator('.wake-action [role="status"]').count(),1);
+ assert.equal(await group.locator(':scope > *').count(),groupRows);
+ assert.equal((await heading.boundingBox()).height,headingHeight);
+ assert.equal(await group.locator('.destination-empty.wake-feedback').count(),0);
+ };
  const selectionCalls=calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length;
  const label=await page.locator('#destination-label').textContent();
  await wake.click();await page.getByText('Wake packet sent',{exact:true}).waitFor();
+ await localFeedback();
  assert.deepEqual(wakeBodies.at(-1),{machineId:'ssh:test'});
  assert.equal(calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length,selectionCalls);
  assert.equal(await page.locator('#destination-label').textContent(),label);
- wakeFailure=true;await wake.click();await page.getByText('send EACCES',{exact:true}).waitFor();
+ await heading.locator('.wake-feedback').waitFor({state:'detached',timeout:5500});
+ wakeFailure=true;await wake.click();await page.getByText('send EACCES',{exact:true}).waitFor();await localFeedback();
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-${width}.png`});
  for(const [connected,configured] of [[true,true],[false,false]]){
  remoteConnected=connected;wakeConfigured=configured;

@@ -693,15 +693,16 @@ function renderDestinationSwitcher() {
       heading.append(availabilityStatus);
     }
     if (!machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
+      const wakeAction = Object.assign(document.createElement("div"), { className: "wake-action" });
       const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
       wake.setAttribute("aria-label", `Wake ${machine.name}`);
       wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
       wake.addEventListener("click", async () => {
         wake.disabled = true;
         group.querySelector(".wake-feedback")?.remove();
-        const feedback = Object.assign(document.createElement("p"), { className: "destination-empty wake-feedback" });
+        const feedback = Object.assign(document.createElement("span"), { className: "wake-feedback" });
         feedback.setAttribute("role", "status");
-        group.append(feedback);
+        wakeAction.append(feedback);
         try {
           const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
           const result = await response.json();
@@ -711,7 +712,8 @@ function renderDestinationSwitcher() {
         } catch (error) { feedback.textContent = error.message; }
         finally { wake.disabled = false; }
       });
-      heading.append(wake);
+      wakeAction.append(wake);
+      heading.append(wakeAction);
     }
     const create = document.createElement("button");
     create.type = "button";

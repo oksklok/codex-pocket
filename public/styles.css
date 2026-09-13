@@ -163,7 +163,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-label); }
 .destination-group-heading .machine-host-badge { margin-left: 4px; padding: 1px 4px; border: 1px solid var(--line-soft); border-radius: 4px; color: var(--muted); font-size: var(--text-meta); font-weight: 400; white-space: nowrap; }
 .destination-group-heading > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
-.destination-group.offline { opacity: .62; }
+.wake-action { position: relative; display: flex; flex: none; margin-left: auto; }
+.wake-feedback { position: absolute; z-index: 1; top: 100%; right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--text-meta); overflow-wrap: anywhere; }
 .destination-group.unavailable { opacity: .78; }
 .destination-group.unavailable .destination-group-heading > span { color: var(--warning); }
 .destination-task {
