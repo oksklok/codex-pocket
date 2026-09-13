@@ -2,6 +2,7 @@
 
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createSocket } from "node:dgram";
 import { createReadStream, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer, isIP } from "node:net";
@@ -33,11 +34,13 @@ type Options = {
 type MachineConfig = {
   name: string;
   ssh: string;
+  wakeMac?: string;
 };
 type MachineDefinition = {
   id: string;
   name: string;
   ssh: string | null;
+  wakeMac?: string;
 };
 type LocalConfig = {
   lanEnabled: boolean;
@@ -315,6 +318,36 @@ function validSshAlias(value: unknown): value is string {
     && /^[a-z0-9][a-z0-9._-]*$/i.test(value);
 }
 
+export function normalizeWakeMac(value: unknown): string {
+  if (typeof value !== "string" || !/^(?:[\da-f]{12}|[\da-f]{2}([:-])(?:[\da-f]{2}\1){4}[\da-f]{2})$/i.test(value.trim())) {
+    throw new Error("Enter a valid Wake-on-LAN MAC address");
+  }
+  return value.trim().replace(/[:-]/g, "").toUpperCase().match(/../g)!.join(":");
+}
+
+export function wakeMagicPacket(mac: string): Buffer {
+  const address = Buffer.from(normalizeWakeMac(mac).replace(/:/g, ""), "hex");
+  const packet = Buffer.alloc(102, 0xff);
+  for (let index = 0; index < 16; index++) address.copy(packet, 6 + index * 6);
+  return packet;
+}
+
+async function sendWakePacket(mac: string): Promise<void> {
+  const packet = wakeMagicPacket(mac);
+  const socket = createSocket("udp4");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.bind(0, () => {
+        try {
+          socket.setBroadcast(true);
+          socket.send(packet, 9, "255.255.255.255", error => error ? reject(error) : resolve());
+        } catch (error) { reject(error); }
+      });
+    });
+  } finally { try { socket.close(); } catch {} }
+}
+
 function validateMachines(value: unknown): MachineConfig[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("machines must be an array");
@@ -328,7 +361,8 @@ function validateMachines(value: unknown): MachineConfig[] {
     const normalized = candidate.ssh.toLowerCase();
     if (aliases.has(normalized)) throw new Error(`duplicate SSH alias: ${candidate.ssh}`);
     aliases.add(normalized);
-    return { name, ssh: candidate.ssh };
+    const wakeMac = candidate.wakeMac === undefined || typeof candidate.wakeMac === "string" && !candidate.wakeMac.trim() ? undefined : normalizeWakeMac(candidate.wakeMac);
+    return { name, ssh: candidate.ssh, ...(wakeMac ? { wakeMac } : {}) };
   });
 }
 
@@ -1911,6 +1945,7 @@ export class MachineRuntime {
       connected: this.state.connected,
       connectionError: this.state.connectionError,
       loadedTaskCount: this.loadedThreads.length,
+      canWake: Boolean(this.definition.ssh && this.definition.wakeMac && !this.state.connected),
       terminalResults: { ...this.terminalResults },
       selectedThreadId: this.state.thread?.id ?? null,
     };
@@ -2188,6 +2223,21 @@ export class MachineRuntime {
       this.reconnectTimer = null;
       this.connect().catch((error) => console.error(error));
     }, delay);
+  }
+
+  async wake(): Promise<JsonObject> {
+    if (!this.definition.ssh || !this.definition.wakeMac) throw new Error("Wake-on-LAN is not configured for this machine");
+    if (this.state.connected) throw new Error("Machine is already connected");
+    await sendWakePacket(this.definition.wakeMac);
+    if (!this.state.connected && !this.shuttingDown) {
+      this.reconnectDelayIndex = 0;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        this.scheduleReconnect();
+      } else if (!this.rpc) this.scheduleReconnect();
+    }
+    return { sent: true };
   }
 
   private async refreshQuota(): Promise<void> {
@@ -3607,7 +3657,7 @@ export class PocketGateway {
   constructor(options: Options, headless = HEADLESS) {
     const definitions: MachineDefinition[] = [
       ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null }]),
-      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh })),
+      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac })),
     ];
     if (!definitions.length) throw new Error("Headless Pocket requires at least one configured SSH machine");
     this.selectedMachineId = definitions[0].id;
@@ -3674,6 +3724,12 @@ export class PocketGateway {
     }));
   }
 
+  async wakeMachine(machineId: unknown): Promise<JsonObject> {
+    const runtime = typeof machineId === "string" ? this.runtimes.get(machineId) : undefined;
+    if (!runtime) throw new Error("Machine is not configured");
+    return runtime.wake();
+  }
+
   async navigationCatalog(archived = false): Promise<JsonObject> {
     const machines = await Promise.all([...this.runtimes.entries()].map(async ([id, runtime]) => {
       const summary = runtime.machineSummary();
@@ -3692,6 +3748,7 @@ export class PocketGateway {
         name: summary.name,
         platform: summary.platform,
         local: id === "local",
+        canWake: summary.canWake,
         connected: Boolean(runtime.state.connected),
         catalogAvailable,
         terminalResults: runtime.machineSummary().terminalResults,
@@ -4056,7 +4113,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
 const JSON_POST_ROUTES = new Set([
   "/api/login", "/api/settings", "/api/tasks", "/api/message", "/api/turn/interrupt",
   "/api/message/queue", "/api/thread/settings", "/api/thread/access", "/api/approval",
-  "/api/input", "/api/thread", "/api/navigation/select",
+  "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake",
 ]);
 
 function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
@@ -4341,6 +4398,15 @@ export async function handleRequest(
       ), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/machines/wake") {
+    try {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await gateway.wakeMachine(body.machineId), gateway);
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
     return;
   }

@@ -103,6 +103,8 @@ Then use **Settings → Machines → Add Machine**, enter a display name and SSH
 
 Disconnected runtimes retry after 5, 10, 20, 30, then 60 seconds, staying at 60 seconds until a successful connection resets the delay. Transport establishment has a 15-second timeout.
 
+For a PC that already supports Wake-on-LAN on the host's LAN, optionally enter its **Wake MAC** in machine settings (`wakeMac` in the config). After saving and restarting Pocket, an offline configured machine shows **Wake** in the Tasks drawer. This sends a magic packet from the Pocket host to UDP broadcast port 9 and nudges the existing reconnect retry. “Wake packet sent” confirms sending, not that the PC is online.
+
 Server-backed settings are stored in the Git-ignored `.codex-pocket.local.json`; appearance, input, and display preferences stay in each browser’s local storage. Local config, runtime records, and logs should stay private. If the Mac runtime is unavailable, check that its shared daemon is running; Pocket also shows a concise underlying connection or task-ownership error.
 
 ## Architecture and limits

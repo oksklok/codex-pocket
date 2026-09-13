@@ -628,7 +628,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .machine-settings-header { display: none; }
 .machine-settings-row [data-machine-ssh] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (min-width: 600px) {
-  .machine-settings-header, .machine-settings-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) 120px; gap: 8px; padding: 8px; }
+  .machine-settings-header, .machine-settings-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1.3fr) 120px; gap: 8px; padding: 8px; }
   .machine-settings-header { color: var(--muted); font-size: var(--text-label); }
   .machine-settings-field > span { display: none; }
   .machine-row-actions { grid-column: auto; }

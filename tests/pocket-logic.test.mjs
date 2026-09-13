@@ -782,6 +782,11 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
   });
   const post = (path, headers = {}, body) => raw(path, headers, "POST", body);
   try {
+    assert.equal((await post("/api/machines/wake", { Origin: "https://attacker.example", "Content-Type": "application/json" }, '{"machineId":"local"}')).status, 403);
+    assert.equal((await post("/api/machines/wake", { Origin: origin }, '{}')).status, 415);
+    const wake = await post("/api/machines/wake", { Origin: origin, "Content-Type": "application/json" }, '{"machineId":"local","wakeMac":"AA:BB:CC:DD:EE:FF","address":"127.0.0.1","port":1234}');
+    assert.equal(wake.status, 400);
+    assert.match((await wake.json()).error, /not configured/);
     assert.equal((await post("/api/login", { Origin: origin, "Content-Type": "application/json; charset=utf-8", "Sec-Fetch-Site": "same-origin" }, "{}")).status, 200);
     assert.equal((await post("/api/login", { Origin: origin.replace("http:","https:"), "Content-Type": "application/json" }, "{}")).status, 200);
     assert.equal((await post("/api/shutdown", { Origin: "https://attacker.example" })).status, 403);
@@ -2288,4 +2293,74 @@ test('goal read or pause failure rejects Stop, clears its guard, and permits ret
     assert.deepEqual(await runtime.interruptTurn('thread-1', 'turn-1'), { accepted: true });
     assert.deepEqual(calls, order);
   }
+});
+
+test('Wake MAC normalization, config round-trip, and exact magic packet', async () => {
+  const { normalizeWakeMac, wakeMagicPacket, saveLocalSettings } = await import('../gateway.ts');
+  for (const mac of ['aa:bb:cc:dd:ee:ff','AA-BB-CC-DD-EE-FF','aabbccddeeff',' AA:BB:CC:DD:EE:FF ']) assert.equal(normalizeWakeMac(mac),'AA:BB:CC:DD:EE:FF');
+  for (const mac of ['',null,42,'AA:BB:CC:DD:EE','AA:BB:CC:DD:EE:GG','AA:BB-CC:DD:EE:FF','aabbccddeeff00']) assert.throws(()=>normalizeWakeMac(mac),/valid Wake-on-LAN MAC/);
+  const packet=wakeMagicPacket('AA:BB:CC:DD:EE:FF');
+  assert.equal(packet.length,102);
+  assert.equal(packet.toString('hex'),'ff'.repeat(6)+'aabbccddeeff'.repeat(16));
+  const {mkdtempSync,readFileSync,rmSync}=await import('node:fs');
+  const {tmpdir}=await import('node:os');
+  const dir=mkdtempSync(`${tmpdir()}/pocket-wake-`);
+  const settings={path:`${dir}/config.json`,config:{lanEnabled:false,host:'127.0.0.1',port:4173,pin:'1234',localName:'',machines:[]}};
+  try {
+    const machines=[{name:'Legacy',ssh:'legacy'},{name:'PC',ssh:'pc',wakeMac:'aa-bb-cc-dd-ee-ff'}];
+    saveLocalSettings(settings,{...settings.config,machines},null,false);
+    assert.deepEqual(settings.config.machines,[machines[0],{...machines[1],wakeMac:'AA:BB:CC:DD:EE:FF'}]);
+    const disk=readFileSync(settings.path,'utf8');
+    assert.throws(()=>saveLocalSettings(settings,{...settings.config,machines:[{...machines[1],wakeMac:'invalid'}]},null,false),/valid Wake/);
+    assert.equal(readFileSync(settings.path,'utf8'),disk);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('Wake resolves configured SSH MAC, preserves selection, and nudges existing reconnect only after UDP success', async t => {
+  const dgram=(await import('node:dgram')).default;
+  const {syncBuiltinESMExports}=await import('node:module');
+  const {EventEmitter}=await import('node:events');
+  const calls=[];let sendError=null, closed=0;
+  t.mock.method(dgram,'createSocket',type=>{
+    assert.equal(type,'udp4');
+    const socket=new EventEmitter();
+    socket.bind=(port,callback)=>{assert.equal(port,0);queueMicrotask(callback);};
+    socket.setBroadcast=enabled=>assert.equal(enabled,true);
+    socket.send=(packet,port,address,callback)=>{calls.push({packet,port,address});callback(sendError);};
+    socket.close=()=>closed++;
+    return socket;
+  });
+  syncBuiltinESMExports();
+  const gateway=new PocketGateway({machines:[{name:'PC',ssh:'pc',wakeMac:'AA:BB:CC:DD:EE:FF'},{name:'Legacy',ssh:'legacy'}]});
+  const local=gateway.runtimes.get('local'),pc=gateway.runtimes.get('ssh:pc');
+  local.state.thread={id:'selected'};
+  const before=gateway.snapshot();
+  pc.reconnectDelayIndex=4;pc.scheduleReconnect();const originalTimer=pc.reconnectTimer;
+  try {
+    for(const id of ['missing','local','ssh:legacy',{machineId:'ssh:pc',mac:'11:22:33:44:55:66'}])await assert.rejects(gateway.wakeMachine(id),/not configured/);
+    assert.equal(calls.length,0);
+    const catalog=await gateway.navigationCatalog();
+    assert.deepEqual(catalog.machines.map(m=>m.canWake),[false,true,false]);
+    assert(!JSON.stringify(catalog).includes('AA:BB'));
+    pc.state.connected=true;
+    assert.equal(pc.machineSummary().canWake,false);
+    await assert.rejects(gateway.wakeMachine('ssh:pc'),/already connected/);
+    pc.state.connected=false;
+    sendError=new Error('send EACCES');
+    await assert.rejects(gateway.wakeMachine('ssh:pc'),/send EACCES/);
+    assert.equal(pc.reconnectTimer,originalTimer);assert.equal(pc.reconnectDelayIndex,4);
+    sendError=null;
+    assert.deepEqual(await gateway.wakeMachine('ssh:pc'),{sent:true});
+    assert.notEqual(pc.reconnectTimer,originalTimer);
+    assert.equal(pc.reconnectTimer._idleTimeout,5000);assert.equal(pc.reconnectDelayIndex,1);
+    assert.equal(originalTimer._destroyed,true);
+    assert.equal(calls[1].port,9);assert.equal(calls[1].address,'255.255.255.255');
+    assert.equal(calls[1].packet.toString('hex'),'ff'.repeat(6)+'aabbccddeeff'.repeat(16));
+    assert.equal(closed,2);
+    assert.deepEqual(gateway.snapshot(),before);
+    // A connection already in flight is left alone; its next failure starts at the short delay.
+    clearTimeout(pc.reconnectTimer);pc.reconnectTimer=null;pc.rpc={};pc.reconnectDelayIndex=4;
+    await gateway.wakeMachine('ssh:pc');
+    assert.equal(pc.reconnectTimer,null);assert.equal(pc.reconnectDelayIndex,0);
+  } finally {if(pc.reconnectTimer)clearTimeout(pc.reconnectTimer);t.mock.restoreAll();syncBuiltinESMExports();}
 });

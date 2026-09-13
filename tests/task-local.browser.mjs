@@ -17,6 +17,7 @@ let composerPost="success", recoveryMode=null;
 const eventClients=new Set();
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
+let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
@@ -42,12 +43,13 @@ const server=createServer(async(req,res)=>{
  }
  return json({settings});
  }
+ if(u.pathname==='/api/machines/wake'){let text='';for await(const c of req)text+=c;wakeBodies.push(JSON.parse(text));return wakeFailure?json({error:'send EACCES'},400):json({sent:true});}
  if(u.pathname==='/api/machines')return json({machines:settings.headless?[{id:'ssh:test',name:'Second machine',connected:remoteConnected}]:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'preview.png',revisedPrompt:u.searchParams.get('itemId')==='imageGeneration'?'A small moonlit garden':undefined}});
  if(u.pathname==='/api/activity/image'||u.pathname==='/api/message/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json(historyFixture||{machineId:runtime.state.machineId,threadId:runtime.state.thread?.id,turns:[],nextCursor:null});
- if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
+ if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,canWake:wakeConfigured&&!remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
@@ -264,16 +266,16 @@ try {
 
  for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).isVisible(),width<600);
  assert.equal(await page.locator('.machine-settings-header').isVisible(),width>=600);
- if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Actions']);}
+ if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Wake MAC (optional)','Actions']);}
  assert.equal(await page.getByRole('button',{name:'Move Laptop up',exact:true}).isDisabled(),true);
  assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('button').allTextContents(),['↑','↓','×']);
- assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40]);
+ assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40,40]);
  const valueSize=width>=861?'13px':'16px';
  assert((await page.locator('.settings-card input:not([type="checkbox"]), .settings-card select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize))).every(s=>s===valueSize));
  const gaps=await page.locator('.settings-card .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom));
  assert(gaps.every(g=>g===4));
- assert.deepEqual(await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>getComputedStyle(e).gap)),['4px','4px','4px','4px']);
+ assert.deepEqual(await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>getComputedStyle(e).gap)),['4px','4px','4px','4px','4px','4px']);
  if(width<600)assert((await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom))).every(g=>g===4));
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).display),'flex');
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).fontSize),'12px');
@@ -1124,5 +1126,34 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await hitTesting(),'auto');
  }
  historyFixture=null;
+ // Wake is a machine action, never a task selection; MAC settings survive save/reopen.
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
+ settings.headless=false;settings.machines=[{name:'PC',ssh:'pc'}];
+ remoteConnected=false;wakeConfigured=true;wakeFailure=false;
+ await page.reload();await open();
+ const wake=page.getByRole('button',{name:'Wake Second machine',exact:true});await wake.waitFor();
+ const selectionCalls=calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length;
+ const label=await page.locator('#destination-label').textContent();
+ await wake.click();await page.getByText('Wake packet sent',{exact:true}).waitFor();
+ assert.deepEqual(wakeBodies.at(-1),{machineId:'ssh:test'});
+ assert.equal(calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length,selectionCalls);
+ assert.equal(await page.locator('#destination-label').textContent(),label);
+ wakeFailure=true;await wake.click();await page.getByText('send EACCES',{exact:true}).waitFor();
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-${width}.png`});
+ for(const [connected,configured] of [[true,true],[false,false]]){
+ remoteConnected=connected;wakeConfigured=configured;
+ await page.reload();await open();await page.locator('.machine-toggle').filter({hasText:'Second machine'}).waitFor();
+ assert.equal(await page.getByRole('button',{name:/^Wake /}).count(),0);
+ }
+ await dismissTasks();await settingsOpen();
+ const mac=page.locator('[data-machine-wake-mac]').first();await mac.fill('AA:BB:CC:DD:EE:FF');await mac.evaluate(e=>e.scrollIntoView({block:"center",behavior:"instant"}));
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-settings-${width}.png`});
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await settingsSave();assert.equal(settings.machines[0].wakeMac,'AA:BB:CC:DD:EE:FF');
+ await settingsOpen();assert.equal(await page.locator('[data-machine-wake-mac]').first().inputValue(),'AA:BB:CC:DD:EE:FF');
+ await page.locator('#settings-close').click();
+ }
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

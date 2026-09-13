@@ -621,7 +621,7 @@ function renderDestinationSwitcher() {
   elements.destinationRefresh.disabled = Boolean(navigationRequest);
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
-    [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected]), elements.destinationSearch.value, Boolean(navigationRequest),
+    [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake]), elements.destinationSearch.value, Boolean(navigationRequest),
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, archived, projectsVisible, navigationErrors[slot],
   ]);
@@ -644,7 +644,7 @@ function renderDestinationSwitcher() {
   }
   for (const catalogMachine of catalogMachines) {
     const latest = machines.find(machine => machine.id === catalogMachine.id);
-    const machine = { ...catalogMachine, ...(latest ? { connected: latest.connected } : {}) };
+    const machine = { ...catalogMachine, ...(latest ? { connected: latest.connected, canWake: latest.canWake ?? catalogMachine.canWake } : {}) };
     const machineMatches = `${machine.name || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
     const tasks = (Array.isArray(machine.tasks) ? machine.tasks : []).filter((task) => {
       if (!query || machineMatches) return true;
@@ -691,6 +691,26 @@ function renderDestinationSwitcher() {
       const availabilityStatus = document.createElement("span");
       availabilityStatus.textContent = availability;
       heading.append(availabilityStatus);
+    }
+    if (!machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
+      const wake = Object.assign(document.createElement("button"), { type: "button", className: "text-button", textContent: "Wake" });
+      wake.setAttribute("aria-label", `Wake ${machine.name}`);
+      wake.addEventListener("click", async () => {
+        wake.disabled = true;
+        group.querySelector(".wake-feedback")?.remove();
+        const feedback = Object.assign(document.createElement("p"), { className: "destination-empty wake-feedback" });
+        feedback.setAttribute("role", "status");
+        group.append(feedback);
+        try {
+          const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
+          feedback.textContent = "Wake packet sent";
+          setTimeout(() => feedback.remove(), 4000);
+        } catch (error) { feedback.textContent = error.message; }
+        finally { wake.disabled = false; }
+      });
+      heading.append(wake);
     }
     const create = document.createElement("button");
     create.type = "button";
@@ -2706,6 +2726,7 @@ function machineSettingsValue() {
   return [...elements.settingsMachines.querySelectorAll(".machine-settings-row")].map((row) => ({
     name: row.querySelector("[data-machine-name]").value.trim(),
     ssh: row.querySelector("[data-machine-ssh]").value.trim(),
+    ...(row.querySelector("[data-machine-wake-mac]").value.trim() ? { wakeMac: row.querySelector("[data-machine-wake-mac]").value.trim() } : {}),
   }));
 }
 
@@ -2783,7 +2804,7 @@ function renderMachineSettings(values) {
   const header = document.createElement("div");
   header.className = "machine-settings-header";
   header.setAttribute("aria-hidden", "true");
-  for (const text of ["Display Name", "SSH Alias", "Actions"]) header.append(Object.assign(document.createElement("span"), { textContent: text }));
+  for (const text of ["Display Name", "SSH Alias", "Wake MAC (optional)", "Actions"]) header.append(Object.assign(document.createElement("span"), { textContent: text }));
   elements.settingsMachines.append(header);
   configured.forEach((machine, index) => {
     const row = document.createElement("div");
@@ -2807,6 +2828,15 @@ function renderMachineSettings(values) {
     ssh.setAttribute("aria-label", `Machine ${index + 1} SSH alias`);
     ssh.required = true;
     ssh.value = machine.ssh || "";
+    const wakeMac = document.createElement("input");
+    wakeMac.dataset.machineWakeMac = "";
+    wakeMac.type = "text";
+    wakeMac.maxLength = 17;
+    wakeMac.placeholder = "AA:BB:CC:DD:EE:FF";
+    wakeMac.autocomplete = "off";
+    wakeMac.spellcheck = false;
+    wakeMac.setAttribute("aria-label", `Machine ${index + 1} Wake MAC (optional)`);
+    wakeMac.value = machine.wakeMac || "";
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "icon-button";
@@ -2837,7 +2867,7 @@ function renderMachineSettings(values) {
     remove.title = remove.getAttribute("aria-label");
     remove.className = "text-button machine-remove";
     controls.append(remove);
-    for (const [input, title] of [[name, "Display Name"], [ssh, "SSH Alias"]]) {
+    for (const [input, title] of [[name, "Display Name"], [ssh, "SSH Alias"], [wakeMac, "Wake MAC (optional)"]]) {
       const label = document.createElement("label");
       label.className = "machine-settings-field";
       label.append(Object.assign(document.createElement("span"), { textContent: title }), input);
