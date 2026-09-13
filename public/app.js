@@ -693,8 +693,9 @@ function renderDestinationSwitcher() {
       heading.append(availabilityStatus);
     }
     if (!machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
-      const wake = Object.assign(document.createElement("button"), { type: "button", className: "text-button", textContent: "Wake" });
+      const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
       wake.setAttribute("aria-label", `Wake ${machine.name}`);
+      wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
       wake.addEventListener("click", async () => {
         wake.disabled = true;
         group.querySelector(".wake-feedback")?.remove();
@@ -1907,7 +1908,7 @@ function transcriptSelectionActive() {
 
 function observeTranscriptSelection() {
   const selection = window.getSelection();
-  if (!matchMedia("(max-width: 860px)").matches && selection && !selection.isCollapsed
+  if (selection && !selection.isCollapsed
     && elements.conversation.contains(selection.anchorNode) && !elements.conversation.contains(selection.focusNode)) {
     const bounds = document.createRange();
     bounds.selectNodeContents(elements.conversation);

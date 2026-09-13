@@ -1070,8 +1070,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert(calls.filter(c=>c==='/api/history').length>before);
  }
  historyFixture=null;
- // Desktop transcript selections clamp escaped endpoints; composer-owned selections still work.
- for(const width of [1280,860]){
+ // Transcript selections clamp escaped endpoints at every width; composer-owned selections still work.
+ for(const width of [1280,860,390,320]){
  await page.setViewportSize({width,height:844});
  historyFixture={machineId:'local',threadId:task.id,turns:[{id:'clamp-turn',messages:[{id:'clamp-message',role:'assistant',text:'Select this transcript text.',complete:true}],activities:[]}],nextCursor:null};
  await page.reload();await page.locator('[data-message-id="clamp-message"] .message-body p').waitFor();
@@ -1090,8 +1090,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  },target);
  assert.equal(result.anchorPreserved,true);
  assert.equal(result.collapsed,false);
- assert.equal(result.inside,width>860);
- if(width>860)assert.equal(result.offset,result.boundary);
+ assert.equal(result.inside,true);
+ assert.equal(result.offset,result.boundary);
  }
  await page.evaluate(()=>{getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'));});
  await input.fill('Intentional composer selection');await input.click();
@@ -1134,6 +1134,9 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  remoteConnected=false;wakeConfigured=true;wakeFailure=false;
  await page.reload();await open();
  const wake=page.getByRole('button',{name:'Wake Second machine',exact:true});await wake.waitFor();
+ assert.equal(await wake.getAttribute('title'),'Wake Second machine');
+ assert.equal(await wake.getAttribute('class'),'icon-button');
+ assert.equal(await wake.locator('svg[aria-hidden="true"]').count(),1);
  const selectionCalls=calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length;
  const label=await page.locator('#destination-label').textContent();
  await wake.click();await page.getByText('Wake packet sent',{exact:true}).waitFor();
