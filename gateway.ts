@@ -2787,6 +2787,11 @@ export class MachineRuntime {
     this.state.stoppingTurnId = turnId;
     this.broadcast("control", { stoppingTurnId: turnId, message: this.messageCapability() });
     try {
+      const { goal } = await this.rpc.request("thread/goal/get", { threadId });
+      if (goal?.status === "active") {
+        // Pause before the idle transition can schedule another goal continuation.
+        await this.rpc.request("thread/goal/set", { threadId, status: "paused" });
+      }
       await this.rpc.request("turn/interrupt", { threadId, turnId });
       return { accepted: true };
     } catch (error) {

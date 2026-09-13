@@ -2215,3 +2215,77 @@ test('failed first Start keeps the guard; accepted Start restores destination-be
     assert(calls.filter(c => c.method === 'thread/resume').every(c => c.params.excludeTurns === true));
   }
 });
+
+test('Stop awaits active goal pause before interrupting the exact turn', async () => {
+  const runtime = activeRuntime(), calls = [];
+  let finishPause;
+  runtime.rpc = { request: async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/goal/get') return { goal: { threadId: 'thread-1', status: 'active' } };
+    if (method === 'thread/goal/set') return new Promise(resolve => { finishPause = () => resolve({ goal: { threadId: 'thread-1', status: 'paused' } }); });
+    return {};
+  } };
+  const stopping = runtime.interruptTurn('thread-1', 'turn-1');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.state.stoppingTurnId, 'turn-1');
+  assert.deepEqual(calls, [
+    { method: 'thread/goal/get', params: { threadId: 'thread-1' } },
+    { method: 'thread/goal/set', params: { threadId: 'thread-1', status: 'paused' } },
+  ]);
+  finishPause();
+  assert.deepEqual(await stopping, { accepted: true });
+  assert.deepEqual(calls[2], { method: 'turn/interrupt', params: { threadId: 'thread-1', turnId: 'turn-1' } });
+  assert.equal(calls.length, 3);
+  await assert.rejects(runtime.interruptTurn('thread-1', 'turn-1'), /already stopping/);
+  assert.equal(calls.length, 3);
+});
+
+test('Stop only interrupts ordinary turns and never rewrites a non-active goal', async () => {
+  for (const status of [null, 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete']) {
+    const runtime = activeRuntime(), calls = [];
+    runtime.rpc = { request: async (method, params) => {
+      calls.push({ method, params });
+      return method === 'thread/goal/get' ? { goal: status === null ? null : { status } } : {};
+    } };
+    assert.deepEqual(await runtime.interruptTurn('thread-1', 'turn-1'), { accepted: true });
+    assert.deepEqual(calls, [
+      { method: 'thread/goal/get', params: { threadId: 'thread-1' } },
+      { method: 'turn/interrupt', params: { threadId: 'thread-1', turnId: 'turn-1' } },
+    ]);
+  }
+});
+
+test('Stop rejects stale thread/turn and inactive turns before any goal RPC', async () => {
+  for (const [threadId, turnId, completed, error] of [
+    ['wrong', 'turn-1', false, /selected task changed/],
+    ['thread-1', 'wrong', false, /active turn changed/],
+    ['thread-1', 'turn-1', true, /no active turn/],
+  ]) {
+    const runtime = activeRuntime(), calls = [];
+    if (completed) runtime.state.turn.status = 'completed';
+    runtime.rpc = { request: async method => { calls.push(method); return {}; } };
+    await assert.rejects(runtime.interruptTurn(threadId, turnId), error);
+    assert.deepEqual(calls, []);
+    assert.equal(runtime.state.stoppingTurnId, null);
+  }
+});
+
+test('goal read or pause failure rejects Stop, clears its guard, and permits retry', async () => {
+  for (const failure of ['thread/goal/get', 'thread/goal/set', 'turn/interrupt']) {
+    const runtime = activeRuntime(), calls = [];
+    let fail = true;
+    runtime.rpc = { request: async method => {
+      calls.push(method);
+      if (fail && method === failure) throw new Error('Stop RPC failed');
+      return method === 'thread/goal/get' ? { goal: { status: 'active' } } : {};
+    } };
+    await assert.rejects(runtime.interruptTurn('thread-1', 'turn-1'), /Stop RPC failed/);
+    assert.equal(runtime.state.stoppingTurnId, null);
+    assert.equal(runtime.state.turn.status, 'inProgress');
+    const order = ['thread/goal/get', 'thread/goal/set', 'turn/interrupt'];
+    assert.deepEqual(calls, order.slice(0, order.indexOf(failure) + 1));
+    calls.length = 0; fail = false;
+    assert.deepEqual(await runtime.interruptTurn('thread-1', 'turn-1'), { accepted: true });
+    assert.deepEqual(calls, order);
+  }
+});
