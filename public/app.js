@@ -3021,6 +3021,14 @@ new ResizeObserver(([entry]) => {
   resizeComposer();
 }).observe(elements.composerInput);
 document.addEventListener("selectionchange", observeTranscriptSelection);
+elements.conversation.addEventListener("pointerdown", event => {
+  if (event.isPrimary && event.button === 0 && !matchMedia("(max-width: 860px)").matches) {
+    elements.appShell.classList.add("transcript-drag-held");
+  }
+});
+const clearTranscriptDrag = () => elements.appShell.classList.remove("transcript-drag-held");
+for (const type of ["pointerup", "pointercancel", "mouseup"]) window.addEventListener(type, clearTranscriptDrag, true);
+window.addEventListener("blur", clearTranscriptDrag);
 elements.conversation.addEventListener("focusout", (event) => {
   if (!event.relatedTarget?.closest(".async-answer")) queueMicrotask(flushDeferredTranscript);
 });

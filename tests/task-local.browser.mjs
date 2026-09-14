@@ -1102,6 +1102,35 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await input.fill('');
  }
  historyFixture=null;
+ // A held desktop transcript drag excludes the composer, then restores it immediately on release.
+ await page.setViewportSize({width:1280,height:844});
+ historyFixture={machineId:'local',threadId:task.id,turns:[{id:'drag-turn',messages:[{id:'drag-message',role:'assistant',text:'Drag this transcript selection toward the composer.',complete:true}],activities:[]}],nextCursor:null};
+ await page.reload();await page.locator('[data-message-id="drag-message"] .message-body p').waitFor();
+ if(await page.locator('#destination-button').getAttribute('aria-expanded')==='true'){await dismissTasks();await closed();await page.waitForTimeout(210);}
+ const dragText=await page.locator('[data-message-id="drag-message"] .message-body p').boundingBox();
+ const composer=await input.boundingBox();
+ const composerHitTesting=()=>input.evaluate(e=>getComputedStyle(e).pointerEvents);
+ await input.focus();
+ await page.mouse.move(dragText.x+5,dragText.y+dragText.height/2);await page.mouse.down();
+ await page.mouse.move(dragText.x+100,dragText.y+dragText.height/2,{steps:5});
+ for(const offset of [4,12,6]){
+ await page.mouse.move(composer.x+composer.width-offset,composer.y+composer.height/2,{steps:5});
+ assert.equal(await composerHitTesting(),'none');
+ assert.equal(await input.evaluate(e=>{const box=e.getBoundingClientRect();return !document.elementFromPoint(box.right-8,box.y+box.height/2)?.closest('.composer-zone');}),true);
+ await page.waitForFunction(()=>{const s=getSelection(),c=document.querySelector('#conversation');return !s.isCollapsed&&c.contains(s.anchorNode)&&c.contains(s.focusNode);});
+ }
+ await page.mouse.up();assert.equal(await composerHitTesting(),'auto');
+ for(const type of ['pointercancel','blur']){
+ await page.mouse.move(dragText.x+5,dragText.y+dragText.height/2);await page.mouse.down();
+ assert.equal(await composerHitTesting(),'none');
+ await page.evaluate(type=>window.dispatchEvent(new Event(type)),type);
+ assert.equal(await composerHitTesting(),'auto');await page.mouse.up();
+ }
+ await page.evaluate(()=>{getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'));});
+ await input.fill('Normal composer editing');await input.click();
+ await input.evaluate(e=>e.setSelectionRange(0,6));await page.keyboard.type('Intentional');
+ assert.equal(await input.inputValue(),'Intentional composer editing');assert.equal(await input.evaluate(e=>document.activeElement===e),true);
+ await input.fill('');historyFixture=null;
  // Native Android handle behavior is covered by physical A/B; verify the hold-driven workaround.
  for(const width of [390,1280]){
  await page.setViewportSize({width,height:844});
