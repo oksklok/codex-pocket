@@ -1417,12 +1417,34 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  return children.slice(1).map((e,i)=>e.getBoundingClientRect().top-children[i].getBoundingClientRect().bottom);
  });assert.deepEqual(stackGaps,[8,8,8]);
  runtime.state.pending=[];runtime.broadcast('snapshot',snapshot());await page.getByRole('button',{name:'Remove image 1',exact:true}).click();
- for(const status of ['paused','complete']){
- update({...goal,status});await page.waitForFunction(status=>document.querySelector('#goal-status').textContent===(status==='complete'?'Goal Complete':'Goal Paused'),status);
+ for(const status of ['active','paused','blocked','usageLimited','budgetLimited']){
+ update({...goal,status});await page.waitForFunction(status=>document.querySelector('#goal-status').textContent===({active:'Pursuing Goal',paused:'Goal Paused',blocked:'Goal Blocked',usageLimited:'Goal Usage Limited',budgetLimited:'Goal Budget Limited'})[status],status);
+ const before=goalCalls.length;
+ await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.locator('#goal-clear-dialog').waitFor();
+ assert.equal(goalCalls.length,before);assert.equal(await page.locator('#goal-clear-title').textContent(),'Clear unfinished goal?');
+ assert.equal(await page.locator('#goal-clear-dialog p').textContent(),"This goal hasn't been completed yet.");
+ assert(!(await page.locator('#goal-clear-dialog').innerText()).includes(goal.objective));
+ await page.getByRole('button',{name:'Keep',exact:true}).click();assert.equal(goalCalls.length,before);assert.equal(await page.locator('#goal-strip').isVisible(),true);
+ await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.keyboard.press('Escape');
+ assert.equal(await page.locator('#goal-clear-dialog').isVisible(),false);assert.equal(goalCalls.length,before);
  await page.getByRole('button',{name:'Clear goal',exact:true}).click();
- assert.equal(await page.locator('#task-dialog').isVisible(),false);assert.equal(await page.locator('#queue-dialog').isVisible(),false);
- await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
+ assert(await page.locator('#goal-clear-dialog').evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;}));
+ if(process.env.POCKET_SCREENSHOT_DIR&&status==='active')await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-clear-${width}.png`});
+ await page.getByRole('button',{name:'Clear',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
  assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/clear',params:{threadId:task.id}});
+ }
+ update({...goal,status:'complete'});await page.waitForFunction(()=>document.querySelector('#goal-status').textContent==='Goal Complete');
+ await page.getByRole('button',{name:'Clear goal',exact:true}).click();
+ assert.equal(await page.locator('#goal-clear-dialog').isVisible(),false);assert.equal(await page.locator('#task-dialog').isVisible(),false);
+ await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/clear',params:{threadId:task.id}});
+ for(const change of ['disappear','task','machine']){
+ update(goal);await page.locator('#goal-strip').waitFor();await page.getByRole('button',{name:'Clear goal',exact:true}).click();
+ const before=goalCalls.length;
+ if(change==='disappear')update(null);
+ else {if(change==='task')runtime.state.thread=owned;else runtime.state.machineId='ssh:other';runtime.broadcast('snapshot',snapshot());}
+ await page.waitForFunction(()=>!document.querySelector('#goal-clear-dialog').open);
+ await page.locator('#goal-clear-form').evaluate(e=>e.requestSubmit());assert.equal(goalCalls.length,before);
+ runtime.state.thread=task;runtime.state.machineId='local';runtime.broadcast('snapshot',snapshot());
  }
  update(goal);await page.locator('#goal-strip').waitFor();update(null);await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
  }

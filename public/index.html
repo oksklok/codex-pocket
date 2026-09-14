@@ -221,6 +221,13 @@
         <div class="new-task-actions"><button id="task-dialog-cancel" class="secondary-button" type="button">Cancel</button><button id="task-dialog-submit" class="primary-button" type="submit">Rename</button></div>
       </form>
     </dialog>
+    <dialog class="new-task-dialog" id="goal-clear-dialog" aria-labelledby="goal-clear-title">
+      <form id="goal-clear-form">
+        <h2 id="goal-clear-title">Clear unfinished goal?</h2>
+        <p>This goal hasn't been completed yet.</p>
+        <div class="new-task-actions"><button id="goal-clear-keep" class="secondary-button" type="button">Keep</button><button class="danger-button" type="submit">Clear</button></div>
+      </form>
+    </dialog>
     <dialog class="new-task-dialog queue-dialog" id="queue-dialog" aria-labelledby="queue-dialog-title">
       <form id="queue-dialog-form" novalidate>
         <h2 id="queue-dialog-title"></h2>

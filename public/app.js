@@ -1300,9 +1300,15 @@ function renderAttention() {
 const goalStrip = document.querySelector("#goal-strip");
 const goalToggle = document.querySelector("#goal-toggle");
 const goalClear = document.querySelector("#goal-clear");
+const goalClearDialog = document.querySelector("#goal-clear-dialog");
+let goalClearTarget = null;
+function goalClearTargetMatches() {
+  return goalClearTarget && state?.goal && state.machineId === goalClearTarget.machineId && state.thread?.id === goalClearTarget.threadId;
+}
 let goalActionBusy = null;
 function renderGoal() {
   const goal = state?.goal;
+  if (goalClearDialog.open && !goalClearTargetMatches()) goalClearDialog.close();
   goalStrip.hidden = !goal;
   if (!goal) return;
   const labels = { active: "Pursuing Goal", paused: "Goal Paused", blocked: "Goal Blocked", usageLimited: "Goal Usage Limited", budgetLimited: "Goal Budget Limited", complete: "Goal Complete" };
@@ -1334,7 +1340,24 @@ async function performGoalAction(body) {
   } finally { goalActionBusy = null; renderComposer(); }
 }
 goalToggle.addEventListener("click", () => performGoalAction({ machineId: state.machineId, threadId: state.thread.id, action: goalToggle.dataset.action }));
-goalClear.addEventListener("click", () => performGoalAction({ machineId: state.machineId, threadId: state.thread.id, action: "clear", confirmed: true }));
+goalClear.addEventListener("click", () => {
+  if (!state?.goal || !state.thread || goalActionBusy) return;
+  const body = { machineId: state.machineId, threadId: state.thread.id, action: "clear", confirmed: true };
+  if (state.goal.status === "complete") { void performGoalAction(body); return; }
+  goalClearTarget = body;
+  goalClearDialog.showModal();
+  document.querySelector("#goal-clear-keep").focus();
+});
+goalClearDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
+goalClearDialog.addEventListener("close", () => { if (!goalClearDialog.open) goalClearTarget = null; });
+document.querySelector("#goal-clear-keep").addEventListener("click", () => goalClearDialog.close());
+document.querySelector("#goal-clear-form").addEventListener("submit", event => {
+  event.preventDefault();
+  if (!goalClearDialog.open || !goalClearTargetMatches()) { goalClearDialog.close(); return; }
+  const body = goalClearTarget;
+  goalClearDialog.close();
+  void performGoalAction(body);
+});
 
 function renderComposer() {
   renderGoal();
