@@ -994,9 +994,9 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));await page.reload();await page.locator('#message-text').fill('Overflowing composer line with enough text to wrap.\n'.repeat(30));
  const geometry=await page.locator('#message-text').evaluate(e=>{
  const r=e.getBoundingClientRect(),b=document.querySelector('#expand-composer').getBoundingClientRect(),rail=document.querySelector('.composer-actions').getBoundingClientRect(),style=getComputedStyle(e),gap=parseFloat(getComputedStyle(document.querySelector('#composer')).columnGap);
- return {overflow:e.scrollHeight>e.clientHeight,outside:b.left>=r.right,gap:b.left-r.right,gridGap:gap,inRail:b.left>=rail.left&&b.right<=rail.right,aboveActions:b.bottom<=rail.top,padding:style.paddingRight,width:b.width,height:b.height,horizontal:document.documentElement.scrollWidth>innerWidth,gutterTarget:document.elementFromPoint(r.right-5,r.top+15)===e};
+ return {overflow:e.scrollHeight>e.clientHeight,outside:b.left>=r.right,gap:b.left-r.right,gridGap:gap,inRail:b.left>=rail.left&&b.right<=rail.right,aboveActions:b.bottom<=rail.top,insideComposer:b.top>=document.querySelector('.composer-zone').getBoundingClientRect().top,padding:style.paddingRight,width:b.width,height:b.height,horizontal:document.documentElement.scrollWidth>innerWidth,gutterTarget:document.elementFromPoint(r.right-5,r.top+15)===e};
  });
- assert(geometry.gutterTarget);assert(geometry.overflow);assert(geometry.outside,JSON.stringify({width,geometry}));assert.equal(geometry.gap,geometry.gridGap);assert(geometry.inRail);assert(geometry.aboveActions);assert.equal(geometry.padding,'44px');assert.equal(geometry.width,32);assert.equal(geometry.height,32);assert(!geometry.horizontal);
+ assert(geometry.gutterTarget);assert(geometry.overflow);assert(geometry.outside,JSON.stringify({width,geometry}));assert.equal(geometry.gap,geometry.gridGap);assert(geometry.inRail);assert(geometry.aboveActions);assert(geometry.insideComposer);assert.equal(geometry.padding,'44px');assert.equal(geometry.width,32);assert.equal(geometry.height,32);assert(!geometry.horizontal);
  await page.locator('#message-text').evaluate(e=>e.scrollTop=0);
  const r=await page.locator('#message-text').boundingBox();await page.mouse.move(r.x+r.width-5,r.y+20);await page.mouse.wheel(0,150);await page.waitForTimeout(100);
  assert(await page.locator('#message-text').evaluate(e=>e.scrollTop>0));
@@ -1017,10 +1017,13 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await toggleStable();
  const textareaWidth=await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().width);
  await page.locator('#message-text').fill('First line\nSecond line');
- assert(await page.locator('#expand-composer').evaluate(e=>e.getBoundingClientRect().bottom<=document.querySelector('.composer-actions').getBoundingClientRect().top),'short multiline drafts must not overlap the action buttons');
+ assert(await page.locator('#expand-composer').isHidden(),'short multiline drafts hide the expand control instead of moving it above the composer');
  assert.equal(await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().width),textareaWidth);
  assert(await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().height<80),'short drafts retain their natural height');
- await toggleStable();await toggleStable();
+ await page.locator('#message-text').fill('Long draft\n'.repeat(10));await toggleStable();
+ await page.locator('#message-text').fill('');assert(await page.locator('#expand-composer').isVisible(),'Fullscreen Exit stays available even for an empty draft');
+ await toggleStable();
+ await page.locator('#message-text').fill('First line\nSecond line');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-short-${width}.png`});
  }
  // Composer surface growth/shrink follows latest only while follow mode is enabled.
@@ -1728,6 +1731,10 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await sourceRow.locator('.task-selection-error').getByText('Send the first message before leaving this new task.',{exact:true}).waitFor();
  assert.equal(await targetRow.locator('.task-selection-error').count(),0);assert.equal(await sourceRow.locator('.destination-task').getAttribute('aria-current'),'true');assert.equal(runtime.state.thread.id,source.id);
  assert.equal(await page.locator('.task-selection-error').count(),1);
+ const subtitleGeometry=await sourceRow.locator('.task-selection-error').evaluate(e=>{const r=e.getBoundingClientRect(),row=e.closest('.destination-task'),b=row.getBoundingClientRect(),style=getComputedStyle(row),title=row.querySelector('.destination-task-label > span').getBoundingClientRect(),menu=row.parentElement.querySelector('.task-actions summary').getBoundingClientRect();return {rightInset:b.right-r.right,expectedInset:parseFloat(style.paddingRight)+parseFloat(style.borderRightWidth),titleRight:title.right,menuLeft:menu.left};});
+ assert(Math.abs(subtitleGeometry.rightInset-subtitleGeometry.expectedInset)<1,JSON.stringify({width,subtitleGeometry}));
+ assert(subtitleGeometry.titleRight<=subtitleGeometry.menuLeft);
+
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/fresh-source-error-${width}.png`});
  await dismissTasks();await closed();await page.locator('#message-text').fill('First real message');await page.locator('#send-message').click();

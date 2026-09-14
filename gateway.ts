@@ -2511,6 +2511,28 @@ export class MachineRuntime {
     }
   }
 
+  private async targetHomeDirectory(): Promise<string> {
+    const rpc = this.rpc;
+    if (!rpc) throw new Error("Codex is disconnected");
+    const windows = /windows/i.test(this.state.platform);
+    const script = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();[Console]::Write([Environment]::GetFolderPath('UserProfile'))";
+    const command = windows
+      ? ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]
+      : ["sh", "-c", `printf '%s' "$HOME"`];
+    try {
+      // Run the fixed read-only Windows query as the runtime user, not a sandbox account.
+      const sandboxPolicy = windows ? { type: "dangerFullAccess" } : { type: "readOnly", networkAccess: false };
+      const result = await rpc.request("command/exec", { command, timeoutMs: 5000, outputBytesCap: 4096, sandboxPolicy });
+      const home = typeof result.stdout === "string" ? result.stdout.trim() : "";
+      if (result.exitCode !== 0 || !home || /[\r\n\0]/.test(home)
+        || !(windows ? /^(?:[a-z]:[\\/]|\\\\)/i : /^\//).test(home)) throw new Error("Invalid home directory");
+      if (this.rpc !== rpc || !this.state.connected) throw new Error("Connection changed");
+      return home;
+    } catch {
+      throw new Error("Could not determine this machine's home directory. Enter a Project Folder and try again.");
+    }
+  }
+
   taskAction(body: JsonObject): Promise<JsonObject> {
     const operation = this.selectionQueue.then(() => this.taskActionNow(body));
     this.selectionQueue = operation.then(() => {}, () => {});
@@ -2526,7 +2548,9 @@ export class MachineRuntime {
       const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
       if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
       if (cwd && (cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd))) throw new Error("Enter an absolute project folder on this machine");
-      const started = await this.rpc.request("thread/start", cwd ? { cwd } : {});
+      const projectFolder = cwd || await this.targetHomeDirectory();
+      if (!this.rpc || !this.state.connected) throw new Error("Codex is disconnected");
+      const started = await this.rpc.request("thread/start", { cwd: projectFolder });
       const id = String(started.thread?.id ?? "");
       if (!id) throw new Error("Codex did not return a new task");
       // Keep the live zero-turn thread; 0.153.4 may not have a resumable rollout yet.

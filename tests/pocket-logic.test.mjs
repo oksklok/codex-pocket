@@ -1606,7 +1606,8 @@ test('New live tasks never resume or name zero-turn threads on either machine', 
     target.rpc = { request: async (method, params) => {
       calls.push(method);
       if (method === 'thread/name/set') assert(materialized, 'name save must wait for materialized turn completion');
-      if (method === 'thread/start') { assert.deepEqual(params, cwd ? { cwd } : {}); return { thread: { ...thread } }; }
+      if (method === 'command/exec') return { exitCode: 0, stdout: '/home/target', stderr: '' };
+      if (method === 'thread/start') { assert.deepEqual(params, { cwd: cwd || '/home/target' }); return { thread: { ...thread } }; }
       if (method === 'thread/resume') throw new Error('no rollout found for thread id new (-32600)');
       if (method === 'thread/loaded/list') return { data: ['new'] };
       if (method === 'thread/read') throw new Error('no rollout found');
@@ -1849,6 +1850,7 @@ test('New Task starting settings use the target runtime and optional failures ke
     b.waitForSettingsUpdate = async () => true;
     b.rpc = { request: async (method, params) => {
       calls.push({ method, params });
+      if (method === 'command/exec') return { exitCode: 0, stdout: '/home/target', stderr: '' };
       if (method === 'thread/start') return { thread: { id: 'new', cwd: '/resolved', status: 'idle', canAcceptDirectInput: true }, model: 'target-model', reasoningEffort: 'high', activePermissionProfile: { id: ':workspace' }, approvalsReviewer: 'user' };
       if (method === 'permissionProfile/list') return { data: [{ id: ':workspace', allowed: true }, { id: ':full-access', allowed: true }] };
       if (method === 'thread/loaded/list') return { data: ['new'] };
@@ -2868,4 +2870,39 @@ test('an away task persists its pending name from authoritative terminal reconci
   assert.equal(runtime.pendingTaskNames.size, 0);
   assert.deepEqual(calls.map(c => c.method), ['thread/turns/list', 'thread/name/set']);
   assert.deepEqual(calls[1].params, { threadId: 'away', name: 'Away name' });
+});
+
+test('blank New Task folder resolves the selected runtime user home before creating a zero-turn task', async () => {
+  for (const [platform, home] of [['unix / macos','/Users/Target User'],['unix / linux','/home/target'],['windows / windows','C:\\Users\\Target User']]) {
+    for (const ssh of [null, 'remote-target']) {
+      const runtime = new MachineRuntime({}, { id: ssh || 'local', name: 'Target', ssh }, () => {}, () => {});
+      Object.assign(runtime.state, { connected: true, platform });
+      const calls = [];
+      runtime.rpc = { request: async (method, params) => {
+        calls.push({ method, params });
+        if (method === 'command/exec') {
+          assert.deepEqual(params.sandboxPolicy, platform.startsWith('windows') ? { type: 'dangerFullAccess' } : { type: 'readOnly', networkAccess: false });
+          if (platform.startsWith('windows')) assert.match(Buffer.from(params.command.at(-1),'base64').toString('utf16le'), /GetFolderPath\('UserProfile'\)/);
+          else assert.deepEqual(params.command, ['sh','-c',`printf '%s' "$HOME"`]);
+          return { exitCode: 0, stdout: home, stderr: '' };
+        }
+        if (method === 'thread/start') return { thread: { id: 'fresh', cwd: params.cwd, status: 'idle', canAcceptDirectInput: true } };
+        return { data: [] };
+      } };
+      const result = await runtime.taskAction({ action: 'create', name: 'Home task', cwd: '   ' });
+      assert.equal(result.thread.cwd, home);
+      assert.deepEqual(calls.slice(0,2).map(c => c.method), ['command/exec','thread/start']);
+      assert.deepEqual(calls[1].params, { cwd: home });
+      assert(!calls.some(c => ['thread/resume','thread/name/set','turn/start'].includes(c.method)));
+    }
+  }
+});
+
+test('failed home resolution creates no task and never falls back to process cwd', async () => {
+  for (const response of [{exitCode:1,stdout:'/home/target'}, {exitCode:0,stdout:''}, {exitCode:0,stdout:'relative'}, {exitCode:0,stdout:'/home/a\n/home/b'}]) {
+    const runtime = activeRuntime(), calls = [];
+    runtime.rpc = { request: async method => {calls.push(method);return response;} };
+    await assert.rejects(runtime.taskAction({action:'create', name:'Home task'}), /Enter a Project Folder/);
+    assert.deepEqual(calls,['command/exec']);
+  }
 });

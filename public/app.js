@@ -71,6 +71,7 @@ const elements = {
   composerZone: document.querySelector(".composer-zone"),
   composerInput: document.querySelector(".composer-input"),
   expandComposer: document.querySelector("#expand-composer"),
+  composerActions: document.querySelector(".composer-actions"),
   enterSends: document.querySelector("#enter-sends"),
   imageViewer: document.querySelector("#image-viewer"),
   viewerImage: document.querySelector("#viewer-image"),
@@ -1526,11 +1527,12 @@ function resizeComposer() {
   textarea.style.height = composerExpanded ? "100%" : "auto";
   const style = getComputedStyle(textarea);
   const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
-  const singleLine = Math.max(40 - border, parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom));
-  const showExpand = composerExpanded || textarea.scrollHeight > singleLine + 1;
+  // Show the normal-mode control only when its full hit target fits above the action row.
+  const height = Math.max(40, Math.min(textarea.scrollHeight + border, 112));
+  const showExpand = composerExpanded || height >= 4 + 32 + 4 + elements.composerActions.offsetHeight;
   elements.composerInput.classList.toggle("can-expand", showExpand);
   elements.expandComposer.hidden = !showExpand;
-  if (!composerExpanded) textarea.style.height = `${Math.max(40, Math.min(textarea.scrollHeight + border, 112))}px`;
+  if (!composerExpanded) textarea.style.height = `${Math.max(height, Math.min(textarea.scrollHeight + border, 112))}px`;
   textarea.scrollTop = scrollTop;
 }
 

@@ -377,7 +377,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .queue-banner .composer-thumbnail img { width: 36px; height: 36px; }
 .image-note { margin: 4px 0 0; color: var(--muted); font-size: .76rem; }
 .composer .expand-composer { position: absolute; top: 4px; right: 4px; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 7px; border: 0; background: transparent; color: var(--muted); }
-.composer-zone:not(.expanded-composer) .expand-composer { left: calc(100% + 7px); right: auto; top: min(4px, calc(100% - 76px)); }
+.composer-zone:not(.expanded-composer) .expand-composer { left: calc(100% + 7px); right: auto; top: 4px; }
 .expand-composer svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .expand-composer .fullscreen-exit, .expanded-composer .fullscreen-enter { display: none; }
 .expanded-composer .fullscreen-exit { display: initial; }
@@ -593,7 +593,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 #task-dialog-delete-copy p { margin-top: 8px; }
 #task-dialog-task-name { overflow-wrap: anywhere; }
 .destination-entry { position: relative; }
-.destination-entry > .destination-task { padding-right: 44px; }
+.destination-entry > .destination-task { grid-template-columns: 18px minmax(0,1fr) auto 28px; }
 .task-actions { position: absolute; top: 0; right: 0; font-size: var(--text-label); }
 .task-actions summary { display: grid; place-items: center; cursor: pointer; list-style: none; width: 40px; height: 38px; padding: 0; }
 .task-action-menu { position: fixed; z-index: 10; width: max-content; min-width: 92px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 4px 16px rgba(0,0,0,.22); }
