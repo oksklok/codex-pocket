@@ -1109,22 +1109,22 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  if(await page.locator('#destination-button').getAttribute('aria-expanded')==='true'){await dismissTasks();await closed();await page.waitForTimeout(210);}
  const dragText=await page.locator('[data-message-id="drag-message"] .message-body p').boundingBox();
  const composer=await input.boundingBox();
- const composerHitTesting=()=>input.evaluate(e=>getComputedStyle(e).pointerEvents);
+ const composerInert=()=>page.locator('.composer-zone').evaluate(e=>e.inert);
  await input.focus();
  await page.mouse.move(dragText.x+5,dragText.y+dragText.height/2);await page.mouse.down();
  await page.mouse.move(dragText.x+100,dragText.y+dragText.height/2,{steps:5});
  for(const offset of [4,12,6]){
  await page.mouse.move(composer.x+composer.width-offset,composer.y+composer.height/2,{steps:5});
- assert.equal(await composerHitTesting(),'none');
+ assert.equal(await composerInert(),true);
  assert.equal(await input.evaluate(e=>{const box=e.getBoundingClientRect();return !document.elementFromPoint(box.right-8,box.y+box.height/2)?.closest('.composer-zone');}),true);
  await page.waitForFunction(()=>{const s=getSelection(),c=document.querySelector('#conversation');return !s.isCollapsed&&c.contains(s.anchorNode)&&c.contains(s.focusNode);});
  }
- await page.mouse.up();assert.equal(await composerHitTesting(),'auto');
- for(const type of ['pointercancel','blur']){
+ await page.mouse.up();assert.equal(await composerInert(),false);
+ for(const type of ['pointercancel','mouseup','blur']){
  await page.mouse.move(dragText.x+5,dragText.y+dragText.height/2);await page.mouse.down();
- assert.equal(await composerHitTesting(),'none');
+ assert.equal(await composerInert(),true);
  await page.evaluate(type=>window.dispatchEvent(new Event(type)),type);
- assert.equal(await composerHitTesting(),'auto');await page.mouse.up();
+ assert.equal(await composerInert(),false);await page.mouse.up();
  }
  await page.evaluate(()=>{getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'));});
  await input.fill('Normal composer editing');await input.click();

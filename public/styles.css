@@ -350,9 +350,6 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 @keyframes working-pulse { 50% { opacity: .35; transform: scale(.78); } }
 
 .composer-zone { position: relative; border-top: 1px solid var(--line-soft); background: var(--composer-bg); padding: 8px max(12px, calc((100vw - 1050px) / 2)); }
-@media (min-width: 861px) {
-  .shell.transcript-drag-held .composer-zone { pointer-events: none; }
-}
 .jump-latest {
   position: absolute; z-index: 3; top: -43px; right: max(16px, calc((100vw - 1050px) / 2));
   display: grid; place-items: center; width: 34px; height: 34px; padding: 0;

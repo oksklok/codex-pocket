@@ -3023,10 +3023,10 @@ new ResizeObserver(([entry]) => {
 document.addEventListener("selectionchange", observeTranscriptSelection);
 elements.conversation.addEventListener("pointerdown", event => {
   if (event.isPrimary && event.button === 0 && !matchMedia("(max-width: 860px)").matches) {
-    elements.appShell.classList.add("transcript-drag-held");
+    elements.composerZone.inert = true;
   }
 });
-const clearTranscriptDrag = () => elements.appShell.classList.remove("transcript-drag-held");
+const clearTranscriptDrag = () => { elements.composerZone.inert = false; };
 for (const type of ["pointerup", "pointercancel", "mouseup"]) window.addEventListener(type, clearTranscriptDrag, true);
 window.addEventListener("blur", clearTranscriptDrag);
 elements.conversation.addEventListener("focusout", (event) => {
