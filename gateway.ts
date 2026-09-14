@@ -1700,7 +1700,7 @@ export class MachineRuntime {
   private loadedThreads: LoadedThreadSummary[] = [];
   private compactionHints = new Map<string, { activity: PocketActivity; occurrence?: number; baseline?: Promise<void> }>();
   private taskQueues = new Map<string, QueuedMessage>();
-  private pendingTaskNames = new Map<string, { name: string; attempted: boolean }>();
+  private pendingTaskNames = new Map<string, { name: string; firstMessageAccepted: boolean; saving?: Promise<void>; lastTurnId?: string; warning?: string }>();
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
@@ -1844,6 +1844,7 @@ export class MachineRuntime {
     delete snapshot.metrics;
     snapshot.message = this.messageCapability();
     snapshot.asyncAnswers = this.asyncAnswers;
+    snapshot.taskNameWarning = this.pendingTaskNames.get(this.state.thread?.id ?? "")?.warning ?? null;
     snapshot.taskTerminalResults = { ...this.terminalResults };
     return snapshot;
   }
@@ -1868,7 +1869,7 @@ export class MachineRuntime {
       sortDirection: "desc",
       itemsView: "summary",
     }).catch(error => {
-      if (this.state.thread?.id === threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.attempted === false
+      if (this.state.thread?.id === threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.firstMessageAccepted === false
         && /not materialized yet[\s\S]*before (?:the )?first user message/i.test(String(error))) return { data: [], nextCursor: null };
       throw error;
     });
@@ -2268,7 +2269,7 @@ export class MachineRuntime {
         : localRuntimeReason(technicalError);
       this.state.connected = false;
       this.loadedThreads = [];
-      this.pendingTaskNames.clear();
+      for (const [id, pending] of this.pendingTaskNames) if (!pending.firstMessageAccepted) this.pendingTaskNames.delete(id);
       this.parkTaskQueue();
       this.resetThreadState();
       this.state.thread = null;
@@ -2291,7 +2292,7 @@ export class MachineRuntime {
       ? `Connection to ${this.definition.name} dropped. Pocket will retry automatically.`
       : localRuntimeReason(this.technicalConnectionError);
     this.loadedThreads = [];
-    this.pendingTaskNames.clear();
+    for (const [id, pending] of this.pendingTaskNames) if (!pending.firstMessageAccepted) this.pendingTaskNames.delete(id);
     this.parkTaskQueue();
     this.resetThreadState();
     this.state.thread = null;
@@ -2505,7 +2506,7 @@ export class MachineRuntime {
 
   assertCanLeaveNewTask(): void {
     const threadId = this.state.thread?.id;
-    if (threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.attempted === false) {
+    if (threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.firstMessageAccepted === false) {
       throw new Error("Send the first message before leaving this new task.");
     }
   }
@@ -2529,7 +2530,7 @@ export class MachineRuntime {
       const id = String(started.thread?.id ?? "");
       if (!id) throw new Error("Codex did not return a new task");
       // Keep the live zero-turn thread; 0.153.4 may not have a resumable rollout yet.
-      this.pendingTaskNames.set(id, { name, attempted: false });
+      this.pendingTaskNames.set(id, { name, firstMessageAccepted: false });
       started.thread = { ...started.thread, name };
       this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
       await this.attachLoadedThread(id, true, started);
@@ -2561,8 +2562,10 @@ export class MachineRuntime {
       const name = typeof body.name === "string" ? body.name.trim() : "";
       if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
       const pendingName = this.pendingTaskNames.get(id);
-      if (pendingName && !pendingName.attempted) this.pendingTaskNames.set(id, { name, attempted: false });
+      if (pendingName && !pendingName.firstMessageAccepted) this.pendingTaskNames.set(id, { name, firstMessageAccepted: false });
       else {
+        // An explicit rename must be the final write if deferred naming is in flight.
+        await pendingName?.saving;
         await this.rpc.request("thread/name/set", { threadId: id, name });
         this.pendingTaskNames.delete(id);
       }
@@ -2761,7 +2764,7 @@ export class MachineRuntime {
     const confirmed = await this.waitForSettingsUpdate(revision);
     if (!confirmed) {
       if (this.state.thread?.id !== threadId || !this.rpc) throw new Error("selected task changed while access was updating");
-      if (this.pendingTaskNames.get(threadId)?.attempted === false) throw new Error("Access update could not be confirmed yet");
+      if (this.pendingTaskNames.get(threadId)?.firstMessageAccepted === false) throw new Error("Access update could not be confirmed yet");
       const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
       this.updateAccessFromCodex(resumed);
       this.broadcast("settings", {
@@ -2929,7 +2932,8 @@ export class MachineRuntime {
     const files = await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
     const input = messageWithFiles(text, images, files);
     const result = await this.rpc.request("turn/start", { threadId, input });
-    void this.savePendingTaskName(threadId);
+    const pendingName = this.pendingTaskNames.get(threadId);
+    if (pendingName) pendingName.firstMessageAccepted = true;
     const turn = result?.turn ?? {};
     this.state.turn = {
       id: String(turn.id ?? ""),
@@ -3340,17 +3344,23 @@ export class MachineRuntime {
     this.terminalReads.set(threadId, token);
     delete this.terminalResults[threadId];
     let status: string | undefined;
+    let turnId = "";
     try {
       const page = await rpc.request("thread/turns/list", {
         threadId, cursor: null, limit: 1, sortDirection: "desc", itemsView: "notLoaded",
       }, 5_000);
       status = page?.data?.[0]?.status;
+      turnId = String(page?.data?.[0]?.id ?? "");
     } catch { /* Unreadable is unknown, not a successful completion. */ }
     if (this.terminalReads.get(threadId) !== token) return;
     this.terminalReads.delete(threadId);
     if (this.rpc !== rpc) return;
     const result = status === "completed" ? "Done" : status === "failed" ? "Failed" : status === "interrupted" ? "Stopped" : null;
-    if (result) this.terminalResults[threadId] = result;
+    if (result) {
+      this.terminalResults[threadId] = result;
+      // A task switched away from may expose completion through status reconciliation.
+      void this.savePendingTaskName(threadId, turnId);
+    }
     this.onTaskStatus({ machineId: this.definition.id, threadId, status: this.taskStatuses.get(threadId), terminalResult: result });
   }
 
@@ -3384,6 +3394,13 @@ export class MachineRuntime {
         void this.reconcileTaskTerminal(threadId);
       }
     }
+    if (method === "turn/started") {
+      const pending = this.pendingTaskNames.get(String(params.threadId ?? ""));
+      if (pending) pending.firstMessageAccepted = true;
+    }
+    if (method === "turn/completed") {
+      void this.savePendingTaskName(String(params.threadId ?? ""), String(params.turn?.id ?? params.turnId ?? ""));
+    }
     if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
     switch (method) {
       case "thread/goal/updated":
@@ -3409,7 +3426,7 @@ export class MachineRuntime {
         break;
       case "thread/name/updated":
         if (this.state.thread && params.name) {
-          this.state.thread.name = compact(params.name, 180);
+          this.state.thread.name = this.pendingTaskNames.get(this.state.thread.id)?.name ?? compact(params.name, 180);
           this.broadcast("thread", this.state.thread);
         }
         break;
@@ -3741,16 +3758,35 @@ export class MachineRuntime {
     this.canAcceptDirectInput = false;
   }
 
-  private async savePendingTaskName(threadId: string): Promise<void> {
+  private async savePendingTaskName(threadId: string, turnId: string): Promise<void> {
     const pending = this.pendingTaskNames.get(threadId);
     const rpc = this.rpc;
-    if (!pending || pending.attempted || !rpc) return;
-    pending.attempted = true;
-    // Keep the display name on failure, but never retry it automatically.
-    try {
-      await rpc.request("thread/name/set", { threadId, name: pending.name });
-      if (this.pendingTaskNames.get(threadId) === pending) this.pendingTaskNames.delete(threadId);
-    } catch {}
+    if (!pending || !rpc || !turnId || pending.saving || pending.lastTurnId === turnId) return;
+    pending.firstMessageAccepted = true;
+    pending.lastTurnId = turnId;
+    // Completion is authoritative: the first real turn now has a persisted rollout.
+    // Retry failures only on a later turn completion, never on a timer or start response.
+    pending.saving = (async () => {
+      try {
+        await rpc.request("thread/name/set", { threadId, name: pending.name });
+        if (this.pendingTaskNames.get(threadId) !== pending) return;
+        this.pendingTaskNames.delete(threadId);
+        const task = this.loadedThreads.find(task => task.id === threadId);
+        if (task) task.name = pending.name;
+        if (this.state.thread?.id === threadId) {
+          this.state.thread.name = pending.name;
+          this.broadcast("thread", this.state.thread);
+        }
+      } catch {
+        pending.warning = "Task name could not be saved. Rename it to save now; Pocket will retry after the next turn.";
+      } finally {
+        pending.saving = undefined;
+        if (this.state.thread?.id === threadId) {
+          this.broadcast("task-name", { threadId, taskNameWarning: this.pendingTaskNames.get(threadId)?.warning ?? null });
+        }
+      }
+    })();
+    await pending.saving;
   }
 
   private async startQueuedMessage(threadId: string): Promise<boolean> {
@@ -3761,7 +3797,8 @@ export class MachineRuntime {
     try {
       const input = messageWithFiles(queued.text, queued.images, queued.files);
       const result = await this.rpc.request("turn/start", { threadId, input });
-      void this.savePendingTaskName(threadId);
+      const pendingName = this.pendingTaskNames.get(threadId);
+      if (pendingName) pendingName.firstMessageAccepted = true;
       if (this.state.thread?.id !== threadId || this.state.queuedMessage !== queued) return;
       this.state.queuedMessage = null;
       const turn = result?.turn ?? {};

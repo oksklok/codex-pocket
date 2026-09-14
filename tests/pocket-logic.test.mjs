@@ -488,6 +488,8 @@ test("empty task creation selects returned ID without fake input; lifecycle and 
   assert.ok(!calls.some(c => c.method === "turn/start"));
   assert(!calls.some(c => ["thread/resume", "thread/name/set"].includes(c.method)));
   await runtime.sendMessage("Real first message", "start");
+  runtime.handleNotification({ method: "turn/completed", params: { threadId: first.thread.id, turn: { id: "first", status: "completed" } } });
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(tasks.get(first.thread.id).name, "Same name");
   await runtime.taskAction({ action: "create", name: "Other task", cwd: "/tmp/other-project" });
   await runtime.sendMessage("Other real first message", "start");
@@ -1301,14 +1303,19 @@ test('New Task hands off ownership before deferred naming; naming failure cannot
   assert(!calls.includes('B:thread/name/set'));
   const sent = await b.sendMessage('Real input', 'start');
   assert.equal(sent.accepted, true);
-  assert(calls.includes('B:thread/name/set'));
+  assert(!calls.includes('B:thread/name/set'));
+  b.handleNotification({ method: 'turn/started', params: { threadId: 'new-b', turn: { id: 'real', status: 'inProgress' } } });
+  assert(!calls.includes('B:thread/name/set'));
+  b.handleNotification({ method: 'turn/completed', params: { threadId: 'new-b', turn: { id: 'real', status: 'completed' } } });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal((await b.listLoadedThreads()).find(t => t.id === 'new-b').name, 'New name');
   assert.equal(b.pendingTaskNames.get('new-b').name, 'New name');
   await b.attachLoadedThread('new-b', false, { thread: { ...created, preview: 'Generated preview' } });
   assert.equal(b.state.thread.name, 'New name');
   const namingCalls = calls.filter(c => c === 'B:thread/name/set').length;
-  await b.savePendingTaskName('new-b');
+  assert.match(b.snapshot().taskNameWarning, /name could not be saved/);
+  b.handleNotification({ method: 'turn/completed', params: { threadId: 'new-b', turn: { id: 'real', status: 'completed' } } });
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.filter(c => c === 'B:thread/name/set').length, namingCalls);
   b.rpc.request = async (method, params) => {
     if (method === 'thread/name/set') { created.name = params.name; return {}; }
@@ -1316,6 +1323,12 @@ test('New Task hands off ownership before deferred naming; naming failure cannot
     if (method === 'thread/read') return { thread: created };
     return { data: [] };
   };
+  b.handleNotification({ method: 'turn/completed', params: { threadId: 'new-b', turn: { id: 'next', status: 'completed' } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(b.pendingTaskNames.has('new-b'), false);
+  assert.equal(b.snapshot().taskNameWarning, null);
+  assert.equal(created.name, 'New name');
+  assert.equal((await b.refreshLoadedThreads()).find(t => t.id === 'new-b').name, 'New name');
   await b.taskAction({ action: 'rename', threadId: 'new-b', name: 'Renamed explicitly' });
   assert.equal(b.pendingTaskNames.has('new-b'), false);
   assert.equal(b.state.thread.name, 'Renamed explicitly');
@@ -1587,11 +1600,12 @@ test('New live tasks never resume or name zero-turn threads on either machine', 
     Object.assign(a.state, { connected: true, thread: { id: 'a' }, threadStatus: 'idle' });
     target.state.connected = true;
     const calls = [];
-    let rejectTurn = true;
+    let rejectTurn = true, materialized = false;
     const thread = { id: 'new', cwd: '/project', status: 'idle', canAcceptDirectInput: true };
     a.rpc = { request: async () => ({ data: [] }) };
     target.rpc = { request: async (method, params) => {
       calls.push(method);
+      if (method === 'thread/name/set') assert(materialized, 'name save must wait for materialized turn completion');
       if (method === 'thread/start') { assert.deepEqual(params, cwd ? { cwd } : {}); return { thread: { ...thread } }; }
       if (method === 'thread/resume') throw new Error('no rollout found for thread id new (-32600)');
       if (method === 'thread/loaded/list') return { data: ['new'] };
@@ -1614,6 +1628,9 @@ test('New live tasks never resume or name zero-turn threads on either machine', 
     rejectTurn = false;
     const sent = await target.sendMessage('First real input', 'start');
     assert.equal(sent.accepted, true);
+    assert(!calls.includes('thread/name/set'));
+    materialized = true;
+    target.handleNotification({ method: 'turn/completed', params: { threadId: 'new', turn: { id: 'first', status: 'completed' } } });
     assert(calls.indexOf('thread/name/set') > calls.indexOf('turn/start'));
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(target.pendingTaskNames.size, 0);
@@ -1809,14 +1826,14 @@ test('Successful deliberate task entry acknowledges only its terminal marker and
 test('Fresh task history only suppresses the specific unmaterialized condition before first use', async () => {
   const runtime = activeRuntime();
   runtime.state.turn = null;
-  runtime.pendingTaskNames.set('thread-1', { name: 'Fresh', attempted: false });
+  runtime.pendingTaskNames.set('thread-1', { name: 'Fresh', firstMessageAccepted: false });
   let error = 'thread thread-1 is not materialized yet; history unavailable before first user message';
   runtime.rpc = { request: async () => { throw new Error(error); } };
   assert.deepEqual((await runtime.history(null, 20)).turns, []);
   error = 'Permission denied';
   await assert.rejects(runtime.history(null, 20), /Permission denied/);
   error = 'thread thread-1 is not materialized yet; history unavailable before first user message';
-  runtime.pendingTaskNames.get('thread-1').attempted = true;
+  runtime.pendingTaskNames.get('thread-1').firstMessageAccepted = true;
   await assert.rejects(runtime.history(null, 20), /not materialized/);
 });
 
@@ -1861,7 +1878,7 @@ test('New Task starting settings use the target runtime and optional failures ke
 
 test('Unconfirmed fresh-task access never falls back to resuming the zero-turn thread', async () => {
   const runtime = activeRuntime();
-  runtime.pendingTaskNames.set('thread-1', { name: 'Fresh', attempted: false });
+  runtime.pendingTaskNames.set('thread-1', { name: 'Fresh', firstMessageAccepted: false });
   runtime.state.access = { mode: 'ask', choices: { auto: { available: true } } };
   runtime.waitForSettingsUpdate = async () => false;
   const calls = [];
@@ -2148,7 +2165,7 @@ function freshTaskGateway() {
     } };
   }
   const runtime = gateway.runtimes.get('local');
-  runtime.pendingTaskNames.set('fresh', { name: 'Fresh', attempted: false });
+  runtime.pendingTaskNames.set('fresh', { name: 'Fresh', firstMessageAccepted: false });
   return { gateway, runtime, calls };
 }
 const freshTaskError = { message: 'Send the first message before leaving this new task.' };
@@ -2188,7 +2205,7 @@ test('fresh task Rename remains in memory, Archive is blocked, and Delete discar
   const { gateway, runtime, calls } = freshTaskGateway();
   const action = (action, extra = {}) => gateway.taskAction({ action, machineId: 'local', expectedMachineId: 'local', expectedThreadId: 'fresh', threadId: 'fresh', ...extra });
   await action('rename', { name: 'Renamed' });
-  assert.deepEqual(runtime.pendingTaskNames.get('fresh'), { name: 'Renamed', attempted: false });
+  assert.deepEqual(runtime.pendingTaskNames.get('fresh'), { name: 'Renamed', firstMessageAccepted: false });
   assert.equal(runtime.state.thread.name, 'Renamed');
   assert(!calls.some(c => ['thread/name/set', 'thread/resume', 'turn/start'].includes(c.method)));
   calls.length = 0;
@@ -2205,7 +2222,7 @@ test('failed first Start keeps the guard; accepted Start restores destination-be
     const { gateway, runtime, calls } = freshTaskGateway();
     runtime.rejectStart = true;
     await assert.rejects(gateway.sendMessage('local', 'Real input', 'start'), /First send failed/);
-    assert.equal(runtime.pendingTaskNames.get('fresh').attempted, false);
+    assert.equal(runtime.pendingTaskNames.get('fresh').firstMessageAccepted, false);
     assert.equal(runtime.state.turn, null);
     await assert.rejects(gateway.selectDestination(destination, 'other', 'local', 'fresh'), freshTaskError);
     assert(!calls.some(c => ['thread/resume', 'thread/name/set'].includes(c.method)));
@@ -2790,4 +2807,65 @@ test("Working Path POST enforces JSON and selected machine/thread before RPC", a
     assert.equal((await response.json()).thread.cwd, '/new');
     assert(!calls.includes('thread/resume'));
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
+
+test('deferred naming deduplicates completions and explicit Rename wins an in-flight save', async () => {
+  const runtime = activeRuntime();
+  runtime.pendingTaskNames.set('thread-1', { name: 'Requested', firstMessageAccepted: true });
+  const calls = [];
+  let finish;
+  runtime.refreshLoadedThreads = async () => [{ id: 'thread-1', name: 'Requested', status: 'idle' }];
+  runtime.rpc = { request: async (method, params) => {
+    if (method === 'thread/name/set') {
+      calls.push(params.name);
+      if (params.name === 'Requested') await new Promise(resolve => { finish = resolve; });
+    }
+    return { data: [] };
+  } };
+  const complete = threadId => runtime.handleNotification({ method: 'turn/completed', params: { threadId, turn: { id: 'first', status: 'completed' } } });
+  complete('unrelated');assert.deepEqual(calls, []);
+  complete('thread-1');complete('thread-1');
+  const rename = runtime.taskAction({ action: 'rename', threadId: 'thread-1', name: 'Explicit' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['Requested']);
+  finish();await rename;
+  assert.deepEqual(calls, ['Requested', 'Explicit']);
+  assert.equal(runtime.state.thread.name, 'Explicit');
+  assert.equal(runtime.pendingTaskNames.size, 0);
+});
+
+test('failed deferred name survives reconnect without retrying until another completion', async () => {
+  const runtime = activeRuntime();
+  runtime.scheduleReconnect = () => {};
+  runtime.pendingTaskNames.set('thread-1', { name: 'Requested', firstMessageAccepted: true });
+  let saves = 0;
+  runtime.rpc = { request: async () => { saves++;throw new Error('Disconnected'); } };
+  await runtime.savePendingTaskName('thread-1', 'first');
+  runtime.handleClose(new Error('Disconnected'));
+  assert.equal(runtime.pendingTaskNames.get('thread-1').name, 'Requested');
+  runtime.rpc = { request: async () => { saves++;return {}; } };
+  runtime.handleNotification({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'second', status: 'completed' } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(saves, 2);
+  assert.equal(runtime.pendingTaskNames.size, 0);
+});
+
+
+test('an away task persists its pending name from authoritative terminal reconciliation', async () => {
+  const runtime = activeRuntime();
+  runtime.pendingTaskNames.set('away', { name: 'Away name', firstMessageAccepted: true });
+  runtime.taskStatuses.set('away', 'active');
+  const calls = [];
+  runtime.rpc = { request: async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/turns/list') return { data: [{ id: 'away-first', status: 'completed' }] };
+    return {};
+  } };
+  runtime.handleNotification({ method: 'thread/status/changed', params: { threadId: 'away', status: 'idle' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.state.thread.id, 'thread-1');
+  assert.equal(runtime.pendingTaskNames.size, 0);
+  assert.deepEqual(calls.map(c => c.method), ['thread/turns/list', 'thread/name/set']);
+  assert.deepEqual(calls[1].params, { threadId: 'away', name: 'Away name' });
 });

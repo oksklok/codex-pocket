@@ -182,6 +182,8 @@ let nextCursor = null;
 let source = null;
 const NEAR_BOTTOM_PX = 200;
 let shouldFollowConversation = true;
+let transcriptScrollTop = 0;
+let transcriptScrollElement = null;
 let historyEpoch = 0;
 let historyRequest = null;
 let threadsRequest = null;
@@ -1400,7 +1402,7 @@ function renderComposer() {
   }
   const capabilityError = !stopping && !resolvingApproval && !submittingInputRequestId
     && capability?.allowed === false && capability.reason !== "Stopping the active turn…" ? capability.reason : "";
-  const status = composerError || turnError || capabilityError || "";
+  const status = composerError || turnError || capabilityError || state?.taskNameWarning || "";
   const usageLimit = usageLimitMessage(status);
   elements.composerStatus.textContent = usageLimit || status;
   if (usageLimit) {
@@ -2010,6 +2012,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
     transcriptScroller().scrollTop = transcriptScroller().scrollHeight;
     shouldFollowConversation = true;
   }
+  rememberTranscriptScroll();
   updateJumpLatest();
 }
 
@@ -2052,6 +2055,11 @@ function flushDeferredTranscript() {
 
 function transcriptScroller() {
   return matchMedia("(max-width: 860px)").matches ? document.scrollingElement : elements.conversation;
+}
+
+function rememberTranscriptScroll() {
+  transcriptScrollElement = transcriptScroller();
+  transcriptScrollTop = transcriptScrollElement.scrollTop;
 }
 
 function updateJumpLatest() {
@@ -2847,6 +2855,10 @@ function connectEvents() {
   });
   on("status", (event) => { mergeState(parseEvent(event)); });
   on("thread", (event) => { mergeState({ thread: parseEvent(event) }); });
+  on("task-name", event => {
+    const value = parseEvent(event);
+    if (value.threadId === state?.thread?.id) mergeState({ taskNameWarning: value.taskNameWarning });
+  });
   on("settings", (event) => { mergeState(parseEvent(event)); });
   on("queue", (event) => { mergeState(parseEvent(event)); });
   on("control", (event) => { mergeState(parseEvent(event)); });
@@ -3228,6 +3240,7 @@ window.visualViewport?.addEventListener("resize", () => {
     if (viewportReconciliationBlocked()) return;
     scroller.scrollTop = scroller.scrollHeight;
     shouldFollowConversation = true;
+    rememberTranscriptScroll();
     updateJumpLatest();
   });
 });
@@ -3254,6 +3267,7 @@ new ResizeObserver(([entry]) => {
     const scroller = transcriptScroller();
     scroller.scrollTop = scroller.scrollHeight;
     shouldFollowConversation = true;
+    rememberTranscriptScroll();
     updateJumpLatest();
   });
 }).observe(elements.composerZone);
@@ -3308,8 +3322,15 @@ elements.modelSelect.addEventListener("change", () => {
 elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 function handleTranscriptScroll() {
-  // Layout-induced scrolling during a composer resize must not turn follow mode off.
-  if (composerResizeFrame === null || transcriptScroller().scrollTop < composerResizeScrollTop) shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < NEAR_BOTTOM_PX;
+  const scroller = transcriptScroller();
+  const top = scroller.scrollTop;
+  const upward = scroller === transcriptScrollElement && top < transcriptScrollTop;
+  // Preserve known layout reconciliation; input cancels its pending frame above.
+  if (composerResizeFrame === null || top < composerResizeScrollTop) {
+    if (upward) shouldFollowConversation = false;
+    else if (scroller.scrollHeight - top - scroller.clientHeight <= 2) shouldFollowConversation = true;
+  }
+  rememberTranscriptScroll();
   updateJumpLatest();
   if (transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 }

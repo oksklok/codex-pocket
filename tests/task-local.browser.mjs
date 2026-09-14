@@ -189,7 +189,7 @@ try {
  runtime.state.activities=[];runtime.state.liveMessages=[];runtime.state.thread=task;runtime.state.machineId='local';mode='success';active=[task,owned,...Array.from({length:9},(_,i)=>({...task,id:`draft-${i}`,name:`Draft task ${i}`}))];
  await page.setViewportSize({width,height:844});await page.goto(`http://127.0.0.1:${server.address().port}`);
  await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
- await page.evaluate(()=>{localStorage.removeItem('codex-pocket-enter-sends');localStorage.removeItem('codex-pocket-translucent-ui');});
+ await page.evaluate(()=>{localStorage.removeItem('codex-pocket-enter-sends');localStorage.removeItem('codex-pocket-translucent-ui');localStorage.removeItem('codex-pocket-details-open');});
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  assert.equal(await page.locator('#enter-sends').isChecked(),width>860);
  await page.setViewportSize({width:width>860?390:1280,height:844});assert.equal(await page.locator('#enter-sends').isChecked(),width>860);await page.setViewportSize({width,height:844});
@@ -943,6 +943,69 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
  await images.nth(1).click();await page.locator('#image-viewer').waitFor();await page.keyboard.press('Escape');
  }
+ // Small upward transcript scroll stops streaming follow even inside the proximity threshold.
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});historyFixture=null;
+ const message={id:'manual-follow',role:'assistant',text:'Streaming paragraph.\n\n'.repeat(100),complete:false,createdAt:Date.now()};
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:{id:'stream',status:'inProgress'},phase:'working',goal:null,pending:[],queuedMessage:null,liveMessages:[message],activities:[]});
+ await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));await page.reload();await page.locator('[data-message-id="manual-follow"]').waitFor();
+ const settled=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))));
+ const scroll=()=>page.evaluate(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');return {top:s.scrollTop,distance:s.scrollHeight-s.clientHeight-s.scrollTop};});
+ await settled();assert((await scroll()).distance<3);
+ const move=async(delta)=>{
+ const box=await page.locator('[data-message-id="manual-follow"]').boundingBox();
+ await page.mouse.move(Math.min(width-40,box.x+box.width/2),350);
+ await page.mouse.wheel(0,delta);await page.waitForTimeout(100);await settled();
+ };
+ const append=async()=>{
+ const delta='Another streamed paragraph.\n\n'.repeat(4);message.text+=delta;
+ runtime.broadcast('assistant_delta',{id:message.id,delta});
+ await page.waitForFunction(count=>document.querySelector('[data-message-id="manual-follow"]').textContent.split('Another streamed paragraph.').length-1===count,message.text.split('Another streamed paragraph.').length-1);
+ await page.waitForTimeout(100);await settled();
+ };
+ await move(-35);const reading=await scroll();assert(reading.distance>0&&reading.distance<200,JSON.stringify({width,reading}));
+ for(let i=0;i<3;i++){await append();assert(Math.abs((await scroll()).top-reading.top)<2,JSON.stringify({width,reading,after:await scroll()}));}
+ await move(10000);assert((await scroll()).distance<3);await append();assert((await scroll()).distance<3);
+ await move(-350);await page.locator('#jump-latest').click();
+ await page.waitForFunction(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');return s.scrollHeight-s.clientHeight-s.scrollTop<3;});
+ await append();assert((await scroll()).distance<3);
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/stream-follow-${width}.png`});
+ }
+ // Deferred-name failure is visible without disabling message input, and clears on success.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:{...task},turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ const priorRpc=runtime.rpc;
+ runtime.pendingTaskNames.set(task.id,{name:'Requested task name',firstMessageAccepted:true});
+ runtime.rpc={request:async()=>{throw new Error('Temporary naming failure');}};
+ await runtime.savePendingTaskName(task.id,'name-first');
+ await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));await page.reload();await page.locator('#composer-status').waitFor();
+ assert.match(await page.locator('#composer-status').textContent(),/Task name could not be saved/);
+ await page.locator('#message-text').fill('Next real message');assert(await page.locator('#send-message').isEnabled());
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/name-warning-${width}.png`});
+ runtime.rpc={request:async()=>({})};await runtime.savePendingTaskName(task.id,'name-next');
+ await page.waitForFunction(()=>document.querySelector('#composer-status').hidden);
+ assert.equal(runtime.pendingTaskNames.has(task.id),false);runtime.rpc=priorRpc;
+ }
+ // Expand control leaves the native scrollbar gutter and text area unobstructed.
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));await page.reload();await page.locator('#message-text').fill('Overflowing composer line with enough text to wrap.\n'.repeat(30));
+ const geometry=await page.locator('#message-text').evaluate(e=>{
+ const r=e.getBoundingClientRect(),b=document.querySelector('#expand-composer').getBoundingClientRect(),style=getComputedStyle(e);
+ return {overflow:e.scrollHeight>e.clientHeight,gutter:r.right-b.right,textRight:r.right-parseFloat(style.paddingRight),buttonLeft:b.left,width:b.width,height:b.height,horizontal:document.documentElement.scrollWidth>innerWidth,gutterTarget:document.elementFromPoint(r.right-5,r.top+15)===e};
+ });
+ assert(geometry.gutterTarget);assert(geometry.overflow);assert(geometry.gutter>=20,JSON.stringify({width,geometry}));assert(geometry.textRight<=geometry.buttonLeft);assert.equal(geometry.width,32);assert.equal(geometry.height,32);assert(!geometry.horizontal);
+ await page.locator('#message-text').evaluate(e=>e.scrollTop=0);
+ const r=await page.locator('#message-text').boundingBox();await page.mouse.move(r.x+r.width-5,r.y+20);await page.mouse.wheel(0,150);await page.waitForTimeout(100);
+ assert(await page.locator('#message-text').evaluate(e=>e.scrollTop>0));
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-scrollbar-${width}.png`});
+ await page.locator('#expand-composer').click();
+ const fullscreen=await page.locator('#expand-composer').evaluate(e=>({right:getComputedStyle(e).right,width:e.getBoundingClientRect().width,padding:getComputedStyle(document.querySelector('#message-text')).paddingRight}));
+ assert.deepEqual(fullscreen,{right:'4px',width:32,padding:'44px'});
+ await page.locator('#expand-composer').click();
+ }
  // Composer surface growth/shrink follows latest only while follow mode is enabled.
  for(const width of [1280,390]){
  await page.setViewportSize({width,height:844});historyFixture=null;
@@ -1639,7 +1702,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const source={...task,id:'fresh-source',name:'Fresh source'},target={...task,id:'fresh-target',name:'Other target'};
  active=[source,target];mode='success';freshNavigation=true;
  Object.assign(runtime.state,{machineId:'local',connected:true,thread:source,turn:null,threadStatus:'idle',phase:'ready',goal:null,queuedMessage:null,pending:[],liveMessages:[],activities:[]});
- runtime.canAcceptDirectInput=true;runtime.pendingTaskNames.set(source.id,{name:source.name,attempted:false});
+ runtime.canAcceptDirectInput=true;runtime.pendingTaskNames.set(source.id,{name:source.name,firstMessageAccepted:false});
  runtime.rpc={request:async method=>method==='turn/start'?{turn:{id:'first-accepted',status:'inProgress'}}:{data:[]}};
  await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));
  await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
