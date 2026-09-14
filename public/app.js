@@ -1079,6 +1079,7 @@ function renderDisplayControls() {
 
 function renderQueue() {
   const queued = state?.queuedMessage;
+  if (queueDialog.open && !queueDialogMatches()) queueDialog.close();
   elements.queueBanner.hidden = !queued;
   renderImageThumbnails(elements.queueImages, queued?.images || []);
   renderFileChips(document.querySelector("#queue-files"), queued?.files || []);
@@ -1087,7 +1088,7 @@ function renderQueue() {
     elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
-    elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue;
+    elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || queueDialogBusy;
     elements.sendQueue.classList.toggle("icon-button", turnActive);
     elements.sendQueue.classList.toggle("text-button", !turnActive);
     const actionLabel = turnActive ? "Steer Now" : sendingQueuedMessage ? "Sending…" : "Send";
@@ -1096,7 +1097,8 @@ function renderQueue() {
     elements.sendQueue.innerHTML = turnActive
       ? '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 19v-7a5 5 0 0 1 5-5h9m-5-5 5 5-5 5"/></svg>'
       : actionLabel;
-    elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage;
+    elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage || queueDialogBusy;
+    document.querySelector("#edit-queue").disabled = elements.cancelQueue.disabled || queueDeliveryUnknown;
   }
 }
 
@@ -1332,7 +1334,7 @@ async function performGoalAction(body) {
   } finally { goalActionBusy = null; renderComposer(); }
 }
 goalToggle.addEventListener("click", () => performGoalAction({ machineId: state.machineId, threadId: state.thread.id, action: goalToggle.dataset.action }));
-goalClear.addEventListener("click", () => openTaskDialog({ machineId: state.machineId, threadId: state.thread.id, action: "clear" }, state.goal.objective));
+goalClear.addEventListener("click", () => performGoalAction({ machineId: state.machineId, threadId: state.thread.id, action: "clear", confirmed: true }));
 
 function renderComposer() {
   renderGoal();
@@ -2264,15 +2266,13 @@ let taskDialogOriginalName = "";
 function openTaskDialog(body, name) {
   taskDialogAction = body;
   taskDialogOriginalName = name;
-  const clearing = body.action === "clear";
-  const deleting = body.action === "delete" || clearing;
-  document.querySelector("#task-dialog-title").textContent = clearing ? "Clear Goal" : deleting ? "Delete Task" : "Rename Task";
+  const deleting = body.action === "delete";
+  document.querySelector("#task-dialog-title").textContent = deleting ? "Delete Task" : "Rename Task";
   document.querySelector("#task-dialog-name-field").hidden = deleting;
   document.querySelector("#task-dialog-delete-copy").hidden = !deleting;
   document.querySelector("#task-dialog-task-name").textContent = name;
-  document.querySelector("#task-dialog-delete-copy p").textContent = clearing ? "Clear this goal from the task?" : "This permanently deletes its Codex conversation. Project files will not be deleted.";
   const submit = document.querySelector("#task-dialog-submit");
-  submit.textContent = clearing ? "Clear" : deleting ? "Delete" : "Rename";
+  submit.textContent = deleting ? "Delete" : "Rename";
   submit.className = deleting ? "danger-button" : "primary-button";
   taskDialogName.value = name;
   taskDialogError.textContent = "";
@@ -2293,8 +2293,7 @@ taskDialogForm.addEventListener("submit", event => {
     if (body.name === taskDialogOriginalName) { taskDialog.close(); return; }
   } else body.confirmed = true;
   taskDialog.close();
-  if (body.action === "clear") void performGoalAction(body);
-  else void performTaskAction(body);
+  void performTaskAction(body);
 });
 
 async function performTaskAction(body) {
@@ -2455,6 +2454,72 @@ async function submitMessage(action) {
     renderState();
   }
 }
+
+const queueDialog = document.querySelector("#queue-dialog");
+const queueDialogText = document.querySelector("#queue-dialog-text");
+const queueDialogError = document.querySelector("#queue-dialog-error");
+const queueDialogSubmit = document.querySelector("#queue-dialog-submit");
+const queueDialogCancel = document.querySelector("#queue-dialog-cancel");
+let queueDialogTarget = null;
+let queueDialogBusy = false;
+function queueDialogMatches() {
+  return queueDialogTarget && state?.queuedMessage
+    && state.machineId === queueDialogTarget.machineId && state.thread?.id === queueDialogTarget.threadId
+    && state.queuedMessage.threadId === queueDialogTarget.threadId && state.queuedMessage.createdAt === queueDialogTarget.createdAt;
+}
+function openQueueDialog(mode) {
+  if (!state?.queuedMessage || queueDialogBusy || submittingMessage || sendingQueuedMessage || cancellingQueue || destinationSelection || taskActionBusy) return;
+  queueDialogTarget = { machineId: state.machineId, threadId: state.thread.id, createdAt: state.queuedMessage.createdAt, mode };
+  const editing = mode === "edit";
+  document.querySelector("#queue-dialog-title").textContent = editing ? "Edit queued message" : "Cancel queued message?";
+  document.querySelector("#queue-dialog-copy").hidden = editing;
+  queueDialogText.hidden = !editing;
+  queueDialogText.value = editing ? state.queuedMessage.text : "";
+  queueDialogError.textContent = "";
+  queueDialogCancel.textContent = editing ? "Cancel" : "Keep";
+  queueDialogSubmit.textContent = editing ? "Save" : "Discard";
+  queueDialogSubmit.className = editing ? "primary-button" : "danger-button";
+  queueDialog.showModal();
+  (editing ? queueDialogText : queueDialogCancel).focus();
+}
+queueDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
+queueDialog.addEventListener("cancel", event => { if (queueDialogBusy) event.preventDefault(); });
+queueDialog.addEventListener("close", () => { if (!queueDialog.open) queueDialogTarget = null; });
+queueDialogCancel.addEventListener("click", () => queueDialog.close());
+document.querySelector("#queue-dialog-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (queueDialogBusy || !queueDialogMatches()) return;
+  if (queueDialogTarget.mode === "cancel") {
+    queueDialog.close();
+    void cancelQueuedMessage();
+    return;
+  }
+  const target = queueDialogTarget;
+  const text = queueDialogText.value;
+  if (!text.trim() && !state.queuedMessage.images?.length && !state.queuedMessage.files?.length) {
+    queueDialogError.textContent = "Enter a message or attach files";
+    return;
+  }
+  queueDialogBusy = true;
+  queueDialogError.textContent = "";
+  queueDialogSubmit.disabled = queueDialogCancel.disabled = queueDialogText.disabled = true;
+  renderQueue();
+  try {
+    const response = await apiFetch("/api/message/queue", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: target.machineId, threadId: target.threadId, text }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not edit queued message");
+    if (queueDialogTarget === target && queueDialogMatches()) {
+      mergeState({ queuedMessage: result.queuedMessage });
+      queueDialog.close();
+    }
+  } catch (error) {
+    if (queueDialogTarget === target && queueDialogMatches()) queueDialogError.textContent = error.message;
+  } finally {
+    queueDialogBusy = false;
+    queueDialogSubmit.disabled = queueDialogCancel.disabled = queueDialogText.disabled = false;
+    renderQueue();
+  }
+});
 
 async function cancelQueuedMessage() {
   if (destinationSelection || taskActionBusy) return;
@@ -3127,7 +3192,8 @@ elements.composer.addEventListener("submit", (event) => {
   else submitMessage(action === "queue" ? "queue" : "start");
 });
 elements.sendQueue.addEventListener("click", sendQueuedMessage);
-elements.cancelQueue.addEventListener("click", cancelQueuedMessage);
+elements.cancelQueue.addEventListener("click", () => openQueueDialog("cancel"));
+document.querySelector("#edit-queue").addEventListener("click", () => openQueueDialog("edit"));
 elements.messageText.addEventListener("input", () => {
   if (unresolvedSubmission) unresolvedSubmission.restoreDraft = false;
   composerError = "";

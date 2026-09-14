@@ -94,6 +94,7 @@
               <div class="file-chips" id="queue-files" hidden></div>
               <span class="queue-actions card-actions">
                 <button class="text-button" id="send-queue" type="button" hidden>Send</button>
+                <button class="icon-button" id="edit-queue" type="button" aria-label="Edit queued message" title="Edit queued message"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m16 3 5 5-12 12-6 1 1-6ZM13 6l5 5"/></svg></button>
                 <button class="icon-button" id="cancel-queue" type="button" aria-label="Cancel queued message" title="Cancel queued message"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
               </span>
             </div>
@@ -218,6 +219,15 @@
         <div id="task-dialog-delete-copy" hidden><strong id="task-dialog-task-name"></strong><p>This permanently deletes its Codex conversation. Project files will not be deleted.</p></div>
         <p id="task-dialog-error" class="form-status error-text" role="alert"></p>
         <div class="new-task-actions"><button id="task-dialog-cancel" class="secondary-button" type="button">Cancel</button><button id="task-dialog-submit" class="primary-button" type="submit">Rename</button></div>
+      </form>
+    </dialog>
+    <dialog class="new-task-dialog queue-dialog" id="queue-dialog" aria-labelledby="queue-dialog-title">
+      <form id="queue-dialog-form" novalidate>
+        <h2 id="queue-dialog-title"></h2>
+        <p id="queue-dialog-copy">This queued message will be discarded and can't be recovered.</p>
+        <textarea id="queue-dialog-text" aria-label="Queued message" rows="4" maxlength="12000" hidden></textarea>
+        <p id="queue-dialog-error" class="form-status error-text" role="alert"></p>
+        <div class="new-task-actions"><button id="queue-dialog-cancel" class="secondary-button" type="button">Keep</button><button id="queue-dialog-submit" class="danger-button" type="submit">Discard</button></div>
       </form>
     </dialog>
     <dialog class="new-task-dialog" id="new-task-dialog" aria-labelledby="new-task-title">

@@ -2645,3 +2645,42 @@ test('stale Goal objective reads cannot overwrite a new goal, cleared goal, task
     assert.deepEqual(runtime.state.goal,expected);
   }
 });
+
+
+test('queued text edits validate identity/content and preserve all attachment metadata', async () => {
+  const runtime=activeRuntime(),events=[];
+  runtime.broadcast=(type,value)=>events.push({type,value});
+  const original={threadId:'thread-1',text:'Original',createdAt:123,images:[{url:'data:image/png;base64,AA=='}],files:[{path:'C:\\temp\\report.pdf',name:'report.pdf',size:1}],error:'Retained metadata'};
+  runtime.state.queuedMessage=original;
+  const result=runtime.editQueuedMessage('thread-1','Updated\r\ntext');
+  assert.deepEqual(result.queuedMessage,{...original,text:'Updated\ntext'});
+  assert.equal(original.text,'Original');assert.equal(result.queuedMessage.images,original.images);assert.equal(result.queuedMessage.files,original.files);
+  assert.equal(events.at(-1).type,'queue');assert.equal(events.at(-1).value.queuedMessage,result.queuedMessage);
+  runtime.editQueuedMessage('thread-1','');assert.equal(runtime.state.queuedMessage.text,'');
+  for(const [threadId,text] of [['wrong','text'],['thread-1',null],['thread-1','x'.repeat(12001)]]){
+    const before=runtime.state.queuedMessage;assert.throws(()=>runtime.editQueuedMessage(threadId,text));assert.equal(runtime.state.queuedMessage,before);
+  }
+  runtime.startingQueuedMessage=true;assert.throws(()=>runtime.editQueuedMessage('thread-1','text'),/already being sent/);runtime.startingQueuedMessage=false;
+  runtime.state.queuedMessage={threadId:'thread-1',text:'Text only',createdAt:456};
+  assert.throws(()=>runtime.editQueuedMessage('thread-1','  '),/Enter a message/);
+  runtime.editQueuedMessage('thread-1','x'.repeat(12000));assert.equal(runtime.state.queuedMessage.text.length,12000);
+  runtime.state.queuedMessage=null;assert.throws(()=>runtime.editQueuedMessage('thread-1','text'),/no longer/);
+});
+
+test('queue PATCH enforces selected machine/thread and JSON before updating text', async () => {
+  const {handleRequest}=await import('../gateway.ts');const {createServer}=await import('node:http');
+  const gateway=new PocketGateway({machines:[]}),runtime=activeRuntime();gateway.runtimes.set('local',runtime);
+  runtime.state.queuedMessage={threadId:'thread-1',text:'Before',images:[],files:[],createdAt:12};
+  const server=createServer((req,res)=>{handleRequest(req,res,gateway,{required:false},{},{host:'127.0.0.1'},async()=>({localUrl:'/'}),()=>{},()=>false).catch(error=>{res.statusCode=500;res.end(error.message);});});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  try {
+    const url=`http://127.0.0.1:${server.address().port}/api/message/queue`;
+    const patch=(body,type='application/json')=>fetch(url,{method:'PATCH',headers:{'Content-Type':type},body:JSON.stringify(body)});
+    assert.equal((await patch({machineId:'other',threadId:'thread-1',text:'Wrong'})).status,409);
+    assert.equal((await patch({machineId:'local',threadId:'wrong',text:'Wrong'})).status,409);
+    assert.equal((await patch({machineId:'local',threadId:'thread-1',text:'Wrong'},'text/plain')).status,415);
+    assert.equal(runtime.state.queuedMessage.text,'Before');
+    const response=await patch({machineId:'local',threadId:'thread-1',text:'After'});assert.equal(response.status,200);
+    assert.deepEqual((await response.json()).queuedMessage,{threadId:'thread-1',text:'After',images:[],files:[],createdAt:12});
+  } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});

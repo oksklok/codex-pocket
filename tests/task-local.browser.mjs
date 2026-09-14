@@ -21,7 +21,7 @@ const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,m
 const fileBodies=[];let realFilePosts=false;
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
-let goalGate=null;const goalCalls=[];let uiGate=null;
+let goalGate=null;const goalCalls=[];let uiGate=null;let queueEditGate=null,queueEditFailure=false;const queueEdits=[];
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
@@ -82,6 +82,11 @@ const server=createServer(async(req,res)=>{
  if(composerPost==='lost'){res.writeHead(202,{'Content-Type':'application/json','Content-Length':'1000'});res.write('{');setTimeout(()=>req.socket.destroy(),10);return;}
  if(composerPost==='reject')return json({error:'Send rejected'},409);
  runtime.state.queuedMessage=null;return json({accepted:true,mode:'steer',turnId:runtime.state.turn.id},202);
+ }
+ if(u.pathname==='/api/message/queue'&&req.method==='PATCH'){
+ let text='';for await(const c of req)text+=c;const body=JSON.parse(text);queueEdits.push(body);if(queueEditGate)await queueEditGate;
+ if(queueEditFailure)return json({error:'Could not save this edit'},409);
+ try{return json(runtime.editQueuedMessage(body.threadId,body.text));}catch(error){return json({error:error.message},409);}
  }
  if(u.pathname==='/api/message/queue'&&req.method==='DELETE')return json(runtime.cancelQueuedMessage());
  if(u.pathname==='/api/message'){
@@ -450,13 +455,13 @@ try {
  runtime.state.liveMessages=[];
  runtime.canAcceptDirectInput=true;
  runtime.state.queuedMessage={threadId:runtime.state.thread.id,text:'Already sending',images:[]};runtime.startingQueuedMessage=true;runtime.broadcast('snapshot',snapshot());
- await page.locator('#queue-banner').waitFor();await page.locator('#cancel-queue').click();
+ await page.locator('#queue-banner').waitFor();await page.locator('#cancel-queue').click();await page.locator('#queue-dialog-submit').click();
  assert.equal(await page.locator('#queue-banner strong').textContent(),'Queued Next');
  await page.waitForFunction(()=>!document.querySelector('#cancel-queue').disabled);
  assert.equal(await page.locator('#composer-status').textContent(),'');
  assert.equal(await page.locator('#queue-banner').isVisible(),true);assert.equal(await page.locator('#queue-text').textContent(),'Already sending');
  assert.equal(runtime.state.queuedMessage.text,'Already sending');
- runtime.startingQueuedMessage=false;await page.locator('#cancel-queue').click();
+ runtime.startingQueuedMessage=false;await page.locator('#cancel-queue').click();await page.locator('#queue-dialog-submit').click();
  await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
  assert.equal(await page.locator('#composer-status').textContent(),'');assert.equal(await page.locator('#composer-status').isVisible(),false);
  assert.equal(await page.locator('#composer-status').evaluate(e=>e.getBoundingClientRect().height),0);
@@ -1345,7 +1350,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal((await page.locator('#goal-strip').textContent()).includes('goal-objective.md'),false);
  runtime.state.queuedMessage={threadId:task.id,text:'A deliberately long queued message to verify matching card geometry. '.repeat(5),createdAt:Date.now()};
  runtime.state.turn={id:'card-turn',status:'inProgress'};runtime.broadcast('snapshot',snapshot());await page.locator('#send-queue').waitFor();
- for(const [id,label] of [['send-queue','Steer Now'],['cancel-queue','Cancel queued message']]){
+ for(const [id,label] of [['send-queue','Steer Now'],['edit-queue','Edit queued message'],['cancel-queue','Cancel queued message']]){
  const button=page.getByRole('button',{name:label,exact:true});
  assert.equal(await button.getAttribute('id'),id);assert.equal(await button.getAttribute('title'),label);
  assert.equal(await button.textContent(),'');assert.equal(await button.locator('svg[aria-hidden="true"]').count(),1);
@@ -1378,8 +1383,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const optics=await page.evaluate(()=>{
  const rect=id=>document.querySelector(id).getBoundingClientRect();
  const textRect=id=>{const range=document.createRange();range.selectNodeContents(document.querySelector(id));return range.getBoundingClientRect();};
- const sizes=['#goal-toggle','#goal-clear','#send-queue','#cancel-queue'].map(id=>{const r=rect(id);return [r.width,r.height];});
- const svgGaps=[['#goal-toggle','#goal-clear'],['#send-queue','#cancel-queue']].map(([a,b])=>rect(`${b} svg`).left-rect(`${a} svg`).right);
+ const sizes=['#goal-toggle','#goal-clear','#send-queue','#edit-queue','#cancel-queue'].map(id=>{const r=rect(id);return [r.width,r.height];});
+ const svgGaps=[['#goal-toggle','#goal-clear'],['#send-queue','#edit-queue'],['#edit-queue','#cancel-queue']].map(([a,b])=>rect(`${b} svg`).left-rect(`${a} svg`).right);
  const transforms=['#goal-objective','#queue-text','#goal-clear','#cancel-queue'].map(id=>getComputedStyle(document.querySelector(id)).transform);
  const alignment=[['#goal-strip','#goal-status','#goal-objective','#goal-clear'],['#queue-banner','.queue-copy strong','#queue-text','#cancel-queue']].map(([card,title,content,clear])=>{
  const r=rect(card),t=textRect(title),c=textRect(content);
@@ -1387,8 +1392,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  });
  return {sizes,svgGaps,transforms,alignment,durationGap:rect('#goal-toggle svg').left-textRect('#goal-time').right};
  });
- assert.deepEqual(optics.sizes,Array(4).fill([36,36]));
- assert.deepEqual(optics.svgGaps,[18,18]);assert.deepEqual(optics.transforms,Array(4).fill('none'));
+ assert.deepEqual(optics.sizes,Array(5).fill([36,36]));
+ assert.deepEqual(optics.svgGaps,[18,18,18]);assert.deepEqual(optics.transforms,Array(4).fill('none'));
  assert(Math.abs(optics.durationGap-optics.svgGaps[0])<=2);
  for(const a of optics.alignment){
  assert(Math.abs(a.leftInset-a.rightInset)<=2);
@@ -1399,7 +1404,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  runtime.state.turn=null;runtime.broadcast('snapshot',{...snapshot(),message:{allowed:true,mode:'start'}});
  await page.waitForFunction(()=>document.querySelector('#send-queue').textContent==='Send');
  assert.equal(await page.locator('#send-queue').textContent(),'Send');assert.equal(await page.locator('#send-queue svg').count(),0);
- assert.equal(await page.locator('#queue-banner').evaluate(e=>e.querySelector('#cancel-queue').getBoundingClientRect().left-e.querySelector('#send-queue').getBoundingClientRect().right),8);
+ assert.equal(await page.locator('#queue-banner').evaluate(e=>e.querySelector('#edit-queue').getBoundingClientRect().left-e.querySelector('#send-queue').getBoundingClientRect().right),8);
  assert.equal(await page.locator('#send-queue').evaluate(e=>e.classList.contains('text-button')&&!e.classList.contains('icon-button')),true);
  assert.equal(await page.locator('#queue-banner').evaluate(e=>e.getBoundingClientRect().height),cards.queue.height);
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
@@ -1412,14 +1417,60 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  return children.slice(1).map((e,i)=>e.getBoundingClientRect().top-children[i].getBoundingClientRect().bottom);
  });assert.deepEqual(stackGaps,[8,8,8]);
  runtime.state.pending=[];runtime.broadcast('snapshot',snapshot());await page.getByRole('button',{name:'Remove image 1',exact:true}).click();
- const beforeClear=goalCalls.length;
- await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.locator('#task-dialog').waitFor();
- assert.equal(await page.locator('#task-dialog-title').textContent(),'Clear Goal');assert.equal(goalCalls.length,beforeClear);
- await page.locator('#task-dialog-cancel').click();assert.equal(await page.locator('#goal-strip').isVisible(),true);
- await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.locator('#task-dialog-submit').click();
+ for(const status of ['paused','complete']){
+ update({...goal,status});await page.waitForFunction(status=>document.querySelector('#goal-status').textContent===(status==='complete'?'Goal Complete':'Goal Paused'),status);
+ await page.getByRole('button',{name:'Clear goal',exact:true}).click();
+ assert.equal(await page.locator('#task-dialog').isVisible(),false);assert.equal(await page.locator('#queue-dialog').isVisible(),false);
  await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
  assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/clear',params:{threadId:task.id}});
+ }
  update(goal);await page.locator('#goal-strip').waitFor();update(null);await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
+ }
+ // Queue dialog keeps user-authored instructions until confirmed discard or successful edit.
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:{id:'queue-dialog-turn',status:'inProgress'},phase:'working',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ historyFixture=null;await page.reload();await page.locator('#message-text').waitFor();
+ const original={threadId:task.id,text:'A private queued instruction',images:[],files:[],createdAt:101};
+ const publish=async queued=>{runtime.state.queuedMessage=queued;runtime.broadcast('queue',{queuedMessage:queued});await page.waitForFunction(show=>document.querySelector('#queue-banner').hidden!==show,Boolean(queued));};
+ await publish({...original});
+ const beforeCancel=calls.filter(p=>p==='/api/message/queue').length;
+ await page.getByRole('button',{name:'Cancel queued message',exact:true}).click();
+ assert.equal(await page.locator('#queue-dialog-title').textContent(),'Cancel queued message?');
+ assert.equal(await page.locator('#queue-dialog-copy').textContent(),"This queued message will be discarded and can't be recovered.");
+ assert(!(await page.locator('#queue-dialog').innerText()).includes(original.text));assert.equal(await page.locator('#task-dialog').isVisible(),false);
+ await page.getByRole('button',{name:'Keep',exact:true}).click();assert.deepEqual(runtime.state.queuedMessage,original);
+ assert.equal(calls.filter(p=>p==='/api/message/queue').length,beforeCancel);
+ await page.getByRole('button',{name:'Edit queued message',exact:true}).click();
+ assert.equal(await page.locator('#queue-dialog-text').inputValue(),original.text);
+ await page.locator('#queue-dialog-text').fill('An unsaved draft');await page.locator('#queue-dialog-cancel').click();assert.deepEqual(runtime.state.queuedMessage,original);
+ await page.getByRole('button',{name:'Edit queued message',exact:true}).click();await page.locator('#queue-dialog-text').fill('   ');await page.locator('#queue-dialog-submit').click();
+ assert.equal(await page.locator('#queue-dialog-error').textContent(),'Enter a message or attach files');assert.deepEqual(runtime.state.queuedMessage,original);
+ await page.locator('#queue-dialog-text').fill('Updated instruction');queueEditFailure=true;
+ await page.locator('#queue-dialog-submit').click();await page.getByText('Could not save this edit',{exact:true}).waitFor();
+ assert.deepEqual(runtime.state.queuedMessage,original);assert.equal(await page.locator('#queue-text').textContent(),original.text);
+ queueEditFailure=false;let releaseEdit;queueEditGate=new Promise(resolve=>releaseEdit=resolve);
+ await page.locator('#queue-dialog-submit').click();await page.waitForFunction(()=>document.querySelector('#queue-dialog-submit').disabled);
+ assert.deepEqual(runtime.state.queuedMessage,original);assert.equal(await page.locator('#queue-dialog-text').isDisabled(),true);
+ queueEditGate=null;releaseEdit();await page.waitForFunction(()=>!document.querySelector('#queue-dialog').open);
+ assert.equal(runtime.state.queuedMessage.text,'Updated instruction');assert.equal(runtime.state.queuedMessage.createdAt,original.createdAt);
+ assert.deepEqual(queueEdits.at(-1),{machineId:'local',threadId:task.id,text:'Updated instruction'});
+ const attached={...original,text:'With attachments',images:[{url:`data:image/png;base64,${png.toString('base64')}`}],files:[{path:'/tmp/staged/report.pdf',name:'report.pdf',size:7}]};
+ await publish(attached);await page.getByRole('button',{name:'Edit queued message',exact:true}).click();await page.locator('#queue-dialog-text').fill('');
+ assert(await page.locator('#queue-dialog').evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;}));
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/queue-edit-${width}.png`});
+ await page.locator('#queue-dialog-submit').click();await page.waitForFunction(()=>!document.querySelector('#queue-dialog').open);
+ assert.deepEqual(runtime.state.queuedMessage,{...attached,text:''});assert.equal(await page.locator('#queue-images img').count(),1);assert.equal(await page.locator('#queue-files .file-chip').count(),1);
+ await page.getByRole('button',{name:'Edit queued message',exact:true}).click();await publish(null);await page.waitForFunction(()=>!document.querySelector('#queue-dialog').open);
+ const editsBefore=queueEdits.length;await page.locator('#queue-dialog-form').evaluate(e=>e.requestSubmit());assert.equal(queueEdits.length,editsBefore);
+ await publish({...original});await page.getByRole('button',{name:'Edit queued message',exact:true}).click();
+ runtime.state.thread=owned;runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>!document.querySelector('#queue-dialog').open);
+ await page.locator('#queue-dialog-form').evaluate(e=>e.requestSubmit());assert.equal(queueEdits.length,editsBefore);
+ runtime.state.thread=task;runtime.broadcast('snapshot',snapshot());
+ await page.getByRole('button',{name:'Cancel queued message',exact:true}).click();
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/queue-discard-${width}.png`});
+ await page.getByRole('button',{name:'Discard',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);assert.equal(runtime.state.queuedMessage,null);
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  }
  // File drafts and chips follow the same task identity and queue lifecycle as images.
  for(const width of [1280,390,320]){
@@ -1456,7 +1507,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(runtime.state.queuedMessage.images.length,1);assert.equal(await page.locator('#queue-files .file-chip').count(),1);
  await fits('#queue-files .file-chip');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/queued-files-${width}.png`});
- await page.locator('#cancel-queue').click();await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
+ await page.locator('#cancel-queue').click();await page.locator('#queue-dialog-submit').click();await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
  }
  // Only actionable errors occupy the under-composer status, including during requests.
  for(const width of [1280,390]){

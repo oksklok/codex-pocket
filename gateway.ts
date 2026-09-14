@@ -2088,6 +2088,19 @@ export class MachineRuntime {
     return operation;
   }
 
+  editQueuedMessage(threadId: unknown, value: unknown): JsonObject {
+    const queued = this.state.queuedMessage;
+    if (!this.state.thread || threadId !== this.state.thread.id || queued?.threadId !== threadId) throw new Error("The selected task no longer has this queued message");
+    if (this.startingQueuedMessage) throw new Error("Queued message is already being sent");
+    if (typeof value !== "string") throw new Error("message text is required");
+    const text = value.replace(/\r\n/g, "\n");
+    if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`message exceeds ${MAX_MESSAGE_LENGTH.toLocaleString()} characters`);
+    if (!text.trim() && !queued.images?.length && !queued.files?.length) throw new Error("Enter a message or attach files");
+    this.state.queuedMessage = { ...queued, text };
+    this.broadcast("queue", { queuedMessage: this.state.queuedMessage, message: this.messageCapability() });
+    return { queuedMessage: this.state.queuedMessage };
+  }
+
   cancelQueuedMessage(): JsonObject {
     if (this.startingQueuedMessage) return { cancelled: false };
     if (!this.state.queuedMessage) return { cancelled: false, queuedMessage: null };
@@ -4057,6 +4070,10 @@ export class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).sendQueuedMessage(action));
   }
 
+  editQueuedMessage(body: JsonObject): Promise<JsonObject> {
+    return this.enqueue(async () => this.requireSelected(body.machineId).editQueuedMessage(body.threadId, body.text));
+  }
+
   cancelQueuedMessage(machineId: unknown): Promise<JsonObject> {
     return this.enqueue(async () => this.requireSelected(machineId).cancelQueuedMessage());
   }
@@ -4331,7 +4348,7 @@ export async function handleRequest(
       sendJson(response, 403, { error: "Same-origin request required" }, gateway);
       return;
     }
-    if (method === "POST" && JSON_POST_ROUTES.has(url.pathname)
+    if ((method === "POST" || (method === "PATCH" && url.pathname === "/api/message/queue")) && JSON_POST_ROUTES.has(url.pathname)
       && request.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
       sendJson(response, 415, { error: "Content-Type must be application/json" }, gateway);
       return;
@@ -4498,6 +4515,14 @@ export async function handleRequest(
     try {
       const body = await readJsonBody(request);
       sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action)), gateway);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+    }
+    return;
+  }
+  if (method === "PATCH" && url.pathname === "/api/message/queue") {
+    try {
+      sendJson(response, 200, await gateway.editQueuedMessage(await readJsonBody(request)), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
