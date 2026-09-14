@@ -2434,7 +2434,12 @@ async function selectDestination(machineId, threadId) {
   } else {
     // Retain live updates received for the original task while the request was pending.
     for (const entry of token.events) entry.deliver();
-    destinationTaskError = { machineId, threadId, message: taskFailureMessage(message) };
+    const sourceError = rejected && message === "Send the first message before leaving this new task.";
+    destinationTaskError = {
+      machineId: sourceError ? expectedMachineId : machineId,
+      threadId: sourceError ? expectedThreadId : threadId,
+      message: taskFailureMessage(message),
+    };
     renderDestinationSwitcher();
   }
 }

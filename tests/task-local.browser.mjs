@@ -20,6 +20,7 @@ const eventClients=new Set();
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const fileBodies=[];let realFilePosts=false;
 const calls=[];let gate=null, release, mode='success', failAction=false;
+let freshNavigation=false;
 let actionFailure='Fixture action failed', cwdFailure=false, cwdGate=null;const cwdEdits=[];
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let goalGate=null;const goalCalls=[];let uiGate=null;let queueEditGate=null,queueEditFailure=false;const queueEdits=[];
@@ -75,6 +76,8 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
+ if(freshNavigation){try{runtime.assertCanLeaveNewTask();}catch(error){return json({error:error.message},409);}}
+ if(mode==='unavailable')return json({error:'selected task is unavailable'},409);
  if(mode==='reject'){
  runtime.rpc={request:async(method)=>{if(method==='thread/list')return {data:[...active,{...owned,id:'remote-owned'}]};if(method==='thread/resume')throw new Error('already has an active writer');return {data:[]};}};
  try{await runtime.selectThread(body.threadId);}catch(error){return json({error:error.message},409);}
@@ -104,6 +107,7 @@ const server=createServer(async(req,res)=>{
  if(uiGate)await uiGate;
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(body.files?.length)fileBodies.push(body);
+ if(freshNavigation)return json(await runtime.sendMessage(body.text,body.action,body.images,body.files,body.submissionId),202);
  if(body.question){
  const q=body.question,source=runtime.state.liveMessages.find(m=>m.id===q.messageId);
  asyncAnswers[q.messageId]={[q.index]:q.answer};
@@ -1628,6 +1632,37 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByText('Send rejected',{exact:true}).waitFor();assert.equal(await page.locator('#composer-status').isVisible(),true);
  composerPost='success';
  }
+ // A fresh task's leave guard belongs to the source; attach failures belong to the target.
+ const savedActiveForFresh=active;
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});
+ const source={...task,id:'fresh-source',name:'Fresh source'},target={...task,id:'fresh-target',name:'Other target'};
+ active=[source,target];mode='success';freshNavigation=true;
+ Object.assign(runtime.state,{machineId:'local',connected:true,thread:source,turn:null,threadStatus:'idle',phase:'ready',goal:null,queuedMessage:null,pending:[],liveMessages:[],activities:[]});
+ runtime.canAcceptDirectInput=true;runtime.pendingTaskNames.set(source.id,{name:source.name,attempted:false});
+ runtime.rpc={request:async method=>method==='turn/start'?{turn:{id:'first-accepted',status:'inProgress'}}:{data:[]}};
+ await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
+ const sourceRow=page.locator('.destination-entry').filter({hasText:source.name}),targetRow=page.locator('.destination-entry').filter({hasText:target.name});
+ await targetRow.locator('.destination-task').click();
+ await sourceRow.locator('.task-selection-error').getByText('Send the first message before leaving this new task.',{exact:true}).waitFor();
+ assert.equal(await targetRow.locator('.task-selection-error').count(),0);assert.equal(await sourceRow.locator('.destination-task').getAttribute('aria-current'),'true');assert.equal(runtime.state.thread.id,source.id);
+ assert.equal(await page.locator('.task-selection-error').count(),1);
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/fresh-source-error-${width}.png`});
+ await dismissTasks();await closed();await page.locator('#message-text').fill('First real message');await page.locator('#send-message').click();
+ await page.waitForFunction(()=>document.querySelector('#message-text').value==='');assert.equal(runtime.state.turn.id,'first-accepted');runtime.assertCanLeaveNewTask();
+ await open();await targetRow.locator('.destination-task').click();await page.waitForFunction(()=>document.querySelector('#destination-button').textContent.includes('Other target'));
+ assert.equal(runtime.state.thread.id,target.id);await open();assert.equal(await page.locator('.task-selection-error').count(),0);
+ freshNavigation=false;
+ for(const failureMode of ['reject','unavailable']){
+ mode=failureMode;await sourceRow.locator('.destination-task').click();
+ await sourceRow.locator('.task-selection-error').getByText(failureMode==='reject'?'Open elsewhere. Close it and retry.':'selected task is unavailable',{exact:true}).waitFor();
+ assert.equal(await targetRow.locator('.task-selection-error').count(),0);assert.equal(await targetRow.locator('.destination-task').getAttribute('aria-current'),'true');
+ }
+ await dismissTasks();await closed();runtime.pendingTaskNames.delete(source.id);
+ }
+ active=savedActiveForFresh;mode='success';freshNavigation=false;
  // Free-text Async Answer has a compact, right-aligned primary action on its own row.
  for(const width of [1280,390,320])for(const submit of ['Enter','button']){
  await page.setViewportSize({width,height:844});
