@@ -2592,6 +2592,18 @@ test('Goal updates resolve exact POSIX and Windows objective paths without chang
   }
 });
 
+test('literal Windows oversized Goal wrapper resolves through updateGoal', async () => {
+  const runtime=activeRuntime(),calls=[];
+  runtime.codexHome=String.raw`C:\Users\KyouKyou\.codex`;runtime.state.platform='windows';
+  const path=String.raw`C:\Users\KyouKyou\.codex\attachments\b1ed4737-775d-4385-9a95-888a9fac8c68\goal-objective.md`;
+  const objective=String.raw`Read the Codex goal objective file at C:\Users\KyouKyou\.codex\attachments\b1ed4737-775d-4385-9a95-888a9fac8c68\goal-objective.md before continuing.`;
+  runtime.rpc={request:async(method,params)=>{calls.push({method,params});return {dataBase64:Buffer.from('The actual Windows objective').toString('base64')};}};
+  runtime.updateGoal('thread-1',{objective,status:'active'});await goalTick();
+  assert.deepEqual(calls,[{method:'fs/readFile',params:{path}}]);
+  assert.equal(runtime.state.goal.objective,'The actual Windows objective');
+  assert.equal(runtime.upstreamGoal.objective,objective);
+});
+
 test('Goal reference validation never reads paths outside the exact attachment shape', async () => {
   const runtime=activeRuntime();runtime.codexHome='/home/user/.codex';runtime.state.platform='linux';
   let reads=0;runtime.rpc={request:async()=>{reads++;throw new Error('Should not read');}};

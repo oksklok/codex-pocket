@@ -451,7 +451,7 @@ try {
  runtime.canAcceptDirectInput=true;
  runtime.state.queuedMessage={threadId:runtime.state.thread.id,text:'Already sending',images:[]};runtime.startingQueuedMessage=true;runtime.broadcast('snapshot',snapshot());
  await page.locator('#queue-banner').waitFor();await page.locator('#cancel-queue').click();
- assert.equal(await page.locator('#queue-banner strong').textContent(),'Queued');
+ assert.equal(await page.locator('#queue-banner strong').textContent(),'Queued Next');
  await page.waitForFunction(()=>!document.querySelector('#cancel-queue').disabled);
  assert.equal(await page.locator('#composer-status').textContent(),'');
  assert.equal(await page.locator('#queue-banner').isVisible(),true);assert.equal(await page.locator('#queue-text').textContent(),'Already sending');
@@ -1264,7 +1264,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const update=value=>runtime.handleNotification({method:value?'thread/goal/updated':'thread/goal/cleared',params:{threadId:task.id,...(value?{goal:value}:{})}});
  runtime.rpc={request:async(method,params)=>{goalCalls.push({method,params});return method==='fs/readFile'?{dataBase64:Buffer.from(goal.objective).toString('base64')}:method==='thread/goal/clear'?{cleared:true}:{goal:{...goal,status:params.status}};}};
  update(goal);await page.getByRole('button',{name:'Pause goal',exact:true}).waitFor();
- assert.equal(await page.locator('#goal-status').textContent(),'Pursuing goal');
+ assert.equal(await page.locator('#goal-status').textContent(),'Pursuing Goal');
  assert.equal(await page.locator('#goal-time').textContent(),'2m 05s');
  assert.equal(await page.getByRole('button',{name:'Clear goal',exact:true}).isVisible(),true);
  const goalBounds=await page.locator('#goal-strip').boundingBox();
@@ -1288,15 +1288,16 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  let releaseGoal;goalGate=new Promise(resolve=>releaseGoal=resolve);
  await page.getByRole('button',{name:'Pause goal',exact:true}).click();
  assert.equal(await page.getByRole('button',{name:'Pause goal',exact:true}).isDisabled(),true);
- assert.equal(await page.locator('#goal-status').textContent(),'Pursuing goal');
+ assert.equal(await page.locator('#goal-status').textContent(),'Pursuing Goal');
  goalGate=null;releaseGoal();await page.getByRole('button',{name:'Resume goal',exact:true}).waitFor();
- assert.equal(await page.locator('#goal-status').textContent(),'Goal paused');
+ assert.equal(await page.locator('#goal-status').textContent(),'Goal Paused');
  assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/set',params:{threadId:task.id,status:'paused'}});
  await page.getByRole('button',{name:'Resume goal',exact:true}).click();await page.getByRole('button',{name:'Pause goal',exact:true}).waitFor();
  assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/set',params:{threadId:task.id,status:'active'}});
  for(const status of ['blocked','usageLimited','budgetLimited','complete']){
  update({...goal,status});await page.waitForFunction(()=>document.querySelector('#goal-toggle').hidden);
  assert.equal(await page.getByRole('button',{name:'Clear goal',exact:true}).isVisible(),true);
+ assert.equal(await page.locator('#goal-status').textContent(),{blocked:'Goal Blocked',usageLimited:'Goal Usage Limited',budgetLimited:'Goal Budget Limited',complete:'Goal Complete'}[status]);
  }
  runtime.codexHome='/runtime-codex';
  const objectivePath='/runtime-codex/attachments/b1ed4737-775d-4385-9a95-888a9fac8c68/goal-objective.md';
@@ -1305,7 +1306,34 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForFunction(expected=>document.querySelector('#goal-objective').textContent===expected,goal.objective);
  assert.deepEqual(goalCalls.at(-1),{method:'fs/readFile',params:{path:objectivePath}});
  assert.equal((await page.locator('#goal-strip').textContent()).includes('goal-objective.md'),false);
+ runtime.state.queuedMessage={threadId:task.id,text:'A deliberately long queued message to verify matching card geometry. '.repeat(5),createdAt:Date.now()};
+ runtime.state.turn={id:'card-turn',status:'inProgress'};runtime.broadcast('snapshot',snapshot());await page.locator('#send-queue').waitFor();
+ assert.equal(await page.locator('#send-queue').textContent(),'Steer Now');
+ assert.equal(await page.locator('.queue-copy strong').textContent(),'Queued Next');
+ const cards=await page.evaluate(()=>{
+ const box=e=>{const r=e.getBoundingClientRect();return {x:r.x,right:r.right,top:r.top,bottom:r.bottom,height:r.height,width:r.width,center:r.top+r.height/2};};
+ const style=e=>{const s=getComputedStyle(e);return [s.padding,s.borderWidth,s.borderRadius,s.fontSize,s.fontWeight];};
+ const goal=document.querySelector('#goal-strip'),queue=document.querySelector('#queue-banner'),zone=document.querySelector('.composer-zone'),composer=document.querySelector('#composer');
+ return {goal:box(goal),queue:box(queue),goalStyle:style(goal),queueStyle:style(queue),goalTitle:style(document.querySelector('#goal-status')),queueTitle:style(document.querySelector('.queue-copy strong')),goalContent:style(document.querySelector('#goal-objective')),queueContent:style(document.querySelector('#queue-text')),title:box(document.querySelector('.queue-copy strong')),text:box(document.querySelector('#queue-text')),actions:box(document.querySelector('.queue-actions')),gaps:[goal.getBoundingClientRect().top-zone.getBoundingClientRect().top-parseFloat(getComputedStyle(zone).borderTopWidth),queue.getBoundingClientRect().top-goal.getBoundingClientRect().bottom,composer.getBoundingClientRect().top-queue.getBoundingClientRect().bottom,zone.getBoundingClientRect().bottom-composer.getBoundingClientRect().bottom],statusHeight:box(document.querySelector('#composer-status')).height};
+ });
+ assert.deepEqual(cards.goalStyle,cards.queueStyle);assert.deepEqual(cards.goalTitle,cards.queueTitle);assert.deepEqual(cards.goalContent,cards.queueContent);
+ assert.equal(cards.goal.x,cards.queue.x);assert.equal(cards.goal.width,cards.queue.width);assert.equal(cards.goal.height,cards.queue.height);
+ assert.deepEqual(cards.gaps,[8,8,8,8]);assert.equal(cards.statusHeight,0);
+ assert(cards.queue.x>=0&&cards.queue.right<=width);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ assert(Math.abs(cards.title.center-cards.actions.center)<1);
+ if(width>860)assert(Math.abs(cards.text.center-cards.title.center)<1);
+ else {assert(cards.text.top>=cards.actions.bottom);assert(cards.text.height<20);}
+ assert.equal(await page.locator('#queue-text').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-${width}.png`});
+ runtime.state.turn=null;runtime.state.queuedMessage=null;runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
+ // Attention and draft attachments participate in the same normal 8px stack.
+ await page.locator('#image-picker').setInputFiles({name:'spacing.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
+ runtime.state.pending=[{id:'card-permission',kind:'permission',supported:true,label:'Run command'}];runtime.broadcast('snapshot',snapshot());await page.locator('#attention-banner').waitFor();
+ const stackGaps=await page.locator('.composer-zone').evaluate(zone=>{
+ const children=[...zone.children].filter(e=>e.getBoundingClientRect().height&&getComputedStyle(e).position!=='absolute');
+ return children.slice(1).map((e,i)=>e.getBoundingClientRect().top-children[i].getBoundingClientRect().bottom);
+ });assert.deepEqual(stackGaps,[8,8,8]);
+ runtime.state.pending=[];runtime.broadcast('snapshot',snapshot());await page.getByRole('button',{name:'Remove image 1',exact:true}).click();
  const beforeClear=goalCalls.length;
  await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.locator('#task-dialog').waitFor();
  assert.equal(await page.locator('#task-dialog-title').textContent(),'Clear Goal');assert.equal(goalCalls.length,beforeClear);

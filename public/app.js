@@ -1296,7 +1296,7 @@ function renderGoal() {
   const goal = state?.goal;
   goalStrip.hidden = !goal;
   if (!goal) return;
-  const labels = { active: "Pursuing goal", paused: "Goal paused", blocked: "Goal blocked", usageLimited: "Goal usage limited", budgetLimited: "Goal budget limited", complete: "Goal complete" };
+  const labels = { active: "Pursuing Goal", paused: "Goal Paused", blocked: "Goal Blocked", usageLimited: "Goal Usage Limited", budgetLimited: "Goal Budget Limited", complete: "Goal Complete" };
   document.querySelector("#goal-status").textContent = labels[goal.status] || `Goal ${goal.status}`;
   const objective = document.querySelector("#goal-objective");
   objective.textContent = goal.objective;
