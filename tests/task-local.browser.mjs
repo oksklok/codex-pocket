@@ -1328,6 +1328,10 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  return {goal:box(goal),queue:box(queue),goalStyle:style(goal),queueStyle:style(queue),goalTitle:style(document.querySelector('#goal-status')),queueTitle:style(document.querySelector('.queue-copy strong')),goalContent:style(document.querySelector('#goal-objective')),queueContent:style(document.querySelector('#queue-text')),title:box(document.querySelector('.queue-copy strong')),text:box(document.querySelector('#queue-text')),actions:box(document.querySelector('.queue-actions')),gaps:[goal.getBoundingClientRect().top-zone.getBoundingClientRect().top-parseFloat(getComputedStyle(zone).borderTopWidth),queue.getBoundingClientRect().top-goal.getBoundingClientRect().bottom,composer.getBoundingClientRect().top-queue.getBoundingClientRect().bottom,zone.getBoundingClientRect().bottom-composer.getBoundingClientRect().bottom],statusHeight:box(document.querySelector('#composer-status')).height};
  });
  assert.deepEqual(cards.goalStyle,cards.queueStyle);assert.deepEqual(cards.goalTitle,cards.queueTitle);assert.deepEqual(cards.goalContent,cards.queueContent);
+ const cardPadding=await page.locator('#goal-strip, #queue-banner').evaluateAll(es=>es.map(e=>{
+ const s=getComputedStyle(e);return [s.paddingTop,s.paddingBottom,s.paddingLeft,s.paddingRight];
+ }));
+ assert.deepEqual(cardPadding,Array(2).fill(width>860?['3px','3px','8px','8px']:['5px','5px','8px','8px']));
  assert.equal(cards.goal.x,cards.queue.x);assert.equal(cards.goal.width,cards.queue.width);assert.equal(cards.goal.height,cards.queue.height);
  assert.deepEqual(cards.gaps,[8,8,8,8]);assert.equal(cards.statusHeight,0);
  assert(cards.queue.x>=0&&cards.queue.right<=width);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

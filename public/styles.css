@@ -715,7 +715,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 @media (max-width: 860px) {
   .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: "status time toggle clear" "objective objective objective objective"; }
   .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective objective"; }
-  .composer-card { row-gap: 0; padding-bottom: 7px; }
+  .composer-card { row-gap: 0; padding-top: 5px; padding-bottom: 5px; }
 }
 .composer-card .icon-button { flex: none; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); }
 .composer-card .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
