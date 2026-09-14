@@ -77,7 +77,7 @@ export function fileInputs(files = []) {
     total += size;
     if (size > MAX_INPUT_FILE_BYTES || total > MAX_INPUT_FILES_BYTES) throw new Error("Files must be at most 10 MB each and 20 MB together");
     if (file.size !== undefined && file.size !== size) throw new Error("File size does not match its content");
-    const name = file.name.replace(/[^a-zA-Z0-9._ -]/g, "_").replace(/^[. ]+|[. ]+$/g, "").slice(0, 120) || "file";
+    const name = file.name.replace(/[<>:"|?*]/g, "_").replace(/^[. ]+|[. ]+$/g, "").slice(0, 120) || "file";
     return { name, data, size };
   });
 }

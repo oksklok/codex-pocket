@@ -2427,7 +2427,11 @@ test('file validation bounds decoded bytes and rejects traversal, forged sizes, 
   const {fileInputs,MAX_INPUT_FILE_BYTES}=await import('../public/pocket-logic.js');
   const file={name:'report: draft?.pdf',data:Buffer.from([0,255,13,10]).toString('base64'),size:4};
   assert.deepEqual(fileInputs([file]),[{...file,name:'report_ draft_.pdf'}]);
-  for(const name of ['../x','..','.', '/tmp/x','C:\\temp\\x','a/b','a\0b','a\nb',''])assert.throws(()=>fileInputs([{...file,name}]),/name/);
+  for(const name of ['测试报告.pdf','日本語 résumé 版本2.xlsx','한국어.txt'])assert.equal(fileInputs([{...file,name}])[0].name,name);
+  assert.equal(fileInputs([{...file,name:'测试<>:"|?*报告.pdf'}])[0].name,'测试_______报告.pdf');
+  assert.equal(fileInputs([{...file,name:' . 测试报告.pdf. '}])[0].name,'测试报告.pdf');
+  assert.equal(fileInputs([{...file,name:'测'.repeat(130)}])[0].name,'测'.repeat(120));
+  for(const name of ['../x','..','.', '/tmp/x','C:\\temp\\x','a/b','a\0b','a\nb','测\tb','测\x1fb','测\x7fb',''])assert.throws(()=>fileInputs([{...file,name}]),/name/);
   assert.throws(()=>fileInputs([{...file,path:'/tmp/chosen'}]),/name/);
   for(const data of ['data:application/pdf;base64,AA==','A===','AAAA\n','AB==','A','!!!!'])assert.throws(()=>fileInputs([{...file,data}]),/base64/);
   assert.throws(()=>fileInputs([{...file,size:1}]),/size/);
@@ -2443,10 +2447,11 @@ test('local files stage exact bytes in submission-scoped temp paths with server-
   const {readFile,rm}=await import('node:fs/promises');
   const {tmpdir}=await import('node:os');const {join}=await import('node:path');const {randomUUID}=await import('node:crypto');
   const id=randomUUID(),bytes=Buffer.from(Array.from({length:256},(_,i)=>i));
-  const files=[{name:'CON',data:bytes.toString('base64')},{name:'CON',data:''}];
+  const files=[{name:'CON',data:bytes.toString('base64')},{name:'CON',data:''},{name:'测试报告.pdf',data:bytes.toString('base64')}];
   try{
     const staged=await stageMessageFiles(files,id);
-    assert.deepEqual(staged,[{name:'CON',path:join(tmpdir(),'codex-pocket',id,'1-CON'),size:256},{name:'CON',path:join(tmpdir(),'codex-pocket',id,'2-CON'),size:0}]);
+    assert.deepEqual(staged,[{name:'CON',path:join(tmpdir(),'codex-pocket',id,'1-CON'),size:256},{name:'CON',path:join(tmpdir(),'codex-pocket',id,'2-CON'),size:0},{name:'测试报告.pdf',path:join(tmpdir(),'codex-pocket',id,'3-测试报告.pdf'),size:256}]);
+    assert.deepEqual(await readFile(staged[2].path),bytes);
     assert.deepEqual(await readFile(staged[0].path),bytes);
     assert.deepEqual(await stageMessageFiles(files,id),staged);
     assert.equal('data' in staged[0],false);
@@ -2466,16 +2471,16 @@ test('SSH file staging streams exact binary bytes through the configured alias f
     if(!windows)return spawn('/bin/sh',['-c',args.at(-1)],{...options,env:{...process.env,TMPDIR:temp}});
     script=Buffer.from(args.at(-1).split(' ').at(-1),'base64').toString('utf16le');
     const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{};
-    const chunks=[];child.stdin.on('data',chunk=>chunks.push(chunk));child.stdin.on('finish',()=>{uploaded=Buffer.concat(chunks);child.stdout.end('C:\\Temp\\codex-pocket\\test-submission\\1-report.pdf');child.emit('close',0);});
+    const chunks=[];child.stdin.on('data',chunk=>chunks.push(chunk));child.stdin.on('finish',()=>{uploaded=Buffer.concat(chunks);child.stdout.end('C:\\Temp\\codex-pocket\\test-submission\\1-日本語 résumé 版本2.xlsx');child.emit('close',0);});
     return child;
   });syncBuiltinESMExports();
   try{
-    const file={name:'report.pdf',data:bytes.toString('base64')};
+    const file={name:'日本語 résumé 版本2.xlsx',data:bytes.toString('base64')};
     const [posix]=await stageMessageFiles([file],'test-submission','configured-alias');
-    assert.equal(posix.path,join(temp,'codex-pocket','test-submission','1-report.pdf'));assert.deepEqual(await readFile(posix.path),bytes);
+    assert.equal(posix.path,join(temp,'codex-pocket','test-submission','1-日本語 résumé 版本2.xlsx'));assert.deepEqual(await readFile(posix.path),bytes);
     windows=true;const [win]=await stageMessageFiles([file],'test-submission','configured-alias',true);
-    assert.equal(win.path,'C:\\Temp\\codex-pocket\\test-submission\\1-report.pdf');assert.deepEqual(uploaded,bytes);
-    assert.match(script,/GetTempPath/);assert.match(script,/codex-pocket\\test-submission/);assert.match(script,/'1-report.pdf'/);assert.match(script,/OpenStandardInput\(\)\.CopyTo\(\$f\)/);
+    assert.equal(win.path,'C:\\Temp\\codex-pocket\\test-submission\\1-日本語 résumé 版本2.xlsx');assert.deepEqual(uploaded,bytes);
+    assert.match(script,/GetTempPath/);assert.match(script,/codex-pocket\\test-submission/);assert.match(script,/'1-日本語 résumé 版本2.xlsx'/);assert.match(script,/OpenStandardInput\(\)\.CopyTo\(\$f\)/);
   }finally{t.mock.restoreAll();syncBuiltinESMExports();await rm(temp,{recursive:true,force:true});}
 });
 

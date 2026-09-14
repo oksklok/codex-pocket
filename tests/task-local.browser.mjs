@@ -1292,7 +1292,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.reload();await input.waitFor();
  assert.equal(await page.getByRole('button',{name:'Attach files',exact:true}).isVisible(),true);
  assert.equal(await page.locator('#image-picker').getAttribute('accept'),null);
- const name='a-long-report-name-'.repeat(5)+'.pdf';
+ const name='测试报告 résumé '+ 'a-long-report-name-'.repeat(4)+'.pdf';
  const file={name,mimeType:'application/pdf',buffer:Buffer.from('binary\0file')};
  await page.locator('#image-picker').setInputFiles([file,{name:'photo.png',mimeType:'image/png',buffer:png}]);
  await page.locator('#composer-files .file-chip').waitFor();assert.equal(await page.locator('#composer-images img').count(),1);
