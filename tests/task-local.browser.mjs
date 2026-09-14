@@ -1276,12 +1276,12 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  return {status:rect('#goal-status'),objective:rect('#goal-objective'),time:rect('#goal-time'),toggle:rect('#goal-toggle'),clear:rect('#goal-clear'),border:getComputedStyle(e).borderStyle,radius:getComputedStyle(e).borderRadius};
  });
  assert.equal(layout.border,'solid');assert.equal(layout.radius,'10px');
- for(const item of [layout.status,layout.time,layout.toggle,layout.clear])assert(Math.abs(item.center-layout.status.center)<1);
+ for(const item of (width>860?[layout.status,layout.time,layout.toggle,layout.clear]:[layout.status,layout.time]))assert(Math.abs(item.center-layout.status.center)<1);
  if(width>860){
  assert(Math.abs(layout.objective.center-layout.status.center)<1);
  assert(Math.abs(layout.time.left-layout.objective.right-8)<1);
  }else{
- assert.equal(layout.objective.top,layout.toggle.bottom-2);assert(layout.objective.bottom-layout.objective.top<20);
+ assert(layout.objective.top>=layout.status.bottom);assert(layout.objective.bottom-layout.objective.top<20);
  }
  const composerBounds=await page.locator('#composer').boundingBox();assert.equal(goalBounds.x,composerBounds.x);assert.equal(goalBounds.width,composerBounds.width);
  assert.equal(await page.locator('#goal-clear svg path').getAttribute('d'),'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7');
@@ -1335,27 +1335,28 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(cards.goal.x,cards.queue.x);assert.equal(cards.goal.width,cards.queue.width);assert.equal(cards.goal.height,cards.queue.height);
  assert.deepEqual(cards.gaps,[8,8,8,8]);assert.equal(cards.statusHeight,0);
  assert(cards.queue.x>=0&&cards.queue.right<=width);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
- assert(Math.abs(cards.title.center-cards.actions.center)<1);
- if(width>860)assert(Math.abs(cards.text.center-cards.title.center)<1);
- else {assert.equal(cards.text.top,cards.actions.bottom-2);assert(cards.text.height<20);}
+ if(width>860){assert(Math.abs(cards.title.center-cards.actions.center)<1);assert(Math.abs(cards.text.center-cards.title.center)<1);}
+ else {assert(cards.text.top>=cards.title.bottom);assert(cards.text.height<20);}
  assert.equal(await page.locator('#queue-text').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
  const optics=await page.evaluate(()=>{
  const rect=id=>document.querySelector(id).getBoundingClientRect();
- const controls=['#goal-toggle','#goal-clear','#send-queue','#cancel-queue'];
- const sizes=controls.map(id=>{const r=rect(id);return [r.width,r.height];});
+ const textRect=id=>{const range=document.createRange();range.selectNodeContents(document.querySelector(id));return range.getBoundingClientRect();};
+ const sizes=['#goal-toggle','#goal-clear','#send-queue','#cancel-queue'].map(id=>{const r=rect(id);return [r.width,r.height];});
  const svgGaps=[['#goal-toggle','#goal-clear'],['#send-queue','#cancel-queue']].map(([a,b])=>rect(`${b} svg`).left-rect(`${a} svg`).right);
- const textTransforms=['#goal-objective','#queue-text'].map(id=>getComputedStyle(document.querySelector(id)).transform);
- const cards=['#goal-strip','#queue-banner'];
- const geometry=()=>cards.map(id=>{const r=rect(id);return [r.x,r.y,r.width,r.height];});
- const before=geometry();
- const shifted=['#goal-objective','#queue-text','#goal-clear','#cancel-queue'].map(id=>document.querySelector(id));
- shifted.forEach(e=>e.style.transform='none');const withoutTransforms=geometry();shifted.forEach(e=>e.style.removeProperty('transform'));
- return {sizes,svgGaps,textTransforms,before,withoutTransforms};
+ const transforms=['#goal-objective','#queue-text','#goal-clear','#cancel-queue'].map(id=>getComputedStyle(document.querySelector(id)).transform);
+ const alignment=[['#goal-strip','#goal-status','#goal-objective','#goal-clear'],['#queue-banner','.queue-copy strong','#queue-text','#cancel-queue']].map(([card,title,content,clear])=>{
+ const r=rect(card),t=textRect(title),c=textRect(content);
+ return {leftInset:t.left-r.left,rightInset:r.right-rect(`${clear} svg`).right,textCenter:(t.top+c.bottom)/2,cardCenter:r.top+r.height/2};
+ });
+ return {sizes,svgGaps,transforms,alignment,durationGap:rect('#goal-toggle svg').left-textRect('#goal-time').right};
  });
  assert.deepEqual(optics.sizes,Array(4).fill([36,36]));
- assert.deepEqual(optics.svgGaps,Array(2).fill(width>860?26:18));
- assert.deepEqual(optics.textTransforms,Array(2).fill(width>860?'none':'matrix(1, 0, 0, 1, 0, -2)'));
- assert.deepEqual(optics.before,optics.withoutTransforms);
+ assert.deepEqual(optics.svgGaps,[18,18]);assert.deepEqual(optics.transforms,Array(4).fill('none'));
+ assert(Math.abs(optics.durationGap-optics.svgGaps[0])<=2);
+ for(const a of optics.alignment){
+ assert(Math.abs(a.leftInset-a.rightInset)<=2);
+ if(width<=860)assert(Math.abs(a.textCenter-a.cardCenter)<=2,JSON.stringify(a));
+ }
 
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-${width}.png`});
  runtime.state.turn=null;runtime.broadcast('snapshot',{...snapshot(),message:{allowed:true,mode:'start'}});

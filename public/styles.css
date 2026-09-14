@@ -426,7 +426,8 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .queue-copy { display: contents; }
 .queue-copy strong { grid-area: status; }
 .queue-copy #queue-text { grid-area: objective; }
-.queue-actions { grid-area: actions; display: flex; flex: none; align-items: center; gap: 8px; }
+.card-actions { grid-area: actions; display: flex; align-items: center; gap: 0; margin-right: -8px; }
+.card-actions > .text-button:not([hidden]) + .icon-button { margin-left: 8px; }
 .queue-actions button { min-height: 36px; }
 
 .inspector {
@@ -706,19 +707,14 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .composer-card { display: grid; align-items: center; gap: 8px; min-width: 0; width: min(100%, 780px); margin: 0 auto 8px; padding: 3px 8px; border-width: 1px; border-style: solid; border-radius: 10px; font-size: var(--text-label); }
 .composer-card strong { font-weight: 500; white-space: nowrap; }
 .composer-card :is(#goal-objective, #queue-text) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-.goal-strip { grid-template-columns: auto minmax(0, 1fr) auto auto auto; grid-template-areas: "status objective time toggle clear"; border-color: var(--line-soft); background: var(--soft-surface); color: var(--muted); }
+.goal-strip { grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "status objective time actions"; border-color: var(--line-soft); background: var(--soft-surface); color: var(--muted); }
 #goal-status { grid-area: status; color: var(--text); }
 #goal-time { grid-area: time; white-space: nowrap; font-size: var(--text-secondary); }
 #goal-objective { grid-area: objective; }
-#goal-toggle { grid-area: toggle; }
-#goal-clear { grid-area: clear; }
 @media (max-width: 860px) {
-  .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: "status time toggle clear" "objective objective objective objective"; }
-  .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective objective"; }
+  .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "status time actions" "objective objective actions"; }
+  .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective actions"; }
   .composer-card { row-gap: 0; padding-top: 5px; padding-bottom: 5px; }
-  #goal-objective, #queue-text { transform: translateY(-2px); }
-  #goal-toggle:not([hidden]) + #goal-clear,
-  .queue-actions > .icon-button + .icon-button { transform: translateX(-8px); }
 }
 .composer-card .icon-button { flex: none; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); }
 .composer-card .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
