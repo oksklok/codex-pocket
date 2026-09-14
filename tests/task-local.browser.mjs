@@ -1628,6 +1628,30 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByText('Send rejected',{exact:true}).waitFor();assert.equal(await page.locator('#composer-status').isVisible(),true);
  composerPost='success';
  }
+ // Free-text Async Answer has a compact, right-aligned primary action on its own row.
+ for(const width of [1280,390,320])for(const submit of ['Enter','button']){
+ await page.setViewportSize({width,height:844});
+ const question={id:'answer-layout',role:'assistant',delivery:'async',text:'What should the empty state say?',questions:[{title:'What should the empty state say?',options:[]}],complete:true,createdAt:1000};
+ const options={...question,id:'answer-options',text:'Choose a layout',questions:[{title:'Choose a layout',options:['Compact','Spacious']}]};
+ Object.assign(runtime.state,{machineId:'local',thread:{...task},turn:null,goal:null,queuedMessage:null,pending:[],liveMessages:[question,options],activities:[]});asyncAnswers={};
+ await page.evaluate(()=>{localStorage.setItem('codex-pocket-details-open','false');localStorage.setItem('codex-pocket-enter-sends','true');});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ const free=page.locator('[data-message-id="answer-layout"] .async-free-text'),answer=free.locator('textarea'),button=free.locator('button');await answer.waitFor();
+ const geometry=()=>free.evaluate(e=>{const input=e.querySelector('textarea').getBoundingClientRect(),button=e.querySelector('button'),b=button.getBoundingClientRect(),r=e.getBoundingClientRect(),style=getComputedStyle(button),send=getComputedStyle(document.querySelector('#send-message'));return {right:b.right-input.right,below:b.top-input.bottom,full:input.width===r.width,compact:b.width<input.width,height:b.height,weight:style.fontWeight,accent:style.color===send.color&&style.backgroundColor===send.backgroundColor&&style.borderColor===send.borderColor,overflow:document.documentElement.scrollWidth>innerWidth};});
+ const before=await geometry();assert.equal(before.right,0);assert(before.below>=6);assert.equal(before.full,true);assert.equal(before.compact,true);assert.equal(before.height,40);assert.equal(before.weight,'750');assert.equal(before.accent,true);assert.equal(before.overflow,false);
+ const choices=page.locator('[data-message-id="answer-options"]');assert.equal(await choices.locator('.async-free-text').isVisible(),false);
+ assert.equal(await choices.locator('.async-options button').count(),2);assert.equal(await choices.locator('.async-options button').first().evaluate(e=>getComputedStyle(e).fontWeight),'400');
+ await choices.getByRole('button',{name:'Other Answer…',exact:true}).click();await choices.locator('textarea').waitFor();await choices.getByRole('button',{name:'Other Answer…',exact:true}).click();assert.equal(await choices.locator('textarea').isVisible(),false);
+ await answer.fill('There are no items yet.');
+ if(process.env.POCKET_SCREENSHOT_DIR&&submit==='button')await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/async-answer-${width}.png`});
+ const count=calls.filter(c=>c==='/api/message').length;
+ uiGate=new Promise(r=>release=r);
+ if(submit==='button')await button.click();else await answer.press('Enter');
+ await free.getByRole('button',{name:'Sending…',exact:true}).waitFor();assert.equal(await button.isDisabled(),true);assert.deepEqual(await geometry(),before);
+ if(process.env.POCKET_SCREENSHOT_DIR&&submit==='button')await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/async-sending-${width}.png`});
+ release();uiGate=null;await page.waitForFunction(()=>!document.querySelector('[data-message-id="answer-layout"] .async-answer'));
+ assert.equal(calls.filter(c=>c==='/api/message').length,count+1);assert.equal(asyncAnswers[question.id][0],'There are no items yet.');
+ }
  // Working Path editing uses selected-runtime settings confirmation without filesystem checks.
  for(const width of [1280,390,320]){
  await page.setViewportSize({width,height:844});

@@ -296,6 +296,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .async-answer button.selected { border-color: var(--blue); }
 .async-answer textarea { display: block; width: 100%; height: 62px; min-height: 62px; margin-bottom: 6px; padding: 8px; line-height: 22px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: 16px; }
 .async-free-text { margin-top: 8px; }
+.async-free-text > button { display: block; margin-left: auto; border-color: rgba(69,200,138,.35); border-radius: 9px; background: rgba(69,200,138,.16); color: var(--accent); font-weight: 750; cursor: pointer; }
 .async-answer .other-answer { min-height: 32px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); }
 .answer-resolved { margin: 0; color: var(--muted); font-size: .8rem; }
 .timeline-activity {
