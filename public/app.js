@@ -3084,6 +3084,28 @@ new ResizeObserver(([entry]) => {
   composerWidth = entry.contentRect.width;
   resizeComposer();
 }).observe(elements.composerInput);
+let composerZoneHeight = 0;
+let composerResizeFrame = null;
+let composerResizeScrollTop = 0;
+new ResizeObserver(([entry]) => {
+  if (entry.contentRect.height === composerZoneHeight) return;
+  composerZoneHeight = entry.contentRect.height;
+  if (composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest || composerResizeFrame !== null) return;
+  composerResizeScrollTop = transcriptScroller().scrollTop;
+  composerResizeFrame = requestAnimationFrame(() => {
+    composerResizeFrame = null;
+    if (composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest) return;
+    const scroller = transcriptScroller();
+    scroller.scrollTop = scroller.scrollHeight;
+    shouldFollowConversation = true;
+    updateJumpLatest();
+  });
+}).observe(elements.composerZone);
+// User scrolling takes priority over a pending composer resize reconciliation.
+for (const type of ["pointerdown", "touchstart", "wheel", "keydown"]) document.addEventListener(type, () => {
+  cancelAnimationFrame(composerResizeFrame);
+  composerResizeFrame = null;
+}, { passive: true });
 document.addEventListener("selectionchange", observeTranscriptSelection);
 elements.conversation.addEventListener("pointerdown", event => {
   if (event.isPrimary && event.button === 0 && !matchMedia("(max-width: 860px)").matches) {
@@ -3129,7 +3151,8 @@ elements.modelSelect.addEventListener("change", () => {
 elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 function handleTranscriptScroll() {
-  shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < NEAR_BOTTOM_PX;
+  // Layout-induced scrolling during a composer resize must not turn follow mode off.
+  if (composerResizeFrame === null || transcriptScroller().scrollTop < composerResizeScrollTop) shouldFollowConversation = transcriptScroller().scrollHeight - transcriptScroller().scrollTop - transcriptScroller().clientHeight < NEAR_BOTTOM_PX;
   updateJumpLatest();
   if (transcriptScroller().scrollTop < 140 && nextCursor && !historyRequest) loadHistory(nextCursor, historyEpoch, false);
 }

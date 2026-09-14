@@ -921,6 +921,43 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
  await images.nth(1).click();await page.locator('#image-viewer').waitFor();await page.keyboard.press('Escape');
  }
+ // Composer surface growth/shrink follows latest only while follow mode is enabled.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});historyFixture=null;
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[{id:'composer-resize-scroll',role:'assistant',text:'Transcript content.\n\n'.repeat(100),complete:true,createdAt:Date.now()}],activities:[]});
+ await page.reload();await page.locator('[data-message-id="composer-resize-scroll"]').waitFor();
+ const settled=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))));
+ const scroll=()=>page.evaluate(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');return {top:s.scrollTop,distance:s.scrollHeight-s.clientHeight-s.scrollTop};});
+ const bottom=async()=>{await settled();assert((await scroll()).distance<3,JSON.stringify({width,...await scroll()}));};
+ const goal=async(show)=>{
+ runtime.state.goal=show?{objective:'Keep the current task moving',status:'active',timeUsedSeconds:125}:null;
+ runtime.broadcast('goal',{machineId:'local',threadId:task.id,goal:runtime.state.goal});
+ await page.waitForFunction(show=>document.querySelector('#goal-strip').hidden!==show,show);await settled();
+ };
+ const queue=async(show)=>{
+ runtime.state.queuedMessage=show?{threadId:task.id,text:'The queued next message',createdAt:Date.now()}:null;
+ runtime.broadcast('queue',{queuedMessage:runtime.state.queuedMessage});
+ await page.waitForFunction(show=>document.querySelector('#queue-banner').hidden!==show,show);await settled();
+ };
+ await bottom();await goal(true);await bottom();await queue(true);await bottom();
+ const geometry=await page.locator('#goal-strip, #queue-banner').evaluateAll(es=>es.map(e=>{const r=e.getBoundingClientRect();return [r.width,r.height,getComputedStyle(e).padding];}));
+ assert.deepEqual(geometry[0],geometry[1]);
+ assert.deepEqual(await page.evaluate(()=>{const g=document.querySelector('#goal-strip').getBoundingClientRect(),q=document.querySelector('#queue-banner').getBoundingClientRect(),c=document.querySelector('#composer').getBoundingClientRect();return [q.top-g.bottom,c.top-q.bottom];}),[8,8]);
+ await queue(false);await bottom();await goal(false);await bottom();
+ // A large attention surface can exceed the near-bottom threshold in one resize.
+ runtime.state.pending=[{id:'resize-attention',kind:'permission',supported:true,label:'An attention request with details. '.repeat(150)}];runtime.broadcast('request',{pending:runtime.state.pending});
+ await page.locator('#attention-banner').waitFor();await bottom();
+ runtime.state.pending=[];runtime.broadcast('request',{pending:[]});await page.waitForFunction(()=>document.querySelector('#attention-banner').hidden);await bottom();
+
+ await page.evaluate(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');s.scrollTop-=650;});
+ await page.locator('#jump-latest').waitFor();await settled();const preserved=(await scroll()).top;
+ for(const [change,show] of [[goal,true],[queue,true],[queue,false],[goal,false]]){
+ await change(show);assert(Math.abs((await scroll()).top-preserved)<1,JSON.stringify({width,preserved,...await scroll()}));
+ }
+ await page.locator('#jump-latest').click();
+ await page.waitForFunction(()=>{const s=innerWidth<=860?document.scrollingElement:document.querySelector('#conversation');return s.scrollHeight-s.clientHeight-s.scrollTop<3;});
+ await goal(true);await bottom();await queue(true);await bottom();await queue(false);await goal(false);await bottom();
+ }
  // Only main-composer mobile focus follows latest; keyboard resize preserves it.
  for(const width of [390,1280]){
  await page.setViewportSize({width,height:844});
