@@ -1448,6 +1448,45 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  }
  update(goal);await page.locator('#goal-strip').waitFor();update(null);await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
  }
+ // Goal duration ticks locally from wall time without changing authoritative state or controls.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});historyFixture=null;
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ await page.reload();await page.locator('#message-text').waitFor();
+ const goal={objective:'A live Goal duration',status:'active',timeUsedSeconds:125};
+ const update=value=>{runtime.state.goal=value;runtime.broadcast('goal',{machineId:runtime.state.machineId,threadId:runtime.state.thread.id,goal:value});};
+ update(goal);await page.waitForFunction(()=>document.querySelector('#goal-time').textContent==='2m 05s');
+ // Retain a control node to detect accidental whole-composer rendering on a tick.
+ const control=await page.locator('#goal-toggle svg').elementHandle();
+ const requests=calls.length;
+ await page.waitForFunction(()=>document.querySelector('#goal-time').textContent!=='2m 05s');
+ assert.match(await page.locator('#goal-time').textContent(),/^2m 0[67]s$/);
+ assert.equal(await control.evaluate(e=>e===document.querySelector('#goal-toggle svg')),true);
+ assert.equal(runtime.state.goal.timeUsedSeconds,125);assert.equal(calls.length,requests);
+ // An unchanged snapshot must not restart the clock; a changed duration must resync.
+ update({...goal,tokensUsed:20});
+ await page.waitForTimeout(60);assert.notEqual(await page.locator('#goal-time').textContent(),'2m 05s');
+ update({...goal,timeUsedSeconds:10});await page.waitForFunction(()=>document.querySelector('#goal-time').textContent==='10s');
+ // Simulate a throttled/background clock jumping ahead between timer callbacks.
+ await page.evaluate(()=>{window.goalClockRealNow=Date.now;Date.now=()=>window.goalClockRealNow()+60000;});
+ await page.waitForFunction(()=>document.querySelector('#goal-time').textContent.startsWith('1m '));
+ await page.evaluate(()=>{Date.now=window.goalClockRealNow;delete window.goalClockRealNow;});
+ assert.equal(runtime.state.goal.timeUsedSeconds,10);
+ for(const status of ['paused','blocked','usageLimited','budgetLimited','complete']){
+ update({...goal,status,timeUsedSeconds:20});await page.waitForFunction(()=>document.querySelector('#goal-time').textContent==='20s');
+ await page.waitForTimeout(1100);assert.equal(await page.locator('#goal-time').textContent(),'20s');
+ }
+ update({...goal,timeUsedSeconds:30});await page.waitForFunction(()=>document.querySelector('#goal-time').textContent==='30s');
+ await page.waitForFunction(()=>document.querySelector('#goal-time').textContent!=='30s');
+ update({...goal,objective:'A replacement Goal',timeUsedSeconds:30});await page.waitForFunction(()=>document.querySelector('#goal-time').textContent==='30s');
+ await page.waitForFunction(()=>document.querySelector('#goal-time').textContent!=='30s');
+ runtime.state.thread=owned;runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>document.querySelector('#goal-time').textContent==='30s');
+ await page.waitForFunction(()=>document.querySelector('#goal-time').textContent!=='30s');
+ update(null);await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
+ update({...goal,objective:'A replacement Goal',timeUsedSeconds:30});await page.waitForFunction(()=>document.querySelector('#goal-time').textContent==='30s');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-clock-${width}.png`});
+ runtime.state.thread=task;runtime.state.goal=null;runtime.broadcast('snapshot',snapshot());
+ }
  // Queue dialog keeps user-authored instructions until confirmed discard or successful edit.
  for(const width of [1280,390,320]){
  await page.setViewportSize({width,height:844});

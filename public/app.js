@@ -1305,18 +1305,26 @@ let goalClearTarget = null;
 function goalClearTargetMatches() {
   return goalClearTarget && state?.goal && state.machineId === goalClearTarget.machineId && state.thread?.id === goalClearTarget.threadId;
 }
+let goalClock = null;
+const goalTime = document.querySelector("#goal-time");
+function renderGoalTime() {
+  const elapsed = goalClock?.active ? Math.max(0, Date.now() - goalClock.receivedAt) : 0;
+  goalTime.textContent = typeof goalClock?.seconds === "number" ? formatElapsed(goalClock.seconds * 1000 + elapsed) : "";
+}
 let goalActionBusy = null;
 function renderGoal() {
   const goal = state?.goal;
   if (goalClearDialog.open && !goalClearTargetMatches()) goalClearDialog.close();
   goalStrip.hidden = !goal;
-  if (!goal) return;
+  if (!goal) { goalClock = null; return; }
+  const clockKey = JSON.stringify([state.machineId, state.thread?.id, goal.objective, goal.status, goal.timeUsedSeconds]);
+  if (goalClock?.key !== clockKey) goalClock = { key: clockKey, seconds: goal.timeUsedSeconds, active: goal.status === "active", receivedAt: Date.now() };
+  renderGoalTime();
   const labels = { active: "Pursuing Goal", paused: "Goal Paused", blocked: "Goal Blocked", usageLimited: "Goal Usage Limited", budgetLimited: "Goal Budget Limited", complete: "Goal Complete" };
   document.querySelector("#goal-status").textContent = labels[goal.status] || `Goal ${goal.status}`;
   const objective = document.querySelector("#goal-objective");
   objective.textContent = goal.objective;
   objective.title = goal.objective;
-  document.querySelector("#goal-time").textContent = typeof goal.timeUsedSeconds === "number" ? formatElapsed(goal.timeUsedSeconds * 1000) : "";
   goalStrip.title = typeof goal.tokensUsed === "number" ? `${goal.tokensUsed.toLocaleString()} tokens used${typeof goal.tokenBudget === "number" ? ` / ${goal.tokenBudget.toLocaleString()} budget` : ""}` : "";
   const active = goal.status === "active";
   goalToggle.hidden = !active && goal.status !== "paused";
@@ -3290,6 +3298,7 @@ for (const [id, visible] of [["display-show-all", true], ["display-hide-all", fa
 }
 
 setInterval(() => {
+  if (goalClock?.active) renderGoalTime();
   const startedAt = state?.turn?.startedAt;
   const completedAt = state?.turn?.completedAt;
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
