@@ -58,6 +58,30 @@ export function imageInputs(images = []) {
   });
 }
 
+export const MAX_INPUT_FILES = 4;
+export const MAX_INPUT_FILE_BYTES = 10 * 1024 * 1024;
+export const MAX_INPUT_FILES_BYTES = 20 * 1024 * 1024;
+
+export function fileInputs(files = []) {
+  if (!Array.isArray(files) || files.length > MAX_INPUT_FILES) throw new Error("Choose up to 4 files");
+  let total = 0;
+  return files.map(file => {
+    if (!file || typeof file.name !== "string" || !file.name.trim() || file.name.length > 255
+      || /[\\/\x00-\x1f\x7f]/.test(file.name) || file.name === "." || file.name === ".." || Object.hasOwn(file, "path")) throw new Error("Invalid file name");
+    const data = file.data;
+    if (typeof data !== "string" || data.length > Math.ceil(MAX_INPUT_FILE_BYTES / 3) * 4) throw new Error("Each file must be 10 MB or smaller");
+    if (data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error("Invalid file base64");
+    // Canonical padding bits, without decoding the entire payload in the browser.
+    if (data.endsWith("=") && btoa(atob(data.slice(-4))) !== data.slice(-4)) throw new Error("Invalid file base64");
+    const size = data.length * 3 / 4 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+    total += size;
+    if (size > MAX_INPUT_FILE_BYTES || total > MAX_INPUT_FILES_BYTES) throw new Error("Files must be at most 10 MB each and 20 MB together");
+    if (file.size !== undefined && file.size !== size) throw new Error("File size does not match its content");
+    const name = file.name.replace(/[^a-zA-Z0-9._ -]/g, "_").replace(/^[. ]+|[. ]+$/g, "").slice(0, 120) || "file";
+    return { name, data, size };
+  });
+}
+
 export function messageInputs(text, images = []) {
   const input = imageInputs(images);
   if (typeof text !== "string" || text.length > 12000) throw new Error("Message text must be at most 12,000 characters");
@@ -137,6 +161,8 @@ export function reconcileSubmission(submissionId, snapshot, requested = {}) {
   }
   const text = requested.text?.replace(/\r\n/g, "\n");
   const images = requested.images || [];
+  // Staged paths cannot prove the original bytes landed; use the submission receipt.
+  if (requested.files?.length) return "unknown";
   if (!text && !images.length) return "unknown";
   if (requested.action === "queue" && snapshot.queuedMessage?.threadId === requested.threadId && snapshot.queuedMessage.text === text
     && JSON.stringify((snapshot.queuedMessage.images || []).map((image) => image.url)) === JSON.stringify(images.map((image) => image.url))) return "accepted";
@@ -242,7 +268,7 @@ export function createSelectionHold(onRelease, timers = globalThis) {
 // Map insertion order keeps the eight most recently saved or restored non-empty drafts.
 export function rememberComposerDraft(drafts, key, draft = drafts.get(key)) {
   drafts.delete(key);
-  if (!key || !draft || (!draft.text && !draft.images.length)) return undefined;
+  if (!key || !draft || (!draft.text && !draft.images.length && !draft.files?.length)) return undefined;
   drafts.set(key, draft);
   while (drafts.size > 8) drafts.delete(drafts.keys().next().value);
   return draft;

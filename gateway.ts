@@ -4,13 +4,15 @@ import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { createReadStream, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer, isIP } from "node:net";
-import { hostname, networkInterfaces } from "node:os";
+import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
+import { fileInputs, MAX_INPUT_FILES_BYTES } from "./public/pocket-logic.js";
 import { asyncAnswerText, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
@@ -159,9 +161,11 @@ type QueuedMessage = {
   threadId: string;
   text: string;
   images?: Array<{ type: string; url: string }>;
+  files?: StagedFile[];
   createdAt: number;
   error?: string;
 };
+type StagedFile = { name: string; path: string; size: number };
 type PocketGoal = { objective: string; status: string; timeUsedSeconds?: number; tokenBudget?: number | null; tokensUsed?: number };
 
 type PocketState = {
@@ -1556,6 +1560,61 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+export async function stageMessageFiles(value: unknown, submissionId: unknown, sshAlias: string | null = null, windows = false): Promise<StagedFile[]> {
+  const files = fileInputs(value);
+  if (!files.length) return [];
+  if (typeof submissionId !== "string" || !/^[a-zA-Z0-9-]{8,100}$/.test(submissionId)) throw new Error("Invalid file submission");
+  const staged: StagedFile[] = [];
+  for (const [index, file] of files.entries()) {
+    const bytes = Buffer.from(file.data, "base64");
+    if (bytes.length !== file.size || bytes.toString("base64") !== file.data) throw new Error("Invalid file content");
+    // Prefixes also avoid Windows reserved device names and duplicate filenames.
+    const filename = `${index + 1}-${file.name}`;
+    let path: string;
+    if (sshAlias) {
+      const directory = `codex-pocket/${submissionId}`;
+      const script = `$ErrorActionPreference='Stop';$d=Join-Path ([IO.Path]::GetTempPath()) '${directory.replace(/\//g, '\\')}';[IO.Directory]::CreateDirectory($d)|Out-Null;$p=Join-Path $d '${filename.replace(/'/g, "''")}';$f=[IO.File]::Create($p);try{[Console]::OpenStandardInput().CopyTo($f)}finally{$f.Dispose()};$b=[Text.Encoding]::UTF8.GetBytes($p);[Console]::OpenStandardOutput().Write($b,0,$b.Length)`;
+      const command = windows
+        ? `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`
+        : `umask 077; d="\${TMPDIR:-/tmp}/${directory}"; mkdir -p -- "$d" && p="$d/"${shellQuote(filename)} && cat > "$p" && printf '%s' "$p"`;
+      path = await new Promise<string>((resolve, reject) => {
+        const child = spawn(process.env.SSH_BIN || "ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshAlias, command], { stdio: ["pipe", "pipe", "pipe"] });
+        let output = "", errorOutput = "", settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (error) reject(error); else resolve(output);
+        };
+        const timer = setTimeout(() => { child.kill("SIGTERM"); finish(new Error("File upload timed out")); }, 60_000);
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", chunk => {
+          output += chunk.toString("utf8");
+          if (output.length > 4096) { child.kill("SIGTERM"); finish(new Error("Invalid file upload response")); }
+        });
+        child.stderr.on("data", chunk => { errorOutput = (errorOutput + chunk.toString("utf8")).slice(-2000); });
+        child.once("error", finish);
+        child.stdin.once("error", error => { child.kill("SIGTERM"); finish(error); });
+        child.once("close", code => finish(code === 0 && output && !/[\r\n\x00]/.test(output) ? undefined : new Error(compact(errorOutput, 240) || "File upload failed")));
+        child.stdin.end(bytes);
+      });
+    } else {
+      const directory = join(tmpdir(), "codex-pocket", submissionId);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      path = join(directory, filename);
+      await writeFile(path, bytes, { mode: 0o600 });
+    }
+    staged.push({ name: file.name, size: bytes.length, path });
+  }
+  return staged;
+}
+
+function messageWithFiles(text: string, images: any[] = [], files: StagedFile[] = []): JsonObject[] {
+  const input = files.length && !text.trim() && !images.length ? [] : messageInputs(text, images);
+  if (files.length) input.push({ type: "text", text: `Attached files available on this machine:\n${files.map(file => `- ${file.path}`).join("\n")}`, text_elements: [] });
+  return input;
+}
+
 function readRemoteImage(sshAlias: string, remotePath: string, windows: boolean): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const command = process.env.SSH_BIN || "ssh";
@@ -1968,10 +2027,10 @@ export class MachineRuntime {
     return selection;
   }
 
-  sendMessage(text: unknown, action: unknown, images: unknown = []): Promise<JsonObject> {
+  sendMessage(text: unknown, action: unknown, images: unknown = [], files: unknown = [], submissionId?: unknown): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.sendMessageNow(text, action, images),
-      () => this.sendMessageNow(text, action, images),
+      () => this.sendMessageNow(text, action, images, files, submissionId),
+      () => this.sendMessageNow(text, action, images, files, submissionId),
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
@@ -2767,30 +2826,37 @@ export class MachineRuntime {
     return { accepted: true, requestId };
   }
 
-  private async sendMessageNow(value: unknown, requestedAction: unknown, imagesValue: unknown = []): Promise<JsonObject> {
+  private async sendMessageNow(value: unknown, requestedAction: unknown, imagesValue: unknown = [], filesValue: unknown = [], submissionId?: unknown, stagedFiles: StagedFile[] = []): Promise<JsonObject> {
     if (typeof value !== "string") throw new Error("message text is required");
     const text = value.replace(/\r\n/g, "\n");
     const images = imageInputs(imagesValue);
+    const uploads = fileInputs(filesValue);
+    if (!text.trim() && !images.length && !uploads.length && !stagedFiles.length) throw new Error("Enter a message or attach files");
     if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`message exceeds ${MAX_MESSAGE_LENGTH.toLocaleString()} characters`);
     if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
     const capability = this.messageCapability();
     if (!capability.allowed || !capability.mode) throw new Error(capability.reason ?? "This task cannot accept a message right now");
 
     const threadId = this.state.thread.id;
-    const input = messageInputs(text, images);
     const action = String(requestedAction ?? capability.mode);
     if (action === "queue") {
       if (capability.mode !== "steer") throw new Error("Queue next is only available while a turn is active");
       if (this.state.queuedMessage) throw new Error("A message is already queued");
-      this.state.queuedMessage = { threadId, text, ...(images.length ? { images } : {}), createdAt: Date.now() };
+      const queuedTurnId = this.state.turn?.id;
+      const files = await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
+      this.state.queuedMessage = { threadId, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}), createdAt: Date.now() };
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
-      return { accepted: true, mode: "queue", ...payload };
+      // Completion may arrive while bytes are being uploaded, before the queue exists.
+      if (uploads.length && this.autoAttach && this.state.turn?.id === queuedTurnId && this.state.turn?.status === "completed") await this.startQueuedMessage(threadId);
+      return { accepted: true, mode: "queue", queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
     }
     if (action === "steer") {
       if (capability.mode !== "steer") throw new Error("There is no active turn to steer");
       const expectedTurnId = this.state.turn?.id;
       if (!expectedTurnId) throw new Error("The active turn is not ready for a follow-up");
+      const files = stagedFiles.length ? stagedFiles : await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
+      const input = messageWithFiles(text, images, files);
       const result = await this.rpc.request("turn/steer", { threadId, expectedTurnId, input });
       return {
         accepted: true,
@@ -2802,6 +2868,8 @@ export class MachineRuntime {
 
     if (action !== "start" || capability.mode !== "start") throw new Error("This task is not idle");
 
+    const files = await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
+    const input = messageWithFiles(text, images, files);
     const result = await this.rpc.request("turn/start", { threadId, input });
     void this.savePendingTaskName(threadId);
     const turn = result?.turn ?? {};
@@ -2899,7 +2967,7 @@ export class MachineRuntime {
     const queued = this.state.queuedMessage;
     if (!queued) throw new Error("There is no queued message to send");
     if (action === "steer") {
-      const result = await this.sendMessageNow(queued.text, "steer", queued.images);
+      const result = await this.sendMessageNow(queued.text, "steer", queued.images, [], undefined, queued.files);
       if (this.state.queuedMessage === queued) this.state.queuedMessage = null;
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
@@ -3588,7 +3656,7 @@ export class MachineRuntime {
     if (!queued || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return false;
     this.startingQueuedMessage = true;
     try {
-      const input = messageInputs(queued.text, queued.images);
+      const input = messageWithFiles(queued.text, queued.images, queued.files);
       const result = await this.rpc.request("turn/start", { threadId, input });
       void this.savePendingTaskName(threadId);
       if (this.state.thread?.id !== threadId || this.state.queuedMessage !== queued) return;
@@ -3928,8 +3996,12 @@ export class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).selectThread(threadId));
   }
 
-  sendMessage(machineId: unknown, text: unknown, action: unknown, images: unknown = []): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId).sendMessage(text, action, images));
+  sendMessage(machineId: unknown, text: unknown, action: unknown, images: unknown = [], files: unknown = [], submissionId?: unknown, threadId?: unknown): Promise<JsonObject> {
+    return this.enqueue(() => {
+      const runtime = this.requireSelected(machineId);
+      if (files !== undefined && (!Array.isArray(files) || files.length) && threadId !== runtime.state.thread?.id) throw new Error("Selected task changed; try again");
+      return runtime.sendMessage(text, action, images, files, submissionId);
+    });
   }
 
   goalAction(body: JsonObject): Promise<JsonObject> {
@@ -4359,10 +4431,10 @@ export async function handleRequest(
   }
   if (method === "POST" && url.pathname === "/api/message") {
     try {
-      const body = await readJsonBody(request, Math.ceil(MAX_INPUT_IMAGES_BYTES * 4 / 3) + 65_536);
+      const body = await readJsonBody(request, Math.ceil((MAX_INPUT_IMAGES_BYTES + MAX_INPUT_FILES_BYTES) * 4 / 3) + 65_536);
       sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => body.question
         ? gateway.answerAsyncQuestion(body.machineId, body.question)
-        : gateway.sendMessage(body.machineId, body.text, body.action, body.images)), gateway);
+        : gateway.sendMessage(body.machineId, body.text, body.action, body.images, body.files, body.submissionId, body.threadId)), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }

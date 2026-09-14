@@ -9,6 +9,7 @@ import {
   reconcileSubmission,
   reconcileConfirmedSteers,
   imageInputs, MAX_INPUT_IMAGES, MAX_INPUT_IMAGE_BYTES,
+  fileInputs, MAX_INPUT_FILES, MAX_INPUT_FILE_BYTES, MAX_INPUT_FILES_BYTES,
   resolvedAsyncAnswer,
   rememberComposerDraft,
 } from "./pocket-logic.js";
@@ -206,10 +207,11 @@ let cancellingQueue = false;
 let composerError = "";
 let composerNotice = "";
 let selectedImages = [];
+let selectedFiles = [];
 const composerDrafts = new Map();
 const draftKey = (machineId, threadId) => threadId ? JSON.stringify([machineId, threadId]) : null;
-let readingImages = false;
-let imageDeliveryUnknown = false;
+let readingAttachments = false;
+let attachmentDeliveryUnknown = false;
 let enterSends = !matchMedia("(max-width: 860px)").matches;
 try { const saved = localStorage.getItem("codex-pocket-enter-sends"); if (saved !== null) enterSends = saved !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
@@ -380,12 +382,12 @@ async function postMessageAction(url, body) {
   if (composerSubmission) unresolvedSubmission = null;
   const submissionId = `${state?.submissionEpoch}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
   const requested = { ...body, threadId: state?.thread?.id, turnId: state?.turn?.id,
-    text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
+    text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, files: body.files ?? state?.queuedMessage?.files, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
   const confirmed = (result) => {
     if (composerSubmission && composerExpanded && requested.machineId === state?.machineId
       && requested.threadId === state?.thread?.id) toggleComposer();
     if ((requested.action === "steer" || (requested.action === "start" && url === "/api/message"))
-      && requested.text && !requested.images?.length
+      && requested.text && !requested.images?.length && !requested.files?.length
       && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) {
       const id = `confirmed-steer-${submissionId}`;
       liveMessages.set(id, { id, role: "user", text: requested.text.replace(/\r\n/g, "\n"),
@@ -452,25 +454,27 @@ async function recoverUnresolvedSubmission() {
     if (outcome === "unknown") {
       composerError = "Delivery unconfirmed. Check the task before sending again.";
       pending.warning = "Delivery unconfirmed. Check the task before sending again.";
-      // Snapshot queue updates must not enable an ambiguously delivered queue/image again.
-      imageDeliveryUnknown = Boolean(requested.images?.length);
+      // Snapshot queue updates must not enable an ambiguously delivered queue/attachment again.
+      attachmentDeliveryUnknown = Boolean(requested.images?.length || requested.files?.length);
       queueDeliveryUnknown = pending.queued;
     } else {
       unresolvedSubmission = null;
-      imageDeliveryUnknown = false;
+      attachmentDeliveryUnknown = false;
       queueDeliveryUnknown = false;
       if (outcome === "accepted") {
         pending.confirmed({ accepted: true, recovered: true, turnId: snapshot.submission?.turnId });
         if (elements.messageText.value === requested.text
-          && JSON.stringify(selectedImages) === JSON.stringify(requested.images || [])) {
+          && JSON.stringify(selectedImages) === JSON.stringify(requested.images || [])
+          && JSON.stringify(selectedFiles) === JSON.stringify(requested.files || [])) {
           elements.messageText.value = "";
           selectedImages = [];
+          selectedFiles = [];
           composerDrafts.delete(draftKey(requested.machineId, requested.threadId));
           resizeComposer();
         }
         if (composerError === pending.warning) composerError = "";
       } else {
-        if (pending.restoreDraft && !elements.messageText.value && !selectedImages.length) {
+        if (pending.restoreDraft && !elements.messageText.value && !selectedImages.length && !selectedFiles.length) {
           elements.messageText.value = requested.text;
           rememberComposerDraft(composerDrafts, draftKey(requested.machineId, requested.threadId), { text: requested.text, images: [] });
           resizeComposer();
@@ -1078,8 +1082,9 @@ function renderQueue() {
   const queued = state?.queuedMessage;
   elements.queueBanner.hidden = !queued;
   renderImageThumbnails(elements.queueImages, queued?.images || []);
+  renderFileChips(document.querySelector("#queue-files"), queued?.files || []);
   if (queued) {
-    elements.queueText.textContent = queued.text || `${queued.images?.length || 0} image(s)`;
+    elements.queueText.textContent = queued.text || (queued.files?.length ? `${queued.files.length} file(s)` : `${queued.images?.length || 0} image(s)`);
     elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
@@ -1329,20 +1334,20 @@ function renderComposer() {
   const turnError = state?.phase === "failed" && state?.turn?.status !== "inProgress" ? state?.turn?.error : "";
   const turnActive = state?.turn?.status === "inProgress" && Boolean(state?.turn?.id);
   const stopping = submittingInterrupt || (turnActive && state?.stoppingTurnId === state?.turn?.id);
-  const hasText = Boolean(elements.messageText.value.trim()) || selectedImages.length > 0;
+  const hasText = Boolean(elements.messageText.value.trim()) || (selectedImages.length > 0 || selectedFiles.length > 0);
   const allowed = Boolean(capability?.allowed)
     && !submittingMessage
     && !updatingAccess
     && !resolvingApproval
     && !submittingInputRequestId
     && !stopping
-    && !readingImages
-    && !imageDeliveryUnknown;
+    && !readingAttachments
+    && !attachmentDeliveryUnknown;
   elements.messageText.disabled = !state?.connected
     || !state?.thread
     || submittingMessage
     || stopping;
-  elements.attachImage.disabled = elements.messageText.disabled || readingImages || Boolean(state?.queuedMessage) || imageDeliveryUnknown;
+  elements.attachImage.disabled = elements.messageText.disabled || readingAttachments || Boolean(state?.queuedMessage) || attachmentDeliveryUnknown;
   if (turnActive && !hasText) {
     elements.sendMessage.dataset.action = "stop";
     elements.sendMessage.textContent = stopping ? "Stopping…" : "Stop";
@@ -1385,6 +1390,7 @@ function renderComposer() {
   renderAttention();
   renderQueue();
   renderImageThumbnails(elements.composerImages, selectedImages, true);
+  renderFileChips(document.querySelector("#composer-files"), selectedFiles, true);
 }
 
 function renderImageThumbnails(container, images, removable = false) {
@@ -1403,10 +1409,10 @@ function renderImageThumbnails(container, images, removable = false) {
       remove.type = "button";
       remove.textContent = "×";
       remove.setAttribute("aria-label", `Remove image ${index + 1}`);
-      remove.disabled = submittingMessage || readingImages;
+      remove.disabled = submittingMessage || readingAttachments;
       remove.addEventListener("click", () => {
         selectedImages = selectedImages.filter((_, candidate) => candidate !== index);
-        if (!selectedImages.length) imageDeliveryUnknown = false;
+        if (!selectedImages.length && !selectedFiles.length) attachmentDeliveryUnknown = false;
         renderComposer();
       });
       thumb.append(remove);
@@ -1415,36 +1421,72 @@ function renderImageThumbnails(container, images, removable = false) {
   });
 }
 
-async function addImages(files) {
+function renderFileChips(container, files, removable = false) {
+  container.hidden = !files.length;
+  container.replaceChildren();
+  files.forEach((file, index) => {
+    const chip = document.createElement("span");
+    chip.className = "file-chip";
+    const name = document.createElement("span");
+    name.textContent = file.name;
+    name.title = file.name;
+    const size = document.createElement("small");
+    size.textContent = file.size >= 1024 * 1024 ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(file.size / 1024)} KB`;
+    chip.append(name, size);
+    if (removable) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Remove file ${file.name}`);
+      remove.disabled = submittingMessage || readingAttachments;
+      remove.addEventListener("click", () => {
+        selectedFiles = selectedFiles.filter((_, candidate) => candidate !== index);
+        if (!selectedImages.length && !selectedFiles.length) attachmentDeliveryUnknown = false;
+        renderComposer();
+      });
+      chip.append(remove);
+    }
+    container.append(chip);
+  });
+}
+
+async function addFiles(files) {
   if (elements.attachImage.disabled || !files.length) return;
   if (unresolvedSubmission) unresolvedSubmission.restoreDraft = false;
-  const imageTaskKey = draftKey(state?.machineId, state?.thread?.id);
-  const priorImages = [...selectedImages];
-  readingImages = true;
+  const taskKey = draftKey(state?.machineId, state?.thread?.id);
+  const priorImages = [...selectedImages], priorFiles = [...selectedFiles];
+  readingAttachments = true;
   composerError = "";
   renderComposer();
   try {
-    if (selectedImages.length + files.length > MAX_INPUT_IMAGES) throw new Error("Choose up to 4 images");
-    const images = [];
+    const isImage = file => /^image\/(png|jpeg|gif|webp)$/.test(file.type);
+    const imageFiles = files.filter(isImage), otherFiles = files.filter(file => !isImage(file));
+    if (priorImages.length + imageFiles.length > MAX_INPUT_IMAGES) throw new Error("Choose up to 4 images");
+    if (priorFiles.length + otherFiles.length > MAX_INPUT_FILES) throw new Error("Choose up to 4 files");
+    if (otherFiles.some(file => file.size > MAX_INPUT_FILE_BYTES)) throw new Error("Each file must be 10 MB or smaller");
+    if ([...priorFiles, ...otherFiles].reduce((sum, file) => sum + file.size, 0) > MAX_INPUT_FILES_BYTES) throw new Error("Files must be at most 20 MB together");
+    const images = [], attachments = [];
     for (const file of files) {
-      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) throw new Error("Use PNG, JPEG, GIF, or WebP images");
-      if (file.size > MAX_INPUT_IMAGE_BYTES) throw new Error("Each image must be 4 MB or smaller");
+      const image = isImage(file);
+      if (image && file.size > MAX_INPUT_IMAGE_BYTES) throw new Error("Each image must be 4 MB or smaller");
       const url = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error("Could not read this image"));
+        reader.onerror = () => reject(new Error("Could not read this file"));
         reader.readAsDataURL(file);
       });
-      images.push({ type: "image", url });
+      if (image) images.push({ type: "image", url });
+      else attachments.push({ name: file.name, size: file.size, data: url.slice(url.indexOf(",") + 1) });
     }
     const nextImages = imageInputs([...priorImages, ...images]);
-    if (imageTaskKey !== draftKey(state?.machineId, state?.thread?.id)) {
-      if (imageTaskKey) rememberComposerDraft(composerDrafts, imageTaskKey, { text: composerDrafts.get(imageTaskKey)?.text || "", images: nextImages });
-    } else selectedImages = nextImages;
+    const nextFiles = fileInputs([...priorFiles, ...attachments]);
+    if (taskKey !== draftKey(state?.machineId, state?.thread?.id)) {
+      if (taskKey) rememberComposerDraft(composerDrafts, taskKey, { text: composerDrafts.get(taskKey)?.text || "", images: nextImages, files: nextFiles });
+    } else { selectedImages = nextImages; selectedFiles = nextFiles; }
   } catch (error) {
     composerError = error.message;
   } finally {
-    readingImages = false;
+    readingAttachments = false;
     elements.imagePicker.value = "";
     renderComposer();
   }
@@ -2077,12 +2119,13 @@ function applySnapshot(next, loadChangedHistory = true) {
   const taskChanged = previousMachineId !== nextMachineId || previousThreadId !== nextThreadId;
   if (taskChanged) {
     const oldKey = draftKey(previousMachineId, previousThreadId);
-    if (oldKey) rememberComposerDraft(composerDrafts, oldKey, { text: elements.messageText.value, images: [...selectedImages] });
+    if (oldKey) rememberComposerDraft(composerDrafts, oldKey, { text: elements.messageText.value, images: [...selectedImages], files: [...selectedFiles] });
     resetConversationState();
     const draft = rememberComposerDraft(composerDrafts, draftKey(nextMachineId, nextThreadId));
     elements.messageText.value = draft?.text || "";
     selectedImages = [...(draft?.images || [])];
-    imageDeliveryUnknown = false;
+    selectedFiles = [...(draft?.files || [])];
+    attachmentDeliveryUnknown = false;
     composerError = "";
     composerNotice = "";
     resizeComposer();
@@ -2267,7 +2310,7 @@ taskDialogForm.addEventListener("submit", event => {
 });
 
 async function performTaskAction(body) {
-  if (taskActionBusy || destinationSelection || submittingMessage || readingImages) return;
+  if (taskActionBusy || destinationSelection || submittingMessage || readingAttachments) return;
   taskActionBusy = true;
   const target = { machineId: body.machineId, threadId: body.threadId, action: body.action, events: [] };
   taskActionTarget = target;
@@ -2313,7 +2356,7 @@ async function performTaskAction(body) {
 }
 
 async function selectDestination(machineId, threadId) {
-  if (!machineId || !threadId || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess || readingImages) return;
+  if (!machineId || !threadId || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess || readingAttachments) return;
   destinationTaskError = null;
   if (machineId === state?.machineId && threadId === state?.thread?.id) {
     if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
@@ -2378,11 +2421,12 @@ async function submitMessage(action) {
   const sentDraftKey = draftKey(state?.machineId, state?.thread?.id);
   const text = elements.messageText.value;
   const images = selectedImages;
-  if ((!text.trim() && !images.length) || readingImages || imageDeliveryUnknown || submittingMessage || state?.queuedMessage) return;
+  const files = selectedFiles;
+  if ((!text.trim() && !images.length && !files.length) || readingAttachments || attachmentDeliveryUnknown || submittingMessage || state?.queuedMessage) return;
   submittingMessage = true;
   composerError = "";
   composerNotice = "";
-  const optimisticQueue = action === "queue" ? { threadId: state?.thread?.id, text, images, createdAt: Date.now() } : null;
+  const optimisticQueue = action === "queue" ? { threadId: state?.thread?.id, text, images, files: files.map(({name,size}) => ({name,size})), createdAt: Date.now() } : null;
   if (optimisticQueue) {
     elements.messageText.value = "";
     resizeComposer();
@@ -2390,11 +2434,12 @@ async function submitMessage(action) {
   }
   renderState();
   try {
-    const result = await postMessageAction("/api/message", { machineId: state?.machineId, text, action, images });
+    const result = await postMessageAction("/api/message", { machineId: state?.machineId, threadId: state?.thread?.id, text, action, images, files });
     composerDrafts.delete(sentDraftKey);
     if (sentDraftKey !== draftKey(state?.machineId, state?.thread?.id)) return;
     selectedImages = [];
-    imageDeliveryUnknown = false;
+    selectedFiles = [];
+    attachmentDeliveryUnknown = false;
     elements.messageText.value = "";
     resizeComposer();
     composerNotice = "";
@@ -2408,9 +2453,9 @@ async function submitMessage(action) {
     });
   } catch (error) {
     if (error.deliveryUnknown) {
-      imageDeliveryUnknown = images.length > 0;
-      elements.messageText.value = images.length ? text : "";
-      if (!images.length && unresolvedSubmission) unresolvedSubmission.restoreDraft = true;
+      attachmentDeliveryUnknown = images.length > 0 || files.length > 0;
+      elements.messageText.value = images.length || files.length ? text : "";
+      if (!images.length && !files.length && unresolvedSubmission) unresolvedSubmission.restoreDraft = true;
       queueDeliveryUnknown = action === "queue";
       resizeComposer();
     } else if (optimisticQueue) {
@@ -3006,10 +3051,10 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && composerExpanded) { event.preventDefault(); toggleComposer(); return; }
 });
 elements.attachImage.addEventListener("click", () => elements.imagePicker.click());
-elements.imagePicker.addEventListener("change", () => addImages([...elements.imagePicker.files]));
+elements.imagePicker.addEventListener("change", () => addFiles([...elements.imagePicker.files]));
 elements.messageText.addEventListener("paste", (event) => {
   const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
-  if (files.length) { event.preventDefault(); addImages(files); }
+  if (files.length) { event.preventDefault(); addFiles(files); }
 });
 elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
@@ -3097,7 +3142,7 @@ elements.messageText.addEventListener("input", () => {
   renderComposer();
 });
 elements.messageText.addEventListener("keydown", (event) => {
-  if (enterSubmits(event, enterSends, composing) && (elements.messageText.value.trim() || selectedImages.length)) {
+  if (enterSubmits(event, enterSends, composing) && (elements.messageText.value.trim() || selectedImages.length || selectedFiles.length)) {
     event.preventDefault();
     elements.composer.requestSubmit();
   }

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {readFile} from 'node:fs/promises';
+import {readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 // Optional browser regression: requires Playwright, or POCKET_PLAYWRIGHT_MODULE pointing to its module.
 const {chromium} = await import(process.env.POCKET_PLAYWRIGHT_MODULE || 'playwright');
 import {fileURLToPath} from 'node:url';
@@ -16,6 +18,7 @@ let asyncAnswers={},historyFixture=null, messageUnknown=false, messageGate=null;
 let composerPost="success", recoveryMode=null;
 const eventClients=new Set();
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
+const fileBodies=[];let realFilePosts=false;
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let goalGate=null;const goalCalls=[];
@@ -76,6 +79,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/message/queue'&&req.method==='DELETE')return json(runtime.cancelQueuedMessage());
  if(u.pathname==='/api/message'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
+ if(body.files?.length)fileBodies.push(body);
  if(body.question){
  const q=body.question,source=runtime.state.liveMessages.find(m=>m.id===q.messageId);
  asyncAnswers[q.messageId]={[q.index]:q.answer};
@@ -85,6 +89,7 @@ const server=createServer(async(req,res)=>{
  if(messageUnknown){req.socket.destroy();return;}
  if(composerPost==='lost'){res.writeHead(202,{'Content-Type':'application/json','Content-Length':'1000'});res.write('{');setTimeout(()=>req.socket.destroy(),10);return;}
  if(composerPost==='reject')return json({error:'Send rejected'},409);
+ if(realFilePosts&&body.files?.length)return json(await runtime.sendMessage(body.text,body.action,body.images,body.files,body.submissionId),202);
  return json({accepted:true,turnId:'accepted-start-turn'},202);
  }
  if(u.pathname==='/api/tasks/options' && u.searchParams.get('cwd')==='/unavailable')return json({error:'Unavailable'},503);
@@ -1277,5 +1282,42 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/clear',params:{threadId:task.id}});
  update(goal);await page.locator('#goal-strip').waitFor();update(null);await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
  }
+ // File drafts and chips follow the same task identity and queue lifecycle as images.
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});
+ realFilePosts=true;mode='success';composerPost='success';settings.headless=false;active=[task,owned];
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,threadStatus:'idle',turn:null,phase:'done',goal:null,queuedMessage:null,liveMessages:[],activities:[],pending:[]});
+ runtime.canAcceptDirectInput=true;
+ const fileTurns=[];runtime.rpc={request:async(method,params)=>{fileTurns.push({method,params});return {turn:{id:'file-turn',status:'inProgress'},turnId:'file-turn'};}};
+ await page.reload();await input.waitFor();
+ assert.equal(await page.getByRole('button',{name:'Attach files',exact:true}).isVisible(),true);
+ assert.equal(await page.locator('#image-picker').getAttribute('accept'),null);
+ const name='a-long-report-name-'.repeat(5)+'.pdf';
+ const file={name,mimeType:'application/pdf',buffer:Buffer.from('binary\0file')};
+ await page.locator('#image-picker').setInputFiles([file,{name:'photo.png',mimeType:'image/png',buffer:png}]);
+ await page.locator('#composer-files .file-chip').waitFor();assert.equal(await page.locator('#composer-images img').count(),1);
+ await select('Owned task');assert.equal(await page.locator('#composer-files .file-chip').count(),0);assert.equal(await page.locator('#composer-images img').count(),0);
+ await select('Current task');assert.equal(await page.locator('#composer-files .file-chip').count(),1);assert.equal(await page.locator('#composer-images img').count(),1);
+ await page.getByRole('button',{name:'Remove image 1',exact:true}).click();
+ await page.locator('#image-picker').setInputFiles([1,2,3].map(i=>({...file,name:`${i}-${name}`})));
+ await page.waitForFunction(()=>document.querySelectorAll('#composer-files .file-chip').length===4);
+ const fits=async selector=>assert(await page.locator(selector).evaluateAll(es=>es.every(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;})));
+ await fits('#composer-files .file-chip');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ assert.equal(await page.locator('#send-message').isEnabled(),true);
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/files-${width}.png`});
+ await page.getByRole('button',{name:`Remove file ${name}`,exact:true}).click();assert.equal(await page.locator('#composer-files .file-chip').count(),3);
+ await page.locator('#send-message').click();await page.waitForFunction(()=>document.querySelector('#composer-files').hidden);
+ assert.equal(fileBodies.at(-1).text,'');assert.equal(fileBodies.at(-1).files.length,3);assert.equal(fileBodies.at(-1).threadId,task.id);
+ assert.equal(fileTurns.at(-1).method,'turn/start');assert.match(fileTurns.at(-1).params.input[0].text,/Attached files available on this machine:/);
+ assert.deepEqual(Buffer.from(fileBodies.at(-1).files[0].data,'base64'),file.buffer);
+ await input.fill('Use the files and image');await page.locator('#image-picker').setInputFiles([file,{name:'photo.png',mimeType:'image/png',buffer:png}]);
+ await page.locator('#composer-files .file-chip').waitFor();await page.locator('#send-message').click();
+ await page.waitForFunction(()=>document.querySelector('#composer-files').hidden&&!document.querySelector('#queue-files').hidden);
+ assert.equal(runtime.state.queuedMessage.files.length,1);assert.equal('data' in runtime.state.queuedMessage.files[0],false);
+ assert.equal(runtime.state.queuedMessage.images.length,1);assert.equal(await page.locator('#queue-files .file-chip').count(),1);
+ await fits('#queue-files .file-chip');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/queued-files-${width}.png`});
+ await page.locator('#cancel-queue').click();await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
+ }
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
-}finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
+}finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));for(const body of fileBodies)await rm(join(tmpdir(),'codex-pocket',body.submissionId),{recursive:true,force:true});}

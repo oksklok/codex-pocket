@@ -2422,3 +2422,125 @@ test('Goal actions use exact status values, require Clear confirmation, and reje
   assert.equal((await act('clear',{confirmed:true})).goal,null);
   assert.deepEqual(calls.at(-1),{method:'thread/goal/clear',params:{threadId:'selected'}});
 });
+
+test('file validation bounds decoded bytes and rejects traversal, forged sizes, and malformed base64', async () => {
+  const {fileInputs,MAX_INPUT_FILE_BYTES}=await import('../public/pocket-logic.js');
+  const file={name:'report: draft?.pdf',data:Buffer.from([0,255,13,10]).toString('base64'),size:4};
+  assert.deepEqual(fileInputs([file]),[{...file,name:'report_ draft_.pdf'}]);
+  for(const name of ['../x','..','.', '/tmp/x','C:\\temp\\x','a/b','a\0b','a\nb',''])assert.throws(()=>fileInputs([{...file,name}]),/name/);
+  assert.throws(()=>fileInputs([{...file,path:'/tmp/chosen'}]),/name/);
+  for(const data of ['data:application/pdf;base64,AA==','A===','AAAA\n','AB==','A','!!!!'])assert.throws(()=>fileInputs([{...file,data}]),/base64/);
+  assert.throws(()=>fileInputs([{...file,size:1}]),/size/);
+  assert.throws(()=>fileInputs(Array(5).fill(file)),/up to 4/);
+  const large={name:'large.bin',data:Buffer.alloc(MAX_INPUT_FILE_BYTES).toString('base64')};
+  assert.equal(fileInputs([large,large]).reduce((sum,f)=>sum+f.size,0),20*1024*1024);
+  assert.throws(()=>fileInputs([large,large,file]),/20 MB/);
+  assert.throws(()=>fileInputs([{name:'too-large',data:Buffer.alloc(MAX_INPUT_FILE_BYTES+1).toString('base64')}]),/10 MB/);
+});
+
+test('local files stage exact bytes in submission-scoped temp paths with server-chosen names', async () => {
+  const {stageMessageFiles}=await import('../gateway.ts');
+  const {readFile,rm}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');const {join}=await import('node:path');const {randomUUID}=await import('node:crypto');
+  const id=randomUUID(),bytes=Buffer.from(Array.from({length:256},(_,i)=>i));
+  const files=[{name:'CON',data:bytes.toString('base64')},{name:'CON',data:''}];
+  try{
+    const staged=await stageMessageFiles(files,id);
+    assert.deepEqual(staged,[{name:'CON',path:join(tmpdir(),'codex-pocket',id,'1-CON'),size:256},{name:'CON',path:join(tmpdir(),'codex-pocket',id,'2-CON'),size:0}]);
+    assert.deepEqual(await readFile(staged[0].path),bytes);
+    assert.deepEqual(await stageMessageFiles(files,id),staged);
+    assert.equal('data' in staged[0],false);
+    await assert.rejects(stageMessageFiles(files,'../escape'),/submission/);
+  }finally{await rm(join(tmpdir(),'codex-pocket',id),{recursive:true,force:true});}
+});
+
+test('SSH file staging streams exact binary bytes through the configured alias for POSIX and Windows', async t => {
+  const {stageMessageFiles}=await import('../gateway.ts');
+  const cp=(await import('node:child_process')).default;const {syncBuiltinESMExports}=await import('node:module');
+  const {PassThrough}=await import('node:stream');const {EventEmitter}=await import('node:events');
+  const {mkdtemp,readFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+  const temp=await mkdtemp(join(tmpdir(),'pocket-upload-test-')),spawn=cp.spawn,bytes=Buffer.from([0,255,128,13,10,26,34,39]);
+  let windows=false,uploaded,script;
+  t.mock.method(cp,'spawn',(command,args,options)=>{
+    assert.equal(command,process.env.SSH_BIN||'ssh');assert.equal(args.at(-2),'configured-alias');assert.deepEqual(args.slice(0,-2),['-T','-o','BatchMode=yes','-o','ConnectTimeout=5']);
+    if(!windows)return spawn('/bin/sh',['-c',args.at(-1)],{...options,env:{...process.env,TMPDIR:temp}});
+    script=Buffer.from(args.at(-1).split(' ').at(-1),'base64').toString('utf16le');
+    const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{};
+    const chunks=[];child.stdin.on('data',chunk=>chunks.push(chunk));child.stdin.on('finish',()=>{uploaded=Buffer.concat(chunks);child.stdout.end('C:\\Temp\\codex-pocket\\test-submission\\1-report.pdf');child.emit('close',0);});
+    return child;
+  });syncBuiltinESMExports();
+  try{
+    const file={name:'report.pdf',data:bytes.toString('base64')};
+    const [posix]=await stageMessageFiles([file],'test-submission','configured-alias');
+    assert.equal(posix.path,join(temp,'codex-pocket','test-submission','1-report.pdf'));assert.deepEqual(await readFile(posix.path),bytes);
+    windows=true;const [win]=await stageMessageFiles([file],'test-submission','configured-alias',true);
+    assert.equal(win.path,'C:\\Temp\\codex-pocket\\test-submission\\1-report.pdf');assert.deepEqual(uploaded,bytes);
+    assert.match(script,/GetTempPath/);assert.match(script,/codex-pocket\\test-submission/);assert.match(script,/'1-report.pdf'/);assert.match(script,/OpenStandardInput\(\)\.CopyTo\(\$f\)/);
+  }finally{t.mock.restoreAll();syncBuiltinESMExports();await rm(temp,{recursive:true,force:true});}
+});
+
+test('file-only Start, mixed Steer, and queued Start/Steer use staged text inputs and retain no payload', async () => {
+  const {rm,readFile}=await import('node:fs/promises');const {join}=await import('node:path');const {tmpdir}=await import('node:os');const {randomUUID}=await import('node:crypto');
+  const runtime=activeRuntime(),calls=[],ids=[];
+  const files=[{name:'data.zip',data:Buffer.from('exact\0bytes').toString('base64')}];
+  const id=()=>{const value=randomUUID();ids.push(value);return value;};
+  runtime.rpc={request:async(method,params)=>{calls.push({method,params});return {turn:{id:'next',status:'inProgress'},turnId:'turn-1'};}};
+  try{
+    runtime.state.turn=null;runtime.state.threadStatus='idle';
+    await runtime.sendMessage('','start',[],files,id());
+    assert.equal(calls[0].method,'turn/start');assert.equal(calls[0].params.input.length,1);assert.equal(calls[0].params.input[0].type,'text');
+    const path=calls[0].params.input[0].text.split('\n- ')[1];assert.deepEqual(await readFile(path),Buffer.from('exact\0bytes'));
+    runtime.state.turn={id:'turn-1',status:'inProgress'};runtime.state.threadStatus='active';
+    await runtime.sendMessage('Use these','steer',[png],files,id());
+    assert.deepEqual(calls.at(-1).params.input.slice(0,2),messageInputs('Use these',[png]));assert.match(calls.at(-1).params.input[2].text,/Attached files available on this machine:/);
+    for(const action of ['start','steer']){
+      const queuedId=id();await runtime.sendMessage('','queue',[],files,queuedId);
+      const queued=runtime.state.queuedMessage;assert.equal('data' in queued.files[0],false);assert.equal('files' in queued,true);
+      assert.deepEqual(await readFile(queued.files[0].path),Buffer.from('exact\0bytes'));
+      if(action==='start')runtime.state.turn.status='completed';
+      await runtime.sendQueuedMessage(action);
+      assert.equal(calls.at(-1).method,`turn/${action}`);assert(calls.at(-1).params.input[0].text.includes(queued.files[0].path));assert.equal(runtime.state.queuedMessage,null);
+    }
+  }finally{for(const value of ids)await rm(join(tmpdir(),'codex-pocket',value),{recursive:true,force:true});}
+});
+
+test('file submissions use receipts for recovery and reject a stale task before staging', async () => {
+  const {rm}=await import('node:fs/promises');const {join}=await import('node:path');const {tmpdir}=await import('node:os');
+  const gateway=new PocketGateway({machines:[]}),runtime=gateway.runtimes.get('local'),calls=[];
+  Object.assign(runtime.state,{connected:true,thread:{id:'selected'},threadStatus:'idle'});runtime.canAcceptDirectInput=true;
+  runtime.rpc={request:async(method)=>{calls.push(method);return {turn:{id:'accepted',status:'inProgress'}};}};
+  const files=[{name:'report.pdf',data:'AA=='}],id=`${gateway.submissions.epoch}-files`;
+  await assert.rejects(gateway.sendMessage('local','','start',[],files,id,'old'),/Selected task changed/);assert.equal(calls.length,0);
+  try{
+    const send=()=>gateway.sendMessage('local','','start',[],files,id,'selected');
+    await gateway.submissions.run(id,send);await gateway.submissions.run(id,send);assert.deepEqual(calls,['turn/start']);
+    assert.equal(reconcileSubmission(id,{submission:await gateway.submissions.recover(id)},{files}),'accepted');
+    assert.equal(reconcileSubmission(id,{machineId:'local',thread:{id:'selected'},queuedMessage:{threadId:'selected',text:'',files:[{name:'report.pdf',path:'irrelevant',size:1}]}},{machineId:'local',threadId:'selected',text:'',action:'queue',files}),'unknown');
+    const drafts=new Map();rememberComposerDraft(drafts,'task',{text:'',images:[],files});assert.deepEqual(rememberComposerDraft(drafts,'task').files,files);
+  }finally{await rm(join(tmpdir(),'codex-pocket',id),{recursive:true,force:true});}
+});
+
+test('upload failure sends no turn or queue; completion during upload starts the staged queue once', async t => {
+  const cp=(await import('node:child_process')).default;const {syncBuiltinESMExports}=await import('node:module');
+  const {PassThrough}=await import('node:stream');const {EventEmitter}=await import('node:events');
+  const runtime=activeRuntime(),calls=[];runtime.definition.ssh='configured-alias';runtime.autoAttach=true;
+  runtime.rpc={request:async(method,params)=>{calls.push({method,params});return {turn:{id:'next',status:'inProgress'}};}};
+  let fail=true;
+  t.mock.method(cp,'spawn',()=>{
+    const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{};
+    child.stdin.resume();child.stdin.on('finish',()=>{
+      if(fail){child.stderr.end('Remote disk full');child.emit('close',1);}
+      else {runtime.state.turn.status='completed';child.stdout.end('/tmp/codex-pocket/test-upload/1-data.bin');child.emit('close',0);}
+    });return child;
+  });syncBuiltinESMExports();
+  const files=[{name:'data.bin',data:'AA=='}];
+  try{
+    for(const action of ['steer','queue']){
+      await assert.rejects(runtime.sendMessage('',action,[],files,'test-upload'),/Remote disk full/);
+      assert.equal(runtime.state.queuedMessage,null);assert.equal(calls.length,0);
+    }
+    fail=false;await runtime.sendMessage('','queue',[],files,'test-upload');
+    assert.equal(calls.length,1);assert.equal(calls[0].method,'turn/start');assert.equal(runtime.state.queuedMessage,null);
+    assert.match(calls[0].params.input[0].text,/test-upload\/1-data.bin/);
+  }finally{t.mock.restoreAll();syncBuiltinESMExports();}
+});
