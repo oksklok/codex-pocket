@@ -362,8 +362,6 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .composer-input { position: relative; min-width: 0; min-height: 0; }
 .composer-input textarea { display: block; }
 .composer-input.can-expand textarea { padding-right: 44px; }
-/* Leave room for the two controls in the action rail on short multiline drafts. */
-.composer-zone:not(.expanded-composer) .composer-input.can-expand textarea { min-height: 80px; }
 .composer textarea { height: 40px; min-height: 40px; max-height: 112px; resize: none; padding: 8px 11px; line-height: 20px; overflow-y: auto; }
 .composer textarea:placeholder-shown { -webkit-user-select: none; user-select: none; }
 .composer-actions { align-self: end; gap: 6px; }
@@ -378,15 +376,15 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .queue-banner .composer-images { grid-column: 1 / -1; margin: 0; }
 .queue-banner .composer-thumbnail img { width: 36px; height: 36px; }
 .image-note { margin: 4px 0 0; color: var(--muted); font-size: .76rem; }
-.composer .expand-composer { position: absolute; top: 4px; right: 4px; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 7px; border: 0; background: var(--surface-strong); color: var(--muted); }
-.composer-zone:not(.expanded-composer) .expand-composer { left: calc(100% + 7px); right: auto; }
+.composer .expand-composer { position: absolute; top: 4px; right: 4px; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 7px; border: 0; background: transparent; color: var(--muted); }
+.composer-zone:not(.expanded-composer) .expand-composer { left: calc(100% + 7px); right: auto; top: min(4px, calc(100% - 76px)); }
 .expand-composer svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .expand-composer .fullscreen-exit, .expanded-composer .fullscreen-enter { display: none; }
 .expanded-composer .fullscreen-exit { display: initial; }
-.expanded-composer { position: fixed; z-index: 15; inset: var(--composer-top, 0px) 0 auto; height: var(--composer-height, 100dvh); display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); }
+.expanded-composer { position: fixed; z-index: 15; inset: var(--composer-top, 0px) 0 auto; height: var(--composer-height, 100dvh); display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(8px, env(safe-area-inset-bottom)); }
 .expanded-composer .jump-latest { display: none; }
 .expanded-composer { background: var(--bg); }
-.expanded-composer .composer { flex: 1; min-height: 0; grid-template-columns: 1fr; grid-template-rows: minmax(0,1fr) auto auto; }
+.expanded-composer .composer { flex: 1; min-height: 0; grid-template-columns: 1fr; grid-template-rows: minmax(0,1fr) auto; }
 .expanded-composer .composer-input { grid-row: 1; }
 .expanded-composer textarea { min-height: 0; max-height: none; height: 100%; padding: 12px; border: 0; border-radius: 0; background: transparent; outline: none; }
 .expanded-composer .composer-actions { justify-self: end; grid-row: 2; }

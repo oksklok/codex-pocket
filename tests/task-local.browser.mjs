@@ -1001,14 +1001,27 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const r=await page.locator('#message-text').boundingBox();await page.mouse.move(r.x+r.width-5,r.y+20);await page.mouse.wheel(0,150);await page.waitForTimeout(100);
  assert(await page.locator('#message-text').evaluate(e=>e.scrollTop>0));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-scrollbar-${width}.png`});
- await page.locator('#expand-composer').click();
+ const toggleStable=async()=>{
+ const positions=await page.evaluate(async()=>{
+ const read=()=>['#attach-image','#send-message'].map(id=>document.querySelector(id).getBoundingClientRect().y);
+ const frames=[read()];document.querySelector('#expand-composer').click();frames.push(read());
+ for(let i=0;i<12;i++){await new Promise(requestAnimationFrame);frames.push(read());}return frames;
+ });
+ for(const frame of positions)frame.forEach((y,i)=>assert(Math.abs(y-positions[0][i])<1,JSON.stringify({width,positions})));
+ };
+ const appearance=await page.locator('#expand-composer').evaluate(e=>({background:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color,attachmentColor:getComputedStyle(document.querySelector('#attach-image')).color}));
+ assert.equal(appearance.background,'rgba(0, 0, 0, 0)');assert.equal(appearance.color,appearance.attachmentColor);
+ await toggleStable();
  const fullscreen=await page.locator('#expand-composer').evaluate(e=>({right:getComputedStyle(e).right,width:e.getBoundingClientRect().width,padding:getComputedStyle(document.querySelector('#message-text')).paddingRight}));
  assert.deepEqual(fullscreen,{right:'4px',width:32,padding:'44px'});
- await page.locator('#expand-composer').click();
+ await toggleStable();
  const textareaWidth=await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().width);
  await page.locator('#message-text').fill('First line\nSecond line');
  assert(await page.locator('#expand-composer').evaluate(e=>e.getBoundingClientRect().bottom<=document.querySelector('.composer-actions').getBoundingClientRect().top),'short multiline drafts must not overlap the action buttons');
  assert.equal(await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().width),textareaWidth);
+ assert(await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().height<80),'short drafts retain their natural height');
+ await toggleStable();await toggleStable();
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-short-${width}.png`});
  }
  // Composer surface growth/shrink follows latest only while follow mode is enabled.
  for(const width of [1280,390]){
