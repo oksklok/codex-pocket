@@ -8,7 +8,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer, isIP } from "node:net";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
@@ -1691,6 +1691,9 @@ function normalizeInputQuestions(params: JsonObject): PocketInputQuestion[] | nu
 export class MachineRuntime {
   readonly state: PocketState;
   private rpc: RpcClient | null = null;
+  private codexHome: string | null = null;
+  private upstreamGoal: JsonObject | null = null;
+  private goalObjectiveRead: { objective: string; rpc: RpcClient; text: Promise<string> } | null = null;
   private subscribers = new Set<ServerResponse>();
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
@@ -2184,6 +2187,7 @@ export class MachineRuntime {
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
       rpc.notify("initialized");
+      this.codexHome = typeof initialized?.codexHome === "string" ? initialized.codexHome : null;
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.technicalConnectionError = null;
@@ -2895,13 +2899,48 @@ export class MachineRuntime {
 
   private updateGoal(threadId: string, goal: any): void {
     if (this.state.thread?.id !== threadId) return;
+    this.upstreamGoal = goal;
+    const objective = String(goal?.objective ?? "");
+    const prefix = "Read the Codex goal objective file at ", suffix = " before continuing.";
+    const referenced = objective.startsWith(prefix) && objective.endsWith(suffix);
+    const cached = this.goalObjectiveRead?.objective === objective && this.goalObjectiveRead.rpc === this.rpc;
     this.state.goal = goal ? {
-      objective: String(goal.objective ?? ""), status: String(goal.status),
+      objective: referenced ? (cached ? this.state.goal?.objective : null) || "Goal objective unavailable" : objective, status: String(goal.status),
       ...(typeof goal.timeUsedSeconds === "number" ? { timeUsedSeconds: goal.timeUsedSeconds } : {}),
       ...(typeof goal.tokensUsed === "number" ? { tokensUsed: goal.tokensUsed } : {}),
       ...(goal.tokenBudget !== undefined ? { tokenBudget: goal.tokenBudget } : {}),
     } : null;
     this.broadcast("goal", { machineId: this.state.machineId, threadId, goal: this.state.goal });
+    const displayGoal = this.state.goal, rpc = this.rpc;
+    if (!referenced || !displayGoal || !rpc) { this.goalObjectiveRead = null; return; }
+    if (this.goalObjectiveRead?.objective !== objective || this.goalObjectiveRead.rpc !== rpc) {
+      this.goalObjectiveRead = { objective, rpc, text: this.readGoalObjective(objective.slice(prefix.length, -suffix.length), rpc) };
+    }
+    void this.goalObjectiveRead.text.then(text => {
+      if (this.rpc !== rpc || this.state.thread?.id !== threadId || this.state.goal !== displayGoal) return;
+      if (text === "Goal objective unavailable") this.goalObjectiveRead = null;
+      displayGoal.objective = text;
+      this.broadcast("goal", { machineId: this.state.machineId, threadId, goal: displayGoal });
+    });
+  }
+
+  private async readGoalObjective(path: string, rpc: RpcClient): Promise<string> {
+    const fallback = "Goal objective unavailable";
+    const windows = /windows/i.test(this.state.platform);
+    const paths = windows ? win32 : posix;
+    if (!this.codexHome || !paths.isAbsolute(this.codexHome) || !paths.isAbsolute(path)) return fallback;
+    const home = (windows ? this.codexHome.replace(/\\/g, "/") : this.codexHome).replace(/\/+$/, "");
+    const candidate = windows ? path.replace(/\\/g, "/") : path;
+    const root = `${home}/attachments/`;
+    if (!(windows ? candidate.toLowerCase().startsWith(root.toLowerCase()) : candidate.startsWith(root))) return fallback;
+    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\/goal-objective\.md$/.test(candidate.slice(root.length))) return fallback;
+    try {
+      const { dataBase64 } = await rpc.request("fs/readFile", { path });
+      if (typeof dataBase64 !== "string") return fallback;
+      const bytes = Buffer.from(dataBase64, "base64");
+      if (bytes.toString("base64") !== dataBase64) return fallback;
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes) || fallback;
+    } catch { return fallback; }
   }
 
   goalAction(body: JsonObject): Promise<JsonObject> {
@@ -3615,6 +3654,8 @@ export class MachineRuntime {
   }
 
   private resetThreadState(): void {
+    this.upstreamGoal = null;
+    this.goalObjectiveRead = null;
     this.state.goal = null;
     this.trustedImagePaths.clear();
     this.state.context = null;

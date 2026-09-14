@@ -1250,14 +1250,29 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('#goal-strip').isVisible(),false);
  const goal={objective:'Complete this deliberately long objective while preserving a compact composer layout. '.repeat(5),status:'active',timeUsedSeconds:125,tokensUsed:1234,tokenBudget:5000};
  const update=value=>runtime.handleNotification({method:value?'thread/goal/updated':'thread/goal/cleared',params:{threadId:task.id,...(value?{goal:value}:{})}});
- runtime.rpc={request:async(method,params)=>{goalCalls.push({method,params});return method==='thread/goal/clear'?{cleared:true}:{goal:{...goal,status:params.status}};}};
+ runtime.rpc={request:async(method,params)=>{goalCalls.push({method,params});return method==='fs/readFile'?{dataBase64:Buffer.from(goal.objective).toString('base64')}:method==='thread/goal/clear'?{cleared:true}:{goal:{...goal,status:params.status}};}};
  update(goal);await page.getByRole('button',{name:'Pause goal',exact:true}).waitFor();
  assert.equal(await page.locator('#goal-status').textContent(),'Pursuing goal');
  assert.equal(await page.locator('#goal-time').textContent(),'2m 05s');
  assert.equal(await page.getByRole('button',{name:'Clear goal',exact:true}).isVisible(),true);
  const goalBounds=await page.locator('#goal-strip').boundingBox();
- assert(goalBounds.x>=0&&goalBounds.x+goalBounds.width<=width&&goalBounds.height<=60,JSON.stringify({width,goalBounds}));
+ assert(goalBounds.x>=0&&goalBounds.x+goalBounds.width<=width&&goalBounds.height<=(width>860?48:68),JSON.stringify({width,goalBounds}));
  assert.equal(await page.locator('#goal-objective').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
+ assert.equal(await page.locator('#goal-objective').textContent(),goal.objective);
+ const layout=await page.locator('#goal-strip').evaluate(e=>{
+ const rect=id=>{const r=e.querySelector(id).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,center:r.top+r.height/2};};
+ return {status:rect('#goal-status'),objective:rect('#goal-objective'),time:rect('#goal-time'),toggle:rect('#goal-toggle'),clear:rect('#goal-clear'),border:getComputedStyle(e).borderStyle,radius:getComputedStyle(e).borderRadius};
+ });
+ assert.equal(layout.border,'solid');assert.equal(layout.radius,'10px');
+ for(const item of [layout.status,layout.time,layout.toggle,layout.clear])assert(Math.abs(item.center-layout.status.center)<1);
+ if(width>860){
+ assert(Math.abs(layout.objective.center-layout.status.center)<1);
+ assert(Math.abs(layout.time.left-layout.objective.right-8)<1);
+ }else{
+ assert(layout.objective.top>=layout.toggle.bottom);assert(layout.objective.bottom-layout.objective.top<20);
+ }
+ const composerBounds=await page.locator('#composer').boundingBox();assert.equal(goalBounds.x,composerBounds.x);assert.equal(goalBounds.width,composerBounds.width);
+ assert.equal(await page.locator('#goal-clear svg path').getAttribute('d'),'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7');
  let releaseGoal;goalGate=new Promise(resolve=>releaseGoal=resolve);
  await page.getByRole('button',{name:'Pause goal',exact:true}).click();
  assert.equal(await page.getByRole('button',{name:'Pause goal',exact:true}).isDisabled(),true);
@@ -1271,7 +1286,13 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  update({...goal,status});await page.waitForFunction(()=>document.querySelector('#goal-toggle').hidden);
  assert.equal(await page.getByRole('button',{name:'Clear goal',exact:true}).isVisible(),true);
  }
- update({...goal,status:'paused'});await page.getByRole('button',{name:'Resume goal',exact:true}).waitFor();
+ runtime.codexHome='/runtime-codex';
+ const objectivePath='/runtime-codex/attachments/b1ed4737-775d-4385-9a95-888a9fac8c68/goal-objective.md';
+ update({...goal,status:'paused',objective:`Read the Codex goal objective file at ${objectivePath} before continuing.`});
+ await page.getByRole('button',{name:'Resume goal',exact:true}).waitFor();
+ await page.waitForFunction(expected=>document.querySelector('#goal-objective').textContent===expected,goal.objective);
+ assert.deepEqual(goalCalls.at(-1),{method:'fs/readFile',params:{path:objectivePath}});
+ assert.equal((await page.locator('#goal-strip').textContent()).includes('goal-objective.md'),false);
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-${width}.png`});
  const beforeClear=goalCalls.length;
  await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.locator('#task-dialog').waitFor();

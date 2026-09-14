@@ -702,12 +702,15 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .new-task-settings select { font-size: 16px; }
 }
 
-.goal-strip { display: flex; align-items: center; gap: 6px; min-width: 0; width: min(100%, 780px); margin: 0 auto 6px; color: var(--muted); font-size: var(--text-meta); }
-.goal-copy { flex: 1; min-width: 0; }
-.goal-copy > div:first-child { display: flex; align-items: center; gap: 8px; }
-#goal-status { font-weight: 500; }
-#goal-time { white-space: nowrap; }
-#goal-objective { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-strip { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; grid-template-areas: "status objective time toggle clear"; align-items: center; gap: 8px; min-width: 0; width: min(100%, 780px); margin: 0 auto 6px; padding: 3px 8px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--soft-surface); color: var(--muted); font-size: var(--text-label); }
+#goal-status { grid-area: status; font-weight: 500; white-space: nowrap; color: var(--text); }
+#goal-time { grid-area: time; white-space: nowrap; font-size: var(--text-secondary); }
+#goal-objective { grid-area: objective; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#goal-toggle { grid-area: toggle; }
+#goal-clear { grid-area: clear; }
+@media (max-width: 860px) {
+  .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: "status time toggle clear" "objective objective objective objective"; row-gap: 0; padding-bottom: 7px; }
+}
 .goal-strip .icon-button { flex: none; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); }
 .goal-strip svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 

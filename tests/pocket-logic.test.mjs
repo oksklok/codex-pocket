@@ -2549,3 +2549,87 @@ test('upload failure sends no turn or queue; completion during upload starts the
     assert.match(calls[0].params.input[0].text,/test-upload\/1-data.bin/);
   }finally{t.mock.restoreAll();syncBuiltinESMExports();}
 });
+
+const objectiveUuid='b1ed4737-775d-4385-9a95-888a9fac8c68';
+const goalReference=path=>`Read the Codex goal objective file at ${path} before continuing.`;
+const goalTick=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('initialize retains codexHome privately and the initial Goal read resolves its trusted objective', async t => {
+  const home='/tmp/runtime-codex',path=`${home}/attachments/${objectiveUuid}/goal-objective.md`,calls=[];
+  t.mock.method(RpcClient.prototype,'connect',async()=>{});
+  t.mock.method(RpcClient.prototype,'notify',()=>{});
+  t.mock.method(RpcClient.prototype,'close',()=>{});
+  t.mock.method(RpcClient.prototype,'request',async(method,params)=>{
+    calls.push({method,params});
+    if(method==='initialize')return {codexHome:home,platformOs:'linux'};
+    if(method==='thread/resume')return {thread:{id:'next',cwd:'/tmp',status:'idle'}};
+    if(method==='thread/goal/get')return {goal:{objective:goalReference(path),status:'active'}};
+    if(method==='fs/readFile')return {dataBase64:Buffer.from('实际 objective\nSecond line').toString('base64')};
+    return {data:[]};
+  });
+  const runtime=new MachineRuntime({}, {id:'local',name:'Test',ssh:null},()=>{});
+  try{
+    await runtime.start(false);assert.equal(runtime.codexHome,home);assert.equal('codexHome' in runtime.snapshot(),false);
+    runtime.loadedThreads=[{id:'next',cwd:'/tmp',name:'Next'}];await runtime.attachLoadedThread('next',false);await goalTick();
+    assert.equal(runtime.state.goal.objective,'实际 objective\nSecond line');
+    assert.equal(runtime.upstreamGoal.objective,goalReference(path));assert.equal('upstreamGoal' in runtime.snapshot(),false);
+    assert.deepEqual(calls.filter(c=>c.method==='fs/readFile'),[{method:'fs/readFile',params:{path}}]);
+  }finally{await runtime.stop();}
+});
+
+test('Goal updates resolve exact POSIX and Windows objective paths without changing inline objectives', async () => {
+  for(const [home,path,platform] of [
+    ['/home/user/.codex',`/home/user/.codex/attachments/${objectiveUuid}/goal-objective.md`,'linux'],
+    ['C:\\Users\\测试\\.codex',`C:\\Users\\测试\\.codex\\attachments\\${objectiveUuid}\\goal-objective.md`,'windows'],
+  ]){
+    const runtime=activeRuntime(),calls=[];runtime.codexHome=home;runtime.state.platform=platform;
+    runtime.rpc={request:async(method,params)=>{calls.push({method,params});return {dataBase64:Buffer.from('Build the actual thing.').toString('base64')};}};
+    const update=objective=>runtime.handleNotification({method:'thread/goal/updated',params:{threadId:'thread-1',goal:{objective,status:'active'}}});
+    update('Normal inline objective');await goalTick();assert.equal(runtime.state.goal.objective,'Normal inline objective');assert.equal(calls.length,0);
+    update(goalReference(path));assert.equal(runtime.state.goal.objective,'Goal objective unavailable');await goalTick();
+    assert.equal(runtime.state.goal.objective,'Build the actual thing.');assert.deepEqual(calls,[{method:'fs/readFile',params:{path}}]);
+    update(goalReference(path));assert.equal(runtime.state.goal.objective,'Build the actual thing.');await goalTick();assert.equal(calls.length,1);
+  }
+});
+
+test('Goal reference validation never reads paths outside the exact attachment shape', async () => {
+  const runtime=activeRuntime();runtime.codexHome='/home/user/.codex';runtime.state.platform='linux';
+  let reads=0;runtime.rpc={request:async()=>{reads++;throw new Error('Should not read');}};
+  const root=runtime.codexHome;
+  for(const path of [
+    `/other/attachments/${objectiveUuid}/goal-objective.md`,`${root}-other/attachments/${objectiveUuid}/goal-objective.md`,
+    `${root}/attachments/not-a-uuid/goal-objective.md`,`${root}/attachments/${objectiveUuid}/other.md`,
+    `${root}/attachments/${objectiveUuid}/GOAL-OBJECTIVE.md`,`${root}/attachments/${objectiveUuid}/../goal-objective.md`,
+    `${root}/attachments/../${objectiveUuid}/goal-objective.md`,`${root}/attachments/${objectiveUuid}/goal-objective.md/extra`,
+    `relative/attachments/${objectiveUuid}/goal-objective.md`,`${root}/attachments/${objectiveUuid}/goal-objective.md\n`,
+  ]){
+    runtime.updateGoal('thread-1',{objective:goalReference(path),status:'active'});await goalTick();
+    assert.equal(runtime.state.goal.objective,'Goal objective unavailable');
+  }
+  runtime.codexHome=null;runtime.updateGoal('thread-1',{objective:goalReference(`${root}/attachments/${objectiveUuid}/goal-objective.md`),status:'active'});await goalTick();
+  assert.equal(runtime.state.goal.objective,'Goal objective unavailable');assert.equal(reads,0);
+});
+
+test('failed, malformed base64, and invalid UTF-8 objective reads use a neutral fallback', async () => {
+  const runtime=activeRuntime();runtime.codexHome='/codex';
+  const objective=goalReference(`/codex/attachments/${objectiveUuid}/goal-objective.md`);
+  for(const response of [new Error('ENOENT'),{}, {dataBase64:'!!!'}, {dataBase64:Buffer.from([0xc3,0x28]).toString('base64')}]){
+    runtime.rpc={request:async()=>{if(response instanceof Error)throw response;return response;}};
+    runtime.updateGoal('thread-1',{objective,status:'paused'});await goalTick();
+    assert.equal(runtime.state.goal.objective,'Goal objective unavailable');assert.equal(runtime.upstreamGoal.objective,objective);
+  }
+});
+
+test('stale Goal objective reads cannot overwrite a new goal, cleared goal, task, or connection', async () => {
+  for(const change of ['goal','clear','task','connection']){
+    const runtime=activeRuntime();runtime.codexHome='/codex';let finish;
+    runtime.rpc={request:()=>new Promise(resolve=>finish=resolve)};
+    runtime.updateGoal('thread-1',{objective:goalReference(`/codex/attachments/${objectiveUuid}/goal-objective.md`),status:'active'});
+    if(change==='clear')runtime.updateGoal('thread-1',null);
+    else if(change==='goal')runtime.updateGoal('thread-1',{objective:'New objective',status:'paused'});
+    else if(change==='task'){runtime.resetThreadState();runtime.state.thread={id:'new-task'};runtime.updateGoal('new-task',{objective:'Other task objective',status:'active'});}
+    else runtime.rpc={request:async()=>({})};
+    const expected=structuredClone(runtime.state.goal);finish({dataBase64:Buffer.from('Stale objective').toString('base64')});await goalTick();
+    assert.deepEqual(runtime.state.goal,expected);
+  }
+});
