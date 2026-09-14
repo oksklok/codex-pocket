@@ -1281,7 +1281,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert(Math.abs(layout.objective.center-layout.status.center)<1);
  assert(Math.abs(layout.time.left-layout.objective.right-8)<1);
  }else{
- assert(layout.objective.top>=layout.toggle.bottom);assert(layout.objective.bottom-layout.objective.top<20);
+ assert.equal(layout.objective.top,layout.toggle.bottom-2);assert(layout.objective.bottom-layout.objective.top<20);
  }
  const composerBounds=await page.locator('#composer').boundingBox();assert.equal(goalBounds.x,composerBounds.x);assert.equal(goalBounds.width,composerBounds.width);
  assert.equal(await page.locator('#goal-clear svg path').getAttribute('d'),'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7');
@@ -1337,12 +1337,31 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert(cards.queue.x>=0&&cards.queue.right<=width);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  assert(Math.abs(cards.title.center-cards.actions.center)<1);
  if(width>860)assert(Math.abs(cards.text.center-cards.title.center)<1);
- else {assert(cards.text.top>=cards.actions.bottom);assert(cards.text.height<20);}
+ else {assert.equal(cards.text.top,cards.actions.bottom-2);assert(cards.text.height<20);}
  assert.equal(await page.locator('#queue-text').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
+ const optics=await page.evaluate(()=>{
+ const rect=id=>document.querySelector(id).getBoundingClientRect();
+ const controls=['#goal-toggle','#goal-clear','#send-queue','#cancel-queue'];
+ const sizes=controls.map(id=>{const r=rect(id);return [r.width,r.height];});
+ const svgGaps=[['#goal-toggle','#goal-clear'],['#send-queue','#cancel-queue']].map(([a,b])=>rect(`${b} svg`).left-rect(`${a} svg`).right);
+ const textTransforms=['#goal-objective','#queue-text'].map(id=>getComputedStyle(document.querySelector(id)).transform);
+ const cards=['#goal-strip','#queue-banner'];
+ const geometry=()=>cards.map(id=>{const r=rect(id);return [r.x,r.y,r.width,r.height];});
+ const before=geometry();
+ const shifted=['#goal-objective','#queue-text','#goal-clear','#cancel-queue'].map(id=>document.querySelector(id));
+ shifted.forEach(e=>e.style.transform='none');const withoutTransforms=geometry();shifted.forEach(e=>e.style.removeProperty('transform'));
+ return {sizes,svgGaps,textTransforms,before,withoutTransforms};
+ });
+ assert.deepEqual(optics.sizes,Array(4).fill([36,36]));
+ assert.deepEqual(optics.svgGaps,Array(2).fill(width>860?26:18));
+ assert.deepEqual(optics.textTransforms,Array(2).fill(width>860?'none':'matrix(1, 0, 0, 1, 0, -2)'));
+ assert.deepEqual(optics.before,optics.withoutTransforms);
+
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-${width}.png`});
  runtime.state.turn=null;runtime.broadcast('snapshot',{...snapshot(),message:{allowed:true,mode:'start'}});
  await page.waitForFunction(()=>document.querySelector('#send-queue').textContent==='Send');
  assert.equal(await page.locator('#send-queue').textContent(),'Send');assert.equal(await page.locator('#send-queue svg').count(),0);
+ assert.equal(await page.locator('#queue-banner').evaluate(e=>e.querySelector('#cancel-queue').getBoundingClientRect().left-e.querySelector('#send-queue').getBoundingClientRect().right),8);
  assert.equal(await page.locator('#send-queue').evaluate(e=>e.classList.contains('text-button')&&!e.classList.contains('icon-button')),true);
  assert.equal(await page.locator('#queue-banner').evaluate(e=>e.getBoundingClientRect().height),cards.queue.height);
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
