@@ -1088,7 +1088,14 @@ function renderQueue() {
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
     elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue;
-    elements.sendQueue.textContent = sendingQueuedMessage ? "Sending…" : turnActive ? "Steer Now" : "Send";
+    elements.sendQueue.classList.toggle("icon-button", turnActive);
+    elements.sendQueue.classList.toggle("text-button", !turnActive);
+    const actionLabel = turnActive ? "Steer Now" : sendingQueuedMessage ? "Sending…" : "Send";
+    elements.sendQueue.setAttribute("aria-label", actionLabel);
+    elements.sendQueue.title = actionLabel;
+    elements.sendQueue.innerHTML = turnActive
+      ? '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 19v-7a5 5 0 0 1 5-5h9m-5-5 5 5-5 5"/></svg>'
+      : actionLabel;
     elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage;
   }
 }

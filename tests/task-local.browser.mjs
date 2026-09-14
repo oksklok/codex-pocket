@@ -1308,7 +1308,18 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal((await page.locator('#goal-strip').textContent()).includes('goal-objective.md'),false);
  runtime.state.queuedMessage={threadId:task.id,text:'A deliberately long queued message to verify matching card geometry. '.repeat(5),createdAt:Date.now()};
  runtime.state.turn={id:'card-turn',status:'inProgress'};runtime.broadcast('snapshot',snapshot());await page.locator('#send-queue').waitFor();
- assert.equal(await page.locator('#send-queue').textContent(),'Steer Now');
+ for(const [id,label] of [['send-queue','Steer Now'],['cancel-queue','Cancel queued message']]){
+ const button=page.getByRole('button',{name:label,exact:true});
+ assert.equal(await button.getAttribute('id'),id);assert.equal(await button.getAttribute('title'),label);
+ assert.equal(await button.textContent(),'');assert.equal(await button.locator('svg[aria-hidden="true"]').count(),1);
+ assert.equal(await button.evaluate(e=>e.classList.contains('icon-button')),true);
+ const appearance=await page.locator(`#${id}, #goal-toggle`).evaluateAll(es=>es.map(e=>{
+ const s=getComputedStyle(e),r=e.getBoundingClientRect(),svg=getComputedStyle(e.querySelector('svg'));
+ return [r.width,r.height,s.padding,s.borderWidth,s.borderRadius,s.backgroundColor,s.color,svg.width,svg.height,svg.strokeWidth];
+ }));assert.deepEqual(appearance[0],appearance[1]);
+ }
+ assert.equal(await page.locator('#send-queue svg path').getAttribute('d'),'M5 19v-7a5 5 0 0 1 5-5h9m-5-5 5 5-5 5');
+ assert.equal(await page.locator('#cancel-queue svg path').getAttribute('d'),'m6 6 12 12M6 18 18 6');
  assert.equal(await page.locator('.queue-copy strong').textContent(),'Queued Next');
  const cards=await page.evaluate(()=>{
  const box=e=>{const r=e.getBoundingClientRect();return {x:r.x,right:r.right,top:r.top,bottom:r.bottom,height:r.height,width:r.width,center:r.top+r.height/2};};
@@ -1325,7 +1336,13 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  else {assert(cards.text.top>=cards.actions.bottom);assert(cards.text.height<20);}
  assert.equal(await page.locator('#queue-text').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-${width}.png`});
- runtime.state.turn=null;runtime.state.queuedMessage=null;runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
+ runtime.state.turn=null;runtime.broadcast('snapshot',{...snapshot(),message:{allowed:true,mode:'start'}});
+ await page.waitForFunction(()=>document.querySelector('#send-queue').textContent==='Send');
+ assert.equal(await page.locator('#send-queue').textContent(),'Send');assert.equal(await page.locator('#send-queue svg').count(),0);
+ assert.equal(await page.locator('#send-queue').evaluate(e=>e.classList.contains('text-button')&&!e.classList.contains('icon-button')),true);
+ assert.equal(await page.locator('#queue-banner').evaluate(e=>e.getBoundingClientRect().height),cards.queue.height);
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ runtime.state.queuedMessage=null;runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
  // Attention and draft attachments participate in the same normal 8px stack.
  await page.locator('#image-picker').setInputFiles({name:'spacing.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
  runtime.state.pending=[{id:'card-permission',kind:'permission',supported:true,label:'Run command'}];runtime.broadcast('snapshot',snapshot());await page.locator('#attention-banner').waitFor();
