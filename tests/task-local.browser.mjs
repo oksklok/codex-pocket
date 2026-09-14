@@ -987,16 +987,16 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForFunction(()=>document.querySelector('#composer-status').hidden);
  assert.equal(runtime.pendingTaskNames.has(task.id),false);runtime.rpc=priorRpc;
  }
- // Expand control leaves the native scrollbar gutter and text area unobstructed.
+ // Expand control uses the existing action rail without consuming textarea width.
  for(const width of [1280,390,320]){
  await page.setViewportSize({width,height:844});
  Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
  await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));await page.reload();await page.locator('#message-text').fill('Overflowing composer line with enough text to wrap.\n'.repeat(30));
  const geometry=await page.locator('#message-text').evaluate(e=>{
- const r=e.getBoundingClientRect(),b=document.querySelector('#expand-composer').getBoundingClientRect(),style=getComputedStyle(e);
- return {overflow:e.scrollHeight>e.clientHeight,gutter:r.right-b.right,textRight:r.right-parseFloat(style.paddingRight),buttonLeft:b.left,width:b.width,height:b.height,horizontal:document.documentElement.scrollWidth>innerWidth,gutterTarget:document.elementFromPoint(r.right-5,r.top+15)===e};
+ const r=e.getBoundingClientRect(),b=document.querySelector('#expand-composer').getBoundingClientRect(),rail=document.querySelector('.composer-actions').getBoundingClientRect(),style=getComputedStyle(e),gap=parseFloat(getComputedStyle(document.querySelector('#composer')).columnGap);
+ return {overflow:e.scrollHeight>e.clientHeight,outside:b.left>=r.right,gap:b.left-r.right,gridGap:gap,inRail:b.left>=rail.left&&b.right<=rail.right,aboveActions:b.bottom<=rail.top,padding:style.paddingRight,width:b.width,height:b.height,horizontal:document.documentElement.scrollWidth>innerWidth,gutterTarget:document.elementFromPoint(r.right-5,r.top+15)===e};
  });
- assert(geometry.gutterTarget);assert(geometry.overflow);assert(geometry.gutter>=20,JSON.stringify({width,geometry}));assert(geometry.textRight<=geometry.buttonLeft);assert.equal(geometry.width,32);assert.equal(geometry.height,32);assert(!geometry.horizontal);
+ assert(geometry.gutterTarget);assert(geometry.overflow);assert(geometry.outside,JSON.stringify({width,geometry}));assert.equal(geometry.gap,geometry.gridGap);assert(geometry.inRail);assert(geometry.aboveActions);assert.equal(geometry.padding,'44px');assert.equal(geometry.width,32);assert.equal(geometry.height,32);assert(!geometry.horizontal);
  await page.locator('#message-text').evaluate(e=>e.scrollTop=0);
  const r=await page.locator('#message-text').boundingBox();await page.mouse.move(r.x+r.width-5,r.y+20);await page.mouse.wheel(0,150);await page.waitForTimeout(100);
  assert(await page.locator('#message-text').evaluate(e=>e.scrollTop>0));
@@ -1005,6 +1005,10 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const fullscreen=await page.locator('#expand-composer').evaluate(e=>({right:getComputedStyle(e).right,width:e.getBoundingClientRect().width,padding:getComputedStyle(document.querySelector('#message-text')).paddingRight}));
  assert.deepEqual(fullscreen,{right:'4px',width:32,padding:'44px'});
  await page.locator('#expand-composer').click();
+ const textareaWidth=await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().width);
+ await page.locator('#message-text').fill('First line\nSecond line');
+ assert(await page.locator('#expand-composer').evaluate(e=>e.getBoundingClientRect().bottom<=document.querySelector('.composer-actions').getBoundingClientRect().top),'short multiline drafts must not overlap the action buttons');
+ assert.equal(await page.locator('#message-text').evaluate(e=>e.getBoundingClientRect().width),textareaWidth);
  }
  // Composer surface growth/shrink follows latest only while follow mode is enabled.
  for(const width of [1280,390]){
