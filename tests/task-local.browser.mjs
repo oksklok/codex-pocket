@@ -437,6 +437,7 @@ try {
  runtime.state.liveMessages=[];
  runtime.state.queuedMessage={threadId:runtime.state.thread.id,text:'Already sending',images:[]};runtime.startingQueuedMessage=true;runtime.broadcast('snapshot',snapshot());
  await page.locator('#queue-banner').waitFor();await page.locator('#cancel-queue').click();
+ assert.equal(await page.locator('#queue-banner strong').textContent(),'Queued');
  await page.getByText('Queued message is already being sent.',{exact:true}).waitFor();
  assert.equal(await page.locator('#queue-banner').isVisible(),true);assert.equal(await page.locator('#queue-text').textContent(),'Already sending');
  assert.equal(runtime.state.queuedMessage.text,'Already sending');
