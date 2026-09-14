@@ -1719,6 +1719,8 @@ export class MachineRuntime {
   private itemTurns = new Map<string, string>();
   private historyItemsSupported: boolean | null = null;
   private settingsRevision = 0;
+  private cwdSettingsRevision = 0;
+  private accessSettings: any = null;
   private settingsWaiters = new Set<() => void>();
   private technicalConnectionError: string | null = null;
   private quota: RuntimeQuota | null = null;
@@ -2107,6 +2109,12 @@ export class MachineRuntime {
     this.state.queuedMessage = null;
     this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
     return { cancelled: true, queuedMessage: null };
+  }
+
+  updateWorkingPath(threadId: unknown, value: unknown): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(() => this.updateWorkingPathNow(threadId, value));
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
   }
 
   updateThreadSettings(model: unknown, effort: unknown): Promise<JsonObject> {
@@ -2609,6 +2617,38 @@ export class MachineRuntime {
     return this.snapshot();
   }
 
+  private async updateWorkingPathNow(threadId: unknown, value: unknown): Promise<JsonObject> {
+    if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    if (threadId !== this.state.thread.id) throw new Error("The selected task changed");
+    const cwd = typeof value === "string" ? value.trim() : "";
+    if (!cwd || cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd)) throw new Error("Enter an absolute project folder on this machine");
+    if (cwd === this.state.thread.cwd) return { updated: true, thread: this.state.thread };
+    const previousCwd = this.state.thread.cwd;
+    const revision = this.settingsRevision;
+    await this.rpc.request("thread/settings/update", { threadId, cwd });
+    const confirmed = await this.waitForSettingsUpdate(revision, () => this.cwdSettingsRevision > revision && this.state.thread?.cwd !== previousCwd);
+    if (this.state.thread?.id !== threadId || !this.rpc) throw new Error("The selected task changed");
+    if (!confirmed || this.cwdSettingsRevision <= revision) throw new Error("Working Path update could not be confirmed yet");
+    return { updated: true, thread: this.state.thread };
+  }
+
+  private async refreshWorkingPathProfiles(thread: JsonObject): Promise<void> {
+    const rpc = this.rpc, cwd = thread.cwd;
+    const current = () => this.rpc === rpc && this.state.thread === thread && thread.cwd === cwd;
+    try {
+      const profiles = await this.loadPermissionProfiles(cwd, false);
+      if (!current()) return;
+      this.permissionProfiles = profiles;
+      this.updateAccessFromCodex(this.accessSettings);
+    } catch (error) {
+      if (!current()) return;
+      this.permissionProfiles = [];
+      this.state.access = emptyAccess();
+      this.state.access.description = compact(error instanceof Error ? error.message : String(error), 240);
+    }
+    this.broadcast("settings", { access: this.state.access });
+  }
+
   private async updateThreadSettingsNow(modelValue: unknown, effortValue: unknown): Promise<JsonObject> {
     if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
     const model = String(modelValue ?? "").trim();
@@ -2631,6 +2671,7 @@ export class MachineRuntime {
   }
 
   private updateAccessFromCodex(value: any): void {
+    this.accessSettings = value;
     const active = value?.activePermissionProfile ?? null;
     const profileId = active?.id ? String(active.id) : null;
     const profileExtends = active?.extends ? String(active.extends) : null;
@@ -2674,8 +2715,8 @@ export class MachineRuntime {
     };
   }
 
-  private waitForSettingsUpdate(revision: number): Promise<boolean> {
-    if (this.settingsRevision !== revision) return Promise.resolve(true);
+  private waitForSettingsUpdate(revision: number, matches: () => boolean = () => true): Promise<boolean> {
+    if (this.settingsRevision !== revision && matches()) return Promise.resolve(true);
     return new Promise((resolve) => {
       let settled = false;
       const finish = (updated: boolean) => {
@@ -2685,10 +2726,10 @@ export class MachineRuntime {
         this.settingsWaiters.delete(onUpdate);
         resolve(updated);
       };
-      const onUpdate = () => finish(true);
+      const onUpdate = () => { if (matches()) finish(true); };
       const timer = setTimeout(() => finish(false), ACCESS_SETTINGS_TIMEOUT_MS);
       this.settingsWaiters.add(onUpdate);
-      if (this.settingsRevision !== revision) finish(true);
+      if (this.settingsRevision !== revision && matches()) finish(true);
     });
   }
 
@@ -3372,7 +3413,13 @@ export class MachineRuntime {
           this.broadcast("thread", this.state.thread);
         }
         break;
-      case "thread/settings/updated":
+      case "thread/settings/updated": {
+        const cwdChanged = this.state.thread && typeof params.threadSettings?.cwd === "string" && this.state.thread.cwd !== params.threadSettings.cwd;
+        if (this.state.thread && typeof params.threadSettings?.cwd === "string") {
+          this.state.thread.cwd = params.threadSettings.cwd;
+          this.cwdSettingsRevision = this.settingsRevision + 1;
+          this.broadcast("thread", this.state.thread);
+        }
         this.updateModel(params.threadSettings);
         this.updateAccessFromCodex(params.threadSettings);
         this.settingsRevision += 1;
@@ -3383,7 +3430,9 @@ export class MachineRuntime {
           access: this.state.access,
           appliesTo: this.state.turn?.status === "inProgress" ? "next_turn" : "current",
         });
+        if (cwdChanged && this.state.thread) void this.refreshWorkingPathProfiles(this.state.thread);
         break;
+      }
       case "turn/started":
         if (this.state.thread) {
           if (this.compactionHints.get(this.state.thread.id)?.activity.turnId !== String(params.turn?.id ?? "")) this.compactionHints.delete(this.state.thread.id);
@@ -4078,6 +4127,10 @@ export class PocketGateway {
     return this.enqueue(async () => this.requireSelected(machineId).cancelQueuedMessage());
   }
 
+  updateWorkingPath(body: JsonObject): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(body.machineId).updateWorkingPath(body.threadId, body.cwd));
+  }
+
   updateThreadSettings(machineId: unknown, model: unknown, effort: unknown): Promise<JsonObject> {
     return this.enqueue(() => this.requireSelected(machineId).updateThreadSettings(model, effort));
   }
@@ -4300,7 +4353,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
 // Routes whose handlers consume readJsonBody; bodyless mutations still get origin checks.
 const JSON_POST_ROUTES = new Set([
   "/api/login", "/api/settings", "/api/tasks", "/api/message", "/api/turn/interrupt",
-  "/api/message/queue", "/api/thread/settings", "/api/thread/access", "/api/approval",
+  "/api/message/queue", "/api/thread/settings", "/api/thread/cwd", "/api/thread/access", "/api/approval",
   "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake", "/api/goal",
 ]);
 
@@ -4534,6 +4587,11 @@ export async function handleRequest(
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/thread/cwd") {
+    try { sendJson(response, 200, await gateway.updateWorkingPath(await readJsonBody(request)), gateway); }
+    catch (error) { sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway); }
     return;
   }
   if (method === "POST" && url.pathname === "/api/thread/settings") {

@@ -1555,6 +1555,8 @@ function renderState() {
   const completedAt = state.turn?.completedAt;
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
   elements.machine.textContent = [state.machine, platformLabel(state.platform)].filter(Boolean).join(" · ") || "—";
+  if (cwdDialog.open && !cwdDialogMatches()) cwdDialog.close();
+  document.querySelector("#edit-cwd").disabled = !state.connected || !state.thread || cwdBusy;
   elements.project.textContent = state.thread?.cwd || "—";
   elements.project.title = state.thread?.cwd || "";
   renderDestinationButton();
@@ -2360,7 +2362,7 @@ async function performTaskAction(body) {
     for (const entry of target.events.slice(lastSnapshot < 0 ? target.events.length : lastSnapshot + 1)) entry.deliver();
   } else for (const entry of target.events) entry.deliver();
   if (succeeded && body.action === "delete") composerDrafts.delete(draftKey(body.machineId, body.threadId));
-  if (failure && body.action !== "create") destinationTaskError = { machineId: body.machineId, threadId: body.threadId, message: failure };
+  if (failure && body.action !== "create") destinationTaskError = { machineId: body.machineId, threadId: body.threadId, message: taskFailureMessage(failure) };
   invalidateNavigationCatalogs();
   await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
   renderDestinationSwitcher();
@@ -2371,6 +2373,10 @@ async function performTaskAction(body) {
   if (succeeded && snapshot?.warning) { composerError = snapshot.warning.replace(/^Task created\. /, ""); renderComposer(); }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
   return { succeeded, failure };
+}
+
+function taskFailureMessage(message) {
+  return /another Codex runtime|active writer/i.test(message) ? "Open elsewhere. Close it and retry." : message;
 }
 
 async function selectDestination(machineId, threadId) {
@@ -2428,8 +2434,7 @@ async function selectDestination(machineId, threadId) {
   } else {
     // Retain live updates received for the original task while the request was pending.
     for (const entry of token.events) entry.deliver();
-    destinationTaskError = { machineId, threadId, message: /another Codex runtime|active writer/i.test(message)
-      ? "Open elsewhere. Close it and retry." : message };
+    destinationTaskError = { machineId, threadId, message: taskFailureMessage(message) };
     renderDestinationSwitcher();
   }
 }
@@ -2485,6 +2490,56 @@ async function submitMessage(action) {
     renderState();
   }
 }
+
+const cwdDialog = document.querySelector("#cwd-dialog");
+const cwdInput = document.querySelector("#cwd-input");
+const cwdError = document.querySelector("#cwd-error");
+let cwdTarget = null;
+let cwdBusy = false;
+function cwdDialogMatches() {
+  return cwdTarget && state?.machineId === cwdTarget.machineId && state.thread?.id === cwdTarget.threadId;
+}
+document.querySelector("#edit-cwd").addEventListener("click", () => {
+  if (!state?.thread || cwdBusy || destinationSelection || taskActionBusy) return;
+  cwdTarget = { machineId: state.machineId, threadId: state.thread.id };
+  cwdInput.value = state.thread.cwd || "";
+  cwdError.textContent = "";
+  cwdDialog.showModal();
+  cwdInput.focus();
+  cwdInput.select();
+});
+cwdDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
+cwdDialog.addEventListener("close", () => { if (!cwdDialog.open) cwdTarget = null; });
+document.querySelector("#cwd-cancel").addEventListener("click", () => cwdDialog.close());
+document.querySelector("#cwd-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (cwdBusy || !cwdDialogMatches()) return;
+  const cwd = cwdInput.value.trim();
+  if (!cwd || cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd)) {
+    cwdError.textContent = "Enter an absolute project folder on this machine";
+    return;
+  }
+  if (cwd === state.thread.cwd) { cwdDialog.close(); return; }
+  const target = cwdTarget;
+  cwdBusy = true;
+  cwdError.textContent = "";
+  document.querySelector("#cwd-save").disabled = cwdInput.disabled = true;
+  try {
+    const response = await apiFetch("/api/thread/cwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...target, cwd }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not update Working Path");
+    if (cwdTarget === target && cwdDialogMatches()) {
+      mergeState({ thread: result.thread });
+      cwdDialog.close();
+    }
+  } catch (error) {
+    if (cwdTarget === target && cwdDialogMatches()) cwdError.textContent = error.message;
+  } finally {
+    cwdBusy = false;
+    document.querySelector("#cwd-save").disabled = cwdInput.disabled = false;
+    renderState();
+  }
+});
 
 const queueDialog = document.querySelector("#queue-dialog");
 const queueDialogText = document.querySelector("#queue-dialog-text");

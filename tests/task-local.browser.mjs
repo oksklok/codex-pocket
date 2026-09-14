@@ -20,6 +20,7 @@ const eventClients=new Set();
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const fileBodies=[];let realFilePosts=false;
 const calls=[];let gate=null, release, mode='success', failAction=false;
+let actionFailure='Fixture action failed', cwdFailure=false, cwdGate=null;const cwdEdits=[];
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let goalGate=null;const goalCalls=[];let uiGate=null;let queueEditGate=null,queueEditFailure=false;const queueEdits=[];
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
@@ -52,6 +53,16 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/thread/settings'){runtime.state.model=body.model;runtime.state.reasoningEffort=body.effort;return json({updated:true,model:body.model,reasoningEffort:body.effort});}
  if(u.pathname==='/api/thread/access'){runtime.state.access={...runtime.state.access,mode:body.mode};return json({updated:true,access:runtime.state.access});}
  runtime.state.pending=[];runtime.broadcast('request',{pending:[],message:{allowed:true,reason:null}});return json({accepted:true});
+ }
+ if(u.pathname==='/api/thread/cwd'){
+ let text='';for await(const c of req)text+=c;const body=JSON.parse(text);cwdEdits.push(body);
+ runtime.rpc={request:async(method,params)=>{
+ if(method==='thread/settings/update'){
+ if(cwdFailure)throw new Error('Folder unavailable on this machine');
+ if(cwdGate)await cwdGate;
+ runtime.handleNotification({method:'thread/settings/updated',params:{threadId:params.threadId,threadSettings:{cwd:params.cwd}}});
+ }return {data:[]};}};
+ try{return json(await runtime.updateWorkingPath(body.threadId,body.cwd));}catch(error){return json({error:error.message},409);}
  }
  if(u.pathname==='/api/goal'){let text='';for await(const c of req)text+=c;const body=JSON.parse(text);if(goalGate)await goalGate;return json(await runtime.goalAction(body));}
  if(u.pathname==='/api/machines/wake'){let text='';for await(const c of req)text+=c;wakeBodies.push(JSON.parse(text));return wakeFailure?json({error:'send EACCES'},400):json({sent:true});}
@@ -108,7 +119,7 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/tasks/options' && u.searchParams.get('cwd')==='/unavailable')return json({error:'Unavailable'},503);
  if(u.pathname==='/api/tasks/options')return json({models:[{model:'demo-model',displayName:'Demo Model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],access:{ask:true,auto:true,full:true}});
  if(u.pathname==='/api/tasks'){
- let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(b.action==='create')calls.push({create:b});if(gate)await gate;if(failAction)return json({error:'Fixture action failed'},409);
+ let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(b.action==='create')calls.push({create:b});if(gate)await gate;if(failAction)return json({error:actionFailure},409);
  if(b.action==='rename'){const t=[...active,...archived].find(t=>t.id===b.threadId);t.name=b.name;}
  if(b.action==='archive'){archived.push({...active.find(t=>t.id===b.threadId),archived:true});active=active.filter(t=>t.id!==b.threadId);}
  if(b.action==='unarchive'){active.push({...archived.find(t=>t.id===b.threadId),archived:false});archived=archived.filter(t=>t.id!==b.threadId);}
@@ -498,7 +509,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  mode='success';await page.locator('#send-message').click();await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
  await select('Owned task');assert.equal(await input.inputValue(),'Draft B');await select('Current task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Stable action draft');await open();
- for(const action of ['Rename','Archive','Delete']){
+ for(const action of ['Rename','Archive','Delete'])for(const failure of [conflict,'already has an active writer','Fixture action failed']){
+ actionFailure=failure;
  failAction=true;gate=new Promise(r=>release=r);
  const before=await input.boundingBox();const signature=await page.locator('#model-select').evaluate(e=>e.outerHTML);
  await row('Owned task').locator('summary').click();await row('Owned task').getByRole('button',{name:action,exact:true}).click();
@@ -508,6 +520,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.deepEqual(await input.boundingBox(),before);assert.equal(await page.locator('#model-select').evaluate(e=>e.outerHTML),signature);
  assert(!(await page.locator('#composer').innerText()).includes('Switching'));
  release();gate=null;await row('Owned task').locator('.task-selection-error').waitFor();
+ assert.equal(await row('Owned task').locator('.task-selection-error').textContent(),failure==='Fixture action failed'?failure:'Open elsewhere. Close it and retry.');
  assert.equal(await page.locator('.destination-error').count(),0);assert.equal(await input.inputValue(),'Stable action draft');
  }
  for(const answer of [null,'   ','Current task']){
@@ -1614,6 +1627,35 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  composerPost='reject';await input.fill('Rejected message');await page.locator('#send-message').click();
  await page.getByText('Send rejected',{exact:true}).waitFor();assert.equal(await page.locator('#composer-status').isVisible(),true);
  composerPost='success';
+ }
+ // Working Path editing uses selected-runtime settings confirmation without filesystem checks.
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:width===390?'ssh:test':'local',thread:{...task,cwd:'C:\\Projects\\current'},turn:null,goal:null,queuedMessage:null,pending:[],liveMessages:[],activities:[]});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.locator('#project').getByText('C:\\Projects\\current',{exact:true}).waitFor({state:'attached'});
+ if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
+ const edit=()=>page.locator('#edit-cwd').click();
+ await edit();assert.equal(await page.locator('#cwd-input').inputValue(),'C:\\Projects\\current');
+ const initial=cwdEdits.length;
+ await page.locator('#cwd-save').click();await page.waitForFunction(()=>!document.querySelector('#cwd-dialog').open);assert.equal(cwdEdits.length,initial);
+ await edit();await page.locator('#cwd-input').fill('relative/path');await page.locator('#cwd-save').click();
+ await page.locator('#cwd-error').getByText('Enter an absolute project folder on this machine').waitFor();assert.equal(cwdEdits.length,initial);
+ cwdFailure=true;await page.locator('#cwd-input').fill('/unavailable');await page.locator('#cwd-save').click();
+ await page.locator('#cwd-error').getByText('Folder unavailable on this machine').waitFor();assert.equal(await page.locator('#project').textContent(),'C:\\Projects\\current');assert.equal(await page.locator('#cwd-dialog').evaluate(e=>e.open),true);cwdFailure=false;
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/working-path-error-${width}.png`});
+ const next=width===1280?'C:\\Projects\\日本語 résumé':('/home/remote/'+ 'long-project-'.repeat(18));
+ cwdGate=new Promise(r=>release=r);await page.locator('#cwd-input').fill('  '+next+'  ');await page.locator('#cwd-save').click();
+ await page.waitForFunction(()=>document.querySelector('#cwd-save').disabled);assert.equal(await page.locator('#project').textContent(),'C:\\Projects\\current');
+ release();cwdGate=null;await page.waitForFunction(()=>!document.querySelector('#cwd-dialog').open);
+ assert.equal(await page.locator('#project').textContent(),next);assert.deepEqual(cwdEdits.at(-1),{machineId:runtime.state.machineId,threadId:task.id,cwd:next});
+ const geometry=await page.locator('#edit-cwd').evaluate(e=>{const r=e.getBoundingClientRect();return {w:r.width,h:r.height,overflow:document.documentElement.scrollWidth>innerWidth};});
+ assert.deepEqual(geometry,{w:36,h:36,overflow:false});
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/working-path-${width}.png`});
+ await edit();await page.locator('#cwd-input').fill('/stale');const beforeSwitch=cwdEdits.length;
+ runtime.state.thread={...owned};runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>!document.querySelector('#cwd-dialog').open);
+ await page.locator('#cwd-form').evaluate(e=>e.requestSubmit());assert.equal(cwdEdits.length,beforeSwitch);
+ await edit();runtime.state.machineId='ssh:changed';runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>!document.querySelector('#cwd-dialog').open);assert.equal(cwdEdits.length,beforeSwitch);
  }
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));for(const body of fileBodies)await rm(join(tmpdir(),'codex-pocket',body.submissionId),{recursive:true,force:true});}

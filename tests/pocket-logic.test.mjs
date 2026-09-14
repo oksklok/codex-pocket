@@ -2684,3 +2684,110 @@ test('queue PATCH enforces selected machine/thread and JSON before updating text
     assert.deepEqual((await response.json()).queuedMessage,{threadId:'thread-1',text:'After',images:[],files:[],createdAt:12});
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+
+test("Working Path validates selected task and absolute paths before settings RPC", async () => {
+  const runtime = activeRuntime();
+  runtime.state.thread.cwd = "/old";
+  const calls = [];
+  runtime.rpc.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/settings/update") runtime.handleNotification({ method: "thread/settings/updated", params: { threadId: params.threadId, threadSettings: { cwd: params.cwd } } });
+    return { data: [] };
+  };
+  for (const cwd of ["", "relative", "C:relative", "/bad\npath", "/bad\rpath", "/bad\0path", "/".repeat(4097)]) {
+    await assert.rejects(runtime.updateWorkingPath("thread-1", cwd), /absolute project folder/);
+  }
+  await assert.rejects(runtime.updateWorkingPath("stale", "/new"), /selected task changed/);
+  assert.deepEqual(calls, []);
+  for (const cwd of ["C:\\Projects\\测试", "/home/remote/project", "\\\\server\\share\\project"]) {
+    const result = await runtime.updateWorkingPath("thread-1", `  ${cwd}  `);
+    assert.equal(result.thread.cwd, cwd);
+    assert.deepEqual(calls.findLast(call => call.method === "thread/settings/update").params, { threadId: "thread-1", cwd });
+  }
+  const count = calls.length;
+  await runtime.updateWorkingPath("thread-1", runtime.state.thread.cwd);
+  assert.equal(calls.length, count);
+  assert(!calls.some(call => call.method === "thread/resume"));
+});
+
+test("Working Path stays authoritative on failure and refreshes cwd permission profiles after confirmation", async () => {
+  const runtime = activeRuntime();
+  runtime.state.thread.cwd = "/old";
+  runtime.rpc.request = async () => { throw new Error("Folder unavailable"); };
+  await assert.rejects(runtime.updateWorkingPath("thread-1", "/new"), /Folder unavailable/);
+  assert.equal(runtime.state.thread.cwd, "/old");
+  const calls = [], events = [];
+  runtime.broadcast = (type, data) => events.push({ type, data });
+  let notify;
+  runtime.rpc.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/settings/update") notify = () => {
+      runtime.handleNotification({ method: "thread/settings/updated", params: { threadId: "thread-1", threadSettings: { cwd: params.cwd, model: "model-new", effort: "high" } } });
+    };
+    return { data: [] };
+  };
+  const pending = runtime.updateWorkingPath("thread-1", "/new");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.state.thread.cwd, "/old");
+  let settled = false;
+  pending.then(() => { settled = true; });
+  runtime.handleNotification({ method: "thread/settings/updated", params: { threadId: "thread-1", threadSettings: { cwd: "/old", model: "unrelated" } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  notify(); await pending;
+  assert.equal(runtime.state.thread.cwd, "/new");
+  assert(events.some(event => event.type === "thread" && event.data.cwd === "/new"));
+  assert(calls.some(call => call.method === "permissionProfile/list" && call.params.cwd === "/new"));
+  runtime.handleNotification({ method: "thread/settings/updated", params: { threadId: "stale", threadSettings: { cwd: "/stale" } } });
+  assert.equal(runtime.state.thread.cwd, "/new");
+  runtime.rpc.request = async () => ({});
+  runtime.waitForSettingsUpdate = async () => false;
+  await assert.rejects(runtime.updateWorkingPath("thread-1", "/unconfirmed"), /could not be confirmed/);
+  assert.equal(runtime.state.thread.cwd, "/new");
+});
+
+test("Working Path serializes behind runtime selection and revalidates the task", async () => {
+  const gateway = new PocketGateway({ machines: [] });
+  const runtime = activeRuntime();
+  gateway.runtimes.set("local", runtime);
+  await assert.rejects(gateway.updateWorkingPath({ machineId: "ssh:other", threadId: "thread-1", cwd: "/new" }), /selected machine|machine changed|Unknown machine/i);
+  let release;
+  runtime.selectionQueue = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  runtime.rpc.request = async method => { calls.push(method); return {}; };
+  const update = gateway.updateWorkingPath({ machineId: "local", threadId: "thread-1", cwd: "/ssh/project" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, []);
+  runtime.state.thread = { id: "new-thread", cwd: "/old" };
+  release();
+  await assert.rejects(update, /selected task changed/);
+  assert.deepEqual(calls, []);
+});
+
+test("Working Path POST enforces JSON and selected machine/thread before RPC", async () => {
+  const { handleRequest } = await import('../gateway.ts');
+  const { createServer } = await import('node:http');
+  const gateway = new PocketGateway({ machines: [] }), runtime = activeRuntime();
+  gateway.runtimes.set('local', runtime);
+  const calls = [];
+  runtime.rpc.request = async (method, params) => {
+    calls.push(method);
+    if (method === 'thread/settings/update') runtime.handleNotification({ method: 'thread/settings/updated', params: { threadId: params.threadId, threadSettings: { cwd: params.cwd } } });
+    return { data: [] };
+  };
+  const server = createServer((req, res) => { handleRequest(req, res, gateway, { required: false }, {}, { host: '127.0.0.1' }, async () => ({ localUrl: '/' }), () => {}, () => false).catch(error => { res.statusCode = 500; res.end(error.message); }); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const post = (body, type = 'application/json') => fetch(`http://127.0.0.1:${server.address().port}/api/thread/cwd`, { method: 'POST', headers: { 'Content-Type': type }, body: JSON.stringify(body) });
+    const body = { machineId: 'local', threadId: 'thread-1', cwd: '/new' };
+    assert.equal((await post({ ...body, machineId: 'other' })).status, 409);
+    assert.equal((await post({ ...body, threadId: 'stale' })).status, 409);
+    assert.equal((await post({ ...body, cwd: 'relative' })).status, 409);
+    assert.equal((await post(body, 'text/plain')).status, 415);
+    assert.deepEqual(calls, []);
+    const response = await post(body);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).thread.cwd, '/new');
+    assert(!calls.includes('thread/resume'));
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});

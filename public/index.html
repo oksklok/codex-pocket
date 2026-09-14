@@ -127,7 +127,7 @@
           <div class="inspector-scroll">
             <dl class="metadata">
               <div><dt>Machine</dt><dd id="machine">—</dd></div>
-              <div><dt>Working Path</dt><dd id="project">—</dd></div>
+              <div class="working-path-card"><dt>Working Path</dt><dd id="project">—</dd><button id="edit-cwd" class="icon-button" type="button" aria-label="Edit Working Path" title="Edit Working Path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg></button></div>
             </dl>
             <section class="secondary-panel runtime-panel" aria-labelledby="runtime-title">
               <div class="panel-heading"><h3 id="runtime-title">Runtime</h3></div>
@@ -219,6 +219,14 @@
         <div id="task-dialog-delete-copy" hidden><strong id="task-dialog-task-name"></strong><p>This permanently deletes its Codex conversation. Project files will not be deleted.</p></div>
         <p id="task-dialog-error" class="form-status error-text" role="alert"></p>
         <div class="new-task-actions"><button id="task-dialog-cancel" class="secondary-button" type="button">Cancel</button><button id="task-dialog-submit" class="primary-button" type="submit">Rename</button></div>
+      </form>
+    </dialog>
+    <dialog class="new-task-dialog" id="cwd-dialog" aria-labelledby="cwd-title">
+      <form id="cwd-form" novalidate>
+        <h2 id="cwd-title">Working Path</h2>
+        <input id="cwd-input" aria-label="Working Path" maxlength="4096" autocomplete="off" spellcheck="false">
+        <p id="cwd-error" class="form-status error-text" role="alert"></p>
+        <div class="new-task-actions"><button id="cwd-cancel" class="secondary-button" type="button">Cancel</button><button id="cwd-save" class="primary-button" type="submit">Save</button></div>
       </form>
     </dialog>
     <dialog class="new-task-dialog" id="goal-clear-dialog" aria-labelledby="goal-clear-title">
