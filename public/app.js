@@ -205,7 +205,6 @@ let submittingInterrupt = false;
 let sendingQueuedMessage = false;
 let cancellingQueue = false;
 let composerError = "";
-let composerNotice = "";
 let selectedImages = [];
 let selectedFiles = [];
 const composerDrafts = new Map();
@@ -1359,23 +1358,9 @@ function renderComposer() {
     elements.sendMessage.classList.remove("stop-action");
     elements.sendMessage.disabled = !allowed || !hasText || Boolean(state?.queuedMessage);
   }
-  const status = submittingMessage
-    ? "Sending…"
-    : stopping
-      ? "Stopping the active turn…"
-    : resolvingApproval
-      ? "Sending approval response…"
-      : submittingInputRequestId
-        ? "Sending structured answer…"
-      : updatingModel
-        ? "Updating model…"
-      : updatingAccess
-        ? "Updating access…"
-    : composerError
-      || turnError
-      || composerNotice
-      || capability?.reason
-      || "";
+  const capabilityError = !stopping && !resolvingApproval && !submittingInputRequestId
+    && capability?.allowed === false && capability.reason !== "Stopping the active turn…" ? capability.reason : "";
+  const status = composerError || turnError || capabilityError || "";
   const usageLimit = usageLimitMessage(status);
   elements.composerStatus.textContent = usageLimit || status;
   if (usageLimit) {
@@ -2053,9 +2038,6 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
       }
     }
   }
-  if (next.message && !next.message.allowed) {
-    composerNotice = "";
-  }
   if (Array.isArray(next.machines)) {
     machines = next.machines;
     for (const machine of machines) restoreTaskTerminalResults(machine.id, machine.terminalResults);
@@ -2127,7 +2109,6 @@ function applySnapshot(next, loadChangedHistory = true) {
     selectedFiles = [...(draft?.files || [])];
     attachmentDeliveryUnknown = false;
     composerError = "";
-    composerNotice = "";
     resizeComposer();
   }
   mergeState(next, true);
@@ -2350,7 +2331,7 @@ async function performTaskAction(body) {
     if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
     elements.messageText.focus();
   }
-  if (succeeded && snapshot?.warning) { composerNotice = snapshot.warning; renderComposer(); }
+  if (succeeded && snapshot?.warning) { composerError = snapshot.warning.replace(/^Task created\. /, ""); renderComposer(); }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
   return { succeeded, failure };
 }
@@ -2425,7 +2406,6 @@ async function submitMessage(action) {
   if ((!text.trim() && !images.length && !files.length) || readingAttachments || attachmentDeliveryUnknown || submittingMessage || state?.queuedMessage) return;
   submittingMessage = true;
   composerError = "";
-  composerNotice = "";
   const optimisticQueue = action === "queue" ? { threadId: state?.thread?.id, text, images, files: files.map(({name,size}) => ({name,size})), createdAt: Date.now() } : null;
   if (optimisticQueue) {
     elements.messageText.value = "";
@@ -2442,7 +2422,6 @@ async function submitMessage(action) {
     attachmentDeliveryUnknown = false;
     elements.messageText.value = "";
     resizeComposer();
-    composerNotice = "";
     mergeState({
       ...(result.turn ? { turn: result.turn } : {}),
       ...(result.phase ? { phase: result.phase } : {}),
@@ -2483,8 +2462,7 @@ async function cancelQueuedMessage() {
     if (!response.ok) throw new Error(result.error || "Could not cancel queued message");
     if (result.cancelled === true) {
       mergeState({ queuedMessage: null });
-      composerNotice = "Queued message cancelled.";
-    } else composerNotice = "Queued message is already being sent.";
+    }
   } catch (error) {
     composerError = error.message;
   } finally {
@@ -2499,15 +2477,12 @@ async function sendQueuedMessage() {
   const action = state?.turn?.status === "inProgress" ? "steer" : "start";
   sendingQueuedMessage = true;
   composerError = "";
-  composerNotice = "Sending queued message…";
   renderState();
   try {
     const result = await postMessageAction("/api/message/queue", { machineId: state?.machineId, action });
     if (!result.recovered) mergeState({ queuedMessage: null });
-    composerNotice = "";
   } catch (error) {
     queueDeliveryUnknown = Boolean(error.deliveryUnknown);
-    composerNotice = "";
     composerError = error.message;
   } finally {
     sendingQueuedMessage = false;
@@ -2524,7 +2499,6 @@ async function interruptTurn() {
   if (!machineId || !expectedThreadId || !expectedTurnId) return;
   submittingInterrupt = true;
   composerError = "";
-  composerNotice = "";
   renderState();
   try {
     const response = await apiFetch("/api/turn/interrupt", {
@@ -2547,7 +2521,6 @@ async function updateThreadSettings(model, effort) {
   if (updatingModel || !state?.thread) return;
   updatingModel = true;
   composerError = "";
-  composerNotice = "Updating model settings…";
   renderState();
   try {
     const response = await apiFetch("/api/thread/settings", {
@@ -2555,7 +2528,6 @@ async function updateThreadSettings(model, effort) {
     });
     const result = await response.json();
     if (!response.ok || !result.updated) throw new Error(result.error || "Could not update model settings");
-    composerNotice = "";
     mergeState({ model: result.model, reasoningEffort: result.reasoningEffort });
   } catch (error) {
     composerError = error.message;
@@ -2570,7 +2542,6 @@ async function updateAccess(mode) {
   if (updatingAccess || !state?.thread) return;
   updatingAccess = true;
   composerError = "";
-  composerNotice = "Updating access…";
   renderState();
   try {
     const response = await apiFetch("/api/thread/access", {
@@ -2578,7 +2549,6 @@ async function updateAccess(mode) {
     });
     const result = await response.json();
     if (!response.ok || !result.updated) throw new Error(result.error || "Could not update access");
-    composerNotice = "";
     mergeState({ access: result.access });
   } catch (error) {
     composerError = error.message;
@@ -2593,7 +2563,6 @@ async function resolveApproval(requestId, decision) {
   if (resolvingApproval || !requestId) return;
   resolvingApproval = true;
   composerError = "";
-  composerNotice = decision === "approve" ? "Approving…" : "Denying…";
   const pending = (state?.pending || []).map((request) => request.id === requestId ? { ...request, resolving: true } : request);
   mergeState({ pending });
   try {
@@ -2603,7 +2572,6 @@ async function resolveApproval(requestId, decision) {
     });
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the approval response");
-    composerNotice = decision === "approve" ? "Approval sent." : "Denial sent.";
   } catch (error) {
     composerError = error.message;
     try {
@@ -2651,7 +2619,6 @@ async function submitStructuredInput(pending) {
 
   submittingInputRequestId = pending.id;
   composerError = "";
-  composerNotice = "Sending structured answer…";
   const nextPending = (state?.pending || []).map((request) => request.id === pending.id ? { ...request, resolving: true } : request);
   mergeState({ pending: nextPending });
   try {
@@ -2662,7 +2629,6 @@ async function submitStructuredInput(pending) {
     });
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the answer");
-    composerNotice = "Answer sent.";
   } catch (error) {
     composerError = error.message;
     try {
@@ -2737,7 +2703,6 @@ function connectEvents() {
     for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, {
       machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle",
     });
-    if (value.turn?.status && value.turn.status !== "inProgress") composerNotice = "";
     mergeState(value);
   });
   on("plan", (event) => { mergeState({ plan: parseEvent(event) }); });
@@ -3137,7 +3102,6 @@ elements.cancelQueue.addEventListener("click", cancelQueuedMessage);
 elements.messageText.addEventListener("input", () => {
   if (unresolvedSubmission) unresolvedSubmission.restoreDraft = false;
   composerError = "";
-  composerNotice = "";
   resizeComposer();
   renderComposer();
 });

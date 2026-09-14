@@ -21,7 +21,7 @@ const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,m
 const fileBodies=[];let realFilePosts=false;
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
-let goalGate=null;const goalCalls=[];
+let goalGate=null;const goalCalls=[];let uiGate=null;
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
@@ -47,6 +47,12 @@ const server=createServer(async(req,res)=>{
  }
  return json({settings});
  }
+ if(['/api/approval','/api/input','/api/thread/settings','/api/thread/access'].includes(u.pathname)){
+ let text='';for await(const c of req)text+=c;const body=JSON.parse(text);if(uiGate)await uiGate;
+ if(u.pathname==='/api/thread/settings'){runtime.state.model=body.model;runtime.state.reasoningEffort=body.effort;return json({updated:true,model:body.model,reasoningEffort:body.effort});}
+ if(u.pathname==='/api/thread/access'){runtime.state.access={...runtime.state.access,mode:body.mode};return json({updated:true,access:runtime.state.access});}
+ runtime.state.pending=[];runtime.broadcast('request',{pending:[],message:{allowed:true,reason:null}});return json({accepted:true});
+ }
  if(u.pathname==='/api/goal'){let text='';for await(const c of req)text+=c;const body=JSON.parse(text);if(goalGate)await goalGate;return json(await runtime.goalAction(body));}
  if(u.pathname==='/api/machines/wake'){let text='';for await(const c of req)text+=c;wakeBodies.push(JSON.parse(text));return wakeFailure?json({error:'send EACCES'},400):json({sent:true});}
  if(u.pathname==='/api/machines')return json({machines:settings.headless?[{id:'ssh:test',name:'Second machine',connected:remoteConnected}]:[runtime.machineSummary()]});
@@ -68,8 +74,9 @@ const server=createServer(async(req,res)=>{
  if(mode==='lost'){req.socket.destroy();return;}
  return json(snapshot());
  }
- if(u.pathname==='/api/turn/interrupt')return json({accepted:true});
+ if(u.pathname==='/api/turn/interrupt'){if(uiGate)await uiGate;return json({accepted:true});}
  if(u.pathname==='/api/message/queue'&&req.method==='POST'){
+ if(uiGate)await uiGate;
  if(messageGate)await messageGate;
  if(messageUnknown){req.socket.destroy();return;}
  if(composerPost==='lost'){res.writeHead(202,{'Content-Type':'application/json','Content-Length':'1000'});res.write('{');setTimeout(()=>req.socket.destroy(),10);return;}
@@ -78,6 +85,7 @@ const server=createServer(async(req,res)=>{
  }
  if(u.pathname==='/api/message/queue'&&req.method==='DELETE')return json(runtime.cancelQueuedMessage());
  if(u.pathname==='/api/message'){
+ if(uiGate)await uiGate;
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(body.files?.length)fileBodies.push(body);
  if(body.question){
@@ -440,14 +448,18 @@ try {
  assert.equal(await page.locator('img[src^="https://"], img[src^="http://"]').count(),0);
  assert((await page.locator('body').innerText()).includes('Remote image'));
  runtime.state.liveMessages=[];
+ runtime.canAcceptDirectInput=true;
  runtime.state.queuedMessage={threadId:runtime.state.thread.id,text:'Already sending',images:[]};runtime.startingQueuedMessage=true;runtime.broadcast('snapshot',snapshot());
  await page.locator('#queue-banner').waitFor();await page.locator('#cancel-queue').click();
  assert.equal(await page.locator('#queue-banner strong').textContent(),'Queued');
- await page.getByText('Queued message is already being sent.',{exact:true}).waitFor();
+ await page.waitForFunction(()=>!document.querySelector('#cancel-queue').disabled);
+ assert.equal(await page.locator('#composer-status').textContent(),'');
  assert.equal(await page.locator('#queue-banner').isVisible(),true);assert.equal(await page.locator('#queue-text').textContent(),'Already sending');
  assert.equal(runtime.state.queuedMessage.text,'Already sending');
  runtime.startingQueuedMessage=false;await page.locator('#cancel-queue').click();
- await page.getByText('Queued message cancelled.',{exact:true}).waitFor();assert.equal(await page.locator('#queue-banner').isVisible(),false);
+ await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
+ assert.equal(await page.locator('#composer-status').textContent(),'');assert.equal(await page.locator('#composer-status').isVisible(),false);
+ assert.equal(await page.locator('#composer-status').evaluate(e=>e.getBoundingClientRect().height),0);
  await input.fill('Draft A');await page.locator('#image-picker').setInputFiles({name:'a.png',mimeType:'image/png',buffer:png});await page.locator('#composer-images img').waitFor();
  await select('Owned task');assert.equal(await input.inputValue(),'');assert.equal(await page.locator('#composer-images img').count(),0);
  await input.fill('Draft B');await select('Current task');assert.equal(await input.inputValue(),'Draft A');assert.equal(await page.locator('#composer-images img').count(),1);
@@ -1339,6 +1351,51 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await fits('#queue-files .file-chip');assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/queued-files-${width}.png`});
  await page.locator('#cancel-queue').click();await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
+ }
+ // Only actionable errors occupy the under-composer status, including during requests.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,threadStatus:'idle',turn:null,phase:'done',goal:null,queuedMessage:null,pending:[],liveMessages:[],activities:[],
+ models:['first','second'].map(model=>({model,displayName:model,supportedReasoningEfforts:[{reasoningEffort:'high'}]})),model:'first',reasoningEffort:'high',access:{mode:'ask',choices:{ask:{available:true},auto:{available:true},full:{available:true}}}});
+ composerPost='success';realFilePosts=false;await page.reload();await input.waitFor();
+ const quiet=async()=>{
+ assert.equal(await page.locator('#composer-status').textContent(),'');
+ assert.equal(await page.locator('#composer-status').isVisible(),false);
+ assert.equal(await page.locator('#composer-status').evaluate(e=>e.getBoundingClientRect().height),0);
+ };
+ const gated=async(route,trigger,busy,done)=>{
+ let releaseUI;uiGate=new Promise(resolve=>releaseUI=resolve);
+ const response=page.waitForResponse(r=>new URL(r.url()).pathname===route);
+ await trigger();await page.waitForFunction(busy);await quiet();
+ releaseUI();uiGate=null;await response;await page.waitForFunction(done);await quiet();
+ };
+ await quiet();
+ for(const decision of ['approve','deny']){
+ runtime.state.pending=[{id:'permission-test',kind:'permission',supported:true,label:'Run the test command'}];runtime.broadcast('snapshot',snapshot());
+ await page.getByRole('button',{name:decision==='approve'?'Approve':'Deny',exact:true}).waitFor();
+ await gated('/api/approval',()=>page.getByRole('button',{name:decision==='approve'?'Approve':'Deny',exact:true}).click(),()=>document.querySelector('.approval-actions button').disabled,()=>document.querySelector('#attention-banner').hidden);
+ }
+ runtime.state.pending=[{id:'input-test',kind:'input',supported:true,blocking:true,questions:[{id:'answer-test',header:'Choice',question:'What should be used?',options:null}]}];runtime.broadcast('snapshot',snapshot());
+ await page.locator('.input-free-text').fill('The selected option');
+ await gated('/api/input',()=>page.getByRole('button',{name:'Send Answer',exact:true}).click(),()=>document.querySelector('.structured-input-form button').disabled,()=>document.querySelector('#attention-banner').hidden);
+ await gated('/api/thread/settings',()=>page.locator('#model-select').evaluate(e=>{e.value='second';e.dispatchEvent(new Event('change'));}),()=>document.querySelector('#model-select').disabled,()=>!document.querySelector('#model-select').disabled);
+ await gated('/api/thread/access',()=>page.locator('#access-select').evaluate(e=>{e.value='full';e.dispatchEvent(new Event('change'));}),()=>document.querySelector('#access-select').disabled,()=>!document.querySelector('#access-select').disabled);
+ await input.fill('A normal message');
+ await gated('/api/message',()=>page.locator('#send-message').click(),()=>document.querySelector('#send-message').disabled,()=>!document.querySelector('#message-text').disabled);
+ runtime.state.turn={id:'quiet-turn',status:'inProgress'};runtime.state.queuedMessage={threadId:task.id,text:'Queued text',createdAt:Date.now()};runtime.broadcast('snapshot',snapshot());
+ await page.locator('#send-queue').waitFor();
+ await gated('/api/message/queue',()=>page.locator('#send-queue').click(),()=>document.querySelector('#send-queue').disabled,()=>document.querySelector('#queue-banner').hidden);
+ await gated('/api/turn/interrupt',()=>page.locator('#send-message').click(),()=>document.querySelector('#send-message').disabled,()=>!document.querySelector('#send-message').disabled);
+ runtime.broadcast('control',{stoppingTurnId:'quiet-turn',message:{allowed:false,reason:'Stopping the active turn…'}});
+ await page.waitForFunction(()=>document.querySelector('#send-message').textContent==='Stopping…');await quiet();
+ runtime.state.turn=null;runtime.broadcast('snapshot',snapshot());
+ runtime.broadcast('control',{message:{allowed:false,reason:'This task does not accept direct input'}});
+ await page.getByText('This task does not accept direct input',{exact:true}).waitFor();
+ runtime.broadcast('control',{message:{allowed:true,reason:'Informational reason'}});
+ await page.waitForFunction(()=>document.querySelector('#composer-status').hidden);await quiet();
+ composerPost='reject';await input.fill('Rejected message');await page.locator('#send-message').click();
+ await page.getByText('Send rejected',{exact:true}).waitFor();assert.equal(await page.locator('#composer-status').isVisible(),true);
+ composerPost='success';
  }
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));for(const body of fileBodies)await rm(join(tmpdir(),'codex-pocket',body.submissionId),{recursive:true,force:true});}
