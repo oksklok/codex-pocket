@@ -162,7 +162,10 @@ type QueuedMessage = {
   createdAt: number;
   error?: string;
 };
+type PocketGoal = { objective: string; status: string; timeUsedSeconds?: number; tokenBudget?: number | null; tokensUsed?: number };
+
 type PocketState = {
+  goal: PocketGoal | null;
   connected: boolean;
   connectionError: string | null;
   machineId: string;
@@ -1672,6 +1675,7 @@ export class MachineRuntime {
     this.onQuotaChange = onQuotaChange;
     this.onTaskStatus = onTaskStatus;
     this.state = {
+      goal: null,
       connected: false,
       connectionError: null,
       machineId: definition.id,
@@ -2821,6 +2825,41 @@ export class MachineRuntime {
     return { accepted: true, mode: "start", turnId: this.state.turn.id, turn: this.state.turn, phase: this.state.phase, message };
   }
 
+  private updateGoal(threadId: string, goal: any): void {
+    if (this.state.thread?.id !== threadId) return;
+    this.state.goal = goal ? {
+      objective: String(goal.objective ?? ""), status: String(goal.status),
+      ...(typeof goal.timeUsedSeconds === "number" ? { timeUsedSeconds: goal.timeUsedSeconds } : {}),
+      ...(typeof goal.tokensUsed === "number" ? { tokensUsed: goal.tokensUsed } : {}),
+      ...(goal.tokenBudget !== undefined ? { tokenBudget: goal.tokenBudget } : {}),
+    } : null;
+    this.broadcast("goal", { machineId: this.state.machineId, threadId, goal: this.state.goal });
+  }
+
+  goalAction(body: JsonObject): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(async () => {
+      const threadId = String(body.threadId ?? "");
+      if (!this.rpc || !this.state.connected) throw new Error("Codex is disconnected");
+      if (threadId !== this.state.thread?.id) throw new Error("Selected task changed; try again");
+      const action = body.action;
+      if (!["pause", "resume", "clear"].includes(action)) throw new Error("Invalid Goal action");
+      if (!this.state.goal) throw new Error("This task has no goal");
+      if (action === "clear") {
+        if (body.confirmed !== true) throw new Error("Confirm clearing the goal first");
+        const result = await this.rpc.request("thread/goal/clear", { threadId });
+        if (!result.cleared) throw new Error("Goal was not cleared; refresh and try again");
+        this.updateGoal(threadId, null);
+      } else {
+        if (this.state.goal.status !== (action === "pause" ? "active" : "paused")) throw new Error("Goal status changed; try again");
+        const result = await this.rpc.request("thread/goal/set", { threadId, status: action === "pause" ? "paused" : "active" });
+        this.updateGoal(threadId, result.goal);
+      }
+      return { machineId: this.state.machineId, threadId, goal: this.state.goal };
+    });
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
+  }
+
   private async interruptTurnNow(expectedThreadId: unknown, expectedTurnId: unknown): Promise<JsonObject> {
     if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
     if (String(expectedThreadId ?? "") !== this.state.thread.id) {
@@ -2838,9 +2877,11 @@ export class MachineRuntime {
     this.broadcast("control", { stoppingTurnId: turnId, message: this.messageCapability() });
     try {
       const { goal } = await this.rpc.request("thread/goal/get", { threadId });
+      this.updateGoal(threadId, goal);
       if (goal?.status === "active") {
         // Pause before the idle transition can schedule another goal continuation.
-        await this.rpc.request("thread/goal/set", { threadId, status: "paused" });
+        const paused = await this.rpc.request("thread/goal/set", { threadId, status: "paused" });
+        this.updateGoal(threadId, paused.goal);
       }
       await this.rpc.request("turn/interrupt", { threadId, turnId });
       return { accepted: true };
@@ -2882,7 +2923,12 @@ export class MachineRuntime {
     const attachment = { threadId, replay: [] as Array<() => void> };
     this.pendingAttachment = changed ? attachment : null;
     let resumed: JsonObject;
-    try { resumed = started ?? await rpc.request("thread/resume", { threadId, excludeTurns: true }); }
+    let goal = null;
+    try {
+      resumed = started ?? await rpc.request("thread/resume", { threadId, excludeTurns: true });
+      try { goal = (await rpc.request("thread/goal/get", { threadId })).goal ?? null; }
+      catch (error) { console.warn(`Goal unavailable: ${compact(error, 180)}`); }
+    }
     finally { this.pendingAttachment = null; }
     const thread = resumed?.thread ?? {};
     const resumedId = String(thread.id ?? threadId);
@@ -2907,6 +2953,7 @@ export class MachineRuntime {
     this.canAcceptDirectInput = thread.canAcceptDirectInput === true;
     this.state.threadStatus = statusText(thread.status ?? summary.status);
     this.updateModel(resumed);
+    this.updateGoal(threadId, goal);
     for (const replay of attachment.replay) replay();
     try {
       await this.loadPermissionProfiles(this.state.thread.cwd);
@@ -3178,6 +3225,12 @@ export class MachineRuntime {
     }
     if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
     switch (method) {
+      case "thread/goal/updated":
+        this.updateGoal(params.threadId, params.goal);
+        break;
+      case "thread/goal/cleared":
+        this.updateGoal(params.threadId, null);
+        break;
       case "thread/tokenUsage/updated":
         if (!this.state.thread || params.threadId !== this.state.thread.id) break;
         const context = contextSnapshot(params.tokenUsage);
@@ -3494,6 +3547,7 @@ export class MachineRuntime {
   }
 
   private resetThreadState(): void {
+    this.state.goal = null;
     this.trustedImagePaths.clear();
     this.state.context = null;
     for (const queued of this.assistantFlushes.values()) clearTimeout(queued.timer);
@@ -3878,6 +3932,10 @@ export class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).sendMessage(text, action, images));
   }
 
+  goalAction(body: JsonObject): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(body.machineId).goalAction(body));
+  }
+
   interruptTurn(machineId: unknown, expectedThreadId: unknown, expectedTurnId: unknown): Promise<JsonObject> {
     return this.enqueue(() => this.requireSelected(machineId).interruptTurn(expectedThreadId, expectedTurnId));
   }
@@ -4113,7 +4171,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
 const JSON_POST_ROUTES = new Set([
   "/api/login", "/api/settings", "/api/tasks", "/api/message", "/api/turn/interrupt",
   "/api/message/queue", "/api/thread/settings", "/api/thread/access", "/api/approval",
-  "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake",
+  "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake", "/api/goal",
 ]);
 
 function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
@@ -4408,6 +4466,11 @@ export async function handleRequest(
     } catch (error) {
       sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
+    return;
+  }
+  if (method === "POST" && url.pathname === "/api/goal") {
+    try { sendJson(response, 200, await gateway.goalAction(await readJsonBody(request)), gateway); }
+    catch (error) { sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, gateway); }
     return;
   }
   if (method !== "GET" && method !== "HEAD") {

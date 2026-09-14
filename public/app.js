@@ -1284,7 +1284,47 @@ function renderAttention() {
   elements.attentionBanner.append(actions);
 }
 
+const goalStrip = document.querySelector("#goal-strip");
+const goalToggle = document.querySelector("#goal-toggle");
+const goalClear = document.querySelector("#goal-clear");
+let goalActionBusy = null;
+function renderGoal() {
+  const goal = state?.goal;
+  goalStrip.hidden = !goal;
+  if (!goal) return;
+  const labels = { active: "Pursuing goal", paused: "Goal paused", blocked: "Goal blocked", usageLimited: "Goal usage limited", budgetLimited: "Goal budget limited", complete: "Goal complete" };
+  document.querySelector("#goal-status").textContent = labels[goal.status] || `Goal ${goal.status}`;
+  const objective = document.querySelector("#goal-objective");
+  objective.textContent = goal.objective;
+  objective.title = goal.objective;
+  document.querySelector("#goal-time").textContent = typeof goal.timeUsedSeconds === "number" ? formatElapsed(goal.timeUsedSeconds * 1000) : "";
+  goalStrip.title = typeof goal.tokensUsed === "number" ? `${goal.tokensUsed.toLocaleString()} tokens used${typeof goal.tokenBudget === "number" ? ` / ${goal.tokenBudget.toLocaleString()} budget` : ""}` : "";
+  const active = goal.status === "active";
+  goalToggle.hidden = !active && goal.status !== "paused";
+  goalToggle.dataset.action = active ? "pause" : "resume";
+  goalToggle.title = active ? "Pause goal" : "Resume goal";
+  goalToggle.setAttribute("aria-label", goalToggle.title);
+  goalToggle.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${active ? "M8 5v14M16 5v14" : "m8 5 11 7-11 7Z"}"/></svg>`;
+  goalToggle.disabled = goalClear.disabled = Boolean(goalActionBusy) || !state.connected;
+}
+async function performGoalAction(body) {
+  if (goalActionBusy) return;
+  goalActionBusy = body;
+  renderGoal();
+  try {
+    const response = await apiFetch("/api/goal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Goal action failed");
+    if (state?.machineId === body.machineId && state?.thread?.id === body.threadId) mergeState({ goal: result.goal });
+  } catch (error) {
+    if (state?.machineId === body.machineId && state?.thread?.id === body.threadId) composerError = error.message;
+  } finally { goalActionBusy = null; renderComposer(); }
+}
+goalToggle.addEventListener("click", () => performGoalAction({ machineId: state.machineId, threadId: state.thread.id, action: goalToggle.dataset.action }));
+goalClear.addEventListener("click", () => openTaskDialog({ machineId: state.machineId, threadId: state.thread.id, action: "clear" }, state.goal.objective));
+
 function renderComposer() {
+  renderGoal();
   const capability = state?.message;
   const turnError = state?.phase === "failed" && state?.turn?.status !== "inProgress" ? state?.turn?.error : "";
   const turnActive = state?.turn?.status === "inProgress" && Boolean(state?.turn?.id);
@@ -2193,13 +2233,15 @@ let taskDialogOriginalName = "";
 function openTaskDialog(body, name) {
   taskDialogAction = body;
   taskDialogOriginalName = name;
-  const deleting = body.action === "delete";
-  document.querySelector("#task-dialog-title").textContent = deleting ? "Delete Task" : "Rename Task";
+  const clearing = body.action === "clear";
+  const deleting = body.action === "delete" || clearing;
+  document.querySelector("#task-dialog-title").textContent = clearing ? "Clear Goal" : deleting ? "Delete Task" : "Rename Task";
   document.querySelector("#task-dialog-name-field").hidden = deleting;
   document.querySelector("#task-dialog-delete-copy").hidden = !deleting;
   document.querySelector("#task-dialog-task-name").textContent = name;
+  document.querySelector("#task-dialog-delete-copy p").textContent = clearing ? "Clear this goal from the task?" : "This permanently deletes its Codex conversation. Project files will not be deleted.";
   const submit = document.querySelector("#task-dialog-submit");
-  submit.textContent = deleting ? "Delete" : "Rename";
+  submit.textContent = clearing ? "Clear" : deleting ? "Delete" : "Rename";
   submit.className = deleting ? "danger-button" : "primary-button";
   taskDialogName.value = name;
   taskDialogError.textContent = "";
@@ -2220,7 +2262,8 @@ taskDialogForm.addEventListener("submit", event => {
     if (body.name === taskDialogOriginalName) { taskDialog.close(); return; }
   } else body.confirmed = true;
   taskDialog.close();
-  void performTaskAction(body);
+  if (body.action === "clear") void performGoalAction(body);
+  else void performTaskAction(body);
 });
 
 async function performTaskAction(body) {
@@ -2633,6 +2676,10 @@ function connectEvents() {
   on("settings", (event) => { mergeState(parseEvent(event)); });
   on("queue", (event) => { mergeState(parseEvent(event)); });
   on("control", (event) => { mergeState(parseEvent(event)); });
+  on("goal", event => {
+    const value = parseEvent(event);
+    if (value.machineId === state?.machineId && value.threadId === state?.thread?.id) mergeState({ goal: value.goal });
+  });
   on("context", (event) => { mergeState(parseEvent(event)); });
   on("answers", (event) => { mergeState(parseEvent(event), true); });
   on("machines", (event) => { mergeState(parseEvent(event), false); });

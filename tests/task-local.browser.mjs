@@ -18,6 +18,7 @@ const eventClients=new Set();
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
+let goalGate=null;const goalCalls=[];
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
@@ -43,6 +44,7 @@ const server=createServer(async(req,res)=>{
  }
  return json({settings});
  }
+ if(u.pathname==='/api/goal'){let text='';for await(const c of req)text+=c;const body=JSON.parse(text);if(goalGate)await goalGate;return json(await runtime.goalAction(body));}
  if(u.pathname==='/api/machines/wake'){let text='';for await(const c of req)text+=c;wakeBodies.push(JSON.parse(text));return wakeFailure?json({error:'send EACCES'},400):json({sent:true});}
  if(u.pathname==='/api/machines')return json({machines:settings.headless?[{id:'ssh:test',name:'Second machine',connected:remoteConnected}]:[runtime.machineSummary()]});
  if(u.pathname==='/api/threads')return json({threads:active});
@@ -1233,6 +1235,46 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await settingsSave();assert.equal(settings.machines[0].wakeMac,'AA:BB:CC:DD:EE:FF');
  await settingsOpen();assert.equal(await page.locator('[data-machine-wake-mac]').first().inputValue(),'AA:BB:CC:DD:EE:FF');
  await page.locator('#settings-close').click();
+ }
+ // Selected goals use authoritative state, compact actions, and the existing Clear dialog.
+ for(const width of [1280,390,320]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:null,phase:'done',goal:null,liveMessages:[],activities:[],pending:[]});
+ historyFixture=null;await page.reload();await page.locator('#message-text').waitFor();
+ assert.equal(await page.locator('#goal-strip').isVisible(),false);
+ const goal={objective:'Complete this deliberately long objective while preserving a compact composer layout. '.repeat(5),status:'active',timeUsedSeconds:125,tokensUsed:1234,tokenBudget:5000};
+ const update=value=>runtime.handleNotification({method:value?'thread/goal/updated':'thread/goal/cleared',params:{threadId:task.id,...(value?{goal:value}:{})}});
+ runtime.rpc={request:async(method,params)=>{goalCalls.push({method,params});return method==='thread/goal/clear'?{cleared:true}:{goal:{...goal,status:params.status}};}};
+ update(goal);await page.getByRole('button',{name:'Pause goal',exact:true}).waitFor();
+ assert.equal(await page.locator('#goal-status').textContent(),'Pursuing goal');
+ assert.equal(await page.locator('#goal-time').textContent(),'2m 05s');
+ assert.equal(await page.getByRole('button',{name:'Clear goal',exact:true}).isVisible(),true);
+ const goalBounds=await page.locator('#goal-strip').boundingBox();
+ assert(goalBounds.x>=0&&goalBounds.x+goalBounds.width<=width&&goalBounds.height<=60,JSON.stringify({width,goalBounds}));
+ assert.equal(await page.locator('#goal-objective').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
+ let releaseGoal;goalGate=new Promise(resolve=>releaseGoal=resolve);
+ await page.getByRole('button',{name:'Pause goal',exact:true}).click();
+ assert.equal(await page.getByRole('button',{name:'Pause goal',exact:true}).isDisabled(),true);
+ assert.equal(await page.locator('#goal-status').textContent(),'Pursuing goal');
+ goalGate=null;releaseGoal();await page.getByRole('button',{name:'Resume goal',exact:true}).waitFor();
+ assert.equal(await page.locator('#goal-status').textContent(),'Goal paused');
+ assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/set',params:{threadId:task.id,status:'paused'}});
+ await page.getByRole('button',{name:'Resume goal',exact:true}).click();await page.getByRole('button',{name:'Pause goal',exact:true}).waitFor();
+ assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/set',params:{threadId:task.id,status:'active'}});
+ for(const status of ['blocked','usageLimited','budgetLimited','complete']){
+ update({...goal,status});await page.waitForFunction(()=>document.querySelector('#goal-toggle').hidden);
+ assert.equal(await page.getByRole('button',{name:'Clear goal',exact:true}).isVisible(),true);
+ }
+ update({...goal,status:'paused'});await page.getByRole('button',{name:'Resume goal',exact:true}).waitFor();
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/goal-${width}.png`});
+ const beforeClear=goalCalls.length;
+ await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.locator('#task-dialog').waitFor();
+ assert.equal(await page.locator('#task-dialog-title').textContent(),'Clear Goal');assert.equal(goalCalls.length,beforeClear);
+ await page.locator('#task-dialog-cancel').click();assert.equal(await page.locator('#goal-strip').isVisible(),true);
+ await page.getByRole('button',{name:'Clear goal',exact:true}).click();await page.locator('#task-dialog-submit').click();
+ await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
+ assert.deepEqual(goalCalls.at(-1),{method:'thread/goal/clear',params:{threadId:task.id}});
+ update(goal);await page.locator('#goal-strip').waitFor();update(null);await page.waitForFunction(()=>document.querySelector('#goal-strip').hidden);
  }
  assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

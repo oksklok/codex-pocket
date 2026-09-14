@@ -2239,6 +2239,7 @@ test('Stop awaits active goal pause before interrupting the exact turn', async (
   ]);
   finishPause();
   assert.deepEqual(await stopping, { accepted: true });
+  assert.equal(runtime.state.goal.status, 'paused');
   assert.deepEqual(calls[2], { method: 'turn/interrupt', params: { threadId: 'thread-1', turnId: 'turn-1' } });
   assert.equal(calls.length, 3);
   await assert.rejects(runtime.interruptTurn('thread-1', 'turn-1'), /already stopping/);
@@ -2363,4 +2364,61 @@ test('Wake resolves configured SSH MAC, preserves selection, and nudges existing
     await gateway.wakeMachine('ssh:pc');
     assert.equal(pc.reconnectTimer,null);assert.equal(pc.reconnectDelayIndex,0);
   } finally {if(pc.reconnectTimer)clearTimeout(pc.reconnectTimer);t.mock.restoreAll();syncBuiltinESMExports();}
+});
+
+test('Goal notifications expose only useful fields for the selected task and reset on release', async () => {
+  const runtime=activeRuntime();
+  const goal={objective:'Finish the task',status:'active',timeUsedSeconds:123,tokensUsed:42,tokenBudget:500,threadId:'thread-1',createdAt:1,updatedAt:2,extra:'omit'};
+  runtime.handleNotification({method:'thread/goal/updated',params:{threadId:'other',goal}});
+  assert.equal(runtime.state.goal,null);
+  runtime.handleNotification({method:'thread/goal/updated',params:{threadId:'thread-1',goal}});
+  assert.deepEqual(runtime.snapshot().goal,{objective:goal.objective,status:'active',timeUsedSeconds:123,tokensUsed:42,tokenBudget:500});
+  runtime.handleNotification({method:'thread/goal/cleared',params:{threadId:'other'}});
+  assert.equal(runtime.state.goal.status,'active');
+  runtime.handleNotification({method:'thread/goal/cleared',params:{threadId:'thread-1'}});
+  assert.equal(runtime.state.goal,null);
+  runtime.handleNotification({method:'thread/goal/updated',params:{threadId:'thread-1',goal}});
+  await runtime.releaseTask();assert.equal(runtime.state.goal,null);
+});
+
+test('Goal attachment reads current state and replays a newer notification over the read', async () => {
+  for(const notified of [false,true]){
+    const runtime=activeRuntime();
+    runtime.loadedThreads=[{id:'next',name:'Next',cwd:'/tmp',status:'idle'}];
+    const calls=[];
+    runtime.rpc={request:async(method,params)=>{
+      calls.push({method,params});
+      if(method==='thread/resume')return {thread:{id:'next',cwd:'/tmp',status:'idle'}};
+      if(method==='thread/goal/get'){
+        if(notified)runtime.handleNotification({method:'thread/goal/updated',params:{threadId:'next',goal:{objective:'New state',status:'paused'}}});
+        return {goal:{objective:'Initial',status:'active',timeUsedSeconds:5}};
+      }
+      return {data:[]};
+    }};
+    await runtime.attachLoadedThread('next',false);
+    assert.equal(runtime.state.goal.status,notified?'paused':'active');
+    assert.deepEqual(calls.find(c=>c.method==='thread/goal/get').params,{threadId:'next'});
+    assert(calls.findIndex(c=>c.method==='thread/goal/get')<calls.findIndex(c=>c.method==='thread/unsubscribe'));
+  }
+});
+
+test('Goal actions use exact status values, require Clear confirmation, and reject stale selection', async () => {
+  const gateway=new PocketGateway({machines:[]}),runtime=gateway.runtimes.get('local'),calls=[];
+  Object.assign(runtime.state,{connected:true,thread:{id:'selected'},goal:{objective:'Goal',status:'active'}});
+  runtime.rpc={request:async(method,params)=>{
+    calls.push({method,params});
+    return method==='thread/goal/clear'?{cleared:true}:{goal:{objective:'Goal',status:params.status,timeUsedSeconds:10}};
+  }};
+  const act=(action,extra={})=>gateway.goalAction({machineId:'local',threadId:'selected',action,...extra});
+  await assert.rejects(act('pause',{threadId:'old'}),/Selected task changed/);
+  await assert.rejects(act('clear'),/Confirm/);assert.equal(calls.length,0);
+  assert.equal((await act('pause')).goal.status,'paused');
+  assert.equal((await act('resume')).goal.status,'active');
+  assert.deepEqual(calls,[{method:'thread/goal/set',params:{threadId:'selected',status:'paused'}},{method:'thread/goal/set',params:{threadId:'selected',status:'active'}}]);
+  runtime.state.goal.status='blocked';await assert.rejects(act('resume'),/status changed/);
+  runtime.rpc.request=async()=>{throw new Error('Goal update failed');};
+  await assert.rejects(act('clear',{confirmed:true}),/Goal update failed/);assert.equal(runtime.state.goal.status,'blocked');
+  runtime.rpc.request=async(method,params)=>{calls.push({method,params});return {cleared:true};};
+  assert.equal((await act('clear',{confirmed:true})).goal,null);
+  assert.deepEqual(calls.at(-1),{method:'thread/goal/clear',params:{threadId:'selected'}});
 });

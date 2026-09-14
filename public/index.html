@@ -80,6 +80,11 @@
             <button class="jump-latest" id="jump-latest" type="button" aria-label="Jump to Latest" title="Jump to Latest" hidden>
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></svg>
             </button>
+            <div class="goal-strip" id="goal-strip" hidden>
+              <div class="goal-copy"><div><strong id="goal-status"></strong><span id="goal-time"></span></div><div id="goal-objective"></div></div>
+              <button class="icon-button" id="goal-toggle" type="button"></button>
+              <button class="icon-button" id="goal-clear" type="button" aria-label="Clear goal" title="Clear goal"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+            </div>
             <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
             <div class="queue-banner" id="queue-banner" hidden>
               <div class="queue-copy"><strong>Queued Next</strong><span id="queue-text"></span></div>
