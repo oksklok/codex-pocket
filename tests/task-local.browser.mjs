@@ -460,9 +460,12 @@ try {
  await open();await capture('tasks');assert.equal(await page.locator('#destination-close').isVisible(),true);assert.equal(await page.locator('#destination-backdrop').isVisible(),true);
  const header=await page.locator('.destination-switcher-head').evaluate(e=>({height:e.getBoundingClientRect().height,padding:getComputedStyle(e).padding}));
  const closeSize=await page.locator('#destination-close').evaluate(e=>({width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height}));
+ const centeredClose=async id=>{const g=await page.locator(id).evaluate(e=>{const b=e.getBoundingClientRect(),s=e.querySelector('svg').getBoundingClientRect();return {dx:(b.left+b.right-s.left-s.right)/2,dy:(b.top+b.bottom-s.top-s.bottom)/2,path:e.querySelector('path').getAttribute('d')};});assert(Math.abs(g.dx)<0.1&&Math.abs(g.dy)<0.1);return g.path;};
+ const closePath=await centeredClose('#destination-close');
  await dismissTasks();await closed();await page.locator('#inspector-button').click();await page.waitForTimeout(210);await capture('details');
  assert.deepEqual(await page.locator('.inspector-heading').evaluate(e=>({height:e.getBoundingClientRect().height,padding:getComputedStyle(e).padding})),header);
  assert.deepEqual(await page.locator('#inspector-close').evaluate(e=>({width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height})),closeSize);
+ assert.equal(await centeredClose('#inspector-close'),closePath);
  assert.equal(await page.locator('#inspector-backdrop').isVisible(),true);await page.locator('#inspector-close').click();await page.waitForTimeout(210);
  }
  runtime.handleNotification({method:'thread/tokenUsage/updated',params:{threadId:'current',tokenUsage:{last:{totalTokens:41000},modelContextWindow:100000}}});

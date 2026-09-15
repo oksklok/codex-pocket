@@ -232,6 +232,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .danger-button { min-height: 36px; padding: 7px 12px; border-color: rgba(255,139,139,.35); color: var(--danger); background: rgba(255,139,139,.08); font-size: var(--text-ui); }
 .icon-button { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); padding: 0; font-size: 1.2rem; }
 .details-toggle { display: grid; place-items: center; padding: 0; }
+.sidebar-close { position: relative; }
+.sidebar-close svg { position: absolute; inset: 0; margin: auto; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 .details-toggle svg, .settings-button svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .settings-button { display: grid; place-items: center; padding: 0; }
 .details-toggle.active { border-color: rgba(69,200,138,.42); background: rgba(69,200,138,.13); color: var(--accent); }
