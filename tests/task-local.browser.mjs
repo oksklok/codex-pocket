@@ -188,13 +188,19 @@ try {
  if(page.viewportSize().width>=1100){await page.waitForTimeout(210);assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}
  await closed();};
 
- // Pending deletion keeps its row slot through unload/status updates and catalog refreshes.
- for(const width of [1280,1099,390])for(const failure of [false,true]){
+ // Pending deletion pins the visible slot, including searches hiding rows above it in either task view.
+ for(const width of [1280,1099,390])for(const failure of [false,true])for(const view of ["normal","filtered-active","filtered-archived"]){
  await page.setViewportSize({width,height:844});
- const deleting={...task,id:'delete-pending',name:'Delete pending',loaded:true,updatedAt:20};
- active=[{...task,loaded:true,updatedAt:30},deleting,{...owned,loaded:true,updatedAt:10}];
+ const filtered=view!=='normal',isArchived=view==='filtered-archived';
+ const visible={preview:filtered?'search-match':'',archived:isArchived};
+ const deleting={...task,...visible,id:'delete-pending',name:'Delete pending',loaded:true,updatedAt:20};
+ const hidden={...task,id:'hidden',name:'Hidden row',loaded:true,updatedAt:50,archived:isArchived};
+ const setCatalog=tasks=>{if(isArchived)archived=tasks;else active=tasks;};
+ setCatalog([...(filtered?[hidden]:[]),{...task,...visible,loaded:true,updatedAt:30},deleting,{...owned,...visible,loaded:true,updatedAt:10}]);
  Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,threadStatus:'idle',liveMessages:[],activities:[]});
  await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
+ if(isArchived){await page.locator('#show-archived').check();await row('Delete pending').waitFor();}
+ if(filtered){await page.locator('#destination-search').fill('search-match');await row('Hidden row').waitFor({state:'detached'});}
  assert.equal(await row('Current task').locator('.destination-check svg[aria-hidden="true"]').count(),1);
  assert.equal(await row('Delete pending').locator('summary svg circle').count(),3);
  const order=()=>page.locator('.destination-group').first().locator('.destination-task-label > span').allTextContents();
@@ -213,11 +219,15 @@ try {
  deleting.status='notLoaded';deleting.loaded=false;
  runtime.broadcast('task-status',{machineId:'local',threadId:deleting.id,status:'notLoaded'});
  runtime.broadcast('task-status',{machineId:'local',threadId:owned.id,status:'idle',updatedAt:40});
- active=[{...owned,loaded:true,updatedAt:40},{...task,loaded:true,updatedAt:30},deleting];
+ if(filtered){
+ hidden.loaded=false;hidden.status='notLoaded';
+ runtime.broadcast('task-status',{machineId:'local',threadId:hidden.id,status:'notLoaded'});
+ }
+ setCatalog([{...owned,...visible,loaded:true,updatedAt:40},{...task,...visible,loaded:true,updatedAt:30},deleting,...(filtered?[hidden]:[])]);
  await page.waitForFunction(()=>document.querySelector('.destination-task-label > span').textContent==='Owned task');
  assert.deepEqual(await order(),['Owned task','Delete pending','Current task']);
  await row('Delete pending').getByText('Deleting…',{exact:true}).waitFor();
- if(!failure)active=active.filter(task=>task.id!==deleting.id);
+ if(!failure)setCatalog((isArchived?archived:active).filter(task=>task.id!==deleting.id));
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  assert.deepEqual(await order(),['Owned task','Delete pending','Current task']);
  assert(await page.evaluate(()=>window.deletingPositions.length>0&&window.deletingPositions.every(index=>index===1)));
@@ -230,11 +240,13 @@ try {
  await row('Delete pending').waitFor({state:'detached'});await row('Current task').waitFor();
  assert.deepEqual(await order(),['Owned task','Current task']);
  }
+ if(!isArchived){
  await row('Owned task').locator('.destination-task').click();
  await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Owned task'));
  assert.equal(await input.evaluate(e=>document.activeElement===e),width>=1100);
  }
- failAction=false;active=[task,owned];
+ }
+ failAction=false;active=[task,owned];archived=[{...task,id:'old',name:'Old task',archived:true}];
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-tasks-open'));
 
  for(const width of [1280,390]){

@@ -663,18 +663,24 @@ function renderDestinationSwitcher(force = false) {
     const latest = machines.find(machine => machine.id === catalogMachine.id);
     const machine = { ...catalogMachine, ...(latest ? { connected: latest.connected, canWake: latest.canWake ?? catalogMachine.canWake } : {}) };
     const machineMatches = `${machine.name || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
+    const pendingDelete = taskActionTarget?.action === "delete" && taskActionTarget.machineId === machine.id
+      && taskActionTarget.archived === archived ? taskActionTarget : null;
     const orderedTasks = [...(Array.isArray(machine.tasks) ? machine.tasks : [])];
-    if (taskActionTarget?.action === "delete" && taskActionTarget.machineId === machine.id
-      && taskActionTarget.archived === archived && taskActionTarget.position >= 0) {
-      // Keep this slot even if an unload or catalog refresh arrives before the delete response.
-      const index = orderedTasks.findIndex(task => task.id === taskActionTarget.threadId);
-      const pendingTask = index >= 0 ? orderedTasks.splice(index, 1)[0] : taskActionTarget.task;
-      orderedTasks.splice(taskActionTarget.position, 0, pendingTask);
-    }
+    // A refresh may omit the task before its delete response arrives.
+    if (pendingDelete?.task && !orderedTasks.some(task => task.id === pendingDelete.threadId)) orderedTasks.push(pendingDelete.task);
     const tasks = orderedTasks.filter((task) => {
       if (!query || machineMatches) return true;
       return `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
     });
+    if (pendingDelete) {
+      const index = tasks.findIndex(task => task.id === pendingDelete.threadId);
+      // Capture and pin the visible slot for this query, after hidden rows are removed.
+      if (pendingDelete.query !== query) {
+        pendingDelete.query = query;
+        pendingDelete.position = index;
+      }
+      if (index >= 0 && pendingDelete.position >= 0) tasks.splice(pendingDelete.position, 0, ...tasks.splice(index, 1));
+    }
     if ((archived || query && !machineMatches) && !tasks.length) continue;
 
     const catalogAvailable = machine.catalogAvailable !== false;
@@ -2425,8 +2431,7 @@ async function performTaskAction(body) {
     target.archived = Boolean(body.archived);
     const tasks = navigationCatalogs[Number(target.archived)]?.machines
       ?.find(machine => machine.id === body.machineId)?.tasks;
-    target.position = tasks?.findIndex(task => task.id === body.threadId) ?? -1;
-    target.task = tasks?.[target.position];
+    target.task = tasks?.find(task => task.id === body.threadId);
   }
   taskActionTarget = target;
   destinationTaskError = null;
