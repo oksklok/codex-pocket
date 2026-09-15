@@ -798,8 +798,9 @@ test("browser mutations enforce origin and JSON while preserving authenticated a
     assert.equal((await post("/api/login", { Origin: origin, "Content-Type": "text/plain" }, "{}")).status, 415);
     assert.equal((await post("/api/login", { Origin: origin })).status, 415);
     const runtime = gateway.runtimes.get("local");
-    runtime.state.queuedMessage = { threadId: "queued-task", text: "Keep until cancelled" };
-    const cancel = headers => fetch(origin + "/api/message/queue?machineId=local", { method: "DELETE", headers });
+    runtime.state.thread = { id: "queued-task" };
+    runtime.state.queuedMessage = { id: "queue-test", threadId: "queued-task", text: "Keep until cancelled" };
+    const cancel = headers => fetch(origin + "/api/message/queue?machineId=local&threadId=queued-task&queueId=queue-test", { method: "DELETE", headers });
     assert.equal((await cancel({ Origin: "https://attacker.example" })).status, 403);
     assert.equal((await cancel({ "Sec-Fetch-Site": "cross-site" })).status, 403);
     assert.equal(runtime.state.queuedMessage.text, "Keep until cancelled");
@@ -2295,13 +2296,13 @@ test('failed first Start keeps the guard; accepted Start restores destination-be
   for (const destination of ['local', 'ssh:b']) {
     const { gateway, runtime, calls } = freshTaskGateway();
     runtime.rejectStart = true;
-    await assert.rejects(gateway.sendMessage('local', 'Real input', 'start'), /First send failed/);
+    await assert.rejects(gateway.sendMessage('local', 'Real input', 'start', [], [], undefined, 'fresh'), /First send failed/);
     assert.equal(runtime.pendingTaskNames.get('fresh').firstMessageAccepted, false);
     assert.equal(runtime.state.turn, null);
     await assert.rejects(gateway.selectDestination(destination, 'other', 'local', 'fresh'), freshTaskError);
     assert(!calls.some(c => ['thread/resume', 'thread/name/set'].includes(c.method)));
     runtime.rejectStart = false;
-    assert.equal((await gateway.sendMessage('local', 'Real input', 'start')).accepted, true);
+    assert.equal((await gateway.sendMessage('local', 'Real input', 'start', [], [], undefined, 'fresh')).accepted, true);
     await gateway.selectDestination(destination, 'other', 'local', 'fresh');
     assert.equal(gateway.state.thread.id, 'other');
     assert.equal(gateway.selectedMachineId, destination);
@@ -2771,7 +2772,7 @@ test('queue PATCH enforces selected machine/thread and JSON before updating text
     assert.equal((await patch({machineId:'local',threadId:'wrong',text:'Wrong'})).status,409);
     assert.equal((await patch({machineId:'local',threadId:'thread-1',text:'Wrong'},'text/plain')).status,415);
     assert.equal(runtime.state.queuedMessage.text,'Before');
-    const response=await patch({machineId:'local',threadId:'thread-1',text:'After'});assert.equal(response.status,200);
+    const response=await patch({machineId:'local',threadId:'thread-1',queueId:'12',text:'After'});assert.equal(response.status,200);
     assert.deepEqual((await response.json()).queuedMessage,{threadId:'thread-1',text:'After',images:[],files:[],createdAt:12});
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
@@ -2990,4 +2991,238 @@ test('task ordering uses active, loaded, recency, then deterministic id ties', (
   assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','newer','older','unloaded']);
   tasks.find(t=>t.id==='older').updatedAt=3;
   assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','older','newer','unloaded']);
+});
+
+test('review: task mutations require thread identity at execution and queue replacement is fenced', async () => {
+  for (const action of ['message','model','access']) {
+    const gateway=new PocketGateway({machines:[]}),runtime=activeRuntime();gateway.runtimes.set('local',runtime);
+    let release;runtime.selectionQueue=new Promise(r=>release=r);
+    const writes=[];runtime.rpc={request:async(...args)=>{writes.push(args);return {};}};
+    const invoke=threadId=>action==='message'?gateway.sendMessage('local','Hello','start',[],[],undefined,threadId)
+      :action==='model'?gateway.updateThreadSettings('local','test','high',threadId):gateway.updateAccess('local','full',threadId);
+    await assert.rejects(invoke(undefined),/Selected task changed/);
+    const pending=invoke('thread-1');await new Promise(setImmediate);
+    runtime.state.thread={id:'other'};release();
+    await assert.rejects(pending,/Selected task changed/);assert.equal(writes.length,0);
+  }
+  for (const action of ['edit','cancel','send']) {
+    const gateway=new PocketGateway({machines:[]}),runtime=activeRuntime();gateway.runtimes.set('local',runtime);
+    const before={id:'old',threadId:'thread-1',text:'Old',createdAt:1};
+    runtime.state.queuedMessage=before;
+    let release;gateway.operationQueue=new Promise(r=>release=r);
+    const pending=action==='edit'?gateway.editQueuedMessage({machineId:'local',threadId:'thread-1',queueId:'old',text:'Stale'})
+      :action==='cancel'?gateway.cancelQueuedMessage('local','thread-1','old'):gateway.sendQueuedMessage('local','steer','thread-1','old');
+    const replacement={...before,id:'new',text:'Replacement'};runtime.state.queuedMessage=replacement;release();
+    await assert.rejects(pending,/no longer has/);assert.equal(runtime.state.queuedMessage,replacement);
+    await assert.rejects(gateway.cancelQueuedMessage('local','thread-1',undefined),/no longer has/);
+  }
+});
+
+test('review: late normal and queued starts preserve terminal notifications and newer tasks', async () => {
+  for(const queued of [false,true])for(const status of ['completed','failed','interrupted','changed']){
+    const runtime=activeRuntime();runtime.state.turn=null;runtime.state.threadStatus='idle';
+    if(queued)runtime.state.queuedMessage={id:'queue',threadId:'thread-1',text:'Queued',createdAt:1};
+    let expected;
+    runtime.rpc={request:async method=>{
+      assert.equal(method,'turn/start');
+      if(status==='changed'){
+        runtime.state.thread={id:'other'};runtime.rpc={};runtime.state.turn={id:'newer',status:'inProgress'};runtime.state.phase='working';
+      }else runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'started',status,error:status==='failed'?{message:'Failed'}:null}}});
+      expected=runtime.state.turn;
+      return {turn:{id:'started',status:'inProgress'}};
+    }};
+    if(queued)await runtime.sendQueuedMessage('start');
+    else await runtime.sendMessage('Hello','start');
+    assert.equal(runtime.state.turn,expected);
+    if(status!=='changed')assert.equal(runtime.state.phase,status==='failed'?'failed':status==='interrupted'?'stopped':'done');
+  }
+});
+
+test('review: late model/access acknowledgments cannot update another task', async () => {
+  for(const mode of ['model','access']){
+    const runtime=activeRuntime();runtime.state.models=[{model:'test',supportedReasoningEfforts:[{reasoningEffort:'high'}]}];
+    runtime.state.access={mode:'ask',choices:{full:{available:true}}};runtime.permissionProfiles=[{id:':full-access',allowed:true}];
+    let resolve,started;const ready=new Promise(r=>started=r);
+    runtime.rpc={request:()=>{started();return new Promise(r=>resolve=r);}};
+    const pending=mode==='model'?runtime.updateThreadSettings('test','high'):runtime.updateAccess('full');
+    await ready;runtime.state.thread={id:'other'};runtime.state.model='new-model';runtime.state.access={mode:'ask'};
+    resolve({});await assert.rejects(pending,/Selected task changed/);
+    assert.equal(runtime.state.model,'new-model');assert.equal(runtime.state.access.mode,'ask');
+  }
+});
+
+test('review: peer disconnect drains RPCs, prevents writes, and contains malformed frames and stdin errors',async t=>{
+  const cp=(await import('node:child_process')).default,{syncBuiltinESMExports}=await import('node:module');
+  const {EventEmitter}=await import('node:events'),{PassThrough}=await import('node:stream'),{createHash}=await import('node:crypto');
+  let child;t.mock.method(cp,'spawn',()=>{child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;return child;});
+  syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  for(const cause of ['frame','parser','stdin','intentional']){
+    const rpc=new RpcClient();let closes=0;rpc.onClose=()=>closes++;
+    const opening=rpc.connect(undefined,'fixture');const c=child;c.emit('spawn');
+    const key=/Sec-WebSocket-Key: (.+)\r/.exec(c.stdin.read().toString())[1];
+    const accept=createHash('sha1').update(key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    c.stdout.write('HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');await opening;
+    const one=rpc.request('one'),two=rpc.request('two');const pending=[...rpc.pending.values()];
+    const rejected=Promise.all([assert.rejects(one),assert.rejects(two)]);
+    if(cause==='frame')c.stdout.write(Buffer.from([0x88,0]));
+    else if(cause==='parser')c.stdout.write(Buffer.from([0x81,127,255,255,255,255,255,255,255,255]));
+    else if(cause==='stdin')c.stdin.emit('error',new Error('broken pipe'));
+    else rpc.close();
+    await rejected;
+    assert.equal(rpc.pending.size,0);assert(pending.every(p=>p.timer._destroyed));
+    assert.equal(closes,cause==='intentional'?0:1);
+    await assert.rejects(rpc.request('late'),/closed/);assert.throws(()=>rpc.notify('late'),/closed/);assert.throws(()=>rpc.respond(4,{}),/closed/);
+    c.emit('exit',255,null);rpc.close();assert.equal(closes,cause==='intentional'?0:1);
+    c.stdin.destroy();c.stdout.destroy();c.stderr.destroy();
+  }
+});
+
+test('review: old connection initialization success/failure cannot overwrite a new connection',async t=>{
+  t.mock.method(RpcClient.prototype,'notify',()=>{});
+  t.mock.method(RpcClient.prototype,'connect',async()=>{});
+  for(const fail of [false,true]){
+    let resolve,reject,started,first=true;const ready=new Promise(r=>started=r);
+    t.mock.method(RpcClient.prototype,'request',async function(method){
+      if(method==='initialize'&&first){first=false;started();return new Promise((r,j)=>{resolve=r;reject=j;});}
+      return method==='initialize'?{userAgent:'new connection'}:{data:[]};
+    });
+    const runtime=new MachineRuntime({}, {id:'ssh:test',name:'Test',ssh:'test'},()=>{});
+    const old=runtime.start(false);await ready;await runtime.connect();const current=runtime.rpc;
+    if(fail)reject(new Error('Old initialization timed out'));else resolve({userAgent:'old connection'});
+    await old;assert.equal(runtime.rpc,current);assert.equal(runtime.state.userAgent,'new connection');assert.equal(runtime.state.connected,true);
+    assert.equal(runtime.reconnectTimer,null);await runtime.stop();
+  }
+});
+
+test('review: confirmed task mutations survive refresh failure, real mutations still reject',async()=>{
+  for(const action of ['rename','archive','unarchive','delete'])for(const failMutation of [false,true]){
+    const runtime=activeRuntime();runtime.state.turn=null;runtime.state.threadStatus='idle';
+    let mutated=false;
+    runtime.refreshLoadedThreads=async()=>{if(mutated)throw new Error('Catalog unavailable');return [{id:'thread-1',name:'Task',status:'idle'}];};
+    runtime.listArchivedThreads=async()=>[{id:'thread-1',name:'Task',status:'idle'}];
+    runtime.rpc={request:async()=>{if(failMutation)throw new Error('Mutation rejected');mutated=true;return {};}};
+    const pending=runtime.taskAction({action,threadId:'thread-1',name:'Renamed',archived:action==='unarchive',confirmed:true});
+    if(failMutation)await assert.rejects(pending,/Mutation rejected/);else{await pending;assert(mutated);}
+  }
+});
+
+test('review: history hydration has a shared deadline, page cap and explicit repeated-cursor failure',async t=>{
+  t.mock.timers.enable({apis:['Date']});
+  for(const cause of ['pages','time','cursor']){
+    const runtime=activeRuntime();let pages=0;const budgets=[];
+    runtime.rpc={request:async(method,params,timeout)=>{
+      if(method==='thread/turns/list')return {data:[{id:'turn',status:'completed',items:[]}]};
+      pages++;budgets.push(timeout);if(cause==='time')t.mock.timers.tick(10001);
+      return {data:[],nextCursor:cause==='cursor'?'repeat':String(pages)};
+    }};
+    await assert.rejects(runtime.history(null,2),/History retrieval incomplete/);
+    if(cause==='pages')assert.equal(pages,100);
+    if(cause==='time'){assert.equal(pages,2);assert.deepEqual(budgets,[20000,9999]);}
+    if(cause==='cursor')assert.equal(pages,2);
+  }
+});
+
+test('review: remote image completion waits for stdout and contains stream errors',async t=>{
+  const cp=(await import('node:child_process')).default,{syncBuiltinESMExports}=await import('node:module');
+  const {EventEmitter}=await import('node:events'),{PassThrough}=await import('node:stream');
+  let child;t.mock.method(cp,'spawn',()=>{child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;return child;});
+  syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  t.mock.timers.enable({apis:['setTimeout']});
+  for(const cause of ['success','stdout','stderr','size','timeout']){
+    const runtime=new MachineRuntime({}, {id:'ssh:test',name:'Test',ssh:'test'},()=>{});
+    runtime.trustedImagePaths.add('/tmp/image.png');
+    let done=false;const pending=runtime.readSurfacedImage('/tmp/image.png').then(value=>{done=true;return value;});
+    const rejected=cause==='success'?null:assert.rejects(pending,/Image unavailable/);
+    child.stdout.write(Buffer.from('first'));child.emit('exit',0);await Promise.resolve();assert.equal(done,false);
+    if(cause==='success'){child.stdout.end(Buffer.from('last'));await new Promise(setImmediate);child.emit('close',0);assert.equal((await pending).data.toString(),'firstlast');}
+    else if(cause==='size'){child.stdout.write(Buffer.alloc(12*1024*1024));await rejected;}
+    else if(cause==='timeout'){t.mock.timers.tick(15000);await rejected;}
+    else{child[cause].emit('error',new Error('stream failure'));await rejected;}
+    child.stdout.destroy();child.stderr.destroy();
+  }
+});
+
+test('review: native control listener checks Host/origin and permits native requests without Origin',async()=>{
+  const {handleControlRequest}=await import('../gateway.ts'),{createServer,request}=await import('node:http');
+  let stopped=0,quit=0;const gateway=new PocketGateway({machines:[]});
+  const server=createServer((req,res)=>handleControlRequest(req,res,gateway,{host:'0.0.0.0',port:4173},()=>stopped++,()=>quit++));
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;
+  const send=(path,headers={})=>new Promise((resolve,reject)=>{const req=request({hostname:'127.0.0.1',port,path,method:'POST',headers},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});req.on('error',reject);req.end();});
+  try{
+    assert.equal(await send('/stop',{Host:'attacker.example',Origin:'http://attacker.example'}),403);
+    assert.equal(await send('/shutdown',{Origin:'https://attacker.example'}),403);
+    assert.equal(await send('/stop',{'Sec-Fetch-Site':'cross-site'}),403);
+    assert.equal(stopped+quit,0);
+    assert.equal(await send('/stop'),202);
+    assert.equal(await send('/shutdown',{Origin:`http://127.0.0.1:${port}`}),202);
+    assert.equal(stopped,1);assert.equal(quit,1);
+  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+});
+
+test('review: HTTP message timeout propagates unknown receipt while genuine rejection remains rejected',async()=>{
+  const {handleRequest}=await import('../gateway.ts'),{createServer}=await import('node:http');
+  const gateway=new PocketGateway({machines:[]});let posts=0,fail='turn/start timed out';
+  gateway.sendMessage=async()=>{posts++;throw new Error(fail);};
+  gateway.sendQueuedMessage=async()=>{posts++;throw new Error(fail);};
+  const server=createServer((req,res)=>handleRequest(req,res,gateway,{required:false},{},{host:'127.0.0.1'},async()=>({}),()=>{},()=>false));
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  try{
+    for(const route of ['/api/message','/api/message/queue'])for(const unknown of [true,false]){
+      fail=unknown?'turn/start timed out':'Upstream rejected';
+      const id=gateway.submissions.epoch+'-'+posts+'-'+String(unknown);
+      const response=await fetch('http://127.0.0.1:'+server.address().port+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({submissionId:id,machineId:'local',threadId:'task',queueId:'queue',text:'Test',action:'start'})});
+      assert.equal(response.status,409);const result=await response.json();
+      assert.equal(result.submission.id,id);assert.equal(result.submission.status,unknown?'unknown':'rejected');
+      assert.equal((await gateway.submissions.recover(id)).status,result.submission.status);
+    }
+    assert.equal(posts,4);
+  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+});
+
+test('review: uncertain queued sends cannot automatically start again on a later completion',async()=>{
+  for(const action of ['start','steer']){
+    const runtime=activeRuntime();if(action==='start'){runtime.state.turn=null;runtime.state.threadStatus='idle';}
+    runtime.state.queuedMessage={id:'queue',threadId:'thread-1',text:'Once',createdAt:1};
+    let sends=0;runtime.rpc={request:async()=>{sends++;throw new Error('turn/'+action+' timed out');}};
+    await assert.rejects(runtime.sendQueuedMessage(action),/timed out/);
+    assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);
+    runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'late',status:'completed'}}});
+    await runtime.selectionQueue;assert.equal(sends,1);
+    await assert.rejects(runtime.sendQueuedMessage('start'),/timed out/);assert.equal(sends,1);
+  }
+});
+
+test('review: parked queued sends retain uncertainty and accepted sends remove only the original queue',async()=>{
+  for(const action of ['start','steer'])for(const outcome of ['unknown','accepted','replaced']){
+    const runtime=activeRuntime();if(action==='start'){runtime.state.turn=null;runtime.state.threadStatus='idle';}
+    const queued={id:'original',threadId:'thread-1',text:'Once',createdAt:1};runtime.state.queuedMessage=queued;
+    let resolve,reject,started;const ready=new Promise(r=>started=r);
+    runtime.rpc={request:()=>{started();return new Promise((r,j)=>{resolve=r;reject=j;});}};
+    const pending=runtime.sendQueuedMessage(action);const rejected=outcome==='unknown'?assert.rejects(pending):null;
+    await ready;runtime.parkTaskQueue();runtime.resetThreadState();runtime.state.thread={id:'other'};runtime.rpc={};
+    const replacement={...queued,id:'replacement'};
+    if(outcome==='replaced')runtime.taskQueues.set('thread-1',replacement);
+    if(outcome==='unknown'){
+      reject(new Error('app-server connection closed'));await rejected;
+      assert.equal(runtime.taskQueues.get('thread-1').deliveryUnknown,true);
+    }else{
+      resolve({turn:{id:'accepted',status:'inProgress'}});await pending;
+      assert.equal(runtime.taskQueues.get('thread-1'),outcome==='replaced'?replacement:undefined);
+    }
+    assert.equal(runtime.state.queuedMessage,null);assert.equal(runtime.state.turn,null);
+  }
+});
+
+test('review: late active-turn hydration preserves terminal state and connection changes',async()=>{
+  for(const change of ['terminal','connection','task']){
+    const runtime=activeRuntime();let resolve;
+    runtime.rpc={request:()=>new Promise(r=>resolve=r)};
+    const pending=runtime.loadActiveTurn();
+    if(change==='terminal')runtime.state.turn={id:'finished',status:'completed'};
+    if(change==='connection')runtime.rpc={};
+    if(change==='task')runtime.state.thread={id:'other'};
+    const turn=runtime.state.turn;
+    resolve({data:[{id:'stale',status:'inProgress'}]});await pending;
+    assert.equal(runtime.state.turn,turn);
+  }
 });

@@ -185,8 +185,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-check, .destination-task-label > span, .destination-task-status { grid-row: 1; line-height: 16px; }
 .destination-task-label > span { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-label > small { grid-column: 2 / -1; grid-row: 2; min-width: 0; line-height: 16px; }
-.destination-task-status { grid-column: 3; }
-.destination-task-status { color: var(--accent); font-size: var(--text-meta); font-weight: 750; }
+.destination-task-status { grid-column: 3; color: var(--accent); font-size: var(--text-meta); font-weight: 750; }
 .destination-group-empty, .destination-empty, .destination-error { margin: 0; padding: 8px 7px; color: var(--subtle); font-size: .68rem; }
 .destination-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 5px; border-radius: 7px; background: rgba(255,139,139,.09); color: var(--danger); }
 .runtime-controls select { min-height: 36px; padding: 6px 22px 6px 9px; font-size: .76rem; text-overflow: ellipsis; }
@@ -328,8 +327,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .activity-kind, .activity-status { color: var(--subtle); font-size: var(--text-meta); font-weight: 750; text-transform: uppercase; }
 .activity-kind { color: var(--activity-color); }
 .activity-label { color: var(--muted); font-size: var(--text-label); line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
-.expandable .activity-label::after { content: "›"; display: inline-block; margin-left: 6px; color: var(--subtle); transition: transform .12s ease; }
-.expandable.expanded .activity-label::after { transform: rotate(90deg); }
+.activity-chevron { display: inline-block; margin-left: 6px; color: var(--subtle); transition: transform .12s ease; }
+.expanded .activity-chevron { transform: rotate(90deg); }
 .timeline-activity.reasoning .activity-label { display: none; }
 .activity-detail { margin-top: 3px; color: var(--subtle); font-size: var(--text-secondary); line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
 .activity-detail.markdown { white-space: normal; }
@@ -582,7 +581,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .inspector, .expandable .activity-label::after, .destination-switcher, .destination-backdrop, .destination-button svg { transition: none; }
+  .inspector, .activity-chevron, .destination-switcher, .destination-backdrop, .destination-button svg { transition: none; }
   .timeline-activity.running .activity-status::before, .phase-pill.working, #destination-refresh:disabled svg { animation: none; }
 }
 
@@ -745,3 +744,5 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .working-path-card dt, .working-path-card dd { grid-column: 1; }
 .working-path-card .icon-button { grid-column: 2; grid-row: 1 / 3; align-self: center; display: grid; place-items: center; }
 .working-path-card svg { width: 18px; height: 18px; stroke-linecap: round; stroke-linejoin: round; }
+
+.activity-chevron svg, .machine-row-actions .text-button svg { width: 16px; height: 16px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }

@@ -242,6 +242,13 @@ const selectionHold = createSelectionHold(() => {
 });
 let queueDeliveryUnknown = false;
 let unresolvedSubmission = null;
+const unresolvedSubmissions = new Map();
+function rememberUnresolvedSubmission(pending) {
+  const key = pending ? draftKey(pending.requested.machineId, pending.requested.threadId) : draftKey(state?.machineId, state?.thread?.id);
+  if (pending) unresolvedSubmissions.set(key, pending);
+  else unresolvedSubmissions.delete(key);
+  if (key === draftKey(state?.machineId, state?.thread?.id)) unresolvedSubmission = pending;
+}
 const asyncDrafts = new Map();
 
 function openImage(img) {
@@ -383,10 +390,12 @@ async function apiFetch(url, options) {
 
 async function postMessageAction(url, body) {
   const composerSubmission = ["start", "queue", "steer"].includes(body.action);
-  if (composerSubmission) unresolvedSubmission = null;
+  if (composerSubmission) rememberUnresolvedSubmission(null);
   const submissionId = `${state?.submissionEpoch}-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
-  const requested = { ...body, threadId: state?.thread?.id, turnId: state?.turn?.id,
+  const requested = { ...body, threadId: body.threadId ?? state?.thread?.id, turnId: state?.turn?.id,
     text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, files: body.files ?? state?.queuedMessage?.files, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
+  const requestedEpoch = historyEpoch;
+  const current = () => requestedEpoch === historyEpoch && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id;
   const confirmed = (result) => {
     if (url === "/api/message" && requested.action === "start"
       && newTaskLeaveWarning?.machineId === requested.machineId
@@ -418,18 +427,23 @@ async function postMessageAction(url, body) {
       body: JSON.stringify({ ...body, submissionId }), signal: AbortSignal.timeout(25000),
     });
     result = await response.json();
+    if (!response.ok && ["unknown", "pending"].includes(result.submission?.status)) {
+      const error = new Error(result.error || "Delivery could not be confirmed");
+      error.deliveryUnknown = true;
+      throw error;
+    }
   } catch (error) {
-    if (!(error instanceof TypeError) && !["AbortError", "TimeoutError"].includes(error.name)) throw error;
+    if (!error.deliveryUnknown && !(error instanceof TypeError) && !["AbortError", "TimeoutError"].includes(error.name)) throw error;
     let snapshot;
     try {
       const recovered = await apiFetch(`/api/state?submissionId=${encodeURIComponent(submissionId)}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
       if (!recovered.ok) throw new Error("State unavailable");
       snapshot = await recovered.json();
-      applySnapshot(snapshot);
+      if (current() && snapshot.machineId === requested.machineId && snapshot.thread?.id === requested.threadId) applySnapshot(snapshot);
       connectEvents();
     } catch {
       const failure = new Error("Connection lost; delivery could not be confirmed. Check the task before sending again.");
-      if (composerSubmission) unresolvedSubmission = { submissionId, requested, confirmed, queued: url === "/api/message/queue" || body.action === "queue", warning: failure.message };
+      if (composerSubmission) rememberUnresolvedSubmission({ submissionId, requested, confirmed, queued: url === "/api/message/queue" || body.action === "queue", warning: failure.message });
       connectEvents();
       failure.deliveryUnknown = true;
       throw failure;
@@ -440,7 +454,7 @@ async function postMessageAction(url, body) {
       ? snapshot.submission.error || "Message was not sent. Please send again."
       : "Connection restored; delivery is still unconfirmed. Check the task before sending again.");
     failure.deliveryUnknown = outcome === "unknown";
-    if (composerSubmission && failure.deliveryUnknown) unresolvedSubmission = { submissionId, requested, confirmed, queued: url === "/api/message/queue" || body.action === "queue", warning: failure.message };
+    if (composerSubmission && failure.deliveryUnknown) rememberUnresolvedSubmission({ submissionId, requested, confirmed, queued: url === "/api/message/queue" || body.action === "queue", warning: failure.message });
     throw failure;
   }
   if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
@@ -462,6 +476,7 @@ async function recoverUnresolvedSubmission() {
     const { requested } = pending;
     if (requested.machineId !== state?.machineId || requested.threadId !== state?.thread?.id) return;
     const outcome = reconcileSubmission(pending.submissionId, snapshot, requested);
+    if (snapshot.machineId !== requested.machineId || snapshot.thread?.id !== requested.threadId) return;
     applySnapshot(snapshot);
     if (requested.machineId !== state?.machineId || requested.threadId !== state?.thread?.id) return;
     if (outcome === "unknown") {
@@ -469,9 +484,10 @@ async function recoverUnresolvedSubmission() {
       pending.warning = "Delivery unconfirmed. Check the task before sending again.";
       // Snapshot queue updates must not enable an ambiguously delivered queue/attachment again.
       attachmentDeliveryUnknown = Boolean(requested.images?.length || requested.files?.length);
-      queueDeliveryUnknown = pending.queued;
+      queueDeliveryUnknown = pending.queued && (!requested.queueId
+        || requested.queueId === (state?.queuedMessage?.id ?? String(state?.queuedMessage?.createdAt)));
     } else {
-      unresolvedSubmission = null;
+      rememberUnresolvedSubmission(null);
       attachmentDeliveryUnknown = false;
       queueDeliveryUnknown = false;
       if (outcome === "accepted") {
@@ -1131,7 +1147,7 @@ function renderQueue() {
     elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
-    elements.sendQueue.disabled = queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || queueDialogBusy;
+    elements.sendQueue.disabled = queued?.deliveryUnknown || queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || queueDialogBusy;
     elements.sendQueue.classList.toggle("icon-button", turnActive);
     elements.sendQueue.classList.toggle("text-button", !turnActive);
     const actionLabel = turnActive ? "Steer Now" : sendingQueuedMessage ? "Sending…" : "Send";
@@ -1280,10 +1296,15 @@ function renderStructuredInput(pending) {
   elements.attentionBanner.append(form);
 }
 
+let attentionRenderKey = null;
 function renderAttention() {
   const pending = state?.pending?.[0];
   const currentInputIds = new Set((state?.pending || []).filter((request) => request.kind === "input").map((request) => request.id));
   for (const requestId of inputDrafts.keys()) if (!currentInputIds.has(requestId)) inputDrafts.delete(requestId);
+  const key = JSON.stringify([state?.machineId, state?.thread?.id, pending, submittingInputRequestId, resolvingApproval, state?.stoppingTurnId,
+    (state?.pending || []).filter(request => request.kind === "permission").length]);
+  if (key === attentionRenderKey) return;
+  attentionRenderKey = key;
   elements.attentionBanner.replaceChildren();
   elements.attentionBanner.hidden = !pending;
   if (!pending) return;
@@ -1959,6 +1980,12 @@ function activityNode(activity) {
   const label = document.createElement("div");
   label.className = "activity-label";
   label.textContent = activity.label;
+  if (activity.expandable) {
+    const chevron = document.createElement("span");
+    chevron.className = "activity-chevron";
+    chevron.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>';
+    label.append(chevron);
+  }
   summary.append(heading, label);
   article.append(summary);
   if (activity.detail) {
@@ -2212,11 +2239,15 @@ function applySnapshot(next, loadChangedHistory = true) {
     elements.messageText.value = draft?.text || "";
     selectedImages = [...(draft?.images || [])];
     selectedFiles = [...(draft?.files || [])];
-    attachmentDeliveryUnknown = false;
-    composerError = "";
+    unresolvedSubmission = unresolvedSubmissions.get(draftKey(nextMachineId, nextThreadId)) || null;
+    attachmentDeliveryUnknown = Boolean(unresolvedSubmission && (unresolvedSubmission.requested.images?.length || unresolvedSubmission.requested.files?.length));
+    queueDeliveryUnknown = Boolean(unresolvedSubmission?.queued && (!unresolvedSubmission.requested.queueId
+      || unresolvedSubmission.requested.queueId === (next.queuedMessage?.id ?? String(next.queuedMessage?.createdAt))));
+    composerError = unresolvedSubmission?.warning || "";
     resizeComposer();
   }
   mergeState(next, true);
+  if (taskChanged && unresolvedSubmission) void recoverUnresolvedSubmission();
   if (taskChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
 }
 
@@ -2550,6 +2581,9 @@ async function selectDestination(machineId, threadId) {
 async function submitMessage(action) {
   if (destinationSelection || taskActionBusy) return;
   const sentDraftKey = draftKey(state?.machineId, state?.thread?.id);
+  const requestedEpoch = historyEpoch;
+  const previousTurn = state?.turn;
+  const current = () => sentDraftKey === draftKey(state?.machineId, state?.thread?.id) && requestedEpoch === historyEpoch;
   const text = elements.messageText.value;
   const images = selectedImages;
   const files = selectedFiles;
@@ -2565,22 +2599,25 @@ async function submitMessage(action) {
   renderState();
   try {
     const result = await postMessageAction("/api/message", { machineId: state?.machineId, threadId: state?.thread?.id, text, action, images, files });
-    composerDrafts.delete(sentDraftKey);
-    if (sentDraftKey !== draftKey(state?.machineId, state?.thread?.id)) return;
+    const savedDraft = composerDrafts.get(sentDraftKey);
+    if (savedDraft?.text === text && JSON.stringify(savedDraft.images || []) === JSON.stringify(images)
+      && JSON.stringify(savedDraft.files || []) === JSON.stringify(files)) composerDrafts.delete(sentDraftKey);
+    if (!current()) return;
     selectedImages = [];
     selectedFiles = [];
     attachmentDeliveryUnknown = false;
     elements.messageText.value = "";
     resizeComposer();
     mergeState({
-      ...(result.turn ? { turn: result.turn } : {}),
-      ...(result.phase ? { phase: result.phase } : {}),
-      ...(result.message ? { message: result.message } : {}),
+      ...(state?.turn === previousTurn && result.turn ? { turn: result.turn } : {}),
+      ...(state?.turn === previousTurn && result.phase ? { phase: result.phase } : {}),
+      ...(state?.turn === previousTurn && result.message ? { message: result.message } : {}),
       // A queue SSE update can arrive before this response, including an automatic send.
       ...(Object.hasOwn(result, "queuedMessage") && (!optimisticQueue || state?.queuedMessage === optimisticQueue)
         ? { queuedMessage: result.queuedMessage } : {}),
     });
   } catch (error) {
+    if (!current()) return;
     if (error.deliveryUnknown) {
       attachmentDeliveryUnknown = images.length > 0 || files.length > 0;
       elements.messageText.value = images.length || files.length ? text : "";
@@ -2659,11 +2696,11 @@ let queueDialogBusy = false;
 function queueDialogMatches() {
   return queueDialogTarget && state?.queuedMessage
     && state.machineId === queueDialogTarget.machineId && state.thread?.id === queueDialogTarget.threadId
-    && state.queuedMessage.threadId === queueDialogTarget.threadId && state.queuedMessage.createdAt === queueDialogTarget.createdAt;
+    && state.queuedMessage.threadId === queueDialogTarget.threadId && (state.queuedMessage.id ?? String(state.queuedMessage.createdAt)) === queueDialogTarget.queueId;
 }
 function openQueueDialog(mode) {
   if (!state?.queuedMessage || queueDialogBusy || submittingMessage || sendingQueuedMessage || cancellingQueue || destinationSelection || taskActionBusy) return;
-  queueDialogTarget = { machineId: state.machineId, threadId: state.thread.id, createdAt: state.queuedMessage.createdAt, mode };
+  queueDialogTarget = { machineId: state.machineId, threadId: state.thread.id, createdAt: state.queuedMessage.createdAt, queueId: state.queuedMessage.id ?? String(state.queuedMessage.createdAt), mode };
   const editing = mode === "edit";
   document.querySelector("#queue-dialog-title").textContent = editing ? "Edit queued message" : "Cancel queued message?";
   document.querySelector("#queue-dialog-copy").hidden = editing;
@@ -2699,7 +2736,7 @@ document.querySelector("#queue-dialog-form").addEventListener("submit", async ev
   queueDialogSubmit.disabled = queueDialogCancel.disabled = queueDialogText.disabled = true;
   renderQueue();
   try {
-    const response = await apiFetch("/api/message/queue", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: target.machineId, threadId: target.threadId, text }) });
+    const response = await apiFetch("/api/message/queue", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: target.machineId, threadId: target.threadId, queueId: target.queueId, text }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not edit queued message");
     if (queueDialogTarget === target && queueDialogMatches()) {
@@ -2718,19 +2755,25 @@ document.querySelector("#queue-dialog-form").addEventListener("submit", async ev
 async function cancelQueuedMessage() {
   if (destinationSelection || taskActionBusy) return;
   if (submittingMessage || sendingQueuedMessage || cancellingQueue) return;
+  const machineId = state?.machineId, threadId = state?.thread?.id;
+  const queueId = state?.queuedMessage?.id ?? String(state?.queuedMessage?.createdAt);
+  const current = () => machineId === state?.machineId && threadId === state?.thread?.id
+    && queueId === (state?.queuedMessage?.id ?? String(state?.queuedMessage?.createdAt));
   cancellingQueue = true;
   renderQueue();
   try {
     const url = new URL("/api/message/queue", location.origin);
-    url.searchParams.set("machineId", state?.machineId || "");
+    url.searchParams.set("machineId", machineId || "");
+    url.searchParams.set("threadId", threadId || "");
+    url.searchParams.set("queueId", queueId);
     const response = await apiFetch(url, { method: "DELETE" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not cancel queued message");
-    if (result.cancelled === true) {
+    if (current() && result.cancelled === true) {
       mergeState({ queuedMessage: null });
     }
   } catch (error) {
-    composerError = error.message;
+    if (current()) composerError = error.message;
   } finally {
     cancellingQueue = false;
     renderComposer();
@@ -2740,18 +2783,23 @@ async function cancelQueuedMessage() {
 async function sendQueuedMessage() {
   if (destinationSelection || taskActionBusy) return;
   if (submittingMessage || cancellingQueue || sendingQueuedMessage || !state?.queuedMessage) return;
+  const machineId = state.machineId, threadId = state.thread.id, requestedEpoch = historyEpoch;
+  const queueId = state.queuedMessage.id ?? String(state.queuedMessage.createdAt);
+  const current = () => machineId === state?.machineId && threadId === state?.thread?.id
+    && queueId === (state?.queuedMessage?.id ?? String(state?.queuedMessage?.createdAt));
   const action = state?.turn?.status === "inProgress" ? "steer" : "start";
   sendingQueuedMessage = true;
   composerError = "";
   renderState();
   try {
-    const result = await postMessageAction("/api/message/queue", { machineId: state?.machineId, action });
-    if (!result.recovered) mergeState({ queuedMessage: null });
+    const result = await postMessageAction("/api/message/queue", { machineId, threadId, queueId, action });
+    if (current() && !result.recovered) mergeState({ queuedMessage: null });
   } catch (error) {
+    if (!current()) return;
     queueDeliveryUnknown = Boolean(error.deliveryUnknown);
-    composerError = error.message;
+    if (current()) composerError = error.message;
   } finally {
-    sendingQueuedMessage = false;
+    if (requestedEpoch === historyEpoch) sendingQueuedMessage = false;
     renderState();
   }
 }
@@ -2775,7 +2823,7 @@ async function interruptTurn() {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the stop request");
   } catch (error) {
-    composerError = error.message;
+    if (machineId === state?.machineId && expectedThreadId === state?.thread?.id) composerError = error.message;
   } finally {
     submittingInterrupt = false;
     renderState();
@@ -2786,17 +2834,20 @@ async function updateThreadSettings(model, effort) {
   if (destinationSelection || taskActionBusy) return;
   if (updatingModel || !state?.thread) return;
   updatingModel = true;
+  const machineId = state.machineId, threadId = state.thread.id, requestedEpoch = historyEpoch;
+  const current = () => machineId === state?.machineId && threadId === state?.thread?.id && requestedEpoch === historyEpoch;
   composerError = "";
   renderState();
   try {
     const response = await apiFetch("/api/thread/settings", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, model, effort }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId, threadId, model, effort }),
     });
     const result = await response.json();
     if (!response.ok || !result.updated) throw new Error(result.error || "Could not update model settings");
+    if (!current()) return;
     mergeState({ model: result.model, reasoningEffort: result.reasoningEffort });
   } catch (error) {
-    composerError = error.message;
+    if (current()) composerError = error.message;
   } finally {
     updatingModel = false;
     renderState();
@@ -2807,17 +2858,20 @@ async function updateAccess(mode) {
   if (destinationSelection || taskActionBusy) return;
   if (updatingAccess || !state?.thread) return;
   updatingAccess = true;
+  const machineId = state.machineId, threadId = state.thread.id, requestedEpoch = historyEpoch;
+  const current = () => machineId === state?.machineId && threadId === state?.thread?.id && requestedEpoch === historyEpoch;
   composerError = "";
   renderState();
   try {
     const response = await apiFetch("/api/thread/access", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: state?.machineId, mode }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId, threadId, mode }),
     });
     const result = await response.json();
     if (!response.ok || !result.updated) throw new Error(result.error || "Could not update access");
+    if (!current()) return;
     mergeState({ access: result.access });
   } catch (error) {
-    composerError = error.message;
+    if (current()) composerError = error.message;
   } finally {
     updatingAccess = false;
     renderState();
@@ -2828,6 +2882,8 @@ async function resolveApproval(requestId, decision) {
   if (destinationSelection || taskActionBusy) return;
   if (resolvingApproval || !requestId) return;
   resolvingApproval = true;
+  const machineId = state?.machineId, threadId = state?.thread?.id, requestedEpoch = historyEpoch;
+  const current = () => machineId === state?.machineId && threadId === state?.thread?.id && requestedEpoch === historyEpoch;
   composerError = "";
   const pending = (state?.pending || []).map((request) => request.id === requestId ? { ...request, resolving: true } : request);
   mergeState({ pending });
@@ -2839,10 +2895,14 @@ async function resolveApproval(requestId, decision) {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the approval response");
   } catch (error) {
+    if (!current()) return;
     composerError = error.message;
     try {
       const response = await apiFetch("/api/state");
-      if (response.ok) applySnapshot(await response.json(), false);
+      if (response.ok) {
+        const snapshot = await response.json();
+        if (current() && snapshot.machineId === machineId && snapshot.thread?.id === threadId) applySnapshot(snapshot, false);
+      }
     } catch {
       // SSE/reconnect will restore the authoritative pending state.
     }
@@ -2884,6 +2944,8 @@ async function submitStructuredInput(pending) {
   }
 
   submittingInputRequestId = pending.id;
+  const machineId = state?.machineId, threadId = state?.thread?.id, requestedEpoch = historyEpoch;
+  const current = () => machineId === state?.machineId && threadId === state?.thread?.id && requestedEpoch === historyEpoch;
   composerError = "";
   const nextPending = (state?.pending || []).map((request) => request.id === pending.id ? { ...request, resolving: true } : request);
   mergeState({ pending: nextPending });
@@ -2896,15 +2958,19 @@ async function submitStructuredInput(pending) {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the answer");
   } catch (error) {
+    if (!current()) return;
     composerError = error.message;
     try {
       const response = await apiFetch("/api/state");
-      if (response.ok) applySnapshot(await response.json(), false);
+      if (response.ok) {
+        const snapshot = await response.json();
+        if (current() && snapshot.machineId === machineId && snapshot.thread?.id === threadId) applySnapshot(snapshot, false);
+      }
     } catch {
       // SSE/reconnect restores the authoritative pending request.
     }
   } finally {
-    submittingInputRequestId = null;
+    if (current() && submittingInputRequestId === pending.id) submittingInputRequestId = null;
     renderState();
   }
 }
@@ -3173,7 +3239,7 @@ function renderMachineSettings(values) {
     remove.type = "button";
     remove.className = "icon-button";
     remove.setAttribute("aria-label", `Remove ${machine.name || `machine ${index + 1}`}`);
-    remove.textContent = "×";
+    remove.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg>';
     remove.addEventListener("click", () => {
       const next = machineSettingsValue();
       next.splice(index, 1);
@@ -3181,11 +3247,11 @@ function renderMachineSettings(values) {
     });
     const controls = document.createElement("div");
     controls.className = "machine-row-actions";
-    for (const [direction, label] of [[-1, "↑"], [1, "↓"]]) {
+    for (const direction of [-1, 1]) {
       const move = document.createElement("button");
       move.type = "button";
       move.className = "text-button";
-      move.textContent = label;
+      move.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${direction < 0 ? "M12 19V5m-6 6 6-6 6 6" : "M12 5v14m-6-6 6 6 6-6"}"/></svg>`;
       move.title = `Move ${machine.name || `machine ${index + 1}`} ${direction < 0 ? "up" : "down"}`;
       move.setAttribute("aria-label", move.title);
       move.disabled = index + direction < 0 || index + direction >= configured.length;

@@ -3,7 +3,7 @@ import {createServer} from 'node:http';
 import {readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-// Optional browser regression: requires Playwright, or POCKET_PLAYWRIGHT_MODULE pointing to its module.
+// npm run test:browser uses the pinned Playwright dependency; an external module override is optional.
 const {chromium} = await import(process.env.POCKET_PLAYWRIGHT_MODULE || 'playwright');
 import {fileURLToPath} from 'node:url';
 import {MachineRuntime,RpcClient} from '../gateway.ts';
@@ -19,6 +19,7 @@ let composerPost="success", recoveryMode=null;
 const eventClients=new Set();
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
 const fileBodies=[];let realFilePosts=false;
+const reviewResponses=new Map();
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let freshNavigation=false;
 let newTaskOptionsFixture=null;
@@ -32,6 +33,12 @@ const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
  const json=(value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
  try{
+ const scripted=reviewResponses.get(u.pathname);
+ if(scripted){
+ let raw='';for await(const chunk of req)raw+=chunk;
+ scripted.bodies.push(raw?JSON.parse(raw):Object.fromEntries(u.searchParams));
+ await scripted.gate;return json(scripted.result,scripted.status);
+ }
  if(u.pathname==='/events'){eventClients.add(res);req.on('close',()=>eventClients.delete(res));res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(`retry: 50\nevent: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);runtime.addSubscriber(res,false);req.on('close',()=>runtime.removeSubscriber(res));return;}
  if(u.pathname==='/api/auth')return json({required:false,authenticated:true});
  if(u.pathname==='/api/state'){
@@ -280,6 +287,88 @@ try {
  }
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-tasks-open'));
 
+ // Keep unrelated sidebar overlays out of these composer-focused fixtures.
+ await page.evaluate(()=>localStorage.setItem("codex-pocket-details-open","false"));
+ // Review: unrelated live updates preserve the exact structured-input node and active composition.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ const question={id:'review-input',kind:'input',supported:true,blocking:true,questions:[{id:'review-q',header:'Details',question:'Describe the change',options:null}]};
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:null,threadStatus:'idle',pending:[question],queuedMessage:null,liveMessages:[],activities:[]});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ const answer=page.locator('.input-free-text');await answer.fill('Before composition');await answer.focus();
+ await answer.evaluate(e=>{window.reviewInput=e;e.setSelectionRange(2,9,'backward');e.dispatchEvent(new CompositionEvent('compositionstart',{data:'文',bubbles:true}));});
+ for(const [event,value] of [['machines',{machines:[runtime.machineSummary()]}],['quota',{available:false}],['context',{context:{usedTokens:123,contextWindow:10000}}]])runtime.broadcast(event,value);
+ await page.waitForTimeout(100);
+ assert.deepEqual(await answer.evaluate(e=>({same:e===window.reviewInput,focus:document.activeElement===e,start:e.selectionStart,end:e.selectionEnd,direction:e.selectionDirection,value:e.value})),
+ {same:true,focus:true,start:2,end:9,direction:'backward',value:'Before composition'});
+ await answer.evaluate(e=>e.dispatchEvent(new CompositionEvent('compositionend',{data:'文',bubbles:true})));
+ question.questions[0].question='Updated question';runtime.broadcast('request',{pending:[question]});
+ await page.getByText('Updated question',{exact:true}).waitFor();assert.equal(await answer.evaluate(e=>e===window.reviewInput),false);
+ assert.equal(await answer.inputValue(),'Before composition');
+ uiGate=new Promise(r=>release=r);await page.getByRole('button',{name:'Send Answer',exact:true}).press('Enter');
+ await page.waitForFunction(()=>document.querySelector('.structured-input-form button').disabled);
+ release();uiGate=null;await page.waitForFunction(()=>document.querySelector('#attention-banner').hidden);
+ }
+
+ // Review: stale responses and failures cannot overwrite a different task's draft, settings or queue.
+ for(const action of ['message','model','access','cancel','queue'])for(const failure of action==='message'?[false,true,'unknown']:[false,true]){
+ await page.setViewportSize({width:1280,height:844});
+ const queued=['cancel','queue'].includes(action);
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,threadStatus:queued?'active':'idle',turn:queued?{id:'turn',status:'inProgress'}:null,pending:[],liveMessages:[],activities:[],
+ queuedMessage:queued?{id:'old-queue',threadId:task.id,text:'Original queue',createdAt:1}:null,
+ models:['first','second'].map(model=>({model,displayName:model,supportedReasoningEfforts:[{reasoningEffort:'high'}]})),model:'first',reasoningEffort:'high',access:{mode:'ask',choices:{ask:{available:true},auto:{available:true},full:{available:true}}}});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await input.waitFor();
+ const path=action==='message'?'/api/message':action==='model'?'/api/thread/settings':action==='access'?'/api/thread/access':'/api/message/queue';
+ const scripted={gate:new Promise(r=>release=r),bodies:[],status:failure?409:200,result:failure?{error:'Old task rejected',...(failure==='unknown'?{submission:{status:'unknown'}}:{})}:
+ {accepted:true,updated:true,cancelled:true,queuedMessage:null,model:'second',reasoningEffort:'high',access:{...runtime.state.access,mode:'full'}}};
+ reviewResponses.set(path,scripted);recoveryMode=failure==='unknown'?'unknown':null;
+ if(action==='message'){await input.fill('Original draft');await page.locator('#send-message').click();}
+ else if(action==='model')await page.locator('#model-select').selectOption('second');
+ else if(action==='access')await page.locator('#access-select').selectOption('full');
+ else if(action==='cancel'){await page.locator('#cancel-queue').click();await page.locator('#queue-dialog-submit').click();}
+ else await page.locator('#send-queue').click();
+ while(!scripted.bodies.length)await page.waitForTimeout(10);
+ assert.equal(scripted.bodies[0].threadId,task.id);
+ if(queued)assert.equal(scripted.bodies[0].queueId,'old-queue');
+ Object.assign(runtime.state,{thread:owned,threadStatus:'idle',turn:null,queuedMessage:{id:'new-queue',threadId:owned.id,text:'Other queue',createdAt:1}});
+ runtime.broadcast('snapshot',snapshot());
+ await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Owned task'));
+ await input.evaluate(e=>{e.value='Other draft';e.dispatchEvent(new Event('input',{bubbles:true}));});
+ release();reviewResponses.delete(path);await page.waitForTimeout(100);
+ assert.equal(await input.inputValue(),'Other draft');
+ assert.equal(await page.locator('#model-select').inputValue(),'first');assert.equal(await page.locator('#access-select').inputValue(),'ask');
+ assert.equal(await page.locator('#queue-text').textContent(),'Other queue');
+ assert(!(await page.locator('#composer-status').textContent()).includes('Old task rejected'));
+ if(failure==='unknown'){
+ assert(!(await page.locator('#composer-status').textContent()).includes('unconfirmed'));
+ Object.assign(runtime.state,{thread:task,queuedMessage:null});runtime.broadcast('snapshot',snapshot());
+ await page.waitForFunction(()=>/unconfirmed/.test(document.querySelector('#composer-status').textContent));
+ assert.equal(await input.inputValue(),'Original draft');assert.equal(scripted.bodies.length,1);
+ }
+ recoveryMode=null;
+ }
+
+ // Review: an HTTP RPC timeout enters receipt recovery; it never retries the message POST.
+ for(const outcome of ['unknown','rejected']){
+ Object.assign(runtime.state,{thread:task,turn:null,threadStatus:'idle',queuedMessage:null,pending:[],liveMessages:[]});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await input.waitFor();
+ const scripted={gate:Promise.resolve(),bodies:[],status:409,result:{error:outcome==='unknown'?'turn/start timed out':'Ordinary rejection',submission:{status:outcome}}};
+ reviewResponses.set('/api/message',scripted);recoveryMode=outcome;
+ await input.fill('Receipt test');await page.locator('#send-message').click();
+ await page.waitForFunction(()=>!document.querySelector('#message-text').disabled);
+ if(outcome==='unknown'){
+ await page.waitForFunction(()=>/unconfirmed/.test(document.querySelector('#composer-status').textContent));
+ assert.equal(await input.inputValue(),'');
+ recoveryMode='accepted';for(const client of [...eventClients])client.end();
+ await page.waitForTimeout(200);assert.equal(scripted.bodies.length,1);
+ }else{
+ assert.equal(await input.inputValue(),'Receipt test');
+ assert((await page.locator('#composer-status').textContent()).includes('Ordinary rejection'));
+ assert.equal(scripted.bodies.length,1);
+ }
+ reviewResponses.clear();recoveryMode=null;
+ }
+
  for(const width of [1280,390]){
  runtime.terminalResults={};
  runtime.state.models=[{model:'test',displayName:'Test',supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort})),defaultReasoningEffort:'low'}];runtime.state.model='test';runtime.state.reasoningEffort='low';
@@ -401,7 +490,7 @@ try {
  if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Wake MAC (optional)','Actions']);}
  assert.equal(await page.getByRole('button',{name:'Move Laptop up',exact:true}).isDisabled(),true);
  assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
- assert.deepEqual(await page.locator('.machine-settings-row').first().locator('button').allTextContents(),['↑','↓','×']);
+ assert.equal(await page.locator('.machine-settings-row').first().locator('button svg[aria-hidden="true"]').count(),3);
  assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40,40]);
  const valueSize=width>=861?'13px':'16px';
  assert((await page.locator('.settings-card input:not([type="checkbox"]), .settings-card select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize))).every(s=>s===valueSize));
@@ -1722,7 +1811,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.deepEqual(runtime.state.queuedMessage,original);assert.equal(await page.locator('#queue-dialog-text').isDisabled(),true);
  queueEditGate=null;releaseEdit();await page.waitForFunction(()=>!document.querySelector('#queue-dialog').open);
  assert.equal(runtime.state.queuedMessage.text,'Updated instruction');assert.equal(runtime.state.queuedMessage.createdAt,original.createdAt);
- assert.deepEqual(queueEdits.at(-1),{machineId:'local',threadId:task.id,text:'Updated instruction'});
+ assert.deepEqual(queueEdits.at(-1),{machineId:'local',threadId:task.id,queueId:String(original.createdAt),text:'Updated instruction'});
  const attached={...original,text:'With attachments',images:[{url:`data:image/png;base64,${png.toString('base64')}`}],files:[{path:'/tmp/staged/report.pdf',name:'report.pdf',size:7}]};
  await publish(attached);await page.getByRole('button',{name:'Edit queued message',exact:true}).click();await page.locator('#queue-dialog-text').fill('');
  assert(await page.locator('#queue-dialog').evaluate(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;}));

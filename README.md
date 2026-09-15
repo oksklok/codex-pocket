@@ -27,8 +27,8 @@ Real Pocket UI with synthetic demo data only, including all tasks, machines, con
 - Choose the model, reasoning effort, and access mode exposed by the selected runtime.
 - Send messages, stop an active turn, or queue one message for the next turn. **Steer Now** in the queue banner injects that queued message into the active turn; **Cancel** removes it.
 - Send images with text or on their own using Attach files or desktop clipboard paste. Removable thumbnails remain available in the fullscreen composer, and images travel with queued/steered messages. Sent images remain viewable from live messages and history where Codex exposes them. Input supports PNG, JPEG, GIF, and WebP: up to four images, 4 MB each and 8 MB combined.
-- Attach up to four other files (10 MB each, 20 MB combined), with or without text/images. Files follow task drafts and queued messages. Pocket stages them in the selected machine’s OS-temp `codex-pocket` directory and sends their paths as a text input; local and Windows/POSIX SSH runtimes are supported. Queued files retain only staged metadata, and OS temp cleanup handles their lifetime.
-- View surfaced assistant images inline and in a fullscreen viewer, including supported local-file references fetched through the gateway or SSH. Remote Markdown images are not loaded; unavailable images show useful alt text.
+- Attach up to four other files (10 MB each, 20 MB combined), with or without text/images. Files follow task drafts and queued messages. Pocket stages them in the selected machine’s OS-temp `codex-pocket` directory and sends their paths as a text input; local and Windows/POSIX SSH runtimes are supported. Queued files retain staged metadata. Pocket does not delete staged files after send, queue cancellation, task deletion, or restart: they remain until OS temp cleanup or manual removal. There is no guaranteed expiry time; keep files that an active task still needs.
+- View surfaced assistant images inline and in a fullscreen viewer, including supported local-file references fetched through the gateway or SSH. Trusted remote image paths are fetched through SSH; external HTTP(S) images are not loaded. Unavailable images show useful alt text.
 - See account quota and a **Ctx** chip showing context-window percentage used from authoritative app-server usage. Without usage replay or a live update, it shows **Ctx —**. Context and quota can each be hidden under Settings → Appearance for this browser.
 - Browse bounded, paginated history in a mobile-focused UI with themes, display toggles, a fullscreen composer, and a browser-local **Enter Sends Message** preference.
 
@@ -40,12 +40,18 @@ The image viewer supports double-tap zoom/reset, pinch zoom, panning while zoome
 
 While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion and stays parked after Stop. Steering clears it only after successful delivery. Queues live in gateway memory and survive task switches, but are lost on gateway restart. A queue stays parked while its task is away; returning alone does not send it. Queued text can be edited while its attachments stay unchanged; cancelling requires confirmation. Only one message can be queued.
 
-Text and image drafts are task-scoped and kept only in browser memory: up to eight recent non-empty drafts. They do not survive a page reload.
+Text, image, and file drafts are task-scoped and kept only in browser memory: up to eight recent non-empty drafts. They do not survive a page reload.
+
+**New Task** offers explicit model, reasoning-effort, and access choices. A successful creation without a settings warning remembers those choices per machine in this browser. The Project Folder prefills from that machine's selected task when available. Leaving it blank uses the runtime user's home directory on the selected machine; failure to resolve that home directory asks for an explicit folder.
+
+At widths of **1100px and above**, successful task switching and New Task creation focus the message composer. Narrow layouts leave it unfocused to avoid opening the software keyboard. **Escape** dismisses narrow Tasks/Info overlays; wide pinned sidebars remain open. Dialogs, Settings, and the fullscreen composer handle Escape before sidebars.
+
+A lost response or upstream message RPC timeout triggers receipt recovery, never an automatic retry of the message POST. Unknown delivery stays unconfirmed until recovery supplies evidence; genuine rejections allow correction and another explicit send.
 
 ## Requirements
 
 - Node.js **22.6 or newer**, with npm. Pocket uses Node's `--experimental-strip-types` flag.
-- An authenticated Codex CLI on each runtime machine, with `codex app-server proxy` and a running shared/managed app-server. Current functionality has been exercised with **Codex CLI 0.153.4**; available controls depend on the runtime's protocol support.
+- An authenticated Codex CLI on each runtime machine, with `codex app-server proxy` and a running shared/managed app-server. The earlier feature baseline was exercised with **Codex CLI 0.153.4**. A read-only local initialization/catalog probe also passed against **0.154.0**; this is not a full remote-device compatibility claim. Available controls depend on the runtime's protocol support.
 - macOS for the menu-bar host. The checked-in app executable is **Apple Silicon (arm64)**; rebuilding requires Apple's command-line developer tools.
 - For remote machines, working non-interactive SSH from the Pocket host and `codex` available in the remote SSH command environment.
 
@@ -106,6 +112,12 @@ Disconnected runtimes retry after 5, 10, 20, 30, then 60 seconds, staying at 60 
 
 For a PC that already supports Wake-on-LAN on the host's LAN, optionally enter its **Wake MAC** in machine settings (`wakeMac` in the config). After saving and restarting Pocket, an offline configured machine shows **Wake** in the Tasks drawer. This sends a magic packet from the Pocket host to UDP broadcast port 9 and nudges the existing reconnect retry. “Wake packet sent” confirms sending, not that the PC is online.
 
+### Connection states
+
+**Tasks Unavailable** means Pocket still has a transport connection but could not retrieve that machine's task catalog within its five-second budget, or received a catalog error. **Offline** means the transport is disconnected. Catalog errors alone do not force a machine Offline.
+
+Long-lived SSH proxy connections use `ConnectTimeout=5`, `ServerAliveInterval=15`, and `ServerAliveCountMax=3`. An unresponsive SSH peer is normally detected after approximately 45 seconds without responses; a responsive SSH server with a stalled Codex app-server can still show Tasks Unavailable. Once a disconnect is detected, retries wait 5, 10, 20, 30, then 60 seconds (capped), plus connection-attempt time. A successful connection resets backoff. Existing connections pick up changed SSH options when they reconnect.
+
 Server-backed settings are stored in the Git-ignored `.codex-pocket.local.json`; appearance, input, and display preferences stay in each browser’s local storage. Local config, runtime records, and logs should stay private. If the Mac runtime is unavailable, check that its shared daemon is running; Pocket also shows a concise underlying connection or task-ownership error.
 
 ## Architecture and limits
@@ -132,7 +144,11 @@ Image transport is limited to validated image input and images surfaced by trust
 npm install
 npm start
 npm test
+npx playwright install chromium
+npm run test:browser
 ```
+
+`npm test` is the fast logic suite. `npm run test:browser` uses the pinned Playwright development dependency and synthetic local fixtures at desktop/mobile widths; install Chromium once with the command above. These checks do not put a real remote device to sleep.
 
 `npm start` runs the gateway directly without the menu-bar host and uses the same saved settings. With no saved LAN configuration it listens on localhost. `CODEX_BIN` can select a local Codex executable; `--host`, `--port`, and `CODEX_POCKET_PIN` override saved network settings. Non-loopback listening requires a four-digit PIN and the network precautions above.
 

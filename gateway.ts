@@ -158,6 +158,8 @@ type PocketModel = {
   defaultReasoningEffort: string;
 };
 type QueuedMessage = {
+  id?: string;
+  deliveryUnknown?: boolean;
   threadId: string;
   text: string;
   images?: Array<{ type: string; url: string }>;
@@ -906,7 +908,22 @@ function connectProxy(
       reject(new Error("app-server proxy WebSocket handshake timed out"));
     }, TRANSPORT_HANDSHAKE_MS);
 
-    const sendFrame = (opcode: number, payload: Buffer) => child.stdin.write(clientFrame(opcode, payload));
+    const disconnect = (error?: Error) => {
+      if (closing) return;
+      closing = true;
+      clearTimeout(handshakeTimer);
+      if (!settled) { settled = true; reject(error ?? new Error("app-server proxy closed before connecting")); }
+      else onClose(error);
+      child.stdin.end();
+      child.kill("SIGTERM");
+    };
+    const sendFrame = (opcode: number, payload: Buffer) => {
+      if (closing) throw new Error("app-server connection closed");
+      child.stdin.write(clientFrame(opcode, payload));
+    };
+    child.stdin.on("error", disconnect);
+    child.stdout.on("error", disconnect);
+    child.stderr.on("error", disconnect);
     registerAbort(() => {
       clearTimeout(handshakeTimer);
       if (!settled) { settled = true; reject(new Error("app-server proxy connection aborted")); }
@@ -915,7 +932,7 @@ function connectProxy(
       child.kill("SIGTERM");
     });
     const parseFrames = () => {
-      for (;;) {
+      while (!closing) {
         if (buffer.length < 2) return;
         const first = buffer[0];
         const second = buffer[1];
@@ -945,9 +962,7 @@ function connectProxy(
           for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
         }
         if (opcode === 0x8) {
-          closing = true;
-          child.stdin.end();
-          onClose();
+          disconnect();
           return;
         }
         if (opcode === 0x9) {
@@ -972,39 +987,43 @@ function connectProxy(
 
     child.stdout.on("data", (chunk: Buffer) => {
       if (closing) return;
-      buffer = Buffer.concat([buffer, chunk]);
-      if (!upgraded) {
-        const headerEnd = buffer.indexOf("\r\n\r\n");
-        if (headerEnd < 0) return;
-        const header = buffer.subarray(0, headerEnd).toString("utf8");
-        buffer = buffer.subarray(headerEnd + 4);
-        const accept = /^sec-websocket-accept:\s*(.+)$/im.exec(header)?.[1]?.trim();
-        if (!/^HTTP\/1\.1 101\b/m.test(header) || accept !== expectedAccept) {
-          const error = new Error(`app-server proxy WebSocket upgrade failed: ${compact(header, 300)}`);
-          clearTimeout(handshakeTimer);
-          settled = true;
-          closing = true;
-          reject(error);
-          child.kill("SIGTERM");
-          return;
-        }
-        clearTimeout(handshakeTimer);
-        upgraded = true;
-        settled = true;
-        resolve({
-          send(message) {
-            sendFrame(0x1, Buffer.from(JSON.stringify(message), "utf8"));
-          },
-          close() {
-            if (closing) return;
+      try {
+        buffer = Buffer.concat([buffer, chunk]);
+        if (!upgraded) {
+          const headerEnd = buffer.indexOf("\r\n\r\n");
+          if (headerEnd < 0) return;
+          const header = buffer.subarray(0, headerEnd).toString("utf8");
+          buffer = buffer.subarray(headerEnd + 4);
+          const accept = /^sec-websocket-accept:\s*(.+)$/im.exec(header)?.[1]?.trim();
+          if (!/^HTTP\/1\.1 101\b/m.test(header) || accept !== expectedAccept) {
+            const error = new Error(`app-server proxy WebSocket upgrade failed: ${compact(header, 300)}`);
+            clearTimeout(handshakeTimer);
+            settled = true;
             closing = true;
-            sendFrame(0x8, Buffer.alloc(0));
-            child.stdin.end();
+            reject(error);
             child.kill("SIGTERM");
-          },
-        });
-      }
-      parseFrames();
+            return;
+          }
+          clearTimeout(handshakeTimer);
+          upgraded = true;
+          settled = true;
+          resolve({
+            send(message) {
+              sendFrame(0x1, Buffer.from(JSON.stringify(message), "utf8"));
+            },
+            close() {
+              if (closing) return;
+              try { sendFrame(0x8, Buffer.alloc(0)); }
+              finally {
+                closing = true;
+                child.stdin.end();
+                child.kill("SIGTERM");
+              }
+            },
+          });
+        }
+        parseFrames();
+      } catch (error) { disconnect(error instanceof Error ? error : new Error(String(error))); }
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
@@ -1012,27 +1031,17 @@ function connectProxy(
       const text = sshAlias ? compact(chunk, 400) : chunk.trim();
       if (text) console.error(`${sshAlias ? `${sshAlias} SSH proxy` : "app-server proxy"}: ${text}`);
     });
-    child.once("error", (error) => {
-      clearTimeout(handshakeTimer);
-      if (!settled) reject(error);
-      else if (!closing) {
-        closing = true;
-        onClose(error);
-      }
-    });
+    child.once("error", disconnect);
     child.once("exit", (code, signal) => {
-      clearTimeout(handshakeTimer);
-      if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code}): ${compact(stderr, 600)}`));
-      else if (!closing) {
-        closing = true;
-        onClose(new Error(`app-server proxy closed (${signal ?? code})`));
-      }
+      disconnect(new Error(`app-server proxy ${settled ? "closed" : "exited before connecting"} (${signal ?? code}): ${compact(stderr, 600)}`));
     });
     child.once("spawn", () => {
       if (closing) return;
-      child.stdin.write(
-        `GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${websocketKey}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
-      );
+      try {
+        child.stdin.write(
+          `GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${websocketKey}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+        );
+      } catch (error) { disconnect(error instanceof Error ? error : new Error(String(error))); }
     });
   });
 }
@@ -1098,25 +1107,28 @@ export class RpcClient {
 
   async connect(ws?: string, sshAlias?: string): Promise<void> {
     const onPayload = (payload: Buffer) => {
+      if (this.closing) return;
       this.onRawPayload(payload.length);
       try {
         this.receive(JSON.parse(payload.toString("utf8")));
       } catch (error) {
-        console.error(`invalid JSON from app-server: ${compact((error as Error).message)}`);
+        this.disconnect(error instanceof Error ? error : new Error(String(error)));
       }
     };
     const registerAbort = (abort: () => void) => { this.abortTransport = abort; };
-    this.wire = ws
-      ? await connectWebSocket(ws, onPayload, (error) => this.onClose(error), registerAbort)
-      : await connectProxy(onPayload, (error) => this.onClose(error), registerAbort, sshAlias);
-    this.abortTransport = null;
+    const wire = ws
+      ? await connectWebSocket(ws, onPayload, (error) => this.disconnect(error), registerAbort)
+      : await connectProxy(onPayload, (error) => this.disconnect(error), registerAbort, sshAlias);
     if (this.closing) {
-      this.wire.close();
+      wire.close();
       throw new Error("app-server connection closed");
     }
+    this.wire = wire;
+    this.abortTransport = null;
   }
 
   request(method: string, params: JsonObject | undefined = {}, timeoutMs = 20_000): Promise<any> {
+    if (this.closing || !this.wire) return Promise.reject(new Error("app-server connection closed"));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1124,28 +1136,37 @@ export class RpcClient {
         reject(new Error(`${method} timed out`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.wire.send(params === undefined ? { method, id } : { method, id, params });
+      try { this.wire.send(params === undefined ? { method, id } : { method, id, params }); }
+      catch (error) { this.disconnect(error instanceof Error ? error : new Error(String(error))); }
     });
   }
 
   notify(method: string, params: JsonObject = {}): void {
-    this.wire.send({ method, params });
+    if (this.closing || !this.wire) throw new Error("app-server connection closed");
+    try { this.wire.send({ method, params }); }
+    catch (error) { this.disconnect(error as Error); throw error; }
   }
 
   respond(id: string | number, result: JsonObject): void {
-    this.wire.send({ id, result });
+    if (this.closing || !this.wire) throw new Error("app-server connection closed");
+    try { this.wire.send({ id, result }); }
+    catch (error) { this.disconnect(error as Error); throw error; }
   }
 
-  close(): void {
+  close(): void { this.disconnect(undefined, false); }
+
+  private disconnect(error?: Error, notify = true): void {
+    if (this.closing) return;
     this.closing = true;
-    this.abortTransport?.();
-    this.abortTransport = null;
-    this.wire?.close();
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
-      pending.reject(new Error("app-server connection closed"));
+      pending.reject(new Error(error ? `app-server disconnected: ${error.message}` : "app-server connection closed"));
       this.pending.delete(id);
     }
+    try { this.abortTransport?.(); } catch {}
+    this.abortTransport = null;
+    try { this.wire?.close(); } catch {}
+    if (notify) this.onClose(error);
   }
 
   private receive(message: JsonObject): void {
@@ -1649,6 +1670,7 @@ function readRemoteImage(sshAlias: string, remotePath: string, windows: boolean)
       finish(new Error("Image unavailable"));
     }, 15_000);
     child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
       length += chunk.length;
       if (length > MAX_IMAGE_BYTES) {
         child.kill("SIGTERM");
@@ -1658,7 +1680,10 @@ function readRemoteImage(sshAlias: string, remotePath: string, windows: boolean)
       chunks.push(chunk);
     });
     child.once("error", () => finish(new Error("Image unavailable")));
-    child.once("exit", (code) => finish(code === 0 && length > 0 ? undefined : new Error("Image unavailable")));
+    child.stdout.on("error", () => { child.kill("SIGTERM"); finish(new Error("Image unavailable")); });
+    child.stderr.on("error", () => { child.kill("SIGTERM"); finish(new Error("Image unavailable")); });
+    child.stderr.resume();
+    child.once("close", (code) => finish(code === 0 && length > 0 ? undefined : new Error("Image unavailable")));
   });
 }
 
@@ -1870,6 +1895,7 @@ export class MachineRuntime {
     if (!this.rpc || !this.state.thread) throw new Error("gateway is not attached to a thread");
     const rpc = this.rpc;
     const threadId = this.state.thread.id;
+    const deadline = Date.now() + 20_000;
     const page = await rpc.request("thread/turns/list", {
       threadId,
       cursor,
@@ -1881,10 +1907,10 @@ export class MachineRuntime {
         && /not materialized yet[\s\S]*before (?:the )?first user message/i.test(String(error))) return { data: [], nextCursor: null };
       throw error;
     });
-    if (this.state.thread?.id !== threadId) throw new Error("The selected task changed");
+    if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
     const rawTurns = Array.isArray(page?.data) ? page.data : [];
     for (const turn of rawTurns) for (const item of turn.items ?? []) this.rememberItem(item, String(turn.id));
-    const turns = (await this.hydrateHistoryTurns(rpc, threadId, rawTurns)).reverse();
+    const turns = (await this.hydrateHistoryTurns(rpc, threadId, rawTurns, deadline)).reverse();
     for (const turn of turns) {
       for (const activity of Array.isArray(turn.activities) ? turn.activities : []) {
         this.itemTurns.set(String(activity.id), String(turn.id));
@@ -1893,11 +1919,12 @@ export class MachineRuntime {
     return { machineId: this.definition.id, threadId, turns, nextCursor: page?.nextCursor ?? null };
   }
 
-  private async hydrateHistoryTurns(rpc: RpcClient, threadId: string, rawTurns: any[]): Promise<JsonObject[]> {
+  private async hydrateHistoryTurns(rpc: RpcClient, threadId: string, rawTurns: any[], deadline = Date.now() + 20_000): Promise<JsonObject[]> {
     if (this.historyItemsSupported === false) {
       return rawTurns.map((turn) => normalizeHistoryTurn(turn));
     }
     const hydrated: JsonObject[] = [];
+    let pages = 0;
     try {
       for (const turn of rawTurns) {
         const turnId = String(turn?.id ?? "");
@@ -1910,15 +1937,17 @@ export class MachineRuntime {
         const seenCursors = new Set<string>();
         let cursor: string | null = null;
         do {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0 || ++pages > 100) throw new Error("History retrieval incomplete: item pagination limit reached; retry with fewer turns");
           const itemPage = await rpc.request("thread/items/list", {
             threadId,
             turnId,
             cursor,
             limit: DETAIL_ITEMS_PAGE_LIMIT,
             sortDirection: "asc",
-          });
+          }, remaining);
+          if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
           this.historyItemsSupported = true;
-          if (this.state.thread?.id !== threadId) throw new Error("The selected task changed");
           for (const entry of Array.isArray(itemPage?.data) ? itemPage.data : []) {
             const item = entry?.item;
             const itemId = item?.id == null ? "" : String(item.id);
@@ -1928,7 +1957,8 @@ export class MachineRuntime {
             this.rememberItem(item, String(entry?.turnId ?? turnId));
           }
           const nextCursor = itemPage?.nextCursor ? String(itemPage.nextCursor) : null;
-          if (!nextCursor || seenCursors.has(nextCursor)) {
+          if (nextCursor && seenCursors.has(nextCursor)) throw new Error("History retrieval incomplete: repeated item cursor");
+          if (!nextCursor) {
             cursor = null;
           } else {
             seenCursors.add(nextCursor);
@@ -1940,7 +1970,7 @@ export class MachineRuntime {
       return hydrated;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!isUnsupportedMethodError(message)) throw error;
+      if (this.rpc !== rpc || this.state.thread?.id !== threadId || !isUnsupportedMethodError(message)) throw error;
       if (this.historyItemsSupported !== false) {
         console.warn(`${this.definition.name}: thread/items/list unavailable; using summary history`);
       }
@@ -2041,10 +2071,21 @@ export class MachineRuntime {
     return selection;
   }
 
-  sendMessage(text: unknown, action: unknown, images: unknown = [], files: unknown = [], submissionId?: unknown): Promise<JsonObject> {
+  private assertTask(threadId: unknown): void {
+    if (typeof threadId !== "string" || !threadId || this.state.thread?.id !== threadId) throw new Error("Selected task changed; try again");
+  }
+
+  private assertQueuedMessage(threadId: unknown, queueId: unknown): void {
+    this.assertTask(threadId);
+    const queued = this.state.queuedMessage;
+    if (!queued || queued.threadId !== threadId || typeof queueId !== "string"
+      || queueId !== (queued.id ?? String(queued.createdAt))) throw new Error("The selected task no longer has this queued message");
+  }
+
+  sendMessage(text: unknown, action: unknown, images: unknown = [], files: unknown = [], submissionId?: unknown, expectedThreadId: unknown = this.state.thread?.id): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.sendMessageNow(text, action, images, files, submissionId),
-      () => this.sendMessageNow(text, action, images, files, submissionId),
+      () => { this.assertTask(expectedThreadId); return this.sendMessageNow(text, action, images, files, submissionId); },
+      () => { this.assertTask(expectedThreadId); return this.sendMessageNow(text, action, images, files, submissionId); },
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
@@ -2053,6 +2094,8 @@ export class MachineRuntime {
   answerAsyncQuestion(question: JsonObject): Promise<JsonObject> {
     const operation = this.selectionQueue.then(async () => {
       if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+      const rpc = this.rpc, thread = this.state.thread;
+      const current = () => this.rpc === rpc && this.state.thread === thread;
       const threadId = String(question.threadId ?? "");
       const messageId = String(question.messageId ?? "");
       if (threadId !== this.state.thread.id) throw new Error("The selected task changed; try again");
@@ -2063,6 +2106,7 @@ export class MachineRuntime {
       const item = live ? { ...live, type: "agentMessage" }
         : cached?.item.delivery === "async" && cached.item.questions?.length ? cached.item
         : (await this.resolveActivityItem(threadId, messageId)).item;
+      if (!current()) throw new Error("Selected task changed; try again");
       const questions = normalizeAsyncQuestions(item.questions);
       const index = Number(question.index);
       if (item.type !== "agentMessage" || item.delivery !== "async" || !Number.isInteger(index) || !questions[index]) throw new Error("This question is unavailable");
@@ -2072,6 +2116,7 @@ export class MachineRuntime {
       const active = this.state.turn?.status === "inProgress";
       if (active && (live?.turnId ?? cached?.turnId ?? this.itemTurns.get(item.id)) !== this.state.turn?.id) throw new Error("Another turn is active. Answer after it finishes.");
       const result = await this.sendMessageNow(asyncAnswerText(questions[index].title, answer), active ? "steer" : "start");
+      if (!current()) return result;
       this.asyncAnswers[item.id] = { ...this.asyncAnswers[item.id], [index]: answer };
       if (Object.keys(this.asyncAnswers).length > 100) delete this.asyncAnswers[Object.keys(this.asyncAnswers)[0]];
       this.broadcast("answers", { asyncAnswers: this.asyncAnswers });
@@ -2090,16 +2135,17 @@ export class MachineRuntime {
     return operation;
   }
 
-  sendQueuedMessage(action: unknown = "start"): Promise<JsonObject> {
+  sendQueuedMessage(action: unknown = "start", threadId: unknown = this.state.thread?.id, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.sendQueuedMessageNow(action),
-      () => this.sendQueuedMessageNow(action),
+      () => { this.assertQueuedMessage(threadId, queueId); return this.sendQueuedMessageNow(action); },
+      () => { this.assertQueuedMessage(threadId, queueId); return this.sendQueuedMessageNow(action); },
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
   }
 
-  editQueuedMessage(threadId: unknown, value: unknown): JsonObject {
+  editQueuedMessage(threadId: unknown, value: unknown, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): JsonObject {
+    this.assertQueuedMessage(threadId, queueId);
     const queued = this.state.queuedMessage;
     if (!this.state.thread || threadId !== this.state.thread.id || queued?.threadId !== threadId) throw new Error("The selected task no longer has this queued message");
     if (this.startingQueuedMessage) throw new Error("Queued message is already being sent");
@@ -2112,7 +2158,8 @@ export class MachineRuntime {
     return { queuedMessage: this.state.queuedMessage };
   }
 
-  cancelQueuedMessage(): JsonObject {
+  cancelQueuedMessage(threadId: unknown = this.state.thread?.id, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): JsonObject {
+    this.assertQueuedMessage(threadId, queueId);
     if (this.startingQueuedMessage) return { cancelled: false };
     if (!this.state.queuedMessage) return { cancelled: false, queuedMessage: null };
     this.state.queuedMessage = null;
@@ -2126,19 +2173,19 @@ export class MachineRuntime {
     return operation;
   }
 
-  updateThreadSettings(model: unknown, effort: unknown): Promise<JsonObject> {
+  updateThreadSettings(model: unknown, effort: unknown, threadId: unknown = this.state.thread?.id): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.updateThreadSettingsNow(model, effort),
-      () => this.updateThreadSettingsNow(model, effort),
+      () => { this.assertTask(threadId); return this.updateThreadSettingsNow(model, effort); },
+      () => { this.assertTask(threadId); return this.updateThreadSettingsNow(model, effort); },
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
   }
 
-  updateAccess(mode: unknown): Promise<JsonObject> {
+  updateAccess(mode: unknown, threadId: unknown = this.state.thread?.id): Promise<JsonObject> {
     const operation = this.selectionQueue.then(
-      () => this.updateAccessNow(mode),
-      () => this.updateAccessNow(mode),
+      () => { this.assertTask(threadId); return this.updateAccessNow(mode); },
+      () => { this.assertTask(threadId); return this.updateAccessNow(mode); },
     );
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
@@ -2185,12 +2232,13 @@ export class MachineRuntime {
     this.broadcast("status", this.statusPayload());
     const rpc = new RpcClient();
     this.rpc = rpc;
+    const current = () => this.rpc === rpc && !this.shuttingDown;
     rpc.onRawPayload = (bytes) => {
       this.state.metrics.rawBytes += bytes;
       this.state.metrics.rawMessages += 1;
     };
-    rpc.onNotification = (message) => this.handleNotification(message);
-    rpc.onServerRequest = (message) => this.handleServerRequest(message);
+    rpc.onNotification = (message) => { if (current()) this.handleNotification(message); };
+    rpc.onServerRequest = (message) => { if (current()) this.handleServerRequest(message); };
     rpc.onClose = (error) => {
       if (this.rpc === rpc) this.handleClose(error);
     };
@@ -2199,30 +2247,35 @@ export class MachineRuntime {
         await rpc.connect(this.definition.ssh ? undefined : this.options.ws, this.definition.ssh ?? undefined);
       } catch (error) {
         // Only the local proxy's missing shared socket warrants starting its daemon.
-        if (this.shuttingDown || this.definition.ssh || this.options.ws || !/failed to connect to socket/i.test(String(error)) || !/No such file/i.test(String(error))) throw error;
+        if (!current() || this.definition.ssh || this.options.ws || !/failed to connect to socket/i.test(String(error)) || !/No such file/i.test(String(error))) throw error;
         try {
           await new Promise<void>((resolve, reject) => {
-            this.daemonStart = execFile(process.env.CODEX_BIN || "codex", ["app-server", "daemon", "start"], { timeout: 15_000 }, (failure) => {
-              this.daemonStart = null;
+            const starting = execFile(process.env.CODEX_BIN || "codex", ["app-server", "daemon", "start"], { timeout: 15_000 }, (failure) => {
+              if (this.daemonStart === starting) this.daemonStart = null;
               failure ? reject(failure) : resolve();
             });
+            this.daemonStart = starting;
           });
         } catch { throw error; }
-        if (this.shuttingDown) throw error;
+        if (!current()) throw error;
         // One retry only; failure flows to the normal reconnect backoff below.
         await rpc.connect();
       }
+      if (!current()) return;
       const initialized = await rpc.request("initialize", {
         clientInfo: { name: "codex_pocket_gateway", title: "Codex Pocket Gateway", version: "0.1.0" },
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
+      if (!current()) return;
       rpc.notify("initialized");
       this.codexHome = typeof initialized?.codexHome === "string" ? initialized.codexHome : null;
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.technicalConnectionError = null;
       await Promise.all([this.loadModels(), this.loadAccessConstraints()]);
+      if (!current()) return;
       const loadedThreads = await this.refreshLoadedThreads();
+      if (!current()) return;
       const active = loadedThreads.find((thread) => thread.status.startsWith("active"));
       const preferred = this.options.thread && loadedThreads.some((thread) => thread.id === this.options.thread)
         ? this.options.thread
@@ -2231,6 +2284,7 @@ export class MachineRuntime {
       this.state.connected = true;
       this.state.connectionError = null;
       await this.refreshQuota();
+      if (!current()) return;
       if (!targetId || !this.autoAttach) {
         this.reconnectDelayIndex = 0;
         this.resetThreadState();
@@ -2244,6 +2298,7 @@ export class MachineRuntime {
       }
       try {
         await this.attachLoadedThread(String(targetId), false);
+        if (!current()) return;
         if (!this.autoAttach) { this.reconnectDelayIndex = 0; await this.releaseTask(); return; }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -2268,7 +2323,8 @@ export class MachineRuntime {
     } catch (error) {
       rpc.onClose = () => {};
       rpc.close();
-      if (this.rpc === rpc) this.rpc = null;
+      if (!current()) return;
+      this.rpc = null;
       if (this.quota) this.quota.fresh = false;
       const technicalError = error instanceof Error ? error.message : String(error);
       this.technicalConnectionError = technicalError;
@@ -2339,13 +2395,16 @@ export class MachineRuntime {
 
   private async refreshQuota(): Promise<void> {
     if (!this.rpc || !this.state.connected) return;
+    const rpc = this.rpc;
     try {
-      const result = await this.rpc.request("account/rateLimits/read", undefined, 5_000);
+      const result = await rpc.request("account/rateLimits/read", undefined, 5_000);
+      if (this.rpc !== rpc) return;
       const normalized = normalizeRateLimits(result);
       if (!normalized) throw new Error("rate-limit response did not contain supported windows");
       this.quota = normalized;
       this.onQuotaChange();
     } catch (error) {
+      if (this.rpc !== rpc) return;
       if (this.quota) this.quota.fresh = false;
       console.warn(`${this.definition.name}: quota unavailable: ${compact(error, 180)}`);
       this.onQuotaChange();
@@ -2362,13 +2421,15 @@ export class MachineRuntime {
 
   private async listTaskPages(method: "thread/list" | "thread/loaded/list", params: JsonObject, deadline = Date.now() + 5_000): Promise<any[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const rpc = this.rpc;
     const data: any[] = [];
     const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("Task catalog timed out");
-      const page = await this.rpc.request(method, { ...params, cursor }, remaining);
+      const page = await rpc.request(method, { ...params, cursor }, remaining);
+      if (this.rpc !== rpc) throw new Error("Codex disconnected");
       data.push(...(Array.isArray(page?.data) ? page.data : []));
       cursor = page?.nextCursor ?? null;
       if (cursor && cursors.has(cursor)) throw new Error("Task catalog returned a repeated cursor");
@@ -2379,6 +2440,7 @@ export class MachineRuntime {
 
   private async refreshLoadedThreads(): Promise<LoadedThreadSummary[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const rpc = this.rpc;
     const observationsAtStart = new Map(this.taskStatusObservations);
     const deadline = Date.now() + 5_000;
     const [listed, loaded] = await Promise.all([
@@ -2390,6 +2452,7 @@ export class MachineRuntime {
       this.listTaskPages("thread/loaded/list", { limit: 100 }, deadline)
         .catch(() => this.loadedThreads.filter(thread => thread.loaded).map(thread => thread.id)),
     ]);
+    if (this.rpc !== rpc) throw new Error("Codex disconnected");
     const threads = listed;
     const previousThreads = this.loadedThreads;
     const loadedIds = new Set<string>(loaded.map((value: any) => String(value?.id ?? value)));
@@ -2398,13 +2461,14 @@ export class MachineRuntime {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
       try {
-        const result = await this.rpc.request("thread/read", { threadId: id, includeTurns: false }, remaining);
+        const result = await rpc.request("thread/read", { threadId: id, includeTurns: false }, remaining);
         if (result.thread) threads.push(result.thread);
       } catch (error) {
         if (Date.now() >= deadline) break;
         // A live task may unload between listing and metadata read.
       }
     }
+    if (this.rpc !== rpc) throw new Error("Codex disconnected");
     const currentThreads = threads.filter(isUserFacingThread)
       .map((thread: any) => loadedThreadSummary(thread, String(thread.id), loadedIds.has(String(thread.id))));
     // Keep already-normalized metadata for loaded tasks whose optional reads failed.
@@ -2429,11 +2493,13 @@ export class MachineRuntime {
 
   private async loadModels(): Promise<void> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const rpc = this.rpc;
     const models: PocketModel[] = [];
     const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
-      const page = await this.rpc.request("model/list", { cursor, limit: 100, includeHidden: false });
+      const page = await rpc.request("model/list", { cursor, limit: 100, includeHidden: false });
+      if (this.rpc !== rpc) return;
       for (const value of Array.isArray(page?.data) ? page.data : []) {
         if (!value || value.hidden === true || !value.model) continue;
         models.push({
@@ -2459,22 +2525,27 @@ export class MachineRuntime {
 
   private async loadAccessConstraints(): Promise<void> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const rpc = this.rpc;
     try {
-      const response = await this.rpc.request("configRequirements/read", {});
+      const response = await rpc.request("configRequirements/read", {});
+      if (this.rpc !== rpc) return;
       const allowed = response?.requirements?.allowedApprovalsReviewers;
       this.allowedReviewers = Array.isArray(allowed) ? allowed.map(String) : null;
     } catch {
+      if (this.rpc !== rpc) return;
       this.allowedReviewers = null;
     }
   }
 
   private async loadPermissionProfiles(cwd: string, store = true): Promise<PermissionProfileSummary[]> {
     if (!this.rpc) throw new Error("gateway is not connected to app-server");
+    const rpc = this.rpc;
     const profiles: PermissionProfileSummary[] = [];
     const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
-      const page = await this.rpc.request("permissionProfile/list", { ...(cwd ? { cwd } : {}), cursor, limit: 100 });
+      const page = await rpc.request("permissionProfile/list", { ...(cwd ? { cwd } : {}), cursor, limit: 100 });
+      if (this.rpc !== rpc) throw new Error("Codex disconnected");
       for (const value of Array.isArray(page?.data) ? page.data : []) {
         if (!value?.id) continue;
         profiles.push({
@@ -2599,7 +2670,7 @@ export class MachineRuntime {
         this.pendingTaskNames.delete(id);
       }
       if (this.state.thread?.id === id) this.state.thread.name = name;
-      await this.refreshLoadedThreads();
+      try { await this.refreshLoadedThreads(); } catch { /* Mutation already succeeded; the browser refresh reconciles the catalog. */ }
       return this.snapshot();
     }
     if ((action === "unarchive") !== (body.archived === true) && action !== "delete") throw new Error("Task archive state changed; refresh and try again");
@@ -2625,7 +2696,7 @@ export class MachineRuntime {
       this.state.phase = this.computePhase();
       this.broadcast("snapshot", this.snapshot());
     }
-    await this.refreshLoadedThreads();
+    try { await this.refreshLoadedThreads(); } catch { /* Mutation already succeeded; the browser refresh reconciles the catalog. */ }
     return this.snapshot();
   }
 
@@ -2683,6 +2754,7 @@ export class MachineRuntime {
 
   private async updateThreadSettingsNow(modelValue: unknown, effortValue: unknown): Promise<JsonObject> {
     if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const rpc = this.rpc, thread = this.state.thread;
     const model = String(modelValue ?? "").trim();
     const effort = String(effortValue ?? "").trim();
     const catalogModel = this.state.models.find((candidate) => candidate.model === model);
@@ -2690,7 +2762,8 @@ export class MachineRuntime {
     if (!catalogModel.supportedReasoningEfforts.some((option) => option.reasoningEffort === effort)) {
       throw new Error("selected reasoning effort is not available for this model");
     }
-    await this.rpc.request("thread/settings/update", { threadId: this.state.thread.id, model, effort });
+    await rpc.request("thread/settings/update", { threadId: thread.id, model, effort });
+    if (this.rpc !== rpc || this.state.thread !== thread) throw new Error("Selected task changed; try again");
     this.state.model = model;
     this.state.reasoningEffort = effort;
     const payload = {
@@ -2767,6 +2840,8 @@ export class MachineRuntime {
 
   private async updateAccessNow(value: unknown): Promise<JsonObject> {
     if (!this.rpc || !this.state.thread) throw new Error("Codex is disconnected");
+    const rpc = this.rpc, thread = this.state.thread;
+    const current = () => this.rpc === rpc && this.state.thread === thread;
     const mode = String(value ?? "");
     if (mode !== "ask" && mode !== "auto" && mode !== "full") throw new Error("unknown access mode");
     const choice = this.state.access.choices[mode];
@@ -2789,12 +2864,15 @@ export class MachineRuntime {
       }
     }
     const revision = this.settingsRevision;
-    await this.rpc.request("thread/settings/update", params);
+    await rpc.request("thread/settings/update", params);
+    if (!current()) throw new Error("Selected task changed; try again");
     const confirmed = await this.waitForSettingsUpdate(revision);
+    if (!current()) throw new Error("Selected task changed; try again");
     if (!confirmed) {
       if (this.state.thread?.id !== threadId || !this.rpc) throw new Error("selected task changed while access was updating");
       if (this.pendingTaskNames.get(threadId)?.firstMessageAccepted === false) throw new Error("Access update could not be confirmed yet");
-      const resumed = await this.rpc.request("thread/resume", { threadId, excludeTurns: true });
+      const resumed = await rpc.request("thread/resume", { threadId, excludeTurns: true });
+      if (!current()) throw new Error("Selected task changed; try again");
       this.updateAccessFromCodex(resumed);
       this.broadcast("settings", {
         model: this.state.model,
@@ -2927,14 +3005,17 @@ export class MachineRuntime {
     const capability = this.messageCapability();
     if (!capability.allowed || !capability.mode) throw new Error(capability.reason ?? "This task cannot accept a message right now");
 
-    const threadId = this.state.thread.id;
+    const rpc = this.rpc, thread = this.state.thread;
+    const current = () => this.rpc === rpc && this.state.thread === thread;
+    const threadId = thread.id;
     const action = String(requestedAction ?? capability.mode);
     if (action === "queue") {
       if (capability.mode !== "steer") throw new Error("Queue next is only available while a turn is active");
       if (this.state.queuedMessage) throw new Error("A message is already queued");
       const queuedTurnId = this.state.turn?.id;
       const files = await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
-      this.state.queuedMessage = { threadId, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}), createdAt: Date.now() };
+      if (!current()) throw new Error("Codex disconnected while staging files");
+      this.state.queuedMessage = { id: randomBytes(16).toString("hex"), threadId, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}), createdAt: Date.now() };
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
       // Completion may arrive while bytes are being uploaded, before the queue exists.
@@ -2946,8 +3027,9 @@ export class MachineRuntime {
       const expectedTurnId = this.state.turn?.id;
       if (!expectedTurnId) throw new Error("The active turn is not ready for a follow-up");
       const files = stagedFiles.length ? stagedFiles : await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
+      if (!current()) throw new Error("Codex disconnected while staging files");
       const input = messageWithFiles(text, images, files);
-      const result = await this.rpc.request("turn/steer", { threadId, expectedTurnId, input });
+      const result = await rpc.request("turn/steer", { threadId, expectedTurnId, input });
       return {
         accepted: true,
         mode: "steer",
@@ -2959,19 +3041,25 @@ export class MachineRuntime {
     if (action !== "start" || capability.mode !== "start") throw new Error("This task is not idle");
 
     const files = await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
+    if (!current()) throw new Error("Codex disconnected while staging files");
+    const previousTurn = this.state.turn;
     const input = messageWithFiles(text, images, files);
-    const result = await this.rpc.request("turn/start", { threadId, input });
+    const result = await rpc.request("turn/start", { threadId, input });
+    if (!current()) return { accepted: true, mode: "start", turnId: result?.turn?.id };
     const pendingName = this.pendingTaskNames.get(threadId);
     if (pendingName) pendingName.firstMessageAccepted = true;
     const turn = result?.turn ?? {};
-    this.state.turn = {
-      id: String(turn.id ?? ""),
-      status: String(turn.status ?? "inProgress"),
-      startedAt: numberTime(turn.createdAt ?? turn.startedAt),
-      completedAt: null,
-      error: null,
-    };
-    this.state.phase = "working";
+    if (this.state.turn === previousTurn) {
+      this.state.turn = {
+        id: String(turn.id ?? ""),
+        status: String(turn.status ?? "inProgress"),
+        startedAt: numberTime(turn.createdAt ?? turn.startedAt),
+        completedAt: null,
+        error: null,
+      };
+      this.state.phase = this.state.turn.status === "inProgress" ? "working"
+        : this.state.turn.status === "failed" ? "failed" : this.state.turn.status === "interrupted" ? "stopped" : "done";
+    }
     const message = this.messageCapability();
     this.broadcast("turn", {
       turn: this.state.turn,
@@ -3090,10 +3178,25 @@ export class MachineRuntime {
 
   private async sendQueuedMessageNow(action: unknown): Promise<JsonObject> {
     if (!this.state.thread) throw new Error("Codex is disconnected");
+    const rpc = this.rpc, thread = this.state.thread;
     const queued = this.state.queuedMessage;
     if (!queued) throw new Error("There is no queued message to send");
+    if (queued.deliveryUnknown) throw new Error(queued.error || "Queued message delivery is unknown after disconnection");
     if (action === "steer") {
-      const result = await this.sendMessageNow(queued.text, "steer", queued.images, [], undefined, queued.files);
+      let result: JsonObject;
+      try { result = await this.sendMessageNow(queued.text, "steer", queued.images, [], undefined, queued.files); }
+      catch (error) {
+        if (/timed out|closed|disconnected/i.test(String(error))) {
+          queued.deliveryUnknown = true;
+          queued.error = compact(String(error), 240);
+        }
+        if (this.rpc === rpc && this.state.thread === thread && this.state.queuedMessage === queued && queued.deliveryUnknown) {
+          this.broadcast("queue", { queuedMessage: this.state.queuedMessage, message: this.messageCapability() });
+        }
+        throw error;
+      }
+      if (this.taskQueues.get(thread.id) === queued) this.taskQueues.delete(thread.id);
+      if (this.rpc !== rpc || this.state.thread !== thread) return result;
       if (this.state.queuedMessage === queued) this.state.queuedMessage = null;
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
@@ -3123,7 +3226,7 @@ export class MachineRuntime {
       try { goal = (await rpc.request("thread/goal/get", { threadId })).goal ?? null; }
       catch (error) { console.warn(`Goal unavailable: ${compact(error, 180)}`); }
     }
-    finally { this.pendingAttachment = null; }
+    finally { if (this.pendingAttachment === attachment) this.pendingAttachment = null; }
     const thread = resumed?.thread ?? {};
     const resumedId = String(thread.id ?? threadId);
     if (resumedId !== threadId) throw new Error("app-server resumed an unexpected thread");
@@ -3149,10 +3252,14 @@ export class MachineRuntime {
     this.updateModel(resumed);
     this.updateGoal(threadId, goal);
     for (const replay of attachment.replay) replay();
+    const selectedThread = this.state.thread;
+    const current = () => this.rpc === rpc && this.state.thread === selectedThread;
     try {
       await this.loadPermissionProfiles(this.state.thread.cwd);
+      if (!current()) throw new Error("Codex disconnected while opening the task");
       this.updateAccessFromCodex(resumed);
     } catch (error) {
+      if (!current()) throw error;
       this.permissionProfiles = [];
       this.state.access = emptyAccess();
       this.state.access.description = compact(error instanceof Error ? error.message : String(error), 240);
@@ -3161,11 +3268,14 @@ export class MachineRuntime {
       try { await this.loadActiveTurn(); }
       catch (error) { console.warn(`${this.definition.name}: active turn details unavailable: ${compact(error, 180)}`); }
     }
+    if (!current()) throw new Error("Codex disconnected while opening the task");
     await this.restoreCompactionHint();
+    if (!current()) throw new Error("Codex disconnected while opening the task");
     if (previousThreadId) {
       try { await rpc.request("thread/unsubscribe", { threadId: previousThreadId }, THREAD_UNSUBSCRIBE_TIMEOUT_MS); }
       catch (error) { console.warn(`${this.definition.name}: previous task unsubscribe skipped: ${compact(error, 180)}`); }
     }
+    if (!current()) throw new Error("Codex disconnected while opening the task");
     if (changed) {
       this.state.queuedMessage = this.taskQueues.get(threadId) ?? null;
       this.taskQueues.delete(threadId);
@@ -3224,13 +3334,15 @@ export class MachineRuntime {
 
   private async loadActiveTurn(): Promise<void> {
     if (!this.rpc || !this.state.thread) return;
-    const page = await this.rpc.request("thread/turns/list", {
+    const rpc = this.rpc, thread = this.state.thread, previousTurn = this.state.turn;
+    const page = await rpc.request("thread/turns/list", {
       threadId: this.state.thread.id,
       cursor: null,
       limit: 5,
       sortDirection: "desc",
       itemsView: "summary",
     });
+    if (this.rpc !== rpc || this.state.thread !== thread || this.state.turn !== previousTurn) return;
     const turn = Array.isArray(page?.data) ? page.data.find((candidate: any) => candidate?.status === "inProgress") : null;
     if (!turn) return;
     this.state.turn = {
@@ -3821,24 +3933,31 @@ export class MachineRuntime {
   private async startQueuedMessage(threadId: string): Promise<boolean> {
     if (this.startingQueuedMessage) return false;
     const queued = this.state.queuedMessage;
-    if (!queued || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return false;
+    if (!queued || queued.deliveryUnknown || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return false;
+    const rpc = this.rpc, thread = this.state.thread, previousTurn = this.state.turn;
+    const current = () => this.rpc === rpc && this.state.thread === thread;
     this.startingQueuedMessage = true;
     try {
       const input = messageWithFiles(queued.text, queued.images, queued.files);
-      const result = await this.rpc.request("turn/start", { threadId, input });
+      const result = await rpc.request("turn/start", { threadId, input });
+      if (this.taskQueues.get(threadId) === queued) this.taskQueues.delete(threadId);
+      if (!current()) return true;
       const pendingName = this.pendingTaskNames.get(threadId);
       if (pendingName) pendingName.firstMessageAccepted = true;
-      if (this.state.thread?.id !== threadId || this.state.queuedMessage !== queued) return;
+      if (this.state.queuedMessage !== queued) return true;
       this.state.queuedMessage = null;
       const turn = result?.turn ?? {};
-      this.state.turn = {
-        id: String(turn.id ?? this.state.turn?.id ?? ""),
-        status: String(turn.status ?? "inProgress"),
-        startedAt: numberTime(turn.createdAt ?? turn.startedAt),
-        completedAt: null,
-        error: null,
-      };
-      this.state.phase = "working";
+      if (this.state.turn === previousTurn) {
+        this.state.turn = {
+          id: String(turn.id ?? this.state.turn?.id ?? ""),
+          status: String(turn.status ?? "inProgress"),
+          startedAt: numberTime(turn.createdAt ?? turn.startedAt),
+          completedAt: null,
+          error: null,
+        };
+        this.state.phase = this.state.turn.status === "inProgress" ? "working"
+          : this.state.turn.status === "failed" ? "failed" : this.state.turn.status === "interrupted" ? "stopped" : "done";
+      }
       this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
       this.broadcast("turn", {
         turn: this.state.turn,
@@ -3850,16 +3969,21 @@ export class MachineRuntime {
       });
       return true;
     } catch (error) {
-      if (this.state.queuedMessage === queued) {
+      if (/timed out|closed|disconnected/i.test(String(error))) {
+        queued.deliveryUnknown = true;
+        queued.error = compact(String(error), 240);
+      }
+      if (current() && this.state.queuedMessage === queued) {
         this.state.queuedMessage = {
           ...queued,
+          deliveryUnknown: /timed out|closed|disconnected/i.test(String(error)),
           error: compact(error instanceof Error ? error.message : String(error), 240),
         };
         this.broadcast("queue", { queuedMessage: this.state.queuedMessage, message: this.messageCapability() });
       }
       return false;
     } finally {
-      this.startingQueuedMessage = false;
+      if (current()) this.startingQueuedMessage = false;
     }
   }
 
@@ -4167,9 +4291,8 @@ export class PocketGateway {
 
   sendMessage(machineId: unknown, text: unknown, action: unknown, images: unknown = [], files: unknown = [], submissionId?: unknown, threadId?: unknown): Promise<JsonObject> {
     return this.enqueue(() => {
-      const runtime = this.requireSelected(machineId);
-      if (files !== undefined && (!Array.isArray(files) || files.length) && threadId !== runtime.state.thread?.id) throw new Error("Selected task changed; try again");
-      return runtime.sendMessage(text, action, images, files, submissionId);
+      const runtime = this.requireSelected(machineId, threadId);
+      return runtime.sendMessage(text, action, images, files, submissionId, threadId);
     });
   }
 
@@ -4181,28 +4304,28 @@ export class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).interruptTurn(expectedThreadId, expectedTurnId));
   }
 
-  sendQueuedMessage(machineId: unknown, action: unknown): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId).sendQueuedMessage(action));
+  sendQueuedMessage(machineId: unknown, action: unknown, threadId: unknown, queueId: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId, threadId).sendQueuedMessage(action, threadId, queueId ?? null));
   }
 
   editQueuedMessage(body: JsonObject): Promise<JsonObject> {
-    return this.enqueue(async () => this.requireSelected(body.machineId).editQueuedMessage(body.threadId, body.text));
+    return this.enqueue(async () => this.requireSelected(body.machineId, body.threadId).editQueuedMessage(body.threadId, body.text, body.queueId ?? null));
   }
 
-  cancelQueuedMessage(machineId: unknown): Promise<JsonObject> {
-    return this.enqueue(async () => this.requireSelected(machineId).cancelQueuedMessage());
+  cancelQueuedMessage(machineId: unknown, threadId: unknown, queueId: unknown): Promise<JsonObject> {
+    return this.enqueue(async () => this.requireSelected(machineId, threadId).cancelQueuedMessage(threadId, queueId ?? null));
   }
 
   updateWorkingPath(body: JsonObject): Promise<JsonObject> {
     return this.enqueue(() => this.requireSelected(body.machineId).updateWorkingPath(body.threadId, body.cwd));
   }
 
-  updateThreadSettings(machineId: unknown, model: unknown, effort: unknown): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId).updateThreadSettings(model, effort));
+  updateThreadSettings(machineId: unknown, model: unknown, effort: unknown, threadId: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId, threadId).updateThreadSettings(model, effort, threadId));
   }
 
-  updateAccess(machineId: unknown, mode: unknown): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId).updateAccess(mode));
+  updateAccess(machineId: unknown, mode: unknown, threadId: unknown): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId, threadId).updateAccess(mode, threadId));
   }
 
   resolveApproval(machineId: unknown, requestId: unknown, decision: unknown): Promise<JsonObject> {
@@ -4221,10 +4344,11 @@ export class PocketGateway {
     return this.runtimes.get(this.selectedMachineId)!;
   }
 
-  private requireSelected(machineId: unknown): MachineRuntime {
+  private requireSelected(machineId: unknown, threadId?: unknown): MachineRuntime {
     const requestedId = String(machineId ?? "").trim();
     if (!requestedId) throw new Error("machineId is required");
     if (requestedId !== this.selectedMachineId) throw new Error("selected machine changed; refresh and try again");
+    if (arguments.length > 1 && (typeof threadId !== "string" || !threadId || threadId !== this.state.thread?.id)) throw new Error("Selected task changed; try again");
     return this.selected();
   }
 
@@ -4349,7 +4473,7 @@ function sendImage(response: ServerResponse, value: { mimeType: string; data: Bu
   response.end(value.data);
 }
 
-function handleControlRequest(
+export function handleControlRequest(
   request: IncomingMessage,
   response: ServerResponse,
   gateway: PocketGateway,
@@ -4359,6 +4483,16 @@ function handleControlRequest(
 ): void {
   if (!isLoopbackRequest(request)) {
     sendControlJson(response, 403, { error: "loopback access only" });
+    return;
+  }
+  if (!allowedBrowserHost(request, { ...options, host: "127.0.0.1" })) {
+    sendControlJson(response, 403, { error: "Unrecognized Pocket host" });
+    return;
+  }
+  const origin = request.headers.origin;
+  if ((origin !== undefined && origin !== `http://${request.headers.host}` && origin !== `https://${request.headers.host}`)
+    || request.headers["sec-fetch-site"] === "cross-site") {
+    sendControlJson(response, 403, { error: "Same-origin request required" });
     return;
   }
   const method = request.method ?? "GET";
@@ -4607,13 +4741,17 @@ export async function handleRequest(
     return;
   }
   if (method === "POST" && url.pathname === "/api/message") {
+    let submissionId: unknown;
     try {
       const body = await readJsonBody(request, Math.ceil((MAX_INPUT_IMAGES_BYTES + MAX_INPUT_FILES_BYTES) * 4 / 3) + 65_536);
+      submissionId = body.submissionId;
       sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => body.question
         ? gateway.answerAsyncQuestion(body.machineId, body.question)
         : gateway.sendMessage(body.machineId, body.text, body.action, body.images, body.files, body.submissionId, body.threadId)), gateway);
     } catch (error) {
-      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+      const submission = typeof submissionId === "string" && /^[a-zA-Z0-9-]{8,100}$/.test(submissionId)
+        ? await gateway.submissions.recover(submissionId) : null;
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error), ...(submission ? { submission } : {}) }, gateway);
     }
     return;
   }
@@ -4631,11 +4769,15 @@ export async function handleRequest(
     return;
   }
   if (method === "POST" && url.pathname === "/api/message/queue") {
+    let submissionId: unknown;
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action)), gateway);
+      submissionId = body.submissionId;
+      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action, body.threadId, body.queueId)), gateway);
     } catch (error) {
-      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
+      const submission = typeof submissionId === "string" && /^[a-zA-Z0-9-]{8,100}$/.test(submissionId)
+        ? await gateway.submissions.recover(submissionId) : null;
+      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error), ...(submission ? { submission } : {}) }, gateway);
     }
     return;
   }
@@ -4649,7 +4791,7 @@ export async function handleRequest(
   }
   if (method === "DELETE" && url.pathname === "/api/message/queue") {
     try {
-      sendJson(response, 200, await gateway.cancelQueuedMessage(url.searchParams.get("machineId")), gateway);
+      sendJson(response, 200, await gateway.cancelQueuedMessage(url.searchParams.get("machineId"), url.searchParams.get("threadId"), url.searchParams.get("queueId")), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
@@ -4663,7 +4805,7 @@ export async function handleRequest(
   if (method === "POST" && url.pathname === "/api/thread/settings") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 200, await gateway.updateThreadSettings(body.machineId, body.model, body.effort), gateway);
+      sendJson(response, 200, await gateway.updateThreadSettings(body.machineId, body.model, body.effort, body.threadId), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
@@ -4672,7 +4814,7 @@ export async function handleRequest(
   if (method === "POST" && url.pathname === "/api/thread/access") {
     try {
       const body = await readJsonBody(request);
-      sendJson(response, 200, await gateway.updateAccess(body.machineId, body.mode), gateway);
+      sendJson(response, 200, await gateway.updateAccess(body.machineId, body.mode, body.threadId), gateway);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }

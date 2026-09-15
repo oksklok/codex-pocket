@@ -1,24 +1,33 @@
 # Contributing
 
-Install dependencies with Node.js 22.6 or newer and npm:
+Install the locked dependencies with Node.js 22.6 or newer and npm:
 
 ```sh
-npm install
+npm ci
+npx playwright install chromium
 ```
 
-Run the existing tests before submitting a change:
+Run both suites before submitting functional or UI changes:
 
 ```sh
 npm test
+npm run test:browser
 ```
 
-The optional desktop/mobile browser regression is `tests/task-local.browser.mjs`. It requires Playwright to already be available; it is not part of `npm test`:
+`npm test` remains the fast logic suite. The browser suite uses the pinned Playwright development dependency; no global installation is needed. On a Linux host missing browser libraries, use `npx playwright install --with-deps chromium`. `POCKET_PLAYWRIGHT_MODULE` remains an optional override for specialized environments, not the reproducible default.
 
-```sh
-node --experimental-strip-types tests/task-local.browser.mjs
-```
+The tests simulate RPC races, delayed responses, connection failures, SSH keepalive expiry, and browser widths. Report those separately from real-device tests. A read-only smoke check is `npm run probe -- --list-only --monitor-seconds 0`; it initializes and lists tasks without attaching to one. Record the app-server version from initialization as well as `codex --version`. Update compatibility claims only for the checks actually performed. Keep `SPIKE_REPORT.md` historical.
 
-If Playwright is installed elsewhere, set `POCKET_PLAYWRIGHT_MODULE` to its module path. For changes to the native macOS host, also run `zsh macos/build-app.sh`.
+Only rebuild the native app with `zsh macos/build-app.sh` when its source changes.
+
+### Behaviors to preserve
+
+- New Task sends explicit starting settings and remembers successful choices per machine/browser. Folder prefill uses the selected task on that machine; a blank folder resolves to that runtime user's home.
+- Wide task navigation/creation focuses the composer; narrow layouts do not. Escape closes narrow sidebar overlays, while wide pinned sidebars remain open.
+- Text, image, and file drafts are task-scoped, in memory, limited to eight non-empty drafts, and lost on reload. Staged files live in the target machine's temp directory; Pocket has no automatic deletion or expiry policy.
+- Tasks Unavailable is a catalog failure on a connected transport. Offline is a transport failure. Keep the 15-second SSH probes/three-miss limit separate from the five-second catalog budget.
+- Unknown message delivery uses receipts and recovery; never retry a message POST automatically.
+- Preserve labels, keyboard focus, input selection/IME composition, and responsive control sizes when changing rendering or icons.
 
 Bug reports should include the host/client operating systems, Codex version (`codex --version`), Node version (`node --version`), and clear reproduction steps.
 

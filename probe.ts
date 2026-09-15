@@ -1,16 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { RpcClient } from "./gateway.ts";
 import process from "node:process";
 
 type JsonObject = Record<string, any>;
-type Pending = {
-  resolve: (value: any) => void;
-  reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
-};
-
 type Options = {
   ws?: string;
   ssh?: string;
@@ -22,11 +15,6 @@ type Options = {
   startTurn?: string;
   steer?: string;
   interrupt: boolean;
-};
-
-type Wire = {
-  send(message: JsonObject): void;
-  close(): void;
 };
 
 const startedAt = Date.now();
@@ -249,264 +237,6 @@ function printNotification(message: JsonObject): void {
   }
 }
 
-function clientFrame(opcode: number, payload: Buffer): Buffer {
-  const mask = randomBytes(4);
-  const length = payload.length;
-  const headerLength = length < 126 ? 2 : length <= 0xffff ? 4 : 10;
-  const frame = Buffer.alloc(headerLength + 4 + length);
-  frame[0] = 0x80 | opcode;
-
-  if (length < 126) {
-    frame[1] = 0x80 | length;
-  } else if (length <= 0xffff) {
-    frame[1] = 0x80 | 126;
-    frame.writeUInt16BE(length, 2);
-  } else {
-    frame[1] = 0x80 | 127;
-    frame.writeBigUInt64BE(BigInt(length), 2);
-  }
-
-  const maskOffset = headerLength;
-  mask.copy(frame, maskOffset);
-  for (let index = 0; index < length; index += 1) {
-    frame[maskOffset + 4 + index] = payload[index] ^ mask[index % 4];
-  }
-  return frame;
-}
-
-function connectProxy(
-  onMessage: (message: JsonObject) => void,
-  onDisconnect: (error: Error) => void,
-  sshHost?: string,
-): Promise<Wire> {
-  return new Promise((resolve, reject) => {
-    const codexBin = process.env.CODEX_BIN || "codex";
-    const command = sshHost ? process.env.SSH_BIN || "ssh" : codexBin;
-    const args = sshHost ? ["-T", sshHost, "codex", "app-server", "proxy"] : ["app-server", "proxy"];
-    const child: ChildProcessWithoutNullStreams = spawn(command, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const websocketKey = randomBytes(16).toString("base64");
-    const expectedAccept = createHash("sha1")
-      .update(`${websocketKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-      .digest("base64");
-    let buffer = Buffer.alloc(0);
-    let upgraded = false;
-    let settled = false;
-    let closing = false;
-    let fragmentedOpcode: number | null = null;
-    let fragments: Buffer[] = [];
-
-    const sendFrame = (opcode: number, payload: Buffer) => child.stdin.write(clientFrame(opcode, payload));
-    const deliver = (payload: Buffer) => {
-      inboundBytes += payload.length;
-      inboundMessages += 1;
-      try {
-        onMessage(JSON.parse(payload.toString("utf8")));
-      } catch (error) {
-        console.error(`invalid JSON from app-server: ${compact((error as Error).message)}`);
-      }
-    };
-
-    const parseFrames = () => {
-      for (;;) {
-        if (buffer.length < 2) return;
-        const first = buffer[0];
-        const second = buffer[1];
-        const final = (first & 0x80) !== 0;
-        const opcode = first & 0x0f;
-        const masked = (second & 0x80) !== 0;
-        let length = second & 0x7f;
-        let offset = 2;
-
-        if (length === 126) {
-          if (buffer.length < 4) return;
-          length = buffer.readUInt16BE(2);
-          offset = 4;
-        } else if (length === 127) {
-          if (buffer.length < 10) return;
-          const longLength = buffer.readBigUInt64BE(2);
-          if (longLength > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("WebSocket frame is too large");
-          length = Number(longLength);
-          offset = 10;
-        }
-
-        const maskLength = masked ? 4 : 0;
-        if (buffer.length < offset + maskLength + length) return;
-        const mask = masked ? buffer.subarray(offset, offset + 4) : null;
-        offset += maskLength;
-        const payload = Buffer.from(buffer.subarray(offset, offset + length));
-        buffer = buffer.subarray(offset + length);
-        if (mask) {
-          for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
-        }
-
-        if (opcode === 0x8) {
-          child.stdin.end();
-          return;
-        }
-        if (opcode === 0x9) {
-          sendFrame(0x0a, payload);
-          continue;
-        }
-        if (opcode === 0x0a) continue;
-
-        if (opcode === 0x1 && final) {
-          deliver(payload);
-        } else if (opcode === 0x1) {
-          fragmentedOpcode = opcode;
-          fragments = [payload];
-        } else if (opcode === 0x0 && fragmentedOpcode !== null) {
-          fragments.push(payload);
-          if (final) {
-            if (fragmentedOpcode === 0x1) deliver(Buffer.concat(fragments));
-            fragmentedOpcode = null;
-            fragments = [];
-          }
-        }
-      }
-    };
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      if (!upgraded) {
-        const headerEnd = buffer.indexOf("\r\n\r\n");
-        if (headerEnd < 0) return;
-        const header = buffer.subarray(0, headerEnd).toString("utf8");
-        buffer = buffer.subarray(headerEnd + 4);
-        const accept = /^sec-websocket-accept:\s*(.+)$/im.exec(header)?.[1]?.trim();
-        if (!/^HTTP\/1\.1 101\b/m.test(header) || accept !== expectedAccept) {
-          reject(new Error(`app-server proxy WebSocket upgrade failed: ${compact(header, 300)}`));
-          child.kill("SIGTERM");
-          return;
-        }
-        upgraded = true;
-        settled = true;
-        resolve({
-          send(message) {
-            sendFrame(0x1, Buffer.from(JSON.stringify(message), "utf8"));
-          },
-          close() {
-            closing = true;
-            sendFrame(0x8, Buffer.alloc(0));
-            child.stdin.end();
-            child.kill("SIGTERM");
-          },
-        });
-      }
-      parseFrames();
-    });
-
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      const text = compact(chunk, 400);
-      if (text) console.error(`${sshHost ? `ssh ${sshHost}` : "proxy"}: ${text}`);
-    });
-    child.once("error", (error) => {
-      if (!settled) reject(error);
-      else if (!closing) onDisconnect(error);
-    });
-    child.once("exit", (code, signal) => {
-      if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code})`));
-      else if (!closing) onDisconnect(new Error(`app-server proxy disconnected (${signal ?? code})`));
-    });
-
-    child.once("spawn", () => {
-      child.stdin.write(
-        `GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${websocketKey}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
-      );
-    });
-  });
-}
-
-function connectWebSocket(url: string, onMessage: (message: JsonObject) => void): Promise<Wire> {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
-    socket.addEventListener("open", () => {
-      resolve({
-        send(message) {
-          socket.send(JSON.stringify(message));
-        },
-        close() {
-          socket.close();
-        },
-      });
-    });
-    socket.addEventListener("message", (event) => {
-      const raw = String(event.data);
-      inboundBytes += Buffer.byteLength(raw);
-      inboundMessages += 1;
-      try {
-        onMessage(JSON.parse(raw));
-      } catch (error) {
-        console.error(`invalid JSON from app-server: ${compact((error as Error).message)}`);
-      }
-    });
-    socket.addEventListener("error", () => reject(new Error(`WebSocket connection failed: ${url}`)));
-  });
-}
-
-class RpcClient {
-  private wire!: Wire;
-  private nextId = 1;
-  private pending = new Map<number, Pending>();
-  private closed = false;
-
-  async connect(onDisconnect: (error: Error) => void, ws?: string, sshHost?: string): Promise<void> {
-    const receive = (message: JsonObject) => this.receive(message);
-    const disconnect = (error: Error) => {
-      this.closed = true;
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(error);
-      }
-      this.pending.clear();
-      onDisconnect(error);
-    };
-    this.wire = ws ? await connectWebSocket(ws, receive) : await connectProxy(receive, disconnect, sshHost);
-  }
-
-  request(method: string, params: JsonObject = {}): Promise<any> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${method} timed out`));
-      }, 20_000);
-      this.pending.set(id, { resolve, reject, timer });
-      this.wire.send({ method, id, params });
-    });
-  }
-
-  notify(method: string, params: JsonObject = {}): void {
-    this.wire.send({ method, params });
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.wire.close();
-  }
-
-  private receive(message: JsonObject): void {
-    if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
-      const id = Number(message.id);
-      const pending = this.pending.get(id);
-      if (!pending) return;
-      clearTimeout(pending.timer);
-      this.pending.delete(id);
-      if (message.error) pending.reject(new Error(`${message.error.message ?? "request failed"} (${message.error.code ?? "no code"})`));
-      else pending.resolve(message.result);
-      return;
-    }
-    if (message.id !== undefined && message.method) {
-      printServerRequest(message);
-      return;
-    }
-    if (message.method) printNotification(message);
-  }
-}
-
 let activeRpc: RpcClient | undefined;
 
 function printThreadList(threads: any[], loadedIds: string[]): void {
@@ -550,14 +280,11 @@ async function main(): Promise<void> {
   const disconnected = new Promise<void>((resolve) => {
     signalDisconnect = resolve;
   });
-  await rpc.connect(
-    (error) => {
-      disconnectError = error;
-      signalDisconnect();
-    },
-    options.ws,
-    options.ssh,
-  );
+  rpc.onRawPayload = bytes => { inboundBytes += bytes; inboundMessages += 1; };
+  rpc.onNotification = printNotification;
+  rpc.onServerRequest = printServerRequest;
+  rpc.onClose = error => { disconnectError = error; signalDisconnect(); };
+  await rpc.connect(options.ws, options.ssh);
   activeRpc = rpc;
 
   let closed = false;
