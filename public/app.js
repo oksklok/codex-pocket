@@ -2290,6 +2290,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     nextCursor = page.nextCursor;
     setHistoryStatus();
     renderConversation({ preserveScroll, forceBottom });
+    void recoverUnresolvedSubmission();
     const transcriptFits = transcriptScroller().scrollHeight <= transcriptScroller().clientHeight + 1;
     if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {

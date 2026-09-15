@@ -1417,16 +1417,16 @@ test('Cancel cannot clear a queued message while automatic turn/start is in flig
   const runtime = activeRuntime();
   await runtime.sendMessage('Queued text', 'queue');
   const queued = runtime.state.queuedMessage;
-  let resolveStart;
+  let resolveStart,started;const ready=new Promise(resolve=>started=resolve);
   runtime.rpc = { request: method => {
-    assert.equal(method, 'turn/start');
+    assert.equal(method, 'turn/start');started();
     return new Promise(resolve => { resolveStart = resolve; });
   } };
   const delivery = runtime.startQueuedMessage('thread-1');
   assert.equal(runtime.startingQueuedMessage, true);
   assert.deepEqual(runtime.cancelQueuedMessage(), { cancelled: false });
   assert.equal(runtime.state.queuedMessage, queued);
-  resolveStart({ turn: { id: 'delivered', status: 'inProgress' } });
+  await ready;resolveStart({ turn: { id: 'delivered', status: 'inProgress' } });
   assert.equal(await delivery, true);
   assert.equal(runtime.state.queuedMessage, null);
   assert.equal(runtime.state.turn.id, 'delivered');
@@ -3183,7 +3183,7 @@ test('review: uncertain queued sends cannot automatically start again on a later
   for(const action of ['start','steer']){
     const runtime=activeRuntime();if(action==='start'){runtime.state.turn=null;runtime.state.threadStatus='idle';}
     runtime.state.queuedMessage={id:'queue',threadId:'thread-1',text:'Once',createdAt:1};
-    let sends=0;runtime.rpc={request:async()=>{sends++;throw new Error('turn/'+action+' timed out');}};
+    let sends=0;runtime.rpc={request:async method=>{if(method!=='turn/'+action)return {data:[]};sends++;throw new Error('turn/'+action+' timed out');}};
     await assert.rejects(runtime.sendQueuedMessage(action),/timed out/);
     assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);
     runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'late',status:'completed'}}});
@@ -3234,7 +3234,7 @@ test('queued receipt recovery retires only the delivered Start/Steer queue, incl
     const oldTurn=runtime.state.turn?.id;
     const queued={id:'original-queue',threadId:'thread-1',text:'Deliver this once',createdAt:1};
     runtime.state.queuedMessage=queued;
-    let sends=0;runtime.rpc={request:async()=>{sends++;throw new Error('turn/'+action+' timed out');}};
+    let sends=0;runtime.rpc={request:async method=>{if(method!=='turn/'+action)return {data:[]};sends++;throw new Error('turn/'+action+' timed out');}};
     const id=receipts.epoch+'-original';
     await assert.rejects(receipts.run(id,()=>runtime.sendQueuedMessage(action,'thread-1',queued.id,{id,receipts})),/timed out/);
     assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);
@@ -3319,4 +3319,80 @@ test('rejected queued RPCs and unrelated Steer turns do not retire a queue',asyn
       assert.equal(runtime.state.queuedMessage,queued);
     }
   }
+});
+
+test('automatic dispatch has a delivery receipt distinct from enqueue acceptance and recovers from bounded history',async()=>{
+  for(const action of ['start','steer','automatic'])for(const placement of ['active','parked','disconnected','replacement'])for(const evidence of ['delivered','older','unrelated','attachment','later-match']){
+    const runtime=activeRuntime(),receipts=runtime.submissions;
+    runtime.state.turn={id:'base',status:'inProgress'};runtime.state.liveMessages=[];
+    const text='Same text as an older message';
+    const old={id:'old-input',type:'userMessage',content:[{type:'text',text}]};
+    let after=false,sends=0;const reads=[];
+    const turnId=action==='steer'?'base':'delivered';
+    const rpc={request:async(method,params)=>{
+      if(method==='turn/start'||method==='turn/steer'){sends++;throw new Error(method+' timed out');}
+      reads.push({method,params});
+      if(method==='thread/turns/list')return {data:after&&action!=='steer'&&evidence!=='older'
+        ?[{id:evidence==='unrelated'?'unrelated':turnId,status:'completed'},{id:'base',status:'completed'}]:[{id:'base',status:'completed'}],nextCursor:null};
+      if(method==='thread/items/list'){
+        const items=params.turnId==='base'?[old]:[];
+        if(after&&evidence==='later-match'&&action!=='steer'&&params.turnId===turnId)items.push({id:'unrelated-first-input',type:'userMessage',content:[{type:'text',text:'Other task input'}]});
+        if(after&&evidence!=='older'&&params.turnId===(evidence==='unrelated'?'unrelated':turnId))items.push({id:'delivered-input',type:'userMessage',content:[{type:'text',text}]});
+        return {data:items.map(item=>({turnId:params.turnId,item})),nextCursor:null};
+      }
+      return {};
+    }};runtime.rpc=rpc;
+    await runtime.history(null,1);
+    const enqueueId=receipts.epoch+'-enqueue';
+    await receipts.run(enqueueId,()=>runtime.sendMessage(text,'queue'));
+    if(evidence==='attachment')runtime.state.queuedMessage.files=[{name:'file.txt',path:'/tmp/file.txt',size:1}];
+    assert.equal((await receipts.recover(enqueueId)).status,'accepted');assert.equal(runtime.state.queuedMessage.submission,undefined);
+    if(action==='automatic'){
+      runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'base',status:'completed'}}});
+      await runtime.selectionQueue;
+    }else{
+      if(action==='start'){runtime.state.turn.status='completed';runtime.state.threadStatus='idle';}
+      const id=receipts.epoch+'-delivery';
+      await assert.rejects(receipts.run(id,()=>runtime.sendQueuedMessage(action,'thread-1',runtime.state.queuedMessage.id,{id,receipts})),/timed out/);
+    }
+    const original=runtime.state.queuedMessage,deliveryId=original.submission.id;
+    assert.notEqual(deliveryId,enqueueId);assert.equal(original.deliveryUnknown,true);assert.equal(sends,1);
+    assert.equal((await receipts.recover(deliveryId)).status,'unknown');
+    if(evidence==='unrelated'&&action!=='steer'){
+      runtime.handleNotification({method:'turn/started',params:{threadId:'thread-1',turn:{id:'delivered',status:'inProgress'}}});
+    }
+    if(placement==='disconnected'){
+      runtime.handleClose(new Error('SSH disconnected'));clearTimeout(runtime.reconnectTimer);runtime.reconnectTimer=null;
+    }else if(placement==='parked'){runtime.parkTaskQueue();runtime.resetThreadState();runtime.state.thread={id:'other'};}
+    const replacement={...original,id:'replacement',submission:undefined,deliveryUnknown:false};
+    if(placement==='replacement')runtime.state.queuedMessage=replacement;
+    Object.assign(runtime.state,{connected:true,thread:{id:'thread-1'},turn:null,liveMessages:[]});runtime.rpc=rpc;
+    after=true;await runtime.history(null,2);
+    const accepted=evidence==='delivered'||(evidence==='later-match'&&action==='steer');
+    assert.equal((await receipts.recover(deliveryId)).status,accepted?'accepted':'unknown',`${action}/${placement}/${evidence}`);
+    assert.equal((await receipts.recover(enqueueId)).status,'accepted');
+    assert.deepEqual(runtime.state.liveMessages,[]);
+    if(placement==='replacement')assert.equal(runtime.state.queuedMessage,replacement);
+    else if(accepted){assert.equal(runtime.state.queuedMessage,null);assert.equal(runtime.taskQueues.has('thread-1'),false);}
+    else assert.equal((runtime.state.queuedMessage||runtime.taskQueues.get('thread-1')).deliveryUnknown,true);
+    assert(reads.filter(read=>read.method==='thread/turns/list').every(read=>read.params.limit<=2&&read.params.cursor===null));
+    assert.equal(sends,1);
+  }
+});
+
+test('Start without a live turn takes a fresh bounded boundary instead of trusting stale history',async()=>{
+  const runtime=activeRuntime(),receipts=runtime.submissions;runtime.state.turn=null;runtime.state.threadStatus='idle';
+  runtime.recentHistory=[{id:'stale-boundary',messages:[]}];
+  runtime.state.queuedMessage={id:'queue',threadId:'thread-1',text:'Identical old text',createdAt:1};
+  let sends=0,reads=0;
+  runtime.rpc={request:async(method,params)=>{
+    if(method==='turn/start'){sends++;throw new Error('turn/start timed out');}
+    if(method==='thread/turns/list'){reads++;assert.equal(params.limit,1);return {data:[{id:'fresh-boundary',status:'completed'}]};}
+    return {data:[]};
+  }};
+  const id=receipts.epoch+'-delivery';
+  await assert.rejects(receipts.run(id,()=>runtime.sendQueuedMessage('start','thread-1','queue',{id,receipts})));
+  assert.equal(reads,1);assert.equal(sends,1);assert.equal(runtime.state.queuedMessage.submission.requested.anchorTurnId,'fresh-boundary');
+  runtime.recentHistory=[{id:'stale-boundary',messages:[]},{id:'old-successor',firstUserMessageId:'old',messages:[{id:'old',role:'user',text:'Identical old text',turnId:'old-successor'}]}];
+  assert.equal((await receipts.recover(id)).status,'unknown');assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);
 });

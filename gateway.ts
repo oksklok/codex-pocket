@@ -1375,6 +1375,7 @@ function normalizeHistoryTurn(turn: any, hydratedItems?: any[]): JsonObject {
     )).filter(Boolean).slice(-MAX_HISTORY_ACTIVITIES_PER_TURN);
   return {
     id: String(turn?.id ?? ""),
+    firstUserMessageId: hydratedItems?.find(item => item.type === "userMessage")?.id ?? null,
     status: String(turn?.status ?? "unknown"),
     createdAt,
     completedAt,
@@ -1765,6 +1766,9 @@ export class MachineRuntime {
   private itemCache = new Map<string, { turnId: string; item: JsonObject }>();
   private itemTurns = new Map<string, string>();
   private historyItemsSupported: boolean | null = null;
+  private recentHistory: JsonObject[] = [];
+  private recentHistoryOldest = false;
+  private submissions: MessageSubmissions;
   private settingsRevision = 0;
   private cwdSettingsRevision = 0;
   private accessSettings: any = null;
@@ -1780,7 +1784,8 @@ export class MachineRuntime {
   private onTaskStatus: (status: JsonObject) => void;
   private asyncAnswers: Record<string, Record<string, string>> = {};
 
-  constructor(options: Options, definition: MachineDefinition, onQuotaChange: () => void, onTaskStatus: (status: JsonObject) => void = () => {}) {
+  constructor(options: Options, definition: MachineDefinition, onQuotaChange: () => void, onTaskStatus: (status: JsonObject) => void = () => {}, submissions = new MessageSubmissions()) {
+    this.submissions = submissions;
     this.options = options;
     this.definition = definition;
     this.onQuotaChange = onQuotaChange;
@@ -1925,6 +1930,13 @@ export class MachineRuntime {
     const rawTurns = Array.isArray(page?.data) ? page.data : [];
     for (const turn of rawTurns) for (const item of turn.items ?? []) this.rememberItem(item, String(turn.id));
     const turns = (await this.hydrateHistoryTurns(rpc, threadId, rawTurns, deadline)).reverse();
+    if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
+    this.recentHistory = turns.map(turn => ({ id: turn.id, firstUserMessageId: turn.firstUserMessageId,
+      messages: turn.messages.filter((message: JsonObject) => message.role === "user") }));
+    this.recentHistoryOldest = !page?.nextCursor;
+    for (const queued of [this.state.queuedMessage, this.taskQueues.get(threadId)]) {
+      if (queued?.threadId === threadId) this.recoverQueuedDelivery(queued, queued.submission, turns, !page?.nextCursor);
+    }
     for (const turn of turns) {
       for (const activity of Array.isArray(turn.activities) ? turn.activities : []) {
         this.itemTurns.set(String(activity.id), String(turn.id));
@@ -2150,18 +2162,10 @@ export class MachineRuntime {
   }
 
   sendQueuedMessage(action: unknown = "start", threadId: unknown = this.state.thread?.id, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt), submission?: { id: string; receipts: MessageSubmissions }): Promise<JsonObject> {
-    const execute = () => {
+    const execute = async () => {
       this.assertQueuedMessage(threadId, queueId);
       const queued = this.state.queuedMessage!;
-      if (submission && !queued.deliveryUnknown) {
-        queued.submission = { id: submission.id, requested: {
-          machineId: this.state.machineId, threadId, action, turnId: this.state.turn?.id,
-          text: queued.text, images: queued.images, files: queued.files,
-          previousMessageIds: [...new Set([...this.state.liveMessages.map(message => message.id), ...this.itemCache.keys()])],
-        } };
-        const original = queued.submission;
-        submission.receipts.setRecovery(submission.id, () => this.recoverQueuedDelivery(queued, original));
-      }
+      if (submission && !queued.deliveryUnknown) await this.trackQueuedSubmission(queued, action, submission);
       return this.sendQueuedMessageNow(action);
     };
     const operation = this.selectionQueue.then(execute, execute);
@@ -2169,11 +2173,48 @@ export class MachineRuntime {
     return operation;
   }
 
-  private recoverQueuedDelivery(queued: QueuedMessage, submission = queued.submission): JsonObject | null {
+  private async trackQueuedSubmission(queued: QueuedMessage, action: unknown, submission: { id: string; receipts: MessageSubmissions }): Promise<void> {
+    const rpc = this.rpc, thread = this.state.thread, expectedTurnId = this.state.turn?.id;
+    // A bounded baseline distinguishes older identical inputs from a new Steer.
+    let baseline: JsonObject[] = [];
+    let complete = false;
+    if ((action === "start" && !this.state.turn) || action === "steer") {
+      try { baseline = (await this.history(null, 1)).turns; complete = this.historyItemsSupported === true || baseline.length === 0; }
+      catch { baseline = []; complete = false; } // Sending remains allowed; weak evidence cannot confirm it later.
+    }
+    if (this.rpc !== rpc || this.state.thread !== thread || this.state.queuedMessage !== queued || this.state.turn?.id !== expectedTurnId) throw new Error("Selected task or turn changed before queued send");
+    queued.submission = { id: submission.id, requested: {
+      machineId: this.state.machineId, threadId: queued.threadId, action, turnId: this.state.turn?.id,
+      anchorTurnId: this.state.turn?.id ?? baseline.at(-1)?.id,
+      emptyHistory: complete && baseline.length === 0 && !this.state.turn,
+      steerBaseline: complete && baseline.some(turn => turn.id === this.state.turn?.id),
+      text: queued.text, images: queued.images, files: queued.files,
+      previousMessageIds: [...new Set([...this.state.liveMessages.map(message => message.id), ...this.itemCache.keys(),
+        ...baseline.flatMap(turn => (turn.messages || []).map((message: JsonObject) => message.id))])],
+    } };
+    const original = queued.submission;
+    submission.receipts.setRecovery(submission.id, () => this.recoverQueuedDelivery(queued, original, this.recentHistory, this.recentHistoryOldest));
+  }
+
+  private recoverQueuedDelivery(queued: QueuedMessage, submission = queued.submission, history: JsonObject[] = [], oldestPage = false): JsonObject | null {
     if (!submission || !queued.deliveryUnknown) return null;
     if (!submission.confirmed) {
-      if (reconcileSubmission(submission.id, this.snapshot(), submission.requested) !== "accepted") return null;
-      submission.confirmed = { accepted: true, queuedMessage: null, turnId: this.state.turn?.id };
+      const requested = submission.requested;
+      let confirmedTurnId = (!requested.deliveryTurnId || requested.deliveryTurnId === this.state.turn?.id)
+        && reconcileSubmission(submission.id, this.snapshot(), requested) === "accepted" ? this.state.turn?.id : null;
+      if (!confirmedTurnId && this.historyItemsSupported === true && requested.threadId === this.state.thread?.id && requested.machineId === this.state.machineId
+        && !requested.images?.length && !requested.files?.length) {
+        const anchor = history.findIndex(turn => turn.id === requested.anchorTurnId);
+        const candidate = requested.action === "steer" ? requested.steerBaseline && history.find(turn => turn.id === requested.turnId)
+          : requested.deliveryTurnId ? history.find(turn => turn.id === requested.deliveryTurnId)
+          : anchor >= 0 ? history[anchor + 1] : requested.emptyHistory && oldestPage ? history[0] : null;
+        if (candidate && (candidate.messages || []).some((message: JsonObject) => message.role === "user"
+          && (requested.action === "steer" || message.id === candidate.firstUserMessageId)
+          && message.turnId === candidate.id && message.text === requested.text?.replace(/\r\n/g, "\n")
+          && !requested.previousMessageIds.includes(message.id))) confirmedTurnId = candidate.id;
+      }
+      if (!confirmedTurnId) return null;
+      submission.confirmed = { accepted: true, queuedMessage: null, turnId: confirmedTurnId };
     }
     const matches = (candidate?: QueuedMessage | null) => candidate?.threadId === queued.threadId
       && (candidate.id ?? String(candidate.createdAt)) === (queued.id ?? String(queued.createdAt))
@@ -3247,7 +3288,7 @@ export class MachineRuntime {
     }
     if (action !== "start") throw new Error("Invalid queued message action");
     if (this.state.turn?.status === "inProgress") throw new Error("Stop or finish the active turn first");
-    const started = await this.startQueuedMessage(this.state.thread.id);
+    const started = await this.startQueuedMessage(this.state.thread.id, true);
     if (!started && !queued.submission?.confirmed) throw new Error(queued.error ?? this.state.queuedMessage?.error ?? "Could not send the queued message");
     return { accepted: true, queuedMessage: null };
   }
@@ -3635,6 +3676,10 @@ export class MachineRuntime {
         break;
       }
       case "turn/started":
+        if (this.state.queuedMessage?.submission?.requested.action === "start") {
+          const requested = this.state.queuedMessage.submission.requested;
+          if (!requested.deliveryTurnId && params.turn?.id && params.turn.id !== requested.anchorTurnId) requested.deliveryTurnId = String(params.turn.id);
+        }
         if (this.state.thread) {
           if (this.compactionHints.get(this.state.thread.id)?.activity.turnId !== String(params.turn?.id ?? "")) this.compactionHints.delete(this.state.thread.id);
           delete this.terminalResults[this.state.thread.id];
@@ -3932,6 +3977,7 @@ export class MachineRuntime {
     this.pendingServerRequests.clear();
     this.itemCache.clear();
     this.itemTurns.clear();
+    this.recentHistory = [];
     this.asyncAnswers = {};
     this.state.liveMessages = [];
     this.state.model = "Not exposed";
@@ -3974,7 +4020,7 @@ export class MachineRuntime {
     await pending.saving;
   }
 
-  private async startQueuedMessage(threadId: string): Promise<boolean> {
+  private async startQueuedMessage(threadId: string, tracked = false): Promise<boolean> {
     if (this.startingQueuedMessage) return false;
     const queued = this.state.queuedMessage;
     if (!queued || queued.deliveryUnknown || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return false;
@@ -3982,8 +4028,15 @@ export class MachineRuntime {
     const current = () => this.rpc === rpc && this.state.thread === thread;
     this.startingQueuedMessage = true;
     try {
-      const input = messageWithFiles(queued.text, queued.images, queued.files);
-      const result = await rpc.request("turn/start", { threadId, input });
+      const id = `${this.submissions.epoch}-${randomBytes(16).toString("hex")}`;
+      const send = async () => {
+        if (!tracked) await this.trackQueuedSubmission(queued, "start", { id, receipts: this.submissions });
+        if (!current()) throw new Error("Codex disconnected before queued send");
+        const input = messageWithFiles(queued.text, queued.images, queued.files);
+        const result = await rpc.request("turn/start", { threadId, input });
+        return { ...result, accepted: true, turnId: result?.turn?.id };
+      };
+      const result = await (tracked ? send() : this.submissions.run(id, send));
       if (this.taskQueues.get(threadId) === queued) this.taskQueues.delete(threadId);
       if (!current()) return true;
       const pendingName = this.pendingTaskNames.get(threadId);
@@ -4129,7 +4182,7 @@ export class PocketGateway {
       };
       this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition, () => this.refreshQuotaSource(), status => {
         for (const response of this.subscribers) this.writeSse(response, "task-status", status);
-      }));
+      }, this.submissions));
     }
   }
 

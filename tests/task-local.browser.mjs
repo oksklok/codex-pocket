@@ -17,8 +17,8 @@ Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 let asyncAnswers={},historyFixture=null, messageUnknown=false, messageGate=null;
 let composerPost="success", recoveryMode=null;
 const eventClients=new Set();
-let queueRecovery=false,queueDropResponse=false,queuePosts=0;
-const queueGateway=new PocketGateway({machines:[]});queueGateway.runtimes.set("local",runtime);
+let queueRecovery=false,queueDropResponse=false,queuePosts=0,queueHistory=false;
+const queueGateway=new PocketGateway({machines:[]});queueGateway.runtimes.set("local",runtime);runtime.submissions=queueGateway.submissions;
 const snapshot=()=>({...runtime.snapshot(),submissionEpoch:queueRecovery?queueGateway.submissions.epoch:"test",asyncAnswers,message:queueRecovery?runtime.messageCapability():{allowed:true,reason:"",canSteer:true}});
 const fileBodies=[];let realFilePosts=false;
 const reviewResponses=new Map();
@@ -35,7 +35,7 @@ const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
  const json=(value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
  try{
- if(queueRecovery&&['/api/message/queue','/api/state'].includes(u.pathname)){
+ if(queueRecovery&&(['/api/message/queue','/api/state'].includes(u.pathname)||(queueHistory&&u.pathname==='/api/history'))){
  if(req.method==='POST')queuePosts++;
  if(queueDropResponse&&req.method==='POST')res.end=()=>{res.write('{');setTimeout(()=>req.socket.destroy(),10);return res;};
  return await handleRequest(req,res,queueGateway,{required:false},{},{host:'127.0.0.1'},async()=>({}),()=>{},()=>false);
@@ -427,6 +427,56 @@ try {
  }
  queueRecovery=false;queueDropResponse=false;runtime.rpc=beforeQueueRpc;
  runtime.resetThreadState();runtime.canAcceptDirectInput=beforeQueueInput;runtime.state.threadStatus="idle";runtime.state.phase="done";
+
+ // Automatic dispatch and history-only delivery confirmation use production bounded history.
+ queueRecovery=true;queueHistory=true;queueDropResponse=false;
+ for(const action of ['start','steer','automatic'])for(const outcome of ['parked','disconnected','replacement','unrelated']){
+ queuePosts=0;runtime.taskQueues.clear();runtime.resetThreadState();runtime.canAcceptDirectInput=true;
+ Object.assign(runtime.state,{machineId:'local',connected:true,thread:task,turn:{id:'history-base',status:'inProgress'},threadStatus:'active',phase:'working'});
+ let delivered=false,sends=0;const text='History-only queued input';
+ const rpc={request:async(method,params)=>{
+ if(['turn/start','turn/steer'].includes(method)){sends++;throw new Error(method+' timed out');}
+ if(method==='thread/turns/list')return {data:delivered&&action!=='steer'?[{id:'history-delivered',status:'completed'},{id:'history-base',status:'completed'}]:[{id:'history-base',status:'inProgress'}],nextCursor:null};
+ if(method==='thread/items/list'){
+ const items=params.turnId==='history-base'?[{id:'old-identical',type:'userMessage',content:[{type:'text',text}]}]:[];
+ if(delivered&&params.turnId===(action==='steer'?'history-base':'history-delivered'))items.push({id:'new-history-input',type:'userMessage',content:[{type:'text',text:outcome==='unrelated'?'Unrelated input':text}]});
+ return {data:items.map(item=>({turnId:params.turnId,item})),nextCursor:null};
+ }
+ return {data:[]};}};runtime.rpc=rpc;
+ const enqueueId=queueGateway.submissions.epoch+'-'+action+'-'+outcome;
+ await queueGateway.submissions.run(enqueueId,()=>runtime.sendMessage(text,'queue'));
+ if(action==='start'){runtime.state.turn.status='completed';runtime.state.threadStatus='idle';runtime.state.phase='done';}
+ await page.setViewportSize({width:1280,height:844});await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.getByText(text,{exact:true}).first().waitFor();
+ if(action==='automatic'){
+ runtime.handleNotification({method:'turn/completed',params:{threadId:task.id,turn:{id:'history-base',status:'completed'}}});await runtime.selectionQueue;
+ }else await page.locator('#send-queue').click();
+ while(!runtime.state.queuedMessage?.deliveryUnknown)await page.waitForTimeout(10);
+ const original=runtime.state.queuedMessage,receiptId=original.submission.id;
+ assert.notEqual(receiptId,enqueueId);assert.equal((await queueGateway.submissions.recover(enqueueId)).status,'accepted');
+ if(outcome==='disconnected'){runtime.handleClose(new Error('fixture disconnect'));clearTimeout(runtime.reconnectTimer);runtime.reconnectTimer=null;}
+ else{runtime.parkTaskQueue();runtime.resetThreadState();runtime.state.thread=owned;runtime.broadcast('snapshot',snapshot());}
+ await page.waitForTimeout(50);
+ runtime.rpc=rpc;runtime.canAcceptDirectInput=true;
+ Object.assign(runtime.state,{connected:true,thread:task,turn:null,threadStatus:'idle',phase:'done',liveMessages:[],queuedMessage:runtime.taskQueues.get(task.id)});
+ runtime.taskQueues.delete(task.id);
+ if(outcome==='replacement')runtime.state.queuedMessage={id:'history-replacement',threadId:task.id,text:'Keep history replacement',createdAt:2};
+ delivered=true;
+ // Reload has no browser submission memory; only gateway history/receipts can retire the queue.
+ await page.reload();await input.waitFor();
+ if(outcome==='unrelated'){
+ await page.waitForTimeout(150);assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);assert.equal(await page.locator('#send-queue').isDisabled(),true);
+ assert.equal((await queueGateway.submissions.recover(receiptId)).status,'unknown');
+ }else{
+ await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden||document.querySelector('#queue-text').textContent==='Keep history replacement');
+ assert.equal((await queueGateway.submissions.recover(receiptId)).status,'accepted');
+ if(outcome==='replacement')assert.equal(runtime.state.queuedMessage.id,'history-replacement');else assert.equal(runtime.state.queuedMessage,null);
+ await page.reload();await input.waitFor();
+ if(outcome==='replacement')assert.equal(await page.locator('#queue-text').textContent(),'Keep history replacement');else assert.equal(await page.locator('#queue-banner').isVisible(),false);
+ }
+ assert.deepEqual(runtime.state.liveMessages,[]);assert.equal(sends,1);assert.equal(queuePosts,action==='automatic'?0:1);assert.equal(runtime.taskQueues.size,0);
+ }
+ queueHistory=false;queueRecovery=false;runtime.rpc=beforeQueueRpc;runtime.resetThreadState();runtime.canAcceptDirectInput=beforeQueueInput;runtime.state.threadStatus='idle';runtime.state.phase='done';
 
  for(const width of [1280,390]){
  runtime.terminalResults={};
