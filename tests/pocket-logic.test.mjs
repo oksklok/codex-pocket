@@ -1862,6 +1862,7 @@ test('New Task starting settings use the target runtime and optional failures ke
     } };
     const options = await gateway.newTaskOptions('ssh:b', '/resolved');
     assert.equal(options.models[0].model, 'target-model');
+    assert.deepEqual(options.current,{model:b.state.model,effort:b.state.reasoningEffort,access:b.state.access?.mode});
     assert.deepEqual(options.access, { ask: true, auto: true, full: true });
     assert.equal(b.permissionProfiles.length, 0); // Read-only options do not replace attached-task settings.
     const result = await gateway.taskAction({ action: 'create', machineId: 'ssh:b', expectedMachineId: 'local', expectedThreadId: 'a', name: 'Fresh', ...settings });

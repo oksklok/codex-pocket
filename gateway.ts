@@ -2488,7 +2488,7 @@ export class MachineRuntime {
     const projectFolder = cwd.trim() || await this.targetHomeDirectory();
     const profiles = await this.loadPermissionProfiles(projectFolder, false);
     const workspace = profiles.some(p => p.id === ":workspace" && p.allowed);
-    return { models: this.state.models, access: {
+    return { models: this.state.models, current: { model: this.state.model, effort: this.state.reasoningEffort, access: this.state.access?.mode }, access: {
       ask: workspace && (!this.allowedReviewers || this.allowedReviewers.includes("user")),
       auto: workspace && (!this.allowedReviewers || this.allowedReviewers.includes("auto_review")),
       full: profiles.some(p => [":danger-full-access", ":full-access"].includes(p.id) && p.allowed),

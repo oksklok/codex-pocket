@@ -21,6 +21,7 @@ const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,m
 const fileBodies=[];let realFilePosts=false;
 const calls=[];let gate=null, release, mode='success', failAction=false;
 let freshNavigation=false;
+let newTaskOptionsFixture=null;
 let actionFailure='Fixture action failed', cwdFailure=false, cwdGate=null;const cwdEdits=[];
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let goalGate=null;const goalCalls=[];let uiGate=null;let queueEditGate=null,queueEditFailure=false;const queueEdits=[];
@@ -124,7 +125,7 @@ const server=createServer(async(req,res)=>{
  return json({accepted:true,turnId:'accepted-start-turn'},202);
  }
  if(u.pathname==='/api/tasks/options' && u.searchParams.get('cwd')==='/unavailable')return json({error:'Unavailable'},503);
- if(u.pathname==='/api/tasks/options')return json({models:[{model:'demo-model',displayName:'Demo Model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],access:{ask:true,auto:true,full:true}});
+ if(u.pathname==='/api/tasks/options')return json(newTaskOptionsFixture||{models:[{model:'demo-model',displayName:'Demo Model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],access:{ask:true,auto:true,full:true}});
  if(u.pathname==='/api/tasks'){
  let text='';for await(const c of req)text+=c;const b=JSON.parse(text);calls.push(b.action);if(b.action==='create')calls.push({create:b});if(gate)await gate;if(failAction)return json({error:actionFailure},409);
  if(b.action==='rename'){const t=[...active,...archived].find(t=>t.id===b.threadId);t.name=b.name;}
@@ -588,7 +589,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByRole('button',{name:'New task',exact:true}).last().click();
  assert.equal(await page.locator('#new-task-title').textContent(),'New Task on Second machine');
  assert.equal(await page.locator('#new-task-cwd').inputValue(),'');
- await page.locator('#new-task-cwd').fill('/unavailable');await page.locator('#new-task-cwd').blur();await page.getByText('Starting settings unavailable. You can still create with Default settings.',{exact:true}).waitFor();
+ await page.locator('#new-task-cwd').fill('/unavailable');await page.locator('#new-task-cwd').blur();await page.getByText('Starting settings unavailable. Check the Project Folder and try again.',{exact:true}).waitFor();
  await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.waitForFunction(()=>document.querySelector('#new-task-error').textContent==='');
  await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});
  await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('auto');
@@ -1728,6 +1729,40 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByText('Send rejected',{exact:true}).waitFor();assert.equal(await page.locator('#composer-status').isVisible(),true);
  composerPost='success';
  }
+ // Explicit New Task choices are remembered only after success, separately per machine.
+ const previousOptionsRemoteConnected=remoteConnected;remoteConnected=true;
+ await page.setViewportSize({width:1280,height:844});
+ await page.evaluate(()=>{localStorage.setItem('codex-pocket-details-open','false');for(const id of ['local','ssh:test'])localStorage.removeItem(`codex-pocket-new-task-settings:${id}`);});
+ newTaskOptionsFixture={models:[{model:'choice-a',displayName:'Choice A',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'medium'},{model:'choice-b',displayName:'Choice B',supportedReasoningEfforts:[{reasoningEffort:'high'},{reasoningEffort:'xhigh'}],defaultReasoningEffort:'high'}],current:{model:'choice-b',effort:'xhigh',access:'full'},access:{ask:true,auto:true,full:true}};
+ await page.reload();await open();
+ const openNew=async index=>{await page.getByRole('button',{name:'New task',exact:true}).nth(index).click();await page.waitForFunction(()=>!document.querySelector('#new-task-create').disabled);};
+ const choices=()=>page.locator('#new-task-model, #new-task-effort, #new-task-access').evaluateAll(es=>es.map(e=>e.value));
+ const savedChoice=id=>page.evaluate(id=>JSON.parse(localStorage.getItem(`codex-pocket-new-task-settings:${id}`)),id);
+ await openNew(0);assert.deepEqual(await choices(),['choice-b','xhigh','full']);
+ assert.equal(await page.locator('.new-task-settings option[value=""]').count(),0);
+ await page.locator('#new-task-model').selectOption('choice-a');assert.equal(await page.locator('#new-task-effort').inputValue(),'medium');
+ await page.locator('#new-task-effort').selectOption('low');await page.locator('#new-task-access').selectOption('auto');
+ await page.locator('#new-task-cancel').click();assert.equal(await savedChoice('local'),null);
+ await openNew(0);assert.deepEqual(await choices(),['choice-b','xhigh','full']);
+ await page.locator('#new-task-model').selectOption('choice-a');await page.locator('#new-task-effort').selectOption('low');await page.locator('#new-task-access').selectOption('auto');
+ await page.locator('#new-task-name').fill('Remembered choices');failAction=true;
+ await page.locator('#new-task-create').click();await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
+ assert.equal(await savedChoice('local'),null);
+ failAction=false;await page.locator('#new-task-create').click();await page.waitForFunction(()=>!document.querySelector('#new-task-dialog').open);
+ assert.deepEqual(await savedChoice('local'),{model:'choice-a',effort:'low',access:'auto'});
+ await page.reload();await open();await openNew(0);assert.deepEqual(await choices(),['choice-a','low','auto']);await page.locator('#new-task-cancel').click();
+ await openNew(1);assert.deepEqual(await choices(),['choice-b','xhigh','full']);
+ await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('ask');await page.locator('#new-task-name').fill('Remote choices');
+ await page.locator('#new-task-create').click();await page.waitForFunction(()=>!document.querySelector('#new-task-dialog').open);
+ assert.deepEqual(await savedChoice('ssh:test'),{model:'choice-b',effort:'high',access:'ask'});
+ assert.deepEqual(await savedChoice('local'),{model:'choice-a',effort:'low',access:'auto'});
+ newTaskOptionsFixture={...newTaskOptionsFixture,models:newTaskOptionsFixture.models.slice(1),access:{ask:true}};
+ await openNew(0);assert.deepEqual(await choices(),['choice-b','high','ask']);await page.locator('#new-task-cancel').click();
+ assert.deepEqual(await savedChoice('local'),{model:'choice-a',effort:'low',access:'auto'},'fallbacks are not saved merely by opening');
+ newTaskOptionsFixture.models[0]={...newTaskOptionsFixture.models[0],supportedReasoningEfforts:[{reasoningEffort:'xhigh'}],defaultReasoningEffort:'xhigh'};
+ await openNew(1);assert.deepEqual(await choices(),['choice-b','xhigh','ask']);await page.locator('#new-task-cancel').click();
+ assert.equal((await savedChoice('ssh:test')).effort,'high','unsupported effort fallback is not saved before creation');
+ newTaskOptionsFixture=null;remoteConnected=previousOptionsRemoteConnected;await dismissTasks();await closed();
  // Real activity reorders cached catalogs immediately, including updates during a catalog read.
  const savedOrderingTasks=active;
  for(const width of [1280,390,320]) {

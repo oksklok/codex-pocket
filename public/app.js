@@ -2267,36 +2267,57 @@ const newTaskEffort = document.querySelector("#new-task-effort");
 const newTaskAccess = document.querySelector("#new-task-access");
 let newTaskModels = [];
 let newTaskOptionsRequest = 0;
-function newTaskEfforts() {
-  newTaskEffort.replaceChildren(new Option("Default", ""));
+let newTaskOptionsReady = false;
+let newTaskOptionsLoad = Promise.resolve();
+const newTaskPreferenceKey = machineId => `codex-pocket-new-task-settings:${machineId}`;
+function newTaskEfforts(preferred) {
+  newTaskEffort.replaceChildren();
   const model = newTaskModels.find(model => model.model === newTaskModel.value);
   for (const effort of model?.supportedReasoningEfforts || []) newTaskEffort.add(new Option(effortLabel(effort.reasoningEffort), effort.reasoningEffort));
-  newTaskEffort.disabled = !model;
+  const supported = value => [...newTaskEffort.options].some(option => option.value === value);
+  if (supported(preferred)) newTaskEffort.value = preferred;
+  else if (supported(model?.defaultReasoningEffort)) newTaskEffort.value = model.defaultReasoningEffort;
+  newTaskEffort.disabled = !newTaskEffort.options.length;
 }
 async function loadNewTaskOptions() {
   if (!newTaskDialog.open) return;
   const request = ++newTaskOptionsRequest;
+  newTaskOptionsReady = false;
+  newTaskCreate.disabled = !newTaskModel.value;
   try {
     const query = new URLSearchParams({ machineId: newTaskMachine.id, cwd: newTaskCwd.value.trim() });
     const response = await apiFetch(`/api/tasks/options?${query}`);
     const value = await response.json();
     if (request !== newTaskOptionsRequest || !newTaskDialog.open) return;
     if (!response.ok) throw new Error(value.error || "Starting settings unavailable");
-    if (newTaskError.textContent === "Starting settings unavailable. You can still create with Default settings.") newTaskError.textContent = "";
-    const chosen = { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value };
-    newTaskModel.replaceChildren(new Option("Default", ""));
-    newTaskAccess.replaceChildren(new Option("Default", ""));
-    newTaskModels = value.models || [];
+    let remembered;
+    try { remembered = JSON.parse(localStorage.getItem(newTaskPreferenceKey(newTaskMachine.id))); } catch {}
+    const chosen = newTaskModel.value
+      ? { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value }
+      : remembered || value.current || {};
+    newTaskModel.replaceChildren();
+    newTaskAccess.replaceChildren();
+    newTaskModels = (value.models || []).filter(model => model.model && model.supportedReasoningEfforts?.length);
     for (const model of newTaskModels) newTaskModel.add(new Option(model.displayName || model.model, model.model));
     for (const [mode, label] of [["ask", "Ask"], ["auto", "Auto"], ["full", "Full"]]) if (value.access?.[mode]) newTaskAccess.add(new Option(label, mode));
     if (newTaskModels.some(model => model.model === chosen.model)) newTaskModel.value = chosen.model;
-    newTaskEfforts();
-    if ([...newTaskEffort.options].some(option => option.value === chosen.effort)) newTaskEffort.value = chosen.effort;
+    else if (newTaskModels.some(model => model.model === value.current?.model)) newTaskModel.value = value.current.model;
+    newTaskEfforts(chosen.effort);
     if ([...newTaskAccess.options].some(option => option.value === chosen.access)) newTaskAccess.value = chosen.access;
-  } catch { if (request === newTaskOptionsRequest && newTaskDialog.open) newTaskError.textContent = "Starting settings unavailable. You can still create with Default settings."; }
+    else if ([...newTaskAccess.options].some(option => option.value === value.current?.access)) newTaskAccess.value = value.current.access;
+    if (!newTaskModel.value || !newTaskEffort.value || !newTaskAccess.value) throw new Error("No available starting settings");
+    newTaskOptionsReady = true;
+    newTaskCreate.disabled = false;
+    if (newTaskError.textContent.startsWith("Starting settings unavailable.")) newTaskError.textContent = "";
+  } catch {
+    if (request === newTaskOptionsRequest && newTaskDialog.open) {
+      newTaskCreate.disabled = true;
+      newTaskError.textContent = "Starting settings unavailable. Check the Project Folder and try again.";
+    }
+  }
 }
-newTaskModel.addEventListener("change", newTaskEfforts);
-newTaskCwd.addEventListener("change", loadNewTaskOptions);
+newTaskModel.addEventListener("change", () => newTaskEfforts());
+newTaskCwd.addEventListener("change", () => { newTaskOptionsLoad = loadNewTaskOptions(); });
 let newTaskMachine = null;
 
 function newTask(machine) {
@@ -2308,16 +2329,16 @@ function newTask(machine) {
     || machine.tasks?.find(task => task.selected && task.cwd?.trim())?.cwd
     || "";
   newTaskError.textContent = "";
-  newTaskModel.replaceChildren(new Option("Default", ""));
-  newTaskAccess.replaceChildren(new Option("Default", ""));
+  newTaskModel.replaceChildren();
+  newTaskAccess.replaceChildren();
   newTaskModels = [];
   newTaskEfforts();
   newTaskDialog.showModal();
-  void loadNewTaskOptions();
+  newTaskOptionsLoad = loadNewTaskOptions();
   newTaskName.focus();
 }
 newTaskDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
-newTaskDialog.addEventListener("cancel", event => { if (newTaskCreate.disabled) event.preventDefault(); });
+newTaskDialog.addEventListener("cancel", event => { if (taskActionBusy) event.preventDefault(); });
 document.querySelector("#new-task-cancel").addEventListener("click", () => newTaskDialog.close());
 newTaskForm.addEventListener("submit", async event => {
   event.preventDefault();
@@ -2327,12 +2348,21 @@ newTaskForm.addEventListener("submit", async event => {
     newTaskError.textContent = "Enter an absolute project folder on this machine"; newTaskCwd.focus(); return;
   }
   newTaskError.textContent = "";
+  const optionsRequest = newTaskOptionsRequest;
+  if (!newTaskOptionsReady) await newTaskOptionsLoad;
+  if (!newTaskDialog.open || taskActionBusy || optionsRequest !== newTaskOptionsRequest
+    || newTaskCwd.value.trim() !== cwd || newTaskName.value.trim() !== name) return;
+  if (!newTaskOptionsReady || !newTaskModel.value || !newTaskEffort.value || !newTaskAccess.value) { newTaskError.textContent = "Choose available starting settings before creating the task."; return; }
+  const machineId = newTaskMachine.id;
   const startingSettings = { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value };
   ++newTaskOptionsRequest;
   for (const control of newTaskForm.elements) control.disabled = true;
   try {
     const result = await performTaskAction({ machineId: newTaskMachine.id, action: "create", name, cwd, ...startingSettings });
-    if (result?.succeeded) { newTaskDialog.close(); elements.messageText.focus(); }
+    if (result?.succeeded) {
+      if (!result.warning) { try { localStorage.setItem(newTaskPreferenceKey(machineId), JSON.stringify(startingSettings)); } catch {} }
+      newTaskDialog.close(); elements.messageText.focus();
+    }
     else newTaskError.textContent = result?.failure || "Task creation is unavailable right now";
   } finally { for (const control of newTaskForm.elements) control.disabled = false; }
 });
@@ -2419,7 +2449,7 @@ async function performTaskAction(body) {
   }
   if (succeeded && snapshot?.warning) { composerError = snapshot.warning.replace(/^Task created\. /, ""); renderComposer(); }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
-  return { succeeded, failure };
+  return { succeeded, failure, warning: snapshot?.warning };
 }
 
 function taskFailureMessage(message) {
