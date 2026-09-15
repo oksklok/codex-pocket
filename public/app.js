@@ -414,9 +414,6 @@ async function postMessageAction(url, body) {
         confirmedSteer: { previousMessageIds: requested.previousMessageIds } });
       renderConversation();
     }
-    if (url === "/api/message" && ["start", "steer"].includes(requested.action)) {
-      updateLiveTaskCatalog({ machineId: requested.machineId, threadId: requested.threadId, updatedAt: Date.now() });
-    }
     if (composerSubmission && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) jumpToLatest(true);
     return result;
   };
@@ -3018,8 +3015,6 @@ function connectEvents() {
       else taskTerminalResults.delete(key);
     }
     if (value.status?.startsWith("active")) taskTerminalResults.delete(key);
-    const previous = navigationCatalogs[0]?.machines?.find(machine => machine.id === value.machineId)?.tasks?.find(task => task.id === value.threadId)?.status;
-    if (value.status?.startsWith("active") && !previous?.startsWith("active")) value.updatedAt ??= Date.now();
     updateLiveTaskCatalog(value);
   });
   on("status", (event) => { mergeState(parseEvent(event)); });
@@ -3048,7 +3043,7 @@ function connectEvents() {
     const status = value.turn?.status;
     if (["inProgress", "completed", "failed", "interrupted"].includes(status)) taskTerminalResults.delete(key);
     updateLiveTaskCatalog({
-      machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle", updatedAt: Date.now(),
+      machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle",
     });
     mergeState(value);
   });
@@ -3058,7 +3053,6 @@ function connectEvents() {
     const activity = parseEvent(event);
     const activities = [...(state.activities || [])];
     const index = activities.findIndex((candidate) => candidate.id === activity.id);
-    if (index < 0) updateLiveTaskCatalog({ machineId: state?.machineId, threadId: state?.thread?.id, updatedAt: Date.now() });
     const expandByDefault = index < 0 && activity.expandable && activityVisible(activity) && activityExpandsByDefault(activity);
     if (index >= 0) activities[index] = activity;
     else activities.push(activity);

@@ -428,6 +428,31 @@ try {
  queueRecovery=false;queueDropResponse=false;runtime.rpc=beforeQueueRpc;
  runtime.resetThreadState();runtime.canAcceptDirectInput=beforeQueueInput;runtime.state.threadStatus="idle";runtime.state.phase="done";
 
+ // Evidence before the automatic RPC timeout clears the queue without another trigger.
+ queueRecovery=true;
+ for(const outcome of ['confirmed','parked','replacement','unrelated']){
+ runtime.taskQueues.clear();runtime.resetThreadState();runtime.canAcceptDirectInput=true;queuePosts=0;
+ Object.assign(runtime.state,{machineId:'local',connected:true,thread:task,turn:{id:'before-base',status:'inProgress'},threadStatus:'active',phase:'working'});
+ let rejectSend,ready,sends=0;const started=new Promise(resolve=>ready=resolve);
+ runtime.rpc={request:async method=>{if(method==='turn/start'){sends++;ready();return new Promise((_,reject)=>rejectSend=reject);}return {data:[]};}};
+ const enqueueId=queueGateway.submissions.epoch+'-before-'+outcome;
+ await queueGateway.submissions.run(enqueueId,()=>runtime.sendMessage('Before timeout input','queue'));
+ const original=runtime.state.queuedMessage;
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await page.locator('#queue-banner').waitFor();
+ runtime.handleNotification({method:'turn/completed',params:{threadId:task.id,turn:{id:'before-base',status:'completed'}}});await started;
+ runtime.handleNotification({method:'turn/started',params:{threadId:task.id,turn:{id:'before-delivered',status:'inProgress'}}});
+ runtime.upsertLiveMessage({id:'before-input',role:'user',turnId:'before-delivered',text:outcome==='unrelated'?'Other input':original.text});
+ if(outcome==='parked'){runtime.parkTaskQueue();runtime.resetThreadState();runtime.state.thread=owned;runtime.broadcast('snapshot',snapshot());}
+ if(outcome==='replacement'){runtime.state.queuedMessage={id:'keep-before',threadId:task.id,text:'Keep replacement',createdAt:2};runtime.broadcast('queue',{queuedMessage:runtime.state.queuedMessage});}
+ rejectSend(new Error('turn/start timed out'));await runtime.selectionQueue;
+ assert.equal(queueGateway.submissions.receipts.get(original.submission.id).status,outcome==='unrelated'?'unknown':'accepted');
+ if(outcome==='unrelated'){
+ await page.waitForFunction(()=>document.querySelector('#send-queue').disabled);
+ assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);
+ }else if(outcome==='replacement')assert.equal(await page.locator('#queue-text').textContent(),'Keep replacement');
+ else {await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);assert.equal(runtime.taskQueues.size,0);assert.equal(runtime.state.queuedMessage,null);}
+ assert.equal((await queueGateway.submissions.recover(enqueueId)).status,'accepted');assert.equal(sends,1);assert.equal(queuePosts,0);
+ }
  // Automatic dispatch and history-only delivery confirmation use production bounded history.
  queueRecovery=true;queueHistory=true;queueDropResponse=false;
  for(const action of ['start','steer','automatic'])for(const outcome of ['parked','disconnected','replacement','unrelated']){
@@ -2065,18 +2090,31 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal((await savedChoice('ssh:test')).effort,'high','unsupported effort fallback is not saved before creation');
  newTaskOptionsFixture=null;remoteConnected=previousOptionsRemoteConnected;await dismissTasks();await closed();
  // Real activity reorders cached catalogs immediately, including updates during a catalog read.
- const savedOrderingTasks=active;
+ const savedOrderingTasks=active,savedOrderingRpc=runtime.rpc,savedOrderingLoaded=runtime.loadedThreads;
  for(const width of [1280,390,320]) {
  await page.setViewportSize({width,height:844});
  const older={...task,id:'order-old',name:'Order old',loaded:true,updatedAt:100},newer={...task,id:'order-new',name:'Order new',loaded:true,updatedAt:200};
- active=[newer,older];Object.assign(runtime.state,{machineId:'local',thread:older,turn:null,threadStatus:'idle',phase:'ready',pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ active=[newer,older];runtime.loadedThreads=active;
+ runtime.rpc={request:async(method,params)=>method==='thread/read'?{thread:{...active.find(t=>t.id===params.threadId),recencyAt:active.find(t=>t.id===params.threadId)?.updatedAt/1000}}:{data:[]}};
+ Object.assign(runtime.state,{machineId:'local',thread:older,turn:null,threadStatus:'idle',phase:'ready',pending:[],queuedMessage:null,liveMessages:[],activities:[]});
  await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));
  await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
  const order=()=>page.locator('.destination-task-label > span').allTextContents().then(names=>names.filter(name=>name.startsWith('Order ')));
  assert.deepEqual(await order(),['Order new','Order old']);
+ for(const name of ['Order new','Order old','Order new','Order old']){
+ await select(name);await open();
+ for(const entry of [older,newer])for(const status of ['idle','notLoaded'])runtime.handleNotification({method:'thread/status/changed',params:{threadId:entry.id,status:{type:status}}});
+ runtime.broadcast('turn',{turn:{id:'existing-turn',status:'completed'}});
+ runtime.broadcast('activity',{id:'replayed-activity',type:'reasoning',title:'Existing activity'});
+ await page.waitForTimeout(30);assert.deepEqual(await order(),['Order new','Order old']);
+ await page.getByRole('button',{name:'Refresh tasks',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.deepEqual(await order(),['Order new','Order old']);
+ }
  const readsBeforeSend=calls.filter(c=>c==='/api/navigation').length;
  await page.locator('#message-text').fill('New activity in the older task');await page.locator('#composer').evaluate(form=>form.requestSubmit());
  await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
+ older.updatedAt=300;runtime.handleNotification({method:'item/started',params:{threadId:older.id,item:{id:'genuine-input',type:'userMessage',content:[]}}});
+ await page.waitForFunction(()=>document.querySelector('.destination-task-label > span').textContent==='Order old');
  assert.deepEqual(await order(),['Order old','Order new']);
  assert.equal(calls.filter(c=>c==='/api/navigation').length,readsBeforeSend,'accepted activity reorders without fetching the catalog');
  runtime.broadcast('task-status',{machineId:'local',threadId:older.id,status:'active'});
@@ -2100,9 +2138,10 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  older.updatedAt=Date.now()+2000;active=[older,newer];
  await page.getByRole('button',{name:'Refresh tasks',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  assert.deepEqual(await order(),['Order old','Order new']);
+ await page.reload();await open();assert.deepEqual(await order(),['Order old','Order new']);
  await dismissTasks();await closed();
  }
- active=savedOrderingTasks;
+ active=savedOrderingTasks;runtime.rpc=savedOrderingRpc;runtime.loadedThreads=savedOrderingLoaded;
  // A fresh task's leave guard belongs to the source; attach failures belong to the target.
  const savedActiveForFresh=active;
  for(const width of [1280,390,320]){

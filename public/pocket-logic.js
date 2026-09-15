@@ -278,7 +278,7 @@ export function rememberComposerDraft(drafts, key, draft = drafts.get(key)) {
 
 // Keep fetched catalogs and live browser updates in the same order.
 export function compareTaskOrder(left, right) {
-  const priority = task => task.status?.startsWith("active") ? 2 : task.loaded ? 1 : 0;
+  const priority = task => task.status?.startsWith("active") ? 1 : 0;
   return priority(right) - priority(left) || (right.updatedAt || 0) - (left.updatedAt || 0)
     || String(left.id).localeCompare(String(right.id));
 }

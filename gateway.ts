@@ -160,7 +160,7 @@ type PocketModel = {
 type QueuedMessage = {
   id?: string;
   deliveryUnknown?: boolean;
-  submission?: { id: string; requested: JsonObject; confirmed?: JsonObject };
+  submission?: { id: string; requested: JsonObject; evidence?: JsonObject; confirmed?: JsonObject };
   threadId: string;
   text: string;
   images?: Array<{ type: string; url: string }>;
@@ -2197,8 +2197,8 @@ export class MachineRuntime {
   }
 
   private recoverQueuedDelivery(queued: QueuedMessage, submission = queued.submission, history: JsonObject[] = [], oldestPage = false): JsonObject | null {
-    if (!submission || !queued.deliveryUnknown) return null;
-    if (!submission.confirmed) {
+    if (!submission) return null;
+    if (!submission.evidence) {
       const requested = submission.requested;
       let confirmedTurnId = (!requested.deliveryTurnId || requested.deliveryTurnId === this.state.turn?.id)
         && reconcileSubmission(submission.id, this.snapshot(), requested) === "accepted" ? this.state.turn?.id : null;
@@ -2214,8 +2214,12 @@ export class MachineRuntime {
           && !requested.previousMessageIds.includes(message.id))) confirmedTurnId = candidate.id;
       }
       if (!confirmedTurnId) return null;
-      submission.confirmed = { accepted: true, queuedMessage: null, turnId: confirmedTurnId };
+      submission.evidence = { accepted: true, queuedMessage: null, turnId: confirmedTurnId };
     }
+    // Remember proof while the RPC is pending, including before parking the queue.
+    // Only an uncertain outcome may be recovered; a genuine rejection stays rejected.
+    if (!queued.deliveryUnknown) return null;
+    submission.confirmed = submission.evidence;
     const matches = (candidate?: QueuedMessage | null) => candidate?.threadId === queued.threadId
       && (candidate.id ?? String(candidate.createdAt)) === (queued.id ?? String(queued.createdAt))
       && candidate.submission === submission;
@@ -2558,6 +2562,8 @@ export class MachineRuntime {
     this.loadedThreads = [...currentThreads, ...previousThreads.filter(previous =>
       loadedIds.has(previous.id) && !threads.some(thread => String(thread.id) === previous.id))]
       .map(task => {
+        const previous = previousThreads.find(previous => previous.id === task.id);
+        if (previous) task.updatedAt = Math.max(task.updatedAt, previous.updatedAt);
         const pendingName = this.pendingTaskNames.get(task.id);
         if (pendingName) task = { ...task, name: pendingName.name };
         // Live observations during this read take precedence, even after active -> idle -> active.
@@ -2660,7 +2666,7 @@ export class MachineRuntime {
   async listArchivedThreads(): Promise<LoadedThreadSummary[]> {
     if (!this.rpc || !this.state.connected) return [];
     const threads = await this.listTaskPages("thread/list", { limit: 50, archived: true, sortKey: "recency_at", sortDirection: "desc" });
-    return threads.filter(isUserFacingThread).map((thread: any) => loadedThreadSummary(thread, String(thread.id), false));
+    return threads.filter(isUserFacingThread).map((thread: any) => loadedThreadSummary(thread, String(thread.id), false)).sort(compareTaskOrder);
   }
 
   assertCanLeaveNewTask(): void {
@@ -3273,6 +3279,8 @@ export class MachineRuntime {
         if (/timed out|closed|disconnected/i.test(String(error))) {
           queued.deliveryUnknown = true;
           queued.error = compact(String(error), 240);
+          const recovered = this.recoverQueuedDelivery(queued, queued.submission, this.recentHistory, this.recentHistoryOldest);
+          if (recovered) return recovered;
         }
         if (this.rpc === rpc && this.state.thread === thread && this.state.queuedMessage === queued && queued.deliveryUnknown) {
           this.broadcast("queue", { queuedMessage: this.state.queuedMessage, message: this.messageCapability() });
@@ -3589,6 +3597,21 @@ export class MachineRuntime {
     this.onTaskStatus({ machineId: this.definition.id, threadId, status: this.taskStatuses.get(threadId), terminalResult: result });
   }
 
+  // Read the same upstream recency used by catalogs. Status/replayed events are
+  // hints to read metadata, never evidence that activity happened at Date.now().
+  private async refreshTaskRecency(threadId: string): Promise<void> {
+    const rpc = this.rpc;
+    if (!rpc || !this.loadedThreads.some(task => task.id === threadId)) return;
+    try {
+      const result = await rpc.request("thread/read", { threadId, includeTurns: false }, 5000);
+      if (this.rpc !== rpc || String(result?.thread?.id ?? "") !== threadId) return;
+      const updatedAt = loadedThreadSummary(result.thread, threadId, false).updatedAt;
+      const task = this.loadedThreads.find(task => task.id === threadId);
+      if (task) task.updatedAt = Math.max(task.updatedAt, updatedAt);
+      this.onTaskStatus({ machineId: this.definition.id, threadId, updatedAt: task?.updatedAt ?? updatedAt });
+    } catch { /* Catalog failures do not change transport state or invent activity. */ }
+  }
+
   private handleNotification(message: JsonObject): void {
     const attachment = this.pendingAttachment;
     if (attachment && String(message.params?.threadId ?? message.params?.conversationId ?? "") === attachment.threadId) {
@@ -3600,6 +3623,9 @@ export class MachineRuntime {
     if (method === "account/rateLimits/updated") {
       this.scheduleQuotaRefresh();
       return;
+    }
+    if (["thread/status/changed", "turn/started", "turn/completed", "item/started", "item/completed"].includes(method)) {
+      void this.refreshTaskRecency(String(params.threadId ?? ""));
     }
     // 0.153.4 broadcasts status changes independently of thread subscriptions.
     if (method === "thread/status/changed") {
@@ -4069,6 +4095,10 @@ export class MachineRuntime {
       if (/timed out|closed|disconnected/i.test(String(error))) {
         queued.deliveryUnknown = true;
         queued.error = compact(String(error), 240);
+        if (this.recoverQueuedDelivery(queued, queued.submission, this.recentHistory, this.recentHistoryOldest)) {
+          if (!tracked && queued.submission) await this.submissions.recover(queued.submission.id);
+          return true;
+        }
       }
       if (current() && this.state.queuedMessage === queued) {
         this.state.queuedMessage = {

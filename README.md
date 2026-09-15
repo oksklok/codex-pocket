@@ -132,6 +132,8 @@ Local / SSH Codex app-server runtimes
 
 Pocket uses supported app-server protocol surfaces. It does not scrape Codex databases, rollout/session files, terminal output, or Desktop UI. Desktop-private, stdio-owned live sessions are not attachable through Pocket; a saved task owned by another runtime may also refuse attachment.
 
+Tasks sort active tasks first, then by Codex’s latest activity time within the active and idle groups. Opening, loading, or refreshing a task does not promote it.
+
 Active, archived, and loaded-task catalogs fetch every cursor page, with no fixed task-count cap. Search covers the complete fetched catalog. Only the selected machine holds a task attachment; other configured machines stay connected for catalogs, status, and quota without retaining task writer ownership. A cross-machine switch attaches the destination first, then releases the previous task. A failed destination attachment leaves the current task intact.
 
 Task attachment uses `thread/resume` with `excludeTurns: true`. History stays bounded through `thread/turns/list` and `thread/items/list`, with older pages loaded as you scroll and activity details fetched lazily. Pocket never requests full history just to obtain context usage, and it does not estimate tokens. Raw app-server events are not forwarded wholesale to browsers.

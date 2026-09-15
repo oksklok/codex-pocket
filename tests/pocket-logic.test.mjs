@@ -2985,12 +2985,12 @@ test('failed home resolution creates no task and never falls back to process cwd
   }
 });
 
-test('task ordering uses active, loaded, recency, then deterministic id ties', () => {
+test('task ordering uses active, genuine recency, then deterministic id ties', () => {
   const tasks = [{id:'unloaded',status:'notLoaded',updatedAt:900}, {id:'older',loaded:true,status:'idle',updatedAt:1},
     {id:'newer',loaded:true,status:'idle',updatedAt:2}, {id:'b',loaded:true,status:'active',updatedAt:1}, {id:'a',loaded:true,status:'active',updatedAt:1}];
-  assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','newer','older','unloaded']);
+  assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','unloaded','newer','older']);
   tasks.find(t=>t.id==='older').updatedAt=3;
-  assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','older','newer','unloaded']);
+  assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','unloaded','older','newer']);
 });
 
 test('review: task mutations require thread identity at execution and queue replacement is fenced', async () => {
@@ -3395,4 +3395,71 @@ test('Start without a live turn takes a fresh bounded boundary instead of trusti
   assert.equal(reads,1);assert.equal(sends,1);assert.equal(runtime.state.queuedMessage.submission.requested.anchorTurnId,'fresh-boundary');
   runtime.recentHistory=[{id:'stale-boundary',messages:[]},{id:'old-successor',firstUserMessageId:'old',messages:[{id:'old',role:'user',text:'Identical old text',turnId:'old-successor'}]}];
   assert.equal((await receipts.recover(id)).status,'unknown');assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);
+});
+
+test('automatic timeout immediately reconciles evidence collected while the RPC was pending', async()=>{
+  for(const placement of ['active','parked','replacement','unrelated','rejected']){
+    const runtime=activeRuntime(),receipts=runtime.submissions;
+    let rejectSend,started;const sending=new Promise(resolve=>started=resolve);let sends=0;
+    runtime.rpc={request:async method=>{
+      if(method==='turn/start'){sends++;started();return new Promise((_,reject)=>rejectSend=reject);}
+      return {data:[]};
+    }};
+    const enqueueId=receipts.epoch+'-enqueue';
+    await receipts.run(enqueueId,()=>runtime.sendMessage('Queued original','queue'));
+    const original=runtime.state.queuedMessage;
+    runtime.handleNotification({method:'turn/completed',params:{threadId:'thread-1',turn:{id:'turn-1',status:'completed'}}});
+    await sending;
+    runtime.handleNotification({method:'turn/started',params:{threadId:'thread-1',turn:{id:'delivered',status:'inProgress'}}});
+    runtime.upsertLiveMessage({id:'input',role:'user',turnId:'delivered',text:placement==='unrelated'?'Other input':original.text});
+    assert.equal(runtime.state.queuedMessage,original,'pending evidence does not retire the queue before the RPC outcome');
+    if(placement==='parked'){runtime.parkTaskQueue();runtime.resetThreadState();runtime.state.thread={id:'other'};}
+    const replacement={id:'replacement',threadId:'thread-1',text:'Keep me',createdAt:2};
+    if(placement==='replacement')runtime.state.queuedMessage=replacement;
+    rejectSend(new Error(placement==='rejected'?'Rejected by upstream':'turn/start timed out'));await runtime.selectionQueue;
+    // Inspect stored state before any recovery endpoint, snapshot, or further event.
+    const delivery=receipts.receipts.get(original.submission.id);
+    assert.equal(delivery.status,placement==='rejected'?'rejected':placement==='unrelated'?'unknown':'accepted');
+    assert.notEqual(original.submission.id,enqueueId);
+    assert.equal(receipts.receipts.get(enqueueId).status,'accepted');
+    if(placement==='replacement')assert.equal(runtime.state.queuedMessage,replacement);
+    else if(['unrelated','rejected'].includes(placement))assert.equal(runtime.state.queuedMessage.id,original.id);
+    else assert.equal(runtime.state.queuedMessage,null);
+    if(placement==='unrelated'){assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);assert.equal(await runtime.startQueuedMessage('thread-1'),false);}
+    else assert.equal(runtime.taskQueues.size,0);
+    assert.equal(sends,1);
+  }
+});
+
+test('catalog and live recency share upstream activity time across navigation, replay, refresh and old connections',async()=>{
+  const events=[],runtime=activeRuntime();runtime.onTaskStatus=value=>events.push(value);
+  const rows=[{id:'a',cwd:'/project',source:'cli',status:{type:'idle'},recencyAt:100,updatedAt:999},
+    {id:'b',cwd:'/project',source:'cli',status:{type:'idle'},recencyAt:200,updatedAt:888}];
+  runtime.rpc={request:async(method,params)=>method==='thread/list'?{data:rows}:method==='thread/loaded/list'?{data:[runtime.state.thread.id]}:
+    method==='thread/read'?{thread:rows.find(row=>row.id===params.threadId)}:{data:[]}};
+  await runtime.refreshLoadedThreads();
+  const order=()=>runtime.loadedThreads.toSorted(compareTaskOrder).map(row=>row.id);
+  assert.deepEqual(order(),['b','a']);
+  for(const id of ['a','b','a']){
+    rows.find(row=>row.id===id).updatedAt=Date.now(); // Metadata writes are not activity.
+    runtime.state.thread={id};
+    for(const status of ['idle','notLoaded','idle'])runtime.handleNotification({method:'thread/status/changed',params:{threadId:id,status:{type:status}}});
+    runtime.handleNotification({method:'turn/completed',params:{threadId:id,turn:{id:'existing-'+id,status:'completed'}}});
+    await runtime.refreshTaskRecency(id);await runtime.refreshLoadedThreads();
+    assert.deepEqual(order(),['b','a']);
+  }
+  rows[0].recencyAt=300;
+  runtime.handleNotification({method:'item/started',params:{threadId:'a',item:{id:'new-input',type:'userMessage',content:[]}}});
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(events.at(-1).updatedAt,300000);assert.deepEqual(order(),['a','b']);
+  await runtime.refreshLoadedThreads();assert.deepEqual(order(),['a','b']);
+  assert.deepEqual((await runtime.listArchivedThreads()).map(row=>row.id),['a','b']);
+  rows[1].recencyAt=400;
+  runtime.handleNotification({method:'item/completed',params:{threadId:'b',item:{id:'new-command',type:'commandExecution',command:'pwd'}}});
+  await Promise.resolve();await Promise.resolve();assert.deepEqual(order(),['b','a']);
+  await runtime.refreshLoadedThreads();assert.deepEqual(order(),['b','a']);
+  let finish;runtime.rpc={request:()=>new Promise(resolve=>finish=resolve)};
+  const late=runtime.refreshTaskRecency('b');runtime.rpc={};finish({thread:{...rows[1],recencyAt:900}});await late;
+  assert.equal(runtime.loadedThreads.find(row=>row.id==='b').updatedAt,400000);
+  assert.deepEqual(order(),['b','a']);
 });
