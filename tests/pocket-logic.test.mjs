@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  compareTaskOrder,
   createSelectionHold,
   usageLimitMessage,
   enterSubmits,
@@ -2889,6 +2890,9 @@ test('blank New Task folder resolves the selected runtime user home before creat
         if (method === 'thread/start') return { thread: { id: 'fresh', cwd: params.cwd, status: 'idle', canAcceptDirectInput: true } };
         return { data: [] };
       } };
+      await runtime.newTaskOptions('   ');
+      assert.equal(calls.find(c => c.method === 'permissionProfile/list').params.cwd, home);
+      calls.length = 0;
       const result = await runtime.taskAction({ action: 'create', name: 'Home task', cwd: '   ' });
       assert.equal(result.thread.cwd, home);
       assert.deepEqual(calls.slice(0,2).map(c => c.method), ['command/exec','thread/start']);
@@ -2902,7 +2906,17 @@ test('failed home resolution creates no task and never falls back to process cwd
   for (const response of [{exitCode:1,stdout:'/home/target'}, {exitCode:0,stdout:''}, {exitCode:0,stdout:'relative'}, {exitCode:0,stdout:'/home/a\n/home/b'}]) {
     const runtime = activeRuntime(), calls = [];
     runtime.rpc = { request: async method => {calls.push(method);return response;} };
+    await assert.rejects(runtime.newTaskOptions(''), /Enter a Project Folder/);
+    assert.deepEqual(calls,['command/exec']);calls.length=0;
     await assert.rejects(runtime.taskAction({action:'create', name:'Home task'}), /Enter a Project Folder/);
     assert.deepEqual(calls,['command/exec']);
   }
+});
+
+test('task ordering uses active, loaded, recency, then deterministic id ties', () => {
+  const tasks = [{id:'unloaded',status:'notLoaded',updatedAt:900}, {id:'older',loaded:true,status:'idle',updatedAt:1},
+    {id:'newer',loaded:true,status:'idle',updatedAt:2}, {id:'b',loaded:true,status:'active',updatedAt:1}, {id:'a',loaded:true,status:'active',updatedAt:1}];
+  assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','newer','older','unloaded']);
+  tasks.find(t=>t.id==='older').updatedAt=3;
+  assert.deepEqual(tasks.sort(compareTaskOrder).map(t=>t.id),['a','b','older','newer','unloaded']);
 });

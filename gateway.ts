@@ -12,7 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
-import { fileInputs, MAX_INPUT_FILES_BYTES } from "./public/pocket-logic.js";
+import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES } from "./public/pocket-logic.js";
 import { asyncAnswerText, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
@@ -2410,11 +2410,7 @@ export class MachineRuntime {
         return observation && observation !== observationsAtStart.get(task.id)
           ? { ...task, status: this.taskStatuses.get(task.id)! } : task;
       })
-      .sort((left, right) => {
-        const leftPriority = left.status.startsWith("active") ? 2 : left.loaded ? 1 : 0;
-        const rightPriority = right.status.startsWith("active") ? 2 : right.loaded ? 1 : 0;
-        return rightPriority - leftPriority || right.updatedAt - left.updatedAt;
-      });
+      .sort(compareTaskOrder);
     for (const task of this.loadedThreads) if (task.status.startsWith("active")) {
       delete this.terminalResults[task.id];
       this.terminalReads.delete(task.id);
@@ -2489,7 +2485,8 @@ export class MachineRuntime {
 
   async newTaskOptions(cwd: string): Promise<JsonObject> {
     if (!this.rpc || !this.state.connected) throw new Error("Codex is disconnected");
-    const profiles = await this.loadPermissionProfiles(cwd, false);
+    const projectFolder = cwd.trim() || await this.targetHomeDirectory();
+    const profiles = await this.loadPermissionProfiles(projectFolder, false);
     const workspace = profiles.some(p => p.id === ":workspace" && p.allowed);
     return { models: this.state.models, access: {
       ask: workspace && (!this.allowedReviewers || this.allowedReviewers.includes("user")),

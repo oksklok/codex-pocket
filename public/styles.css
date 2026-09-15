@@ -361,7 +361,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .composer { width: min(100%, 780px); margin: 0 auto; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; }
 .composer-input { position: relative; min-width: 0; min-height: 0; }
 .composer-input textarea { display: block; }
-.composer-input.can-expand textarea { padding-right: 44px; }
+.expanded-composer .composer-input textarea { padding-right: 44px; }
 .composer textarea { height: 40px; min-height: 40px; max-height: 112px; resize: none; padding: 8px 11px; line-height: 20px; overflow-y: auto; }
 .composer textarea:placeholder-shown { -webkit-user-select: none; user-select: none; }
 .composer-actions { align-self: end; gap: 6px; }

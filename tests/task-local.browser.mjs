@@ -999,7 +999,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const r=e.getBoundingClientRect(),b=document.querySelector('#expand-composer').getBoundingClientRect(),rail=document.querySelector('.composer-actions').getBoundingClientRect(),style=getComputedStyle(e),gap=parseFloat(getComputedStyle(document.querySelector('#composer')).columnGap);
  return {overflow:e.scrollHeight>e.clientHeight,outside:b.left>=r.right,gap:b.left-r.right,gridGap:gap,inRail:b.left>=rail.left&&b.right<=rail.right,aboveActions:b.bottom<=rail.top,insideComposer:b.top>=document.querySelector('.composer-zone').getBoundingClientRect().top,padding:style.paddingRight,width:b.width,height:b.height,horizontal:document.documentElement.scrollWidth>innerWidth,gutterTarget:document.elementFromPoint(r.right-5,r.top+15)===e};
  });
- assert(geometry.gutterTarget);assert(geometry.overflow);assert(geometry.outside,JSON.stringify({width,geometry}));assert.equal(geometry.gap,geometry.gridGap);assert(geometry.inRail);assert(geometry.aboveActions);assert(geometry.insideComposer);assert.equal(geometry.padding,'44px');assert.equal(geometry.width,32);assert.equal(geometry.height,32);assert(!geometry.horizontal);
+ assert(geometry.gutterTarget);assert(geometry.overflow);assert(geometry.outside,JSON.stringify({width,geometry}));assert.equal(geometry.gap,geometry.gridGap);assert(geometry.inRail);assert(geometry.aboveActions);assert(geometry.insideComposer);assert.equal(geometry.padding,'11px');assert.equal(geometry.width,32);assert.equal(geometry.height,32);assert(!geometry.horizontal);
  await page.locator('#message-text').evaluate(e=>e.scrollTop=0);
  const r=await page.locator('#message-text').boundingBox();await page.mouse.move(r.x+r.width-5,r.y+20);await page.mouse.wheel(0,150);await page.waitForTimeout(100);
  assert(await page.locator('#message-text').evaluate(e=>e.scrollTop>0));
@@ -1718,6 +1718,45 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByText('Send rejected',{exact:true}).waitFor();assert.equal(await page.locator('#composer-status').isVisible(),true);
  composerPost='success';
  }
+ // Real activity reorders cached catalogs immediately, including updates during a catalog read.
+ const savedOrderingTasks=active;
+ for(const width of [1280,390,320]) {
+ await page.setViewportSize({width,height:844});
+ const older={...task,id:'order-old',name:'Order old',loaded:true,updatedAt:100},newer={...task,id:'order-new',name:'Order new',loaded:true,updatedAt:200};
+ active=[newer,older];Object.assign(runtime.state,{machineId:'local',thread:older,turn:null,threadStatus:'idle',phase:'ready',pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ await page.evaluate(()=>localStorage.setItem('codex-pocket-details-open','false'));
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
+ const order=()=>page.locator('.destination-task-label > span').allTextContents().then(names=>names.filter(name=>name.startsWith('Order ')));
+ assert.deepEqual(await order(),['Order new','Order old']);
+ const readsBeforeSend=calls.filter(c=>c==='/api/navigation').length;
+ await page.locator('#message-text').fill('New activity in the older task');await page.locator('#composer').evaluate(form=>form.requestSubmit());
+ await page.waitForFunction(()=>document.querySelector('#message-text').value==='');
+ assert.deepEqual(await order(),['Order old','Order new']);
+ assert.equal(calls.filter(c=>c==='/api/navigation').length,readsBeforeSend,'accepted activity reorders without fetching the catalog');
+ runtime.broadcast('task-status',{machineId:'local',threadId:older.id,status:'active'});
+ await page.waitForFunction(()=>document.querySelector('.destination-task-label > span').textContent==='Order old');
+ runtime.broadcast('task-status',{machineId:'local',threadId:older.id,status:'idle'});
+ await page.waitForTimeout(30);assert.deepEqual(await order(),['Order old','Order new']);
+ // Passive repeats do not move the older timestamp ahead of genuinely newer activity.
+ runtime.broadcast('task-status',{machineId:'local',threadId:newer.id,status:'active',updatedAt:Date.now()+1000});
+ runtime.broadcast('task-status',{machineId:'local',threadId:newer.id,status:'idle'});
+ await page.waitForFunction(()=>document.querySelector('.destination-task-label > span').textContent==='Order new');
+ runtime.broadcast('task-status',{machineId:'local',threadId:older.id,status:'idle'});
+ await page.waitForTimeout(30);assert.deepEqual(await order(),['Order new','Order old']);
+ let finishOrdering;navigationGate=new Promise(resolve=>finishOrdering=resolve);
+ await page.getByRole('button',{name:'Refresh tasks',exact:true}).click();
+ runtime.broadcast('task-status',{machineId:'local',threadId:older.id,status:'active',updatedAt:Date.now()+2000});
+ runtime.broadcast('task-status',{machineId:'local',threadId:older.id,status:'idle'});
+ await page.waitForTimeout(30);finishOrdering();navigationGate=null;
+ await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.deepEqual(await order(),['Order old','Order new']);
+ // A fresh catalog using the same recency agrees with the live order.
+ older.updatedAt=Date.now()+2000;active=[older,newer];
+ await page.getByRole('button',{name:'Refresh tasks',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.deepEqual(await order(),['Order old','Order new']);
+ await dismissTasks();await closed();
+ }
+ active=savedOrderingTasks;
  // A fresh task's leave guard belongs to the source; attach failures belong to the target.
  const savedActiveForFresh=active;
  for(const width of [1280,390,320]){
@@ -1734,6 +1773,14 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await sourceRow.locator('.task-selection-error').getByText('Send the first message before leaving this new task.',{exact:true}).waitFor();
  assert.equal(await targetRow.locator('.task-selection-error').count(),0);assert.equal(await sourceRow.locator('.destination-task').getAttribute('aria-current'),'true');assert.equal(runtime.state.thread.id,source.id);
  assert.equal(await page.locator('.task-selection-error').count(),1);
+ // An unrelated task action must not erase the fresh source's leave warning.
+ failAction=true;gate=new Promise(resolve=>release=resolve);
+ await targetRow.locator('summary').click();await targetRow.getByRole('button',{name:'Rename',exact:true}).click();
+ await page.locator('#task-dialog-name').fill('Renamed target');await page.locator('#task-dialog-submit').click();
+ await page.getByText('Renaming…',{exact:true}).waitFor();
+ assert.equal(await sourceRow.locator('.task-selection-error').count(),1);
+ release();gate=null;await targetRow.locator('.task-selection-error').waitFor();failAction=false;
+ assert.equal(await sourceRow.locator('.task-selection-error').count(),1);
  const subtitleGeometry=await sourceRow.locator('.task-selection-error').evaluate(e=>{const r=e.getBoundingClientRect(),row=e.closest('.destination-task'),b=row.getBoundingClientRect(),style=getComputedStyle(row),title=row.querySelector('.destination-task-label > span').getBoundingClientRect(),menu=row.parentElement.querySelector('.task-actions summary').getBoundingClientRect();return {rightInset:b.right-r.right,expectedInset:parseFloat(style.paddingRight)+parseFloat(style.borderRightWidth),titleRight:title.right,menuLeft:menu.left};});
  assert(Math.abs(subtitleGeometry.rightInset-subtitleGeometry.expectedInset)<1,JSON.stringify({width,subtitleGeometry}));
  assert(subtitleGeometry.titleRight<=subtitleGeometry.menuLeft);

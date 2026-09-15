@@ -1,4 +1,5 @@
 import {
+  compareTaskOrder,
   createSelectionHold,
   usageLimitMessage,
   enterSubmits,
@@ -197,6 +198,7 @@ let navigationEpoch = 0;
 let destinationSelection = null;
 let taskActionTarget = null;
 let destinationTaskError = null;
+let newTaskLeaveWarning = null;
 let taskActionBusy = false;
 let submittingMessage = false;
 let updatingModel = false;
@@ -387,10 +389,9 @@ async function postMessageAction(url, body) {
     text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, files: body.files ?? state?.queuedMessage?.files, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
   const confirmed = (result) => {
     if (url === "/api/message" && requested.action === "start"
-      && destinationTaskError?.machineId === requested.machineId
-      && destinationTaskError?.threadId === requested.threadId
-      && destinationTaskError.message === "Send the first message before leaving this new task.") {
-      destinationTaskError = null;
+      && newTaskLeaveWarning?.machineId === requested.machineId
+      && newTaskLeaveWarning?.threadId === requested.threadId) {
+      newTaskLeaveWarning = null;
       renderDestinationSwitcher(true);
     }
     if (composerSubmission && composerExpanded && requested.machineId === state?.machineId
@@ -403,6 +404,9 @@ async function postMessageAction(url, body) {
         turnId: result.turnId || requested.turnId, createdAt: Date.now(), complete: true,
         confirmedSteer: { previousMessageIds: requested.previousMessageIds } });
       renderConversation();
+    }
+    if (url === "/api/message" && ["start", "steer"].includes(requested.action)) {
+      updateLiveTaskCatalog({ machineId: requested.machineId, threadId: requested.threadId, updatedAt: Date.now() });
     }
     if (composerSubmission && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) jumpToLatest(true);
     return result;
@@ -636,7 +640,7 @@ function renderDestinationSwitcher(force = false) {
   const renderKey = JSON.stringify([
     [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake]), elements.destinationSearch.value, Boolean(navigationRequest),
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
-    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, archived, projectsVisible, navigationErrors[slot],
+    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, projectsVisible, navigationErrors[slot],
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -762,7 +766,7 @@ function renderDestinationSwitcher(force = false) {
       const label = document.createElement("span");
       label.className = "destination-task-label";
       label.append(Object.assign(document.createElement("span"), { textContent: threadLabel(task) }));
-      const taskError = destinationTaskError?.machineId === machine.id && destinationTaskError?.threadId === task.id ? destinationTaskError.message : "";
+      const taskError = [newTaskLeaveWarning, destinationTaskError].find(error => error?.machineId === machine.id && error?.threadId === task.id)?.message || "";
       if (taskError) label.append(Object.assign(document.createElement("small"), { className: "task-selection-error", textContent: taskError }));
       else if (projectsVisible) {
         const project = task.project || projectName(task.cwd);
@@ -874,9 +878,24 @@ function invalidateNavigationCatalogs() {
   navigationErrors.fill("");
 }
 
-function updateCatalogTaskStatus(catalog, { machineId, threadId, status }) {
-  const task = catalog?.machines?.find(machine => machine.id === machineId)?.tasks?.find(task => task.id === threadId);
-  if (task) { task.status = status; task.phase = null; }
+function updateCatalogTaskStatus(catalog, { machineId, threadId, status, updatedAt }) {
+  const tasks = catalog?.machines?.find(machine => machine.id === machineId)?.tasks;
+  const task = tasks?.find(task => task.id === threadId);
+  if (!task) return;
+  if (Number.isFinite(updatedAt)) task.updatedAt = Math.max(task.updatedAt || 0, updatedAt);
+  if (status) {
+    task.status = status;
+    task.phase = null;
+    if (status.startsWith("active") || status === "idle") task.loaded = true;
+    else if (status === "notLoaded") task.loaded = false;
+  }
+  tasks.sort(compareTaskOrder);
+}
+
+function updateLiveTaskCatalog(value) {
+  for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, value);
+  for (const request of navigationRequests) request?.taskStatuses.push(value);
+  renderDestinationSwitcher();
 }
 
 async function refreshNavigationCatalog(archived = archivedTasks, force = false) {
@@ -951,7 +970,7 @@ function closeDestinationSwitcher() {
   document.body.classList.remove("destination-open");
   saveSidebarPreference("tasks", false);
   elements.destinationSearch.value = "";
-  if (destinationTaskError?.message !== "Send the first message before leaving this new task.") destinationTaskError = null;
+  destinationTaskError = null;
   return true;
 }
 
@@ -2452,11 +2471,8 @@ async function selectDestination(machineId, threadId) {
     // Retain live updates received for the original task while the request was pending.
     for (const entry of token.events) entry.deliver();
     const sourceError = rejected && message === "Send the first message before leaving this new task.";
-    destinationTaskError = {
-      machineId: sourceError ? expectedMachineId : machineId,
-      threadId: sourceError ? expectedThreadId : threadId,
-      message: taskFailureMessage(message),
-    };
+    if (sourceError) newTaskLeaveWarning = { machineId: expectedMachineId, threadId: expectedThreadId, message };
+    else destinationTaskError = { machineId, threadId, message: taskFailureMessage(message) };
     renderDestinationSwitcher();
   }
 }
@@ -2858,9 +2874,9 @@ function connectEvents() {
       else taskTerminalResults.delete(key);
     }
     if (value.status?.startsWith("active")) taskTerminalResults.delete(key);
-    for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, value);
-    for (const request of navigationRequests) request?.taskStatuses.push(value);
-    renderDestinationSwitcher();
+    const previous = navigationCatalogs[0]?.machines?.find(machine => machine.id === value.machineId)?.tasks?.find(task => task.id === value.threadId)?.status;
+    if (value.status?.startsWith("active") && !previous?.startsWith("active")) value.updatedAt ??= Date.now();
+    updateLiveTaskCatalog(value);
   });
   on("status", (event) => { mergeState(parseEvent(event)); });
   on("thread", (event) => { mergeState({ thread: parseEvent(event) }); });
@@ -2884,8 +2900,8 @@ function connectEvents() {
     const key = draftKey(state?.machineId, state?.thread?.id);
     const status = value.turn?.status;
     if (["inProgress", "completed", "failed", "interrupted"].includes(status)) taskTerminalResults.delete(key);
-    for (const catalog of navigationCatalogs) updateCatalogTaskStatus(catalog, {
-      machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle",
+    updateLiveTaskCatalog({
+      machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle", updatedAt: Date.now(),
     });
     mergeState(value);
   });
@@ -2895,6 +2911,7 @@ function connectEvents() {
     const activity = parseEvent(event);
     const activities = [...(state.activities || [])];
     const index = activities.findIndex((candidate) => candidate.id === activity.id);
+    if (index < 0) updateLiveTaskCatalog({ machineId: state?.machineId, threadId: state?.thread?.id, updatedAt: Date.now() });
     const expandByDefault = index < 0 && activity.expandable && activityVisible(activity) && activityExpandsByDefault(activity);
     if (index >= 0) activities[index] = activity;
     else activities.push(activity);
