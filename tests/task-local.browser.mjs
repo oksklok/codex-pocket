@@ -184,8 +184,58 @@ try {
  const row=name=>page.locator('.destination-entry').filter({has:page.getByText(name,{exact:true})});
  const select=async name=>{await open();await row(name).locator('.destination-task').click();
  await page.waitForFunction(name=>document.querySelector('#destination-label').textContent.includes(name),name);
+ assert.equal(await input.evaluate(e=>document.activeElement===e),page.viewportSize().width>=1100);
  if(page.viewportSize().width>=1100){await page.waitForTimeout(210);assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}
  await closed();};
+
+ // Pending deletion keeps its row slot through unload/status updates and catalog refreshes.
+ for(const width of [1280,1099,390])for(const failure of [false,true]){
+ await page.setViewportSize({width,height:844});
+ const deleting={...task,id:'delete-pending',name:'Delete pending',loaded:true,updatedAt:20};
+ active=[{...task,loaded:true,updatedAt:30},deleting,{...owned,loaded:true,updatedAt:10}];
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,threadStatus:'idle',liveMessages:[],activities:[]});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
+ assert.equal(await row('Current task').locator('.destination-check svg[aria-hidden="true"]').count(),1);
+ assert.equal(await row('Delete pending').locator('summary svg circle').count(),3);
+ const order=()=>page.locator('.destination-group').first().locator('.destination-task-label > span').allTextContents();
+ assert.deepEqual(await order(),['Current task','Delete pending','Owned task']);
+ failAction=failure;gate=new Promise(r=>release=r);
+ await row('Delete pending').locator('summary').click();await row('Delete pending').getByRole('button',{name:'Delete',exact:true}).click();
+ await page.locator('#task-dialog-submit').click();await row('Delete pending').getByText('Deleting…',{exact:true}).waitFor();
+ await page.evaluate(()=>{
+ window.deletingPositions=[];
+ window.deleteObserver=new MutationObserver(()=>{
+ const names=[...document.querySelector('.destination-group').querySelectorAll('.destination-task-label > span')].map(e=>e.textContent);
+ if(document.querySelector('.destination-task-status')&&names.includes('Delete pending'))window.deletingPositions.push(names.indexOf('Delete pending'));
+ });
+ window.deleteObserver.observe(document.querySelector('#destination-list'),{childList:true,subtree:true});
+ });
+ deleting.status='notLoaded';deleting.loaded=false;
+ runtime.broadcast('task-status',{machineId:'local',threadId:deleting.id,status:'notLoaded'});
+ runtime.broadcast('task-status',{machineId:'local',threadId:owned.id,status:'idle',updatedAt:40});
+ active=[{...owned,loaded:true,updatedAt:40},{...task,loaded:true,updatedAt:30},deleting];
+ await page.waitForFunction(()=>document.querySelector('.destination-task-label > span').textContent==='Owned task');
+ assert.deepEqual(await order(),['Owned task','Delete pending','Current task']);
+ await row('Delete pending').getByText('Deleting…',{exact:true}).waitFor();
+ if(!failure)active=active.filter(task=>task.id!==deleting.id);
+ await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ assert.deepEqual(await order(),['Owned task','Delete pending','Current task']);
+ assert(await page.evaluate(()=>window.deletingPositions.length>0&&window.deletingPositions.every(index=>index===1)));
+ await page.evaluate(()=>window.deleteObserver.disconnect());
+ release();gate=null;
+ if(failure){
+ await row('Delete pending').locator('.task-selection-error').waitFor();
+ assert.deepEqual(await order(),['Owned task','Current task','Delete pending']);
+ }else{
+ await row('Delete pending').waitFor({state:'detached'});await row('Current task').waitFor();
+ assert.deepEqual(await order(),['Owned task','Current task']);
+ }
+ await row('Owned task').locator('.destination-task').click();
+ await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Owned task'));
+ assert.equal(await input.evaluate(e=>document.activeElement===e),width>=1100);
+ }
+ failAction=false;active=[task,owned];
+ await page.evaluate(()=>localStorage.removeItem('codex-pocket-tasks-open'));
 
  for(const width of [1280,390]){
  runtime.terminalResults={};
@@ -612,7 +662,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
  assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('#new-task-dialog .new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('ask');await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('New test task'));if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('ask');await page.locator('#new-task-create').click();await page.waitForFunction(()=>!document.querySelector('#new-task-dialog').open);assert.equal(await input.evaluate(e=>document.activeElement===e),width>=1100);if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  const createdSettings=calls.findLast(c=>c?.create).create;
  assert.deepEqual({model:createdSettings.model,effort:createdSettings.effort,access:createdSettings.access},{model:'demo-model',effort:'high',access:'ask'});
  await page.getByText('No conversation history yet.',{exact:true}).waitFor();
@@ -1663,6 +1713,16 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#composer-files .file-chip').waitFor();assert.equal(await page.locator('#composer-images img').count(),1);
  await select('Owned task');assert.equal(await page.locator('#composer-files .file-chip').count(),0);assert.equal(await page.locator('#composer-images img').count(),0);
  await select('Current task');assert.equal(await page.locator('#composer-files .file-chip').count(),1);assert.equal(await page.locator('#composer-images img').count(),1);
+ const removers=page.locator('#composer-images .attachment-remove, #composer-files .attachment-remove');
+ assert.equal(await removers.count(),2);
+ assert(await removers.evaluateAll(buttons=>buttons.every(button=>{
+ const svg=button.querySelector('svg'),b=button.getBoundingClientRect(),r=svg.getBoundingClientRect();
+ return svg.getAttribute('aria-hidden')==='true'&&button.textContent===''&&r.width===14&&r.height===14
+ &&Math.abs(b.x+b.width/2-r.x-r.width/2)<1&&Math.abs(b.y+b.height/2-r.y-r.height/2)<1;
+ })));
+ assert.deepEqual(await removers.evaluateAll(buttons=>buttons.map(e=>{const s=getComputedStyle(e);return [s.color,s.borderRadius];})),await removers.evaluateAll(buttons=>buttons.map(()=>{const s=getComputedStyle(buttons[0]);return [s.color,s.borderRadius];})));
+ assert.equal(await page.locator('#composer-images .attachment-remove').evaluate(e=>getComputedStyle(e).position),'absolute');
+ assert.equal(await page.locator('#composer-files .attachment-remove').evaluate(e=>getComputedStyle(e).position),'static');
  await page.getByRole('button',{name:'Remove image 1',exact:true}).click();
  await page.locator('#image-picker').setInputFiles([1,2,3].map(i=>({...file,name:`${i}-${name}`})));
  await page.waitForFunction(()=>document.querySelectorAll('#composer-files .file-chip').length===4);

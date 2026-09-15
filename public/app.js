@@ -663,7 +663,15 @@ function renderDestinationSwitcher(force = false) {
     const latest = machines.find(machine => machine.id === catalogMachine.id);
     const machine = { ...catalogMachine, ...(latest ? { connected: latest.connected, canWake: latest.canWake ?? catalogMachine.canWake } : {}) };
     const machineMatches = `${machine.name || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
-    const tasks = (Array.isArray(machine.tasks) ? machine.tasks : []).filter((task) => {
+    const orderedTasks = [...(Array.isArray(machine.tasks) ? machine.tasks : [])];
+    if (taskActionTarget?.action === "delete" && taskActionTarget.machineId === machine.id
+      && taskActionTarget.archived === archived && taskActionTarget.position >= 0) {
+      // Keep this slot even if an unload or catalog refresh arrives before the delete response.
+      const index = orderedTasks.findIndex(task => task.id === taskActionTarget.threadId);
+      const pendingTask = index >= 0 ? orderedTasks.splice(index, 1)[0] : taskActionTarget.task;
+      orderedTasks.splice(taskActionTarget.position, 0, pendingTask);
+    }
+    const tasks = orderedTasks.filter((task) => {
       if (!query || machineMatches) return true;
       return `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
     });
@@ -762,7 +770,7 @@ function renderDestinationSwitcher(force = false) {
       row.title = task.cwd || task.name || "Task";
       const check = document.createElement("span");
       check.className = "destination-check";
-      check.textContent = selected ? "✓" : "";
+      if (selected) check.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
       const label = document.createElement("span");
       label.className = "destination-task-label";
       label.append(Object.assign(document.createElement("span"), { textContent: threadLabel(task) }));
@@ -786,7 +794,7 @@ function renderDestinationSwitcher(force = false) {
       const actions = document.createElement("details");
       actions.className = "task-actions";
       const summary = document.createElement("summary");
-      summary.textContent = "⋯";
+      summary.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>';
       summary.setAttribute("aria-label", `Actions for ${task.name}`);
       actions.append(summary);
       const menu = document.createElement("div");
@@ -1461,7 +1469,8 @@ function renderImageThumbnails(container, images, removable = false) {
     if (removable) {
       const remove = document.createElement("button");
       remove.type = "button";
-      remove.textContent = "×";
+      remove.className = "attachment-remove";
+      remove.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg>';
       remove.setAttribute("aria-label", `Remove image ${index + 1}`);
       remove.disabled = submittingMessage || readingAttachments;
       remove.addEventListener("click", () => {
@@ -1490,7 +1499,8 @@ function renderFileChips(container, files, removable = false) {
     if (removable) {
       const remove = document.createElement("button");
       remove.type = "button";
-      remove.textContent = "×";
+      remove.className = "attachment-remove";
+      remove.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg>';
       remove.setAttribute("aria-label", `Remove file ${file.name}`);
       remove.disabled = submittingMessage || readingAttachments;
       remove.addEventListener("click", () => {
@@ -2361,7 +2371,8 @@ newTaskForm.addEventListener("submit", async event => {
     const result = await performTaskAction({ machineId: newTaskMachine.id, action: "create", name, cwd, ...startingSettings });
     if (result?.succeeded) {
       if (!result.warning) { try { localStorage.setItem(newTaskPreferenceKey(machineId), JSON.stringify(startingSettings)); } catch {} }
-      newTaskDialog.close(); elements.messageText.focus();
+      newTaskDialog.close();
+      if (matchMedia("(min-width: 1100px)").matches) elements.messageText.focus({ preventScroll: true });
     }
     else newTaskError.textContent = result?.failure || "Task creation is unavailable right now";
   } finally { for (const control of newTaskForm.elements) control.disabled = false; }
@@ -2410,6 +2421,13 @@ async function performTaskAction(body) {
   if (taskActionBusy || destinationSelection || submittingMessage || readingAttachments) return;
   taskActionBusy = true;
   const target = { machineId: body.machineId, threadId: body.threadId, action: body.action, events: [] };
+  if (body.action === "delete") {
+    target.archived = Boolean(body.archived);
+    const tasks = navigationCatalogs[Number(target.archived)]?.machines
+      ?.find(machine => machine.id === body.machineId)?.tasks;
+    target.position = tasks?.findIndex(task => task.id === body.threadId) ?? -1;
+    target.task = tasks?.[target.position];
+  }
   taskActionTarget = target;
   destinationTaskError = null;
   renderDestinationSwitcher();
@@ -2430,6 +2448,12 @@ async function performTaskAction(body) {
     failure = error instanceof TypeError ? "Could not confirm the task action. Check the refreshed list before trying again." : error.message;
     try { const response = await apiFetch("/api/state"); if (response.ok) snapshot = await response.json(); } catch {}
   }
+  if (succeeded && body.action === "delete") {
+    for (const catalog of navigationCatalogs) {
+      const machine = catalog?.machines?.find(machine => machine.id === body.machineId);
+      if (machine) machine.tasks = machine.tasks.filter(task => task.id !== body.threadId);
+    }
+  }
   taskActionBusy = false;
   taskActionTarget = null;
   const changed = snapshot && (snapshot.machineId !== state?.machineId || snapshot.thread?.id !== state?.thread?.id);
@@ -2445,7 +2469,6 @@ async function performTaskAction(body) {
   renderDestinationSwitcher();
   if (succeeded && body.action === "create") {
     if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
-    elements.messageText.focus();
   }
   if (succeeded && snapshot?.warning) { composerError = snapshot.warning.replace(/^Task created\. /, ""); renderComposer(); }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
@@ -2506,6 +2529,7 @@ async function selectDestination(machineId, threadId) {
     const lastSnapshot = token.events.findLastIndex(entry => entry.snapshot?.machineId === accepted.machineId && entry.snapshot?.thread?.id === accepted.thread?.id);
     for (const entry of token.events.slice(lastSnapshot < 0 ? token.events.length : lastSnapshot + 1)) entry.deliver();
     if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
+    else elements.messageText.focus({ preventScroll: true });
     await loadHistory(null, historyEpoch, true);
     await Promise.allSettled([refreshMachines(), refreshLoadedThreads()]);
   } else {
