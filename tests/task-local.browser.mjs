@@ -17,9 +17,10 @@ Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 let asyncAnswers={},historyFixture=null, messageUnknown=false, messageGate=null;
 let composerPost="success", recoveryMode=null;
 const eventClients=new Set();
+let realAsync=false;
 let queueRecovery=false,queueDropResponse=false,queuePosts=0,queueHistory=false;
 const queueGateway=new PocketGateway({machines:[]});queueGateway.runtimes.set("local",runtime);runtime.submissions=queueGateway.submissions;
-const snapshot=()=>({...runtime.snapshot(),submissionEpoch:queueRecovery?queueGateway.submissions.epoch:"test",asyncAnswers,message:queueRecovery?runtime.messageCapability():{allowed:true,reason:"",canSteer:true}});
+const snapshot=()=>({...runtime.snapshot(),submissionEpoch:(queueRecovery||realAsync)?queueGateway.submissions.epoch:"test",asyncAnswers:realAsync?runtime.snapshot().asyncAnswers:asyncAnswers,message:(queueRecovery||realAsync)?runtime.messageCapability():{allowed:true,reason:"",canSteer:true}});
 const fileBodies=[];let realFilePosts=false;
 const reviewResponses=new Map();
 const calls=[];let gate=null, release, mode='success', failAction=false;
@@ -35,6 +36,7 @@ const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
  const json=(value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
  try{
+ if(realAsync&&['/api/message','/api/state','/api/history'].includes(u.pathname))return await handleRequest(req,res,queueGateway,{required:false},{},{host:'127.0.0.1'},async()=>({}),()=>{},()=>false);
  if(queueRecovery&&(['/api/message/queue','/api/state'].includes(u.pathname)||(queueHistory&&u.pathname==='/api/history'))){
  if(req.method==='POST')queuePosts++;
  if(queueDropResponse&&req.method==='POST')res.end=()=>{res.write('{');setTimeout(()=>req.socket.destroy(),10);return res;};
@@ -2233,6 +2235,70 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  runtime.pendingTaskNames.delete(source.id);freshNavigation=false;
  }
  active=savedActiveForFresh;
+ // Canonical async questions and actual generated replies survive live/history normalization.
+ realAsync=true;
+ for(const width of [1280,390])for(const outcome of ['option','free','rejected','unknown']){
+ runtime.resetThreadState();runtime.canAcceptDirectInput=true;
+ Object.assign(runtime.state,{machineId:'local',connected:true,thread:{...task},turn:{id:'async-turn',status:'inProgress'},threadStatus:'active',phase:'working'});
+ const title='Use `C:\Projects\Pocket` for **this task**?';
+ const question={id:'path-questions',type:'agentMessage',delivery:'async',createdAt:100,
+ text:'The existing project is ready.\n\n- Keep the current folder\n- Preserve unrelated notes\n\n**Use `C:\Projects\Pocket` for\nthis   task?**\n\n- **Keep the current folder**\n- Use `C:\Projects\Next`\n\nFormatting and paths should stay readable.\n\nWhich **checks** should run?\nUnit tests\nBrowser tests',
+ questions:[{title,options:['Keep the current folder','Use `C:\Projects\Next`']},{title:'Which checks should run?',options:['Unit tests','Browser tests']}]};
+ const items=[question];let sends=0;
+ const rpc={request:async(method,params)=>{
+ if(['turn/start','turn/steer'].includes(method)){
+ sends++;
+ if(outcome==='rejected')throw new Error('Answer rejected by Codex');
+ if(outcome==='unknown')throw new Error(method+' timed out');
+ const text=params.input[0].text;assert(text.includes('send_user_message_question_reply'));assert.equal(JSON.parse(text.match(/^<send_user_message_question_reply>(.*)<\/send_user_message_question_reply>$/s)[1])[0].question,question.questions[sends-1].title);
+ const item={id:'actual-reply-'+sends,type:'userMessage',createdAt:100+sends,content:[{type:'text',text}]};items.push(item);
+ runtime.handleNotification({method:'item/completed',params:{threadId:task.id,turnId:'async-turn',item}});
+ return {turnId:'async-turn',turn:{id:'async-turn',status:'inProgress'}};
+ }
+ if(method==='thread/turns/list')return {data:[{id:'async-turn',status:'inProgress'}],nextCursor:null};
+ if(method==='thread/items/list')return {data:items.map(item=>({turnId:'async-turn',item})),nextCursor:null};
+ return {};
+ }};runtime.rpc=rpc;
+ runtime.handleNotification({method:'item/completed',params:{threadId:task.id,turnId:'async-turn',item:question}});
+ await page.setViewportSize({width,height:844});await page.evaluate(()=>{localStorage.setItem('codex-pocket-details-open','false');localStorage.setItem('codex-pocket-tasks-open','false');});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ const node=page.locator('[data-message-id="path-questions"]');await node.locator('.async-answer').first().waitFor();
+ const check=async answered=>{
+ const text=await node.textContent();
+ assert.equal(text.split('C:\Projects\Pocket').length-1,1);assert(!text.includes('`'));
+ assert.equal(text.split('The existing project is ready.').length-1,1);
+ assert.equal(text.split('Formatting and paths should stay readable.').length-1,1);
+ assert.deepEqual(await node.locator('li').allTextContents(),['Keep the current folder','Preserve unrelated notes']);
+ assert.equal(await node.locator('.async-title code').count(),1);
+ assert.equal(await node.locator('.async-answer').count(),answered?1:2);
+ assert.equal(await node.getByRole('button',{name:'Unit tests',exact:true}).count(),1);
+ };
+ await check(false);
+ const first=node.locator('.async-answer').first(),answer=outcome==='free'?'Use the temporary workspace.':'Keep the current folder';
+ if(outcome==='free'){await first.getByRole('button',{name:'Other Answer…',exact:true}).click();await first.locator('textarea').fill(answer);await first.getByRole('button',{name:'Answer',exact:true}).click();}
+ else await first.getByRole('button',{name:answer,exact:true}).click();
+ if(['rejected','unknown'].includes(outcome)){
+ await node.locator('.form-status').filter({hasText:outcome==='rejected'?'Answer rejected':'unconfirmed'}).waitFor();await check(false);
+ assert.equal(await page.locator('.message.user').count(),0);assert.deepEqual(runtime.snapshot().asyncAnswers,{});
+ if(outcome==='unknown')assert.equal(await first.getByRole('button',{name:answer,exact:true}).isDisabled(),true);
+ }else{
+ await page.waitForFunction(()=>document.querySelectorAll('[data-message-id="path-questions"] .async-answer').length===1);await check(true);
+ assert.deepEqual(await page.locator('.message.user .message-body').allTextContents(),[answer+'\n']);
+ assert.equal(await node.getByRole('button',{name:'Keep the current folder',exact:true}).count(),0);
+ // Switch away, drop live state, and load the unchanged raw RPC input from history.
+ runtime.resetThreadState();runtime.state.thread={...owned};runtime.broadcast('snapshot',snapshot());
+ runtime.state.thread={...task};runtime.state.threadStatus='idle';runtime.state.phase='done';runtime.rpc=rpc;runtime.canAcceptDirectInput=true;
+ await page.reload();await node.locator('.async-title').first().waitFor();await check(true);
+ assert.equal(await page.locator('.message.user').count(),1);assert.equal((await page.locator('.message.user .message-body').textContent()).trim(),answer);
+ assert.deepEqual(runtime.state.liveMessages,[]);assert.deepEqual(runtime.snapshot().asyncAnswers,{});
+ await node.getByRole('button',{name:'Browser tests',exact:true}).click();
+ await page.waitForFunction(()=>!document.querySelector('[data-message-id="path-questions"] .async-answer'));
+ assert.equal(await node.locator('.async-title').count(),2);assert.deepEqual(await node.locator('li').allTextContents(),['Keep the current folder','Preserve unrelated notes']);
+ assert.deepEqual((await page.locator('.message.user .message-body').allTextContents()).map(text=>text.trim()),[answer,'Browser tests']);
+ }
+ assert.equal(sends,['rejected','unknown'].includes(outcome)?1:2);
+ }
+ realAsync=false;runtime.resetThreadState();runtime.state.thread={...task};runtime.state.threadStatus='idle';runtime.state.phase='done';
  // Free-text Async Answer has a compact, right-aligned primary action on its own row.
  for(const width of [1280,390,320])for(const submit of ['Enter','button']){
  await page.setViewportSize({width,height:844});

@@ -13,7 +13,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
-import { asyncAnswerText, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
+import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
 type PendingRpc = {
@@ -2141,7 +2141,7 @@ export class MachineRuntime {
       if (!answer || answer.length > 8000) throw new Error("Enter an answer of up to 8,000 characters");
       const active = this.state.turn?.status === "inProgress";
       if (active && (live?.turnId ?? cached?.turnId ?? this.itemTurns.get(item.id)) !== this.state.turn?.id) throw new Error("Another turn is active. Answer after it finishes.");
-      const result = await this.sendMessageNow(asyncAnswerText(questions[index].title, answer), active ? "steer" : "start");
+      const result = await this.sendMessageNow(asyncAnswerInput(messageId, index, questions[index].title, answer), active ? "steer" : "start");
       if (!current()) return result;
       this.asyncAnswers[item.id] = { ...this.asyncAnswers[item.id], [index]: answer };
       if (Object.keys(this.asyncAnswers).length > 100) delete this.asyncAnswers[Object.keys(this.asyncAnswers)[0]];

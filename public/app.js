@@ -1676,16 +1676,56 @@ function messageNode(message, displayCreatedAt) {
     body.append(images);
   }
   if (message.delivery === "async" && message.questions?.length) {
-    // Upstream also repeats questions/options in Markdown. Remove only exact duplicate blocks.
-    const repeated = new Set(message.questions.flatMap((question) => [question.title, ...question.options]));
-    for (const node of body.querySelectorAll("p, li")) {
-      if (repeated.has(node.textContent.trim())) node.remove();
-    }
-    for (const list of body.querySelectorAll("ul, ol")) if (!list.children.length) list.remove();
+    suppressAsyncQuestionMarkdown(body, message.questions);
     for (const [index, question] of message.questions.entries()) body.append(asyncQuestionNode(message, question, index));
   }
   article.append(meta, body);
   return article;
+}
+
+// Match rendered blocks within this message only. Options belong to the immediately
+// preceding matched question; identical words in unrelated lists are left alone.
+function suppressAsyncQuestionMarkdown(body, questions) {
+  const normalize = text => text.replace(/\s+/gu, " ").trim();
+  const renderedText = value => {
+    const node = document.createElement("div");
+    renderMarkdownInto(node, value);
+    return normalize(node.textContent);
+  };
+  const canonical = questions.map(question => ({ title: renderedText(question.title), options: new Set(question.options.map(renderedText)) }));
+  const blocks = [];
+  for (const node of body.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, table, hr")) {
+    if (node.matches("blockquote, pre, table, hr")) { blocks.push({ text: null }); continue; }
+    if (node.closest("blockquote, pre, table") || node.querySelector("p, ul, ol")) continue;
+    const whole = normalize(node.textContent);
+    if (canonical.some(question => question.title === whole || question.options.has(whole))) {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      blocks.push({ range, text: whole });
+      continue;
+    }
+    const breaks = [...node.querySelectorAll("br")];
+    for (let index = 0; index <= breaks.length; index++) {
+      const range = document.createRange();
+      if (index) range.setStartAfter(breaks[index - 1]); else range.setStart(node, 0);
+      if (index < breaks.length) range.setEndBefore(breaks[index]); else range.setEnd(node, node.childNodes.length);
+      const text = normalize(range.toString());
+      if (index < breaks.length) range.setEndAfter(breaks[index]);
+      if (text) blocks.push({ range, text });
+    }
+  }
+  let question = null;
+  const remove = [];
+  for (const block of blocks) {
+    const match = canonical.find(candidate => candidate.title === block.text);
+    if (match) { question = match; remove.push(block.range); }
+    else if (question?.options.has(block.text)) remove.push(block.range);
+    else question = null;
+  }
+  for (const range of remove.reverse()) range.deleteContents();
+  for (const node of [...body.querySelectorAll("p, li, ul, ol, h1, h2, h3, h4, h5, h6")].reverse()) {
+    if (!normalize(node.textContent) && !node.querySelector("img")) node.remove();
+  }
 }
 
 function asyncQuestionNode(message, question, index) {
@@ -1694,21 +1734,19 @@ function asyncQuestionNode(message, question, index) {
   asyncDrafts.set(key, draft);
   const all = new Map([...historyMessages, ...liveMessages]);
   const answer = resolvedAsyncAnswer(message, index, [...all.values()], state?.asyncAnswers);
+  const title = document.createElement("div");
+  title.className = "async-title";
+  renderMarkdownInto(title, question.title);
   if (answer !== null) {
     draft.error = "";
     draft.uncertain = false;
-    const questionText = document.createElement("p");
-    questionText.textContent = question.title;
-    return questionText;
+    return title;
   }
   const form = document.createElement("form");
   form.className = "async-answer";
   const fields = document.createElement("div");
   fields.className = "async-question";
   const disabled = draft.sending || draft.uncertain || !state?.message?.allowed;
-  const title = document.createElement("p");
-  title.className = "async-title";
-  title.textContent = question.title;
   fields.append(title);
   const options = document.createElement("div");
   options.className = "async-options";
@@ -1716,7 +1754,7 @@ function asyncQuestionNode(message, question, index) {
     const choice = document.createElement("button");
     choice.type = "button";
     choice.disabled = disabled;
-    choice.textContent = option;
+    renderMarkdownInto(choice, option);
     choice.classList.toggle("selected", draft.text === option);
     choice.addEventListener("click", () => { draft.text = option; submitAsyncAnswer(message, index, draft); });
     options.append(choice);

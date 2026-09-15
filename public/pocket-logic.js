@@ -103,6 +103,15 @@ export function asyncAnswerText(title, answer) {
   return `In response to: ${title}\n\n${answer}`;
 }
 
+// Use the existing protocol reply envelope so history retains the exact question/index.
+export function asyncAnswerInput(messageId, index, title, answer) {
+  return `<send_user_message_question_reply>${JSON.stringify([{
+    questionItemId: JSON.stringify(["request_user_input_async", messageId, index]),
+    question: title,
+    answer,
+  }])}</send_user_message_question_reply>`;
+}
+
 function asyncReplyMatches(value, messageId, index) {
   if (value === messageId) return true;
   if (typeof value !== "string") return false;
@@ -142,6 +151,8 @@ export function resolvedAsyncAnswer(message, index, messages, answers = {}) {
       && (reply.question === message.questions[index].title || (reply.question === undefined && message.questions.length === 1)));
     if (reply && typeof reply.answer === "string") return reply.answer;
   }
+  // Retain recognition of replies sent by older Pocket clients. Their display
+  // text stays intact because those messages have no durable reply identity.
   const prefix = asyncAnswerText(message.questions[index].title, "");
   const response = messages.find((candidate) => candidate.role === "user"
     && candidate.createdAt >= message.createdAt && candidate.text.startsWith(prefix));

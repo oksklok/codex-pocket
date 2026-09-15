@@ -14,6 +14,7 @@ import {
   pocketPhase,
   preserveMessageCreatedAt,
   asyncAnswerText,
+  asyncAnswerInput,
   contextSnapshot,
   imageInputs,
   messageInputs,
@@ -316,7 +317,7 @@ test("async answers steer the original active turn, retain failure state, and st
   fail = false;
   await runtime.answerAsyncQuestion(question);
   assert.equal(calls.at(-1).method, "turn/steer");
-  assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Scope?", "Keep"));
+  assert.equal(calls.at(-1).params.input[0].text, asyncAnswerInput("question", 0, "Scope?", "Keep"));
   assert.equal(runtime.state.queuedMessage, null);
   assert.equal(resolvedAsyncAnswer(message, 0, [], runtime.snapshot().asyncAnswers), "Keep");
   await assert.rejects(runtime.answerAsyncQuestion(question), /already answered/);
@@ -324,7 +325,7 @@ test("async answers steer the original active turn, retain failure state, and st
   runtime.handleNotification({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } });
   await runtime.answerAsyncQuestion({ ...question, index: 1, answer: "Please check mobile" });
   assert.equal(calls.at(-1).method, "turn/start");
-  assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Anything else?", "Please check mobile"));
+  assert.equal(calls.at(-1).params.input[0].text, asyncAnswerInput("question", 1, "Anything else?", "Please check mobile"));
 });
 
 test("bounded resume leaves context unavailable until replay or a later authoritative update", async () => {
@@ -685,7 +686,7 @@ test("async answers use trusted live or cached questions without remote lookup",
     }
     await runtime.answerAsyncQuestion(question);
     assert.deepEqual(calls.map(call => call.method), source === "remote" ? ["thread/items/list", "turn/steer"] : ["turn/steer"]);
-    assert.equal(calls.at(-1).params.input[0].text, asyncAnswerText("Scope?", "Keep"));
+    assert.equal(calls.at(-1).params.input[0].text, asyncAnswerInput("question", 0, "Scope?", "Keep"));
     await assert.rejects(runtime.answerAsyncQuestion(question), /already answered/);
   }
 });
@@ -704,6 +705,9 @@ test("GPT-6 async reply envelopes show only human answers in live messages and h
     [wrap('{"answer":"wrong shape"}'), "Question answered."],
     [wrap('[{"answer":42}]'), "Question answered."],
     ["Ordinary <tags> and JSON {}", "Ordinary <tags> and JSON {}"],
+    ["In response to: Which?\n\nUser-written text", "In response to: Which?\n\nUser-written text"],
+    ["> In response to: Which?\n> Example", "> In response to: Which?\n> Example"],
+    ["```text\nIn response to: Which?\n\nExample\n```", "```text\nIn response to: Which?\n\nExample\n```"],
     [`Example: ${wrap(payload)}`, `Example: ${wrap(payload)}`],
   ];
   const items = cases.map(([text], index) => ({ type: "userMessage", id: `reply-${index}`, content: [{ type: "text", text }] }));
@@ -3462,4 +3466,42 @@ test('catalog and live recency share upstream activity time across navigation, r
   const late=runtime.refreshTaskRecency('b');runtime.rpc={};finish({thread:{...rows[1],recencyAt:900}});await late;
   assert.equal(runtime.loadedThreads.find(row=>row.id==='b').updatedAt,400000);
   assert.deepEqual(order(),['b','a']);
+});
+
+test('Pocket-generated async replies preserve transport context and normalize identically live and in history',async()=>{
+  for(const action of ['start','steer']){
+    const runtime=activeRuntime();
+    const title='Use `C:\\Projects\\Pocket` for **this task**?';
+    const item={id:'path-question',type:'agentMessage',delivery:'async',text:title,questions:[{title,options:['Yes']},{title:'Anything else?',options:[]}],createdAt:100};
+    notify(runtime,'item/completed',{item});
+    const items=[item];let sends=0;
+    runtime.rpc={request:async(method,params)=>{
+      if(method.startsWith('turn/')){
+        sends++;
+        const text=params.input[0].text;
+        const payload=JSON.parse(text.match(/^<send_user_message_question_reply>(.*)<\/send_user_message_question_reply>$/s)[1])[0];
+        assert.equal(payload.questionItemId,JSON.stringify(['request_user_input_async',item.id,sends-1]));
+        assert.equal(payload.question,item.questions[sends-1].title);
+        assert.equal(payload.answer,sends===1?'Yes':'In response to: Anything else?\n\nKeep this text.');
+        const reply={id:'reply-'+sends,type:'userMessage',createdAt:100+sends,content:[{type:'text',text}]};items.push(reply);
+        notify(runtime,'item/completed',{item:reply});
+        return {turn:{id:'turn-1',status:'inProgress'}};
+      }
+      if(method==='thread/turns/list')return {data:[{id:'turn-1',status:'completed'}]};
+      return {data:items.map(item=>({turnId:'turn-1',item}))};
+    }};
+    if(action==='start'){runtime.state.turn=null;runtime.state.threadStatus='idle';}
+    await runtime.answerAsyncQuestion({threadId:'thread-1',messageId:item.id,index:0,answer:'Yes'});
+    assert.equal(runtime.state.liveMessages.find(m=>m.id==='reply-1').text,'Yes');
+    assert.equal(resolvedAsyncAnswer(runtime.state.liveMessages[0],1,runtime.state.liveMessages),null);
+    await runtime.answerAsyncQuestion({threadId:'thread-1',messageId:item.id,index:1,answer:'In response to: Anything else?\n\nKeep this text.'});
+    const live=runtime.state.liveMessages;
+    runtime.resetThreadState();runtime.state.thread={id:'thread-1'};
+    const history=(await runtime.history(null,1)).turns[0].messages;
+    assert.deepEqual(history.map(m=>m.text),live.map(m=>m.text));
+    assert.equal(resolvedAsyncAnswer(history[0],0,history),'Yes');
+    assert.equal(resolvedAsyncAnswer(history[0],1,history),'In response to: Anything else?\n\nKeep this text.');
+    assert.equal(resolvedAsyncAnswer({...history[0],id:'unrelated'},0,history),null);
+    assert.equal(sends,2);
+  }
 });
