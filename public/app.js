@@ -2126,6 +2126,12 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
     machines = machines.map(machine => machine.id === id ? { ...machine, connected: next.connected } : machine);
   }
   state = { ...(state || {}), ...next };
+  if (newTaskLeaveWarning?.machineId === state.machineId
+    && newTaskLeaveWarning?.threadId === state.thread?.id
+    && next.turn?.id && ["inProgress", "completed", "failed", "interrupted"].includes(next.turn.status)) {
+    newTaskLeaveWarning = null;
+    renderDestinationSwitcher(true);
+  }
   if (Array.isArray(next.liveMessages)) {
     for (const message of next.liveMessages) {
       const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
@@ -2177,6 +2183,11 @@ function applySnapshot(next, loadChangedHistory = true) {
   const nextThreadId = next?.thread?.id;
   if (next?.threadStatus?.startsWith("active") || next?.turn?.status === "inProgress") taskTerminalResults.delete(draftKey(nextMachineId, nextThreadId));
   const taskChanged = previousMachineId !== nextMachineId || previousThreadId !== nextThreadId;
+  if (newTaskLeaveWarning && next?.connected && nextThreadId
+    && (newTaskLeaveWarning.machineId !== nextMachineId || newTaskLeaveWarning.threadId !== nextThreadId)) {
+    newTaskLeaveWarning = null;
+    renderDestinationSwitcher(true);
+  }
   if (taskChanged) {
     const oldKey = draftKey(previousMachineId, previousThreadId);
     if (oldKey) rememberComposerDraft(composerDrafts, oldKey, { text: elements.messageText.value, images: [...selectedImages], files: [...selectedFiles] });
@@ -3214,7 +3225,13 @@ elements.showArchived.addEventListener("change", () => {
   void refreshNavigationCatalog();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && composerExpanded) { event.preventDefault(); toggleComposer(); return; }
+  if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("dialog[open]")) return;
+  if (!elements.settingsScreen.hidden) { closeSettings(); return; }
+  if (composerExpanded) { event.preventDefault(); toggleComposer(); return; }
+  if (!matchMedia("(min-width: 1100px)").matches) {
+    if (elements.appShell.classList.contains("inspector-open")) closeInspector();
+    else if (!elements.destinationSwitcher.hidden) closeDestinationSwitcher();
+  }
 });
 elements.attachImage.addEventListener("click", () => elements.imagePicker.click());
 elements.imagePicker.addEventListener("change", () => addFiles([...elements.imagePicker.files]));
@@ -3438,10 +3455,6 @@ elements.settingsButton.addEventListener("click", openSettings);
 elements.settingsClose.addEventListener("click", closeSettings);
 elements.settingsCancel.addEventListener("click", closeSettings);
 elements.settingsScreen.addEventListener("click", (event) => { if (event.target === elements.settingsScreen) closeSettings(); });
-document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-  if (!elements.settingsScreen.hidden) closeSettings();
-});
 elements.settingsLanEnabled.addEventListener("change", () => {
   if (elements.settingsLanEnabled.checked && elements.settingsHost.value === "127.0.0.1") elements.settingsHost.value = "0.0.0.0";
 });

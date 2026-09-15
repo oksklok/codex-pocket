@@ -385,8 +385,15 @@ try {
  await page.keyboard.press('Escape');assert.equal(await page.locator('#settings-screen').isVisible(),false);
  for(const id of ['destination-button','inspector-button'])assert.equal(await page.locator(`#${id}`).getAttribute('aria-expanded'),'true');
  await page.keyboard.press('Escape');await page.waitForTimeout(210);
+ if(width<1100){
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),'false');
+ assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');
+ await page.keyboard.press('Escape');await closed();
+ await open();await page.locator('#inspector-button').evaluate(e=>e.click());await page.waitForTimeout(210);
+ }else{
  for(const id of ['destination-button','inspector-button'])assert.equal(await page.locator(`#${id}`).getAttribute('aria-expanded'),'true');
  assert.deepEqual(await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`))),sidebarPreferences);
+ }
  await img.focus();await img.press('Enter');await page.locator('#image-viewer').waitFor();
  await page.keyboard.press('Escape');await page.waitForTimeout(210);
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
@@ -1806,6 +1813,48 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await dismissTasks();await closed();runtime.pendingTaskNames.delete(source.id);
  }
  active=savedActiveForFresh;mode='success';freshNavigation=false;
+ // Escape respects the exact overlay breakpoint and fullscreen priority.
+ for(const width of [1099,1100]){
+ await page.setViewportSize({width,height:844});
+ if(await page.locator('#inspector-button').getAttribute('aria-expanded')==='true')await page.locator('#inspector-button').evaluate(e=>e.click());
+ await open();
+ if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').evaluate(e=>e.click());
+ await page.locator('#message-text').fill('Multiline draft\n'.repeat(10));
+ await page.locator('#expand-composer').evaluate(e=>e.click());
+ await page.keyboard.press('Escape');
+ assert.equal(await page.locator('.expanded-composer').count(),0);
+ for(const id of ['destination-button','inspector-button'])assert.equal(await page.locator(`#${id}`).getAttribute('aria-expanded'),'true');
+ await page.keyboard.press('Escape');
+ assert.equal(await page.locator('#inspector-button').getAttribute('aria-expanded'),width<1100?'false':'true');
+ if(width<1100){await page.keyboard.press('Escape');await closed();}
+ else {assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'true');await page.locator('#inspector-button').evaluate(e=>e.click());await dismissTasks();await closed();}
+ await page.locator('#message-text').fill('');
+ }
+ // A different client can materialize or leave the warned fresh task.
+ for(const width of [1280,390])for(const evidence of ['turn','snapshot','leave']){
+ await page.setViewportSize({width,height:844});
+ const source={...task,id:'cross-client-fresh',name:'Cross client fresh'},target={...task,id:'cross-client-target',name:'Cross client target'};
+ active=[source,target];freshNavigation=true;mode='success';
+ Object.assign(runtime.state,{machineId:'local',thread:source,turn:null,threadStatus:'idle',phase:'ready',pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ runtime.pendingTaskNames.set(source.id,{name:source.name,firstMessageAccepted:false});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
+ const sourceRow=page.locator('.destination-entry').filter({hasText:source.name});
+ await page.locator('.destination-entry').filter({hasText:target.name}).locator('.destination-task').click();
+ await sourceRow.locator('.task-selection-error').waitFor();
+ runtime.broadcast('snapshot',snapshot());await page.waitForTimeout(30);
+ assert.equal(await sourceRow.locator('.task-selection-error').count(),1,'a zero-turn snapshot is not acceptance');
+ runtime.broadcast('snapshot',{...snapshot(),connected:false,thread:null,turn:null});await page.waitForTimeout(30);
+ assert.equal(await sourceRow.locator('.task-selection-error').count(),1,'disconnect is not successful departure');
+ runtime.broadcast('snapshot',snapshot());await page.waitForTimeout(30);
+ runtime.pendingTaskNames.get(source.id).firstMessageAccepted=true;
+ if(evidence==='turn')runtime.broadcast('turn',{turn:{id:'other-client-turn',status:'inProgress'}});
+ else if(evidence==='snapshot'){runtime.state.turn={id:'other-client-turn',status:'completed'};runtime.broadcast('snapshot',snapshot());}
+ else {await page.locator('.destination-entry').filter({hasText:target.name}).locator('.destination-task').click();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Cross client target'));await open();}
+ await page.waitForFunction(()=>!document.querySelector('.task-selection-error'));
+ await dismissTasks();await closed();
+ runtime.pendingTaskNames.delete(source.id);freshNavigation=false;
+ }
+ active=savedActiveForFresh;
  // Free-text Async Answer has a compact, right-aligned primary action on its own row.
  for(const width of [1280,390,320])for(const submit of ['Enter','button']){
  await page.setViewportSize({width,height:844});
