@@ -463,6 +463,13 @@ async function postMessageAction(url, body) {
 
 // Recheck only the one unresolved composer submission, once per SSE reconnect.
 async function recoverUnresolvedSubmission() {
+  // A reload or another client can recover the gateway's retained submission too.
+  const queued = state?.queuedMessage;
+  if (!unresolvedSubmission && queued?.deliveryUnknown && queued.submission?.id) {
+    rememberUnresolvedSubmission({ submissionId: queued.submission.id,
+      requested: { ...queued.submission.requested, queueId: queued.id ?? String(queued.createdAt) },
+      queued: true, confirmed: () => {}, warning: queued.error || "Delivery unconfirmed. Check the task before sending again." });
+  }
   const pending = unresolvedSubmission;
   if (!pending || pending.checking) return;
   pending.checking = true;
@@ -3021,7 +3028,10 @@ function connectEvents() {
     if (value.threadId === state?.thread?.id) mergeState({ taskNameWarning: value.taskNameWarning });
   });
   on("settings", (event) => { mergeState(parseEvent(event)); });
-  on("queue", (event) => { mergeState(parseEvent(event)); });
+  on("queue", (event) => {
+    mergeState(parseEvent(event));
+    if (!state?.queuedMessage && unresolvedSubmission?.requested.queueId) void recoverUnresolvedSubmission();
+  });
   on("control", (event) => { mergeState(parseEvent(event)); });
   on("goal", event => {
     const value = parseEvent(event);

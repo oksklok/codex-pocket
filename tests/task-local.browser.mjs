@@ -6,7 +6,7 @@ import {join} from 'node:path';
 // npm run test:browser uses the pinned Playwright dependency; an external module override is optional.
 const {chromium} = await import(process.env.POCKET_PLAYWRIGHT_MODULE || 'playwright');
 import {fileURLToPath} from 'node:url';
-import {MachineRuntime,RpcClient} from '../gateway.ts';
+import {MachineRuntime,RpcClient,PocketGateway,handleRequest} from '../gateway.ts';
 const root=fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
 const conflict='This task is open in another Codex runtime. Close it there, then retry.';
 const runtime=new MachineRuntime({}, {id:'local',name:'Local',ssh:null},()=>{},value=>runtime.broadcast('task-status',value));
@@ -17,7 +17,9 @@ Object.assign(runtime.state,{connected:true,thread:task,threadStatus:'idle'});
 let asyncAnswers={},historyFixture=null, messageUnknown=false, messageGate=null;
 let composerPost="success", recoveryMode=null;
 const eventClients=new Set();
-const snapshot=()=>({...runtime.snapshot(),submissionEpoch:"test",asyncAnswers,message:{allowed:true,reason:"",canSteer:true}});
+let queueRecovery=false,queueDropResponse=false,queuePosts=0;
+const queueGateway=new PocketGateway({machines:[]});queueGateway.runtimes.set("local",runtime);
+const snapshot=()=>({...runtime.snapshot(),submissionEpoch:queueRecovery?queueGateway.submissions.epoch:"test",asyncAnswers,message:queueRecovery?runtime.messageCapability():{allowed:true,reason:"",canSteer:true}});
 const fileBodies=[];let realFilePosts=false;
 const reviewResponses=new Map();
 const calls=[];let gate=null, release, mode='success', failAction=false;
@@ -33,6 +35,11 @@ const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
  const json=(value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
  try{
+ if(queueRecovery&&['/api/message/queue','/api/state'].includes(u.pathname)){
+ if(req.method==='POST')queuePosts++;
+ if(queueDropResponse&&req.method==='POST')res.end=()=>{res.write('{');setTimeout(()=>req.socket.destroy(),10);return res;};
+ return await handleRequest(req,res,queueGateway,{required:false},{},{host:'127.0.0.1'},async()=>({}),()=>{},()=>false);
+ }
  const scripted=reviewResponses.get(u.pathname);
  if(scripted){
  let raw='';for await(const chunk of req)raw+=chunk;
@@ -368,6 +375,58 @@ try {
  }
  reviewResponses.clear();recoveryMode=null;
  }
+
+ // Queue recovery uses the production HTTP receipts and runtime, including other clients/reloads.
+ const beforeQueueRpc=runtime.rpc,beforeQueueInput=runtime.canAcceptDirectInput;
+ for(const action of ['start','steer'])for(const outcome of ['confirmed','parked','replacement','unknown','lost-response']){
+ queueRecovery=true;queuePosts=0;queueDropResponse=outcome==='lost-response';
+ runtime.taskQueues.clear();runtime.resetThreadState();runtime.canAcceptDirectInput=true;
+ Object.assign(runtime.state,{machineId:'local',connected:true,thread:task,threadStatus:action==='steer'?'active':'idle',phase:action==='steer'?'working':'done',
+ turn:action==='steer'?{id:'original-turn',status:'inProgress'}:null,queuedMessage:{id:`queue-${action}-${outcome}`,threadId:task.id,text:'Deliver queued input once',createdAt:1}});
+ let sends=0;runtime.rpc={request:async method=>{if(method==='turn/'+action){sends++;if(queueDropResponse)return {turn:{id:'delivered-turn',status:'inProgress'}};throw new Error(method+' timed out');}return {data:[]};}};
+ await page.setViewportSize({width:1280,height:844});await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.locator('#send-queue').click();
+ if(outcome==='lost-response'){
+ await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);
+ }else{
+ await page.waitForFunction(()=>document.querySelector('#send-queue').disabled&&/unconfirmed/.test(document.querySelector('#composer-status').textContent));
+ const original=runtime.state.queuedMessage;assert.equal(original.deliveryUnknown,true);
+ const receiptId=original.submission.id;
+ let observer;
+ if(outcome==='confirmed'){observer=await browser.newPage();await observer.goto(`http://127.0.0.1:${server.address().port}`);await observer.locator('#queue-text').waitFor();}
+ if(outcome==='parked'){
+ runtime.parkTaskQueue();runtime.resetThreadState();runtime.state.thread=owned;runtime.broadcast('snapshot',snapshot());
+ await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Owned task'));
+ assert.equal(runtime.taskQueues.get(task.id),original);
+ runtime.canAcceptDirectInput=true;Object.assign(runtime.state,{thread:task,queuedMessage:runtime.taskQueues.get(task.id)});runtime.taskQueues.delete(task.id);
+ }
+ if(outcome==='replacement')runtime.state.queuedMessage={id:'replacement-queue',threadId:task.id,text:'Keep replacement',createdAt:2};
+ const turnId=action==='steer'?'original-turn':'delivered-turn';
+ Object.assign(runtime.state,{turn:{id:turnId,status:'inProgress'},threadStatus:'active',phase:'working',
+ liveMessages:[{id:'delivered-user',role:'user',turnId,text:outcome==='unknown'?'Unrelated input':'Deliver queued input once',complete:true}]});
+ runtime.broadcast('snapshot',snapshot());for(const client of [...eventClients])client.end();
+ if(outcome==='unknown'){
+ await page.waitForTimeout(150);assert.equal((await queueGateway.submissions.recover(receiptId)).status,'unknown');
+ assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);assert.equal(await page.locator('#send-queue').isDisabled(),true);
+ }else{
+ await page.waitForFunction(()=>!document.querySelector('#composer-status').textContent.includes('unconfirmed'));
+ assert.equal((await queueGateway.submissions.recover(receiptId)).status,'accepted');
+ if(outcome==='replacement'){
+ assert.equal(await page.locator('#queue-text').textContent(),'Keep replacement');assert.equal(runtime.state.queuedMessage.id,'replacement-queue');
+ }else{
+ await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);assert.equal(runtime.state.queuedMessage,null);
+ if(observer){await observer.waitForFunction(()=>document.querySelector('#queue-banner').hidden);await observer.close();}
+ }
+ }
+ }
+ await page.reload();await input.waitFor();
+ if(outcome==='unknown'){assert.equal(await page.locator('#send-queue').isDisabled(),true);assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);}
+ else if(outcome==='replacement')assert.equal(await page.locator('#queue-text').textContent(),'Keep replacement');
+ else assert.equal(await page.locator('#queue-banner').isVisible(),false);
+ assert.equal(sends,1);assert.equal(queuePosts,1);assert.equal(runtime.taskQueues.size,0);
+ }
+ queueRecovery=false;queueDropResponse=false;runtime.rpc=beforeQueueRpc;
+ runtime.resetThreadState();runtime.canAcceptDirectInput=beforeQueueInput;runtime.state.threadStatus="idle";runtime.state.phase="done";
 
  for(const width of [1280,390]){
  runtime.terminalResults={};

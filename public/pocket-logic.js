@@ -154,6 +154,8 @@ export function reconcileSubmission(submissionId, snapshot, requested = {}) {
     if (receipt.status === "accepted") return "accepted";
     if (receipt.status === "rejected") return "rejected";
   }
+  // The gateway must retire a delivered queue before clients consider recovery complete.
+  if (requested.queueId) return "unknown";
   if (!requested.threadId || snapshot.machineId !== requested.machineId || snapshot.thread?.id !== requested.threadId) return "unknown";
   if (requested.question) {
     const question = requested.question;

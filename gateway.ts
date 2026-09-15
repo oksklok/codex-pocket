@@ -12,7 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
-import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES } from "./public/pocket-logic.js";
+import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerText, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 type JsonObject = Record<string, any>;
@@ -160,6 +160,7 @@ type PocketModel = {
 type QueuedMessage = {
   id?: string;
   deliveryUnknown?: boolean;
+  submission?: { id: string; requested: JsonObject; confirmed?: JsonObject };
   threadId: string;
   text: string;
   images?: Array<{ type: string; url: string }>;
@@ -1554,6 +1555,11 @@ export class MessageSubmissions {
     }
   }
 
+  setRecovery(id: string, recover: () => JsonObject | null): void {
+    const receipt = this.receipts.get(id);
+    if (receipt?.status === "pending") receipt.recover = recover;
+  }
+
   async recover(id: string): Promise<JsonObject> {
     if (!/^[a-zA-Z0-9-]{8,100}$/.test(id)) throw new Error("Invalid message submission");
     if (!id.startsWith(`${this.epoch}-`)) return { id, status: "unknown" };
@@ -1567,6 +1573,14 @@ export class MessageSubmissions {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([receipt.finished, new Promise((resolve) => { timer = setTimeout(resolve, 5000); })]);
       clearTimeout(timer);
+    }
+    if (receipt.status === "unknown" && receipt.recover) {
+      const confirmed = receipt.recover();
+      if (confirmed) {
+        receipt.status = "accepted";
+        receipt.result = confirmed;
+        delete receipt.error;
+      }
     }
     return { id, status: receipt.status, ...(receipt.error ? { error: receipt.error } : {}),
       ...(receipt.status === "accepted" && receipt.result?.turnId ? { turnId: receipt.result.turnId } : {}) };
@@ -2135,13 +2149,41 @@ export class MachineRuntime {
     return operation;
   }
 
-  sendQueuedMessage(action: unknown = "start", threadId: unknown = this.state.thread?.id, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): Promise<JsonObject> {
-    const operation = this.selectionQueue.then(
-      () => { this.assertQueuedMessage(threadId, queueId); return this.sendQueuedMessageNow(action); },
-      () => { this.assertQueuedMessage(threadId, queueId); return this.sendQueuedMessageNow(action); },
-    );
+  sendQueuedMessage(action: unknown = "start", threadId: unknown = this.state.thread?.id, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt), submission?: { id: string; receipts: MessageSubmissions }): Promise<JsonObject> {
+    const execute = () => {
+      this.assertQueuedMessage(threadId, queueId);
+      const queued = this.state.queuedMessage!;
+      if (submission && !queued.deliveryUnknown) {
+        queued.submission = { id: submission.id, requested: {
+          machineId: this.state.machineId, threadId, action, turnId: this.state.turn?.id,
+          text: queued.text, images: queued.images, files: queued.files,
+          previousMessageIds: [...new Set([...this.state.liveMessages.map(message => message.id), ...this.itemCache.keys()])],
+        } };
+        const original = queued.submission;
+        submission.receipts.setRecovery(submission.id, () => this.recoverQueuedDelivery(queued, original));
+      }
+      return this.sendQueuedMessageNow(action);
+    };
+    const operation = this.selectionQueue.then(execute, execute);
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;
+  }
+
+  private recoverQueuedDelivery(queued: QueuedMessage, submission = queued.submission): JsonObject | null {
+    if (!submission || !queued.deliveryUnknown) return null;
+    if (!submission.confirmed) {
+      if (reconcileSubmission(submission.id, this.snapshot(), submission.requested) !== "accepted") return null;
+      submission.confirmed = { accepted: true, queuedMessage: null, turnId: this.state.turn?.id };
+    }
+    const matches = (candidate?: QueuedMessage | null) => candidate?.threadId === queued.threadId
+      && (candidate.id ?? String(candidate.createdAt)) === (queued.id ?? String(queued.createdAt))
+      && candidate.submission === submission;
+    if (matches(this.taskQueues.get(queued.threadId))) this.taskQueues.delete(queued.threadId);
+    if (this.state.thread?.id === queued.threadId && matches(this.state.queuedMessage)) {
+      this.state.queuedMessage = null;
+      this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
+    }
+    return submission.confirmed;
   }
 
   editQueuedMessage(threadId: unknown, value: unknown, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): JsonObject {
@@ -3186,6 +3228,7 @@ export class MachineRuntime {
       let result: JsonObject;
       try { result = await this.sendMessageNow(queued.text, "steer", queued.images, [], undefined, queued.files); }
       catch (error) {
+        if (queued.submission?.confirmed) return queued.submission.confirmed;
         if (/timed out|closed|disconnected/i.test(String(error))) {
           queued.deliveryUnknown = true;
           queued.error = compact(String(error), 240);
@@ -3205,7 +3248,7 @@ export class MachineRuntime {
     if (action !== "start") throw new Error("Invalid queued message action");
     if (this.state.turn?.status === "inProgress") throw new Error("Stop or finish the active turn first");
     const started = await this.startQueuedMessage(this.state.thread.id);
-    if (!started) throw new Error(this.state.queuedMessage?.error ?? "Could not send the queued message");
+    if (!started && !queued.submission?.confirmed) throw new Error(queued.error ?? this.state.queuedMessage?.error ?? "Could not send the queued message");
     return { accepted: true, queuedMessage: null };
   }
 
@@ -3869,6 +3912,7 @@ export class MachineRuntime {
   }
 
   private parkTaskQueue(): void {
+    if (this.state.queuedMessage) this.recoverQueuedDelivery(this.state.queuedMessage);
     const queued = this.state.queuedMessage;
     if (queued) this.taskQueues.set(queued.threadId, queued);
   }
@@ -3993,6 +4037,7 @@ export class MachineRuntime {
     if (index >= 0) this.state.liveMessages[index] = stored;
     else this.state.liveMessages.push(stored);
     this.state.liveMessages = this.state.liveMessages.slice(-MAX_LIVE_MESSAGES);
+    if (message.role === "user" && this.state.queuedMessage) this.recoverQueuedDelivery(this.state.queuedMessage);
     return stored;
   }
 
@@ -4304,8 +4349,9 @@ export class PocketGateway {
     return this.enqueue(() => this.requireSelected(machineId).interruptTurn(expectedThreadId, expectedTurnId));
   }
 
-  sendQueuedMessage(machineId: unknown, action: unknown, threadId: unknown, queueId: unknown): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(machineId, threadId).sendQueuedMessage(action, threadId, queueId ?? null));
+  sendQueuedMessage(machineId: unknown, action: unknown, threadId: unknown, queueId: unknown, submissionId?: string): Promise<JsonObject> {
+    return this.enqueue(() => this.requireSelected(machineId, threadId).sendQueuedMessage(action, threadId, queueId ?? null,
+      submissionId ? { id: submissionId, receipts: this.submissions } : undefined));
   }
 
   editQueuedMessage(body: JsonObject): Promise<JsonObject> {
@@ -4773,7 +4819,7 @@ export async function handleRequest(
     try {
       const body = await readJsonBody(request);
       submissionId = body.submissionId;
-      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action, body.threadId, body.queueId)), gateway);
+      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action, body.threadId, body.queueId, body.submissionId)), gateway);
     } catch (error) {
       const submission = typeof submissionId === "string" && /^[a-zA-Z0-9-]{8,100}$/.test(submissionId)
         ? await gateway.submissions.recover(submissionId) : null;
