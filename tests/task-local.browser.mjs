@@ -6,7 +6,7 @@ import {join} from 'node:path';
 // Optional browser regression: requires Playwright, or POCKET_PLAYWRIGHT_MODULE pointing to its module.
 const {chromium} = await import(process.env.POCKET_PLAYWRIGHT_MODULE || 'playwright');
 import {fileURLToPath} from 'node:url';
-import {MachineRuntime} from '../gateway.ts';
+import {MachineRuntime,RpcClient} from '../gateway.ts';
 const root=fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
 const conflict='This task is open in another Codex runtime. Close it there, then retry.';
 const runtime=new MachineRuntime({}, {id:'local',name:'Local',ssh:null},()=>{},value=>runtime.broadcast('task-status',value));
@@ -25,7 +25,7 @@ let newTaskOptionsFixture=null;
 let actionFailure='Fixture action failed', cwdFailure=false, cwdGate=null;const cwdEdits=[];
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let goalGate=null;const goalCalls=[];let uiGate=null;let queueEditGate=null,queueEditFailure=false;const queueEdits=[];
-let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true;
+let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true, remoteCatalogTimeout=false;
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
 const server=createServer(async(req,res)=>{
@@ -73,7 +73,13 @@ const server=createServer(async(req,res)=>{
  if(u.pathname==='/api/activity/detail')return json({machineId:'local',threadId:runtime.state.thread.id,itemId:u.searchParams.get('itemId'),detail:u.searchParams.get('itemId')==='diff-test'?{type:'fileChange',changes:[{path:'file.ts',kind:'modified',diff:'+    '+ 'long_token'.repeat(100)}]}:u.searchParams.get('itemId')==='command-test'?{type:'commandExecution',command:'echo test',output:'command_output'.repeat(100),exitCode:0}:{type:u.searchParams.get('itemId'),imageAvailable:true,name:'preview.png',revisedPrompt:u.searchParams.get('itemId')==='imageGeneration'?'A small moonlit garden':undefined}});
  if(u.pathname==='/api/activity/image'||u.pathname==='/api/message/image'){res.writeHead(200,{'Content-Type':'image/png'});res.end(png);return;}
  if(u.pathname==='/api/history')return json(historyFixture||{machineId:runtime.state.machineId,threadId:runtime.state.thread?.id,turns:[],nextCursor:null});
- if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,canWake:wakeConfigured&&!remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
+ if(u.pathname==='/api/navigation'){calls.push(u.search);if(navigationGate)await navigationGate;
+ let remoteAvailable=true;
+ if(remoteCatalogTimeout){
+ const rpc=new RpcClient();rpc.wire={send(){},close(){}};
+ try{await rpc.request('thread/list',{},5000);}catch{remoteAvailable=false;calls.push('remote-catalog-timeout');}finally{rpc.close();}
+ }
+ return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,catalogAvailable:remoteAvailable,canWake:wakeConfigured&&!remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
@@ -247,6 +253,31 @@ try {
  }
  }
  failAction=false;active=[task,owned];archived=[{...task,id:'old',name:'Old task',archived:true}];
+ await page.evaluate(()=>localStorage.removeItem('codex-pocket-tasks-open'));
+
+ // Catalog timeout is not transport failure; the later machine event alone changes the label.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,threadStatus:'idle',turn:null});
+ await page.goto(`http://127.0.0.1:${server.address().port}`);await open();
+ const remote=page.locator('.destination-group').filter({has:page.getByText('Second machine',{exact:true})});
+ await remote.getByText('Remote owned task',{exact:true}).waitFor();
+ await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
+ remoteCatalogTimeout=true;
+ const timeouts=calls.filter(c=>c==='remote-catalog-timeout').length;
+ await page.locator('#destination-refresh').click();
+ await remote.getByText('Tasks Unavailable',{exact:true}).waitFor();
+ assert(calls.filter(c=>c==='remote-catalog-timeout').length>timeouts);
+ assert.equal(await remote.getByText('Offline',{exact:true}).count(),0);
+ assert.equal(await remote.getByRole('button',{name:'New task',exact:true}).isEnabled(),true);
+ remoteConnected=false;
+ runtime.broadcast('machines',{machines:[runtime.machineSummary(),{id:'ssh:test',name:'Second machine',connected:false}]});
+ await remote.getByText('Offline',{exact:true}).waitFor();
+ assert.equal(await remote.getByText('Tasks Unavailable',{exact:true}).count(),0);
+ assert.equal(await remote.getByRole('button',{name:'New task',exact:true}).isDisabled(),true);
+ remoteCatalogTimeout=false;remoteConnected=true;
+ await dismissTasks();await closed();
+ }
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-tasks-open'));
 
  for(const width of [1280,390]){

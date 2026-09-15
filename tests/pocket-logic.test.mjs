@@ -1111,6 +1111,76 @@ test("proxy handshake is bounded and timeout enters normal reconnect; success an
   socket.dispatchEvent(new Event("open"));await opening;assert(directTimer.cancelled);established.close();
 });
 
+test("remote proxy closes exactly once and configures bounded SSH keepalives", async (t) => {
+  const childProcess = (await import("node:child_process")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const { createHash } = await import("node:crypto");
+  const children = [];
+  const spawnMock = t.mock.method(childProcess, "spawn", (command, args) => {
+    const child = new EventEmitter();
+    child.command = command; child.args = args;
+    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => true;
+    children.push(child); return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  t.mock.method(RpcClient.prototype, "request", async method => method === "account/rateLimits/read"
+    ? { rateLimits: { primary: { usedPercent: 0, windowDurationMins: 300 } } } : { data: [] });
+
+  for (const cause of ["close-frame", "error", "exit", "keepalive", "intentional-close"]) {
+    const runtime = new MachineRuntime({}, { id: "ssh:test", name: "Test", ssh: "test" }, () => {});
+    const closeSpy = t.mock.method(runtime, "handleClose");
+    const starting = runtime.start(false);
+    const child = children.at(-1);
+    assert.equal(child.command, process.env.SSH_BIN || "ssh");
+    assert.deepEqual(child.args, ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+      "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "test", "codex", "app-server", "proxy"]);
+    child.emit("spawn");
+    const key = /Sec-WebSocket-Key: (.+)\r/.exec(child.stdin.read().toString())[1];
+    const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    child.stdout.write(`HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    await starting;
+    assert.equal(runtime.state.connected, true);
+    const client = runtime.rpc;
+    if (cause === "close-frame") child.stdout.write(Buffer.from([0x88, 0]));
+    else if (cause === "error") child.emit("error", new Error("SSH connection error"));
+    else if (cause === "exit") child.emit("exit", 255, null);
+    else if (cause === "intentional-close") await runtime.stop();
+    else {
+      // Model OpenSSH exhausting the configured probes; Pocket relies on its process exit.
+      const option = name => Number(child.args.find(value => value.startsWith(name + "=")).split("=")[1]);
+      const windowMs = option("ServerAliveInterval") * option("ServerAliveCountMax") * 1000;
+      assert.equal(windowMs, 45_000);
+      setTimeout(() => child.emit("exit", 255, null), windowMs);
+      t.mock.timers.tick(windowMs - 1);
+      assert.equal(runtime.state.connected, true);
+      t.mock.timers.tick(1);
+    }
+    const expected = cause === "intentional-close" ? 0 : 1;
+    assert.equal(closeSpy.mock.callCount(), expected);
+    const reconnect = runtime.reconnectTimer;
+    if (expected) {
+      assert.equal(runtime.state.connected, false);
+      assert(reconnect);
+      assert.equal(runtime.reconnectDelayIndex, 1);
+    }
+    // A frame, process error and exit can arrive for the same failed transport.
+    child.stdout.write(Buffer.from([0x88, 0]));
+    if (cause !== "error") child.emit("error", new Error("Late transport error"));
+    child.emit("exit", 255, null);
+    client.close(); // Cleanup after a peer close must not write to ended stdin.
+    await new Promise(setImmediate);
+    assert.equal(closeSpy.mock.callCount(), expected);
+    assert.equal(runtime.reconnectTimer, reconnect);
+    await runtime.stop();
+    child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+  }
+});
+
 test("complete task catalogs page active, archived and loaded IDs without changing ordering", async () => {
   const runtime = activeRuntime();
   const make = (prefix, count) => Array.from({ length: count }, (_, i) => ({ id: `${prefix}-${i}`, name: `${prefix} ${i}`, cwd: '/tmp', status: 'idle', updatedAt: 1000 - i, canAcceptDirectInput: true }));

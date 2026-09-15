@@ -881,7 +881,7 @@ function connectProxy(
     const codexBin = process.env.CODEX_BIN || "codex";
     const command = sshAlias ? process.env.SSH_BIN || "ssh" : codexBin;
     const args = sshAlias
-      ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshAlias, "codex", "app-server", "proxy"]
+      ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshAlias, "codex", "app-server", "proxy"]
       : ["app-server", "proxy"];
     const child: ChildProcessWithoutNullStreams = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -947,6 +947,7 @@ function connectProxy(
         if (opcode === 0x8) {
           closing = true;
           child.stdin.end();
+          onClose();
           return;
         }
         if (opcode === 0x9) {
@@ -995,6 +996,7 @@ function connectProxy(
             sendFrame(0x1, Buffer.from(JSON.stringify(message), "utf8"));
           },
           close() {
+            if (closing) return;
             closing = true;
             sendFrame(0x8, Buffer.alloc(0));
             child.stdin.end();
@@ -1013,12 +1015,18 @@ function connectProxy(
     child.once("error", (error) => {
       clearTimeout(handshakeTimer);
       if (!settled) reject(error);
-      else if (!closing) onClose(error);
+      else if (!closing) {
+        closing = true;
+        onClose(error);
+      }
     });
     child.once("exit", (code, signal) => {
       clearTimeout(handshakeTimer);
       if (!settled) reject(new Error(`app-server proxy exited before connecting (${signal ?? code}): ${compact(stderr, 600)}`));
-      else if (!closing) onClose(new Error(`app-server proxy closed (${signal ?? code})`));
+      else if (!closing) {
+        closing = true;
+        onClose(new Error(`app-server proxy closed (${signal ?? code})`));
+      }
     });
     child.once("spawn", () => {
       if (closing) return;
