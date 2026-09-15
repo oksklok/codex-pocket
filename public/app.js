@@ -386,6 +386,13 @@ async function postMessageAction(url, body) {
   const requested = { ...body, threadId: state?.thread?.id, turnId: state?.turn?.id,
     text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, files: body.files ?? state?.queuedMessage?.files, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
   const confirmed = (result) => {
+    if (url === "/api/message" && requested.action === "start"
+      && destinationTaskError?.machineId === requested.machineId
+      && destinationTaskError?.threadId === requested.threadId
+      && destinationTaskError.message === "Send the first message before leaving this new task.") {
+      destinationTaskError = null;
+      renderDestinationSwitcher(true);
+    }
     if (composerSubmission && composerExpanded && requested.machineId === state?.machineId
       && requested.threadId === state?.thread?.id) toggleComposer();
     if ((requested.action === "steer" || (requested.action === "start" && url === "/api/message"))
@@ -618,8 +625,8 @@ try {
   if (Array.isArray(saved) && saved.every(id => typeof id === "string")) for (const id of saved) collapsedMachines.add(id);
 } catch {}
 let destinationRenderKey = null;
-function renderDestinationSwitcher() {
-  if (elements.destinationSwitcher.hidden) return;
+function renderDestinationSwitcher(force = false) {
+  if (elements.destinationSwitcher.hidden && !force) return;
   const archived = archivedTasks;
   const slot = Number(archived);
   const navigationCatalog = navigationCatalogs[slot];
@@ -944,7 +951,7 @@ function closeDestinationSwitcher() {
   document.body.classList.remove("destination-open");
   saveSidebarPreference("tasks", false);
   elements.destinationSearch.value = "";
-  destinationTaskError = null;
+  if (destinationTaskError?.message !== "Send the first message before leaving this new task.") destinationTaskError = null;
   return true;
 }
 

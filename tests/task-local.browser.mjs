@@ -107,7 +107,10 @@ const server=createServer(async(req,res)=>{
  if(uiGate)await uiGate;
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(body.files?.length)fileBodies.push(body);
- if(freshNavigation)return json(await runtime.sendMessage(body.text,body.action,body.images,body.files,body.submissionId),202);
+ if(freshNavigation){
+ if(composerPost==='reject')return json({error:'Send rejected'},409);
+ return json(await runtime.sendMessage(body.text,body.action,body.images,body.files,body.submissionId),202);
+ }
  if(body.question){
  const q=body.question,source=runtime.state.liveMessages.find(m=>m.id===q.messageId);
  asyncAnswers[q.messageId]={[q.index]:q.answer};
@@ -1737,8 +1740,14 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
 
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/fresh-source-error-${width}.png`});
- await dismissTasks();await closed();await page.locator('#message-text').fill('First real message');await page.locator('#send-message').click();
+ await dismissTasks();await closed();await page.locator('#message-text').fill('First real message');
+ composerPost='reject';await page.locator('#send-message').click();
+ await page.getByText('Send rejected',{exact:true}).waitFor();
+ assert.equal(await sourceRow.locator('.task-selection-error').count(),1,'a rejected first message keeps the source task warning');
+ assert.equal(runtime.pendingTaskNames.get(source.id).firstMessageAccepted,false);
+ composerPost='success';await page.locator('#send-message').click();
  await page.waitForFunction(()=>document.querySelector('#message-text').value==='');assert.equal(runtime.state.turn.id,'first-accepted');runtime.assertCanLeaveNewTask();
+ assert.equal(await sourceRow.locator('.task-selection-error').count(),0,'acceptance immediately rerenders the task row, before opening Tasks or navigating');
  await open();await targetRow.locator('.destination-task').click();await page.waitForFunction(()=>document.querySelector('#destination-button').textContent.includes('Other target'));
  assert.equal(runtime.state.thread.id,target.id);await open();assert.equal(await page.locator('.task-selection-error').count(),0);
  freshNavigation=false;
