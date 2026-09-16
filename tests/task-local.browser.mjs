@@ -642,10 +642,13 @@ try {
  await page.locator('#settings-close').click();
  if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
  await page.waitForTimeout(200);await page.locator('#display-files').waitFor();
- assert.deepEqual(await page.locator('#effort-select option').allTextContents(),['Light','Medium','High','Extra High','Max','Ultra']);
+ assert.deepEqual(await page.locator('#effort-select option').allTextContents(),['Low','Medium','High','Extra High','Max','Ultra']);
  assert.equal(await page.locator('#effort-select').inputValue(),'low');
- assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40,40]);
- assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize)),[valueSize,valueSize,valueSize]);
+ // A provider with a single model renders it as a read-only value, so only two selects remain.
+ assert.equal(await page.locator('#model-select').count(),0);
+ assert.equal(await page.locator('#model-select-static').textContent(),'Test');
+ assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40]);
+ assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize)),[valueSize,valueSize]);
  assert.deepEqual(await page.locator('.runtime-panel .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom)),[4,4,4]);
  await page.locator('#access-select').evaluate(e=>e.classList.add('full-access'));
  assert.equal(await page.locator('#access-select').evaluate(e=>getComputedStyle(e).fontSize),valueSize);
@@ -848,12 +851,12 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  for(const action of ['Rename','Archive','Delete'])for(const failure of [conflict,'already has an active writer','Fixture action failed']){
  actionFailure=failure;
  failAction=true;gate=new Promise(r=>release=r);
- const before=await input.boundingBox();const signature=await page.locator('#model-select').evaluate(e=>e.outerHTML);
+ const before=await input.boundingBox();const signature=await page.locator('.runtime-panel').evaluate(e=>e.outerHTML);
  await row('Owned task').locator('summary').click();await row('Owned task').getByRole('button',{name:action,exact:true}).click();
  if(action==='Rename')await page.locator('#task-dialog-name').fill('New test task');
  if(action==='Rename'||action==='Delete')await page.locator('#task-dialog-submit').click();
  await page.getByText(action==='Rename'?'Renaming…':action==='Archive'?'Archiving…':'Deleting…',{exact:true}).waitFor();
- assert.deepEqual(await input.boundingBox(),before);assert.equal(await page.locator('#model-select').evaluate(e=>e.outerHTML),signature);
+ assert.deepEqual(await input.boundingBox(),before);assert.equal(await page.locator('.runtime-panel').evaluate(e=>e.outerHTML),signature);
  assert(!(await page.locator('#composer').innerText()).includes('Switching'));
  release();gate=null;await row('Owned task').locator('.task-selection-error').waitFor();
  assert.equal(await row('Owned task').locator('.task-selection-error').textContent(),failure==='Fixture action failed'?failure:'Open elsewhere. Close it and retry.');
@@ -909,8 +912,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('#new-task-cwd').inputValue(),'');
  await page.locator('#new-task-cwd').fill('/unavailable');await page.locator('#new-task-cwd').blur();await page.getByText('Starting settings unavailable. Check the Project Folder and try again.',{exact:true}).waitFor();
  await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.waitForFunction(()=>document.querySelector('#new-task-error').textContent==='');
- await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});
- await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('auto');
+ await page.locator('#new-task-model-static').filter({hasText:'Demo Model'}).waitFor();
+ await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('auto');
  await page.locator('#new-task-cancel').click();
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();
@@ -930,7 +933,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
  assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('#new-task-dialog .new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
- failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.locator('#new-task-model option[value="demo-model"]').waitFor({state:'attached'});await page.locator('#new-task-model').selectOption('demo-model');await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('ask');await page.locator('#new-task-create').click();await page.waitForFunction(()=>!document.querySelector('#new-task-dialog').open);assert.equal(await input.evaluate(e=>document.activeElement===e),width>=1100);if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
+ failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.locator('#new-task-model-static').filter({hasText:'Demo Model'}).waitFor();await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('ask');await page.locator('#new-task-create').click();await page.waitForFunction(()=>!document.querySelector('#new-task-dialog').open);assert.equal(await input.evaluate(e=>document.activeElement===e),width>=1100);if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
  const createdSettings=calls.findLast(c=>c?.create).create;
  assert.deepEqual({model:createdSettings.model,effort:createdSettings.effort,access:createdSettings.access},{model:'demo-model',effort:'high',access:'ask'});
  await page.getByText('No conversation history yet.',{exact:true}).waitFor();
@@ -1101,7 +1104,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  Object.assign(runtime.state,{model:value,reasoningEffort:value,models:[],access:value?{mode:'unavailable',choices:{}}:null});
  await page.goto(`http://127.0.0.1:${server.address().port}`);
  await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
- assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.selectedOptions[0]?.textContent)),['Unavailable','Unavailable','Unavailable']);
+ assert.equal(await page.locator('.runtime-panel .select-static').textContent(),'Unavailable');
+ assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.selectedOptions[0]?.textContent)),['Unavailable','Unavailable']);
  }
  Object.assign(runtime.state,savedRuntime);
  runtime.state.turn={id:'failed-turn',status:'failed',error:'Upstream capacity reached. Try again later.'};runtime.state.phase='failed';runtime.state.threadStatus='idle';
@@ -2085,10 +2089,10 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.deepEqual(await savedChoice('ssh:test'),{model:'choice-b',effort:'high',access:'ask'});
  assert.deepEqual(await savedChoice('local'),{model:'choice-a',effort:'low',access:'auto'});
  newTaskOptionsFixture={...newTaskOptionsFixture,models:newTaskOptionsFixture.models.slice(1),access:{ask:true}};
- await openNew(0);assert.deepEqual(await choices(),['choice-b','high','ask']);await page.locator('#new-task-cancel').click();
+ await openNew(0);assert.equal(await page.locator('#new-task-model-static').textContent(),'Choice B','one model renders as a read-only value');assert.deepEqual(await choices(),['high','ask']);await page.locator('#new-task-cancel').click();
  assert.deepEqual(await savedChoice('local'),{model:'choice-a',effort:'low',access:'auto'},'fallbacks are not saved merely by opening');
  newTaskOptionsFixture.models[0]={...newTaskOptionsFixture.models[0],supportedReasoningEfforts:[{reasoningEffort:'xhigh'}],defaultReasoningEffort:'xhigh'};
- await openNew(1);assert.deepEqual(await choices(),['choice-b','xhigh','ask']);await page.locator('#new-task-cancel').click();
+ await openNew(1);assert.deepEqual(await choices(),['xhigh','ask']);await page.locator('#new-task-cancel').click();
  assert.equal((await savedChoice('ssh:test')).effort,'high','unsupported effort fallback is not saved before creation');
  newTaskOptionsFixture=null;remoteConnected=previousOptionsRemoteConnected;await dismissTasks();await closed();
  // Real activity reorders cached catalogs immediately, including updates during a catalog read.

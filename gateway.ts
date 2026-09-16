@@ -48,6 +48,8 @@ type MachineDefinition = {
   wakeMac?: string;
   deepseek?: boolean;
   provider?: "openai" | "deepseek";
+  // Physical machine this runtime belongs to; several providers can share one host.
+  group?: string;
 };
 type LocalConfig = {
   lanEnabled: boolean;
@@ -2176,6 +2178,8 @@ export class MachineRuntime {
       id: this.definition.id,
       name: this.definition.name,
       provider: this.definition.provider ?? null,
+      // Grouping is explicit metadata, not a display-name match.
+      group: this.definition.group ?? this.definition.id,
       ssh: this.definition.ssh,
       transport: this.state.transport,
       platform: this.state.platform,
@@ -4319,12 +4323,12 @@ export class PocketGateway {
 
   constructor(options: Options, headless = HEADLESS) {
     const definitions: MachineDefinition[] = [
-      ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null, provider: "openai" as const }]),
+      ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null, provider: "openai" as const, group: "local" }]),
       // The provider is separate metadata; the machine name stays the configured name.
       ...(!headless && options.deepseek?.enabled === true
-        ? [{ id: "local:deepseek", name: options.localName || localMachineName(), ssh: null, deepseek: true, provider: "deepseek" as const }]
+        ? [{ id: "local:deepseek", name: options.localName || localMachineName(), ssh: null, deepseek: true, provider: "deepseek" as const, group: "local" }]
         : []),
-      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac, provider: "openai" as const })),
+      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac, provider: "openai" as const, group: `ssh:${machine.ssh}` })),
     ];
     if (!definitions.length) throw new Error("Headless Pocket requires at least one configured SSH machine");
     this.selectedMachineId = definitions[0].id;
@@ -4414,6 +4418,7 @@ export class PocketGateway {
         id,
         name: summary.name,
         provider: summary.provider,
+        group: summary.group,
         platform: summary.platform,
         local: id === "local" || id === "local:deepseek",
         canWake: summary.canWake,

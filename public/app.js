@@ -48,8 +48,10 @@ const elements = {
   showArchived: document.querySelector("#show-archived"),
   destinationList: document.querySelector("#destination-list"),
   modelSelect: document.querySelector("#model-select"),
+  modelSlot: document.querySelector("#model-slot"),
   effortSelect: document.querySelector("#effort-select"),
   accessSelect: document.querySelector("#access-select"),
+  provider: document.querySelector("#provider"),
   historyStatus: document.querySelector("#history-status"),
   conversation: document.querySelector("#conversation"),
   jumpLatest: document.querySelector("#jump-latest"),
@@ -352,12 +354,21 @@ function activityExpandsByDefault(activity) {
 
 function effortLabel(value) {
   const normalized = String(value || "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
-  const labels = { "not exposed": "Unavailable", none: "None", minimal: "Minimal", low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", "extra high": "Extra High", max: "Max", ultra: "Ultra" };
+  const labels = { "not exposed": "Unavailable", none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", "extra high": "Extra High", max: "Max", ultra: "Ultra" };
   return labels[normalized] || normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Unavailable";
 }
 
+// Access choices share one label set so the same mode never appears with two spellings.
+const ACCESS_MODES = [
+  { value: "ask", label: "Ask for Approval" },
+  { value: "auto", label: "Approve for Me" },
+  { value: "full", label: "Full Access" },
+];
+const accessModeLabel = (mode) => ACCESS_MODES.find((entry) => entry.value === mode)?.label
+  || (mode === "custom" ? "Custom Access" : "Unavailable");
+
 function accessLabel(access) {
-  return ({ ask: "Ask for Approval", auto: "Approve for Me", full: "Full Access", custom: "Custom Access", unavailable: "Unavailable" })[access?.mode] || "Unavailable";
+  return access?.mode ? accessModeLabel(access.mode) : "Unavailable";
 }
 
 function showLogin(message = "") {
@@ -626,10 +637,36 @@ function providerBadge(provider) {
   return badge;
 }
 
-function machineProviderLabel(machine) {
-  const provider = providerName(machine?.provider);
-  const name = machine?.name || "Machine";
-  return provider ? `${name} [${provider}]` : name;
+// One choice is a value, not a picker: render read-only text until a second option exists.
+function renderChoiceControl(slot, { entries, selected, ariaLabel, id, disabled, emptyLabel = "Unavailable", onChange }) {
+  slot.replaceChildren();
+  const label = slot.closest(".form-field")?.querySelector("label") || null;
+  if (entries.length <= 1) {
+    const value = document.createElement("p");
+    value.id = `${id}-static`;
+    value.className = "select-static";
+    value.setAttribute("aria-label", ariaLabel);
+    value.textContent = entries.length ? entries[0].label : emptyLabel;
+    if (disabled) value.classList.add("disabled");
+    slot.append(value);
+    if (label) label.setAttribute("for", value.id);
+    return null;
+  }
+  const select = document.createElement("select");
+  select.id = id;
+  select.setAttribute("aria-label", ariaLabel);
+  select.disabled = Boolean(disabled);
+  for (const entry of entries) {
+    const option = new Option(entry.label, entry.value);
+    if (entry.title) option.title = entry.title;
+    select.add(option);
+  }
+  if (entries.some((entry) => entry.value === selected)) select.value = selected;
+  // Listen directly on the control so synthetic change events without bubbling still work.
+  if (typeof onChange === "function") select.addEventListener("change", () => onChange(select.value));
+  slot.append(select);
+  if (label) label.setAttribute("for", select.id);
+  return select;
 }
 
 function setConnection(connected, failed = false) {
@@ -708,51 +745,79 @@ function renderDestinationSwitcher(force = false) {
     elements.destinationList.append(loading);
     return;
   }
+  // Collect one visual group per physical machine; each provider stays its own runtime underneath.
+  const visualGroups = [];
+  const groupsByKey = new Map();
   for (const catalogMachine of catalogMachines) {
     const latest = machines.find(machine => machine.id === catalogMachine.id);
-    const machine = { ...catalogMachine, ...(latest ? { connected: latest.connected, canWake: latest.canWake ?? catalogMachine.canWake } : {}) };
-    const machineMatches = `${machine.name || ""} ${providerName(machine.provider) || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
-    const pendingDelete = taskActionTarget?.action === "delete" && taskActionTarget.machineId === machine.id
-      && taskActionTarget.archived === archived ? taskActionTarget : null;
-    const orderedTasks = [...(Array.isArray(machine.tasks) ? machine.tasks : [])];
-    // A refresh may omit the task before its delete response arrives.
-    if (pendingDelete?.task && !orderedTasks.some(task => task.id === pendingDelete.threadId)) orderedTasks.push(pendingDelete.task);
-    const tasks = orderedTasks.filter((task) => {
-      if (!query || machineMatches) return true;
-      return `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
-    });
-    if (pendingDelete) {
-      const index = tasks.findIndex(task => task.id === pendingDelete.threadId);
-      // Capture and pin the visible slot for this query, after hidden rows are removed.
-      if (pendingDelete.query !== query) {
-        pendingDelete.query = query;
-        pendingDelete.position = index;
-      }
-      if (index >= 0 && pendingDelete.position >= 0) tasks.splice(pendingDelete.position, 0, ...tasks.splice(index, 1));
+    const entry = { ...catalogMachine, ...(latest ? { connected: latest.connected, canWake: latest.canWake ?? catalogMachine.canWake } : {}) };
+    const key = entry.group || entry.id;
+    let visual = groupsByKey.get(key);
+    if (!visual) {
+      visual = { key, name: entry.name || "Machine", host: false, providers: [], members: [] };
+      groupsByKey.set(key, visual);
+      visualGroups.push(visual);
     }
+    visual.members.push(entry);
+    if (entry.local === true) visual.host = true;
+    const provider = providerName(entry.provider);
+    if (provider && !visual.providers.includes(provider)) visual.providers.push(provider);
+  }
+
+  for (const visual of visualGroups) {
+    const multiProvider = visual.providers.length > 1;
+    const machineMatches = `${visual.name} ${visual.providers.join(" ")} ${visual.members.map(member => member.platform || "").join(" ")}`
+      .toLowerCase().includes(query);
+    // Providers keep their own task order and their own pinned pending-delete slot.
+    const sections = visual.members.map(member => {
+      const pendingDelete = taskActionTarget?.action === "delete" && taskActionTarget.machineId === member.id
+        && taskActionTarget.archived === archived ? taskActionTarget : null;
+      const orderedTasks = [...(Array.isArray(member.tasks) ? member.tasks : [])];
+      // A refresh may omit the task before its delete response arrives.
+      if (pendingDelete?.task && !orderedTasks.some(task => task.id === pendingDelete.threadId)) orderedTasks.push(pendingDelete.task);
+      const memberTasks = orderedTasks.filter((task) => {
+        if (!query || machineMatches) return true;
+        return `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
+      });
+      if (pendingDelete) {
+        const index = memberTasks.findIndex(task => task.id === pendingDelete.threadId);
+        // Capture and pin the visible slot for this query, after hidden rows are removed.
+        if (pendingDelete.query !== query) {
+          pendingDelete.query = query;
+          pendingDelete.position = index;
+        }
+        if (index >= 0 && pendingDelete.position >= 0) memberTasks.splice(pendingDelete.position, 0, ...memberTasks.splice(index, 1));
+      }
+      return { member, tasks: memberTasks };
+    });
+    const tasks = sections.flatMap(section => section.tasks);
     if ((archived || query && !machineMatches) && !tasks.length) continue;
 
-    const catalogAvailable = machine.catalogAvailable !== false;
-    const availability = !machine.connected
+    const connected = visual.members.some(member => member.connected);
+    const catalogAvailable = visual.members.some(member => member.connected && member.catalogAvailable !== false);
+    const availability = !connected
       ? "Offline"
       : !catalogAvailable
         ? "Tasks Unavailable"
         : "";
+    const machine = {
+      ...visual.members[0],
+      id: visual.key,
+      name: visual.name,
+      local: visual.host,
+      provider: null,
+      connected,
+      catalogAvailable,
+      canWake: visual.members.some(member => member.canWake),
+      connectionError: visual.members.find(member => member.local && member.connectionError)?.connectionError || null,
+    };
     const group = document.createElement("section");
     group.className = `destination-group ${!machine.connected ? "offline" : !catalogAvailable ? "unavailable" : ""}`;
     const heading = document.createElement("div");
     heading.className = "destination-group-heading";
     const name = document.createElement("strong");
+    name.className = "machine-name";
     name.textContent = machine.name || "Machine";
-    // Provider first, then the host badge, each as separate restrained metadata.
-    const providerTag = providerBadge(machine.provider);
-    if (providerTag) name.append(" ", providerTag);
-    if (machine.local === true) {
-      const badge = document.createElement("span");
-      badge.className = "machine-host-badge";
-      badge.textContent = "Host";
-      name.append(" ", badge);
-    }
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "machine-toggle";
@@ -762,6 +827,14 @@ function renderDestinationSwitcher(force = false) {
     toggle.setAttribute("aria-expanded", String(!collapsed));
     toggle.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>';
     toggle.append(name);
+    // The header is the physical machine only; the host badge is a flex sibling of the
+    // truncating name, so its border is never clipped by the name's overflow.
+    if (machine.local === true) {
+      const badge = document.createElement("span");
+      badge.className = "machine-host-badge";
+      badge.textContent = "Host";
+      toggle.append(badge);
+    }
     toggle.addEventListener("click", () => {
       if (collapsedMachines.has(machine.id)) collapsedMachines.delete(machine.id);
       else collapsedMachines.add(machine.id);
@@ -806,7 +879,7 @@ function renderDestinationSwitcher(force = false) {
     create.title = "New task";
     create.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
     create.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget.action === "create");
-    create.addEventListener("click", () => newTask(machine));
+    create.addEventListener("click", () => newTask(visual));
     if (!archived) controls.append(create);
     group.append(heading);
     // Auto-attach ownership failures belong to a task, not the machine catalog.
@@ -818,12 +891,14 @@ function renderDestinationSwitcher(force = false) {
       }));
     }
 
-    for (const task of tasks) {
-      const selected = machine.id === state?.machineId && task.id === state?.thread?.id;
+    // Rows iterate each provider's own task list in order, carrying their runtime identity.
+    for (const { member, task } of sections.flatMap(section => section.tasks.map(task => ({ member: section.member, task })))) {
+      const memberCatalogAvailable = member.connected && member.catalogAvailable !== false;
+      const selected = member.id === state?.machineId && task.id === state?.thread?.id;
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
-      row.disabled = !machine.connected || !catalogAvailable || Boolean(destinationSelection) || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id) || task.archived;
+      row.disabled = !member.connected || !memberCatalogAvailable || Boolean(destinationSelection) || (taskActionBusy && taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id) || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
       row.title = task.cwd || task.name || "Task";
       const check = document.createElement("span");
@@ -831,8 +906,19 @@ function renderDestinationSwitcher(force = false) {
       if (selected) check.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
       const label = document.createElement("span");
       label.className = "destination-task-label";
-      label.append(Object.assign(document.createElement("span"), { textContent: threadLabel(task) }));
-      const taskError = [newTaskLeaveWarning, destinationTaskError].find(error => error?.machineId === machine.id && error?.threadId === task.id)?.message || "";
+      const taskName = document.createElement("span");
+      taskName.className = "destination-task-name";
+      taskName.append(Object.assign(document.createElement("span"), { className: "destination-task-text", textContent: threadLabel(task) }));
+      // Provider badges appear on rows only when this machine actually exposes several.
+      if (multiProvider) {
+        const taskProvider = providerBadge(member.provider);
+        if (taskProvider) {
+          taskProvider.classList.add("task-provider-badge");
+          taskName.append(taskProvider);
+        }
+      }
+      label.append(taskName);
+      const taskError = [newTaskLeaveWarning, destinationTaskError].find(error => error?.machineId === member.id && error?.threadId === task.id)?.message || "";
       if (taskError) label.append(Object.assign(document.createElement("small"), { className: "task-selection-error", textContent: taskError }));
       else if (projectsVisible) {
         const project = task.project || projectName(task.cwd);
@@ -840,12 +926,12 @@ function renderDestinationSwitcher(force = false) {
       }
       const status = document.createElement("span");
       status.className = "destination-task-status";
-      status.textContent = destinationSelection?.machineId === machine.id && destinationSelection?.threadId === task.id
+      status.textContent = destinationSelection?.machineId === member.id && destinationSelection?.threadId === task.id
         ? "Opening…"
-        : taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "rename" ? "Renaming" : taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
-        : destinationTaskStatus(machine, task, state, taskTerminalResults.get(draftKey(machine.id, task.id)));
+        : taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "rename" ? "Renaming" : taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
+        : destinationTaskStatus(member, task, state, taskTerminalResults.get(draftKey(member.id, task.id)));
       row.append(check, label, status);
-      row.addEventListener("click", () => selectDestination(machine.id, task.id));
+      row.addEventListener("click", () => selectDestination(member.id, task.id));
       const entry = document.createElement("div");
       entry.className = "destination-entry";
       entry.append(row);
@@ -880,10 +966,10 @@ function renderDestinationSwitcher(force = false) {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
-        button.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget?.threadId === task.id) || (action !== "rename" && task.status?.startsWith("active"));
+        button.disabled = !member.connected || (taskActionBusy && taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id) || (action !== "rename" && task.status?.startsWith("active"));
         button.addEventListener("click", () => {
           if (destinationSelection || taskActionBusy) return;
-          const body = { machineId: machine.id, threadId: task.id, archived: Boolean(task.archived), action };
+          const body = { machineId: member.id, threadId: task.id, archived: Boolean(task.archived), action };
           if (action === "rename" || action === "delete") openTaskDialog(body, task.name);
           else performTaskAction(body);
         });
@@ -1063,22 +1149,30 @@ function currentCatalogModel(modelName = state?.model) {
 
 function renderModelControls() {
   const models = state?.thread ? state?.models || [] : [];
-  elements.modelSelect.replaceChildren();
-  for (const model of models) {
-    const option = document.createElement("option");
-    option.value = model.model;
-    option.textContent = model.displayName || model.model;
-    option.title = model.description || model.model;
-    option.selected = model.model === state?.model;
-    elements.modelSelect.append(option);
-  }
-  if (!models.length) {
-    const option = document.createElement("option");
-    option.textContent = state?.model && !/^not exposed$/i.test(state.model) ? state.model : "Unavailable";
-    elements.modelSelect.append(option);
-  }
+  const enabled = Boolean(state?.connected && state?.thread && models.length)
+    && !updatingModel
+    && !updatingAccess
+    && !resolvingApproval
+    && !submittingInputRequestId
+    && !submittingInterrupt;
+  elements.modelSelect = renderChoiceControl(elements.modelSlot, {
+    entries: models.map((model) => ({ value: model.model, label: model.displayName || model.model, title: model.description || model.model })),
+    selected: state?.model,
+    ariaLabel: "Model",
+    id: "model-select",
+    disabled: !enabled,
+    emptyLabel: state?.model && !/^not exposed$/i.test(state.model) ? state.model : "Unavailable",
+    onChange: (value) => {
+      const model = currentCatalogModel(value);
+      const efforts = model?.supportedReasoningEfforts || [];
+      const effort = efforts.some((option) => option.reasoningEffort === state?.reasoningEffort)
+        ? state.reasoningEffort
+        : model?.defaultReasoningEffort || efforts[0]?.reasoningEffort;
+      if (model && effort) updateThreadSettings(model.model, effort);
+    },
+  });
 
-  const selectedModel = currentCatalogModel(elements.modelSelect.value || state?.model);
+  const selectedModel = currentCatalogModel(elements.modelSelect?.value || state?.model);
   const efforts = selectedModel?.supportedReasoningEfforts || [];
   elements.effortSelect.replaceChildren();
   for (const effort of efforts) {
@@ -1094,41 +1188,31 @@ function renderModelControls() {
     option.textContent = effortLabel(state?.reasoningEffort);
     elements.effortSelect.append(option);
   }
-  const enabled = Boolean(state?.connected && state?.thread && models.length)
-    && !updatingModel
-    && !updatingAccess
-    && !resolvingApproval
-    && !submittingInputRequestId
-    && !submittingInterrupt;
-  elements.modelSelect.disabled = !enabled;
   elements.effortSelect.disabled = !enabled || !efforts.length;
 }
 
 function renderAccessControl() {
   const access = state?.access;
-  const modes = [
-    { value: "ask", label: "Ask for Approval" },
-    { value: "auto", label: "Approve for Me" },
-    { value: "full", label: "Full Access" },
-  ];
   elements.accessSelect.replaceChildren();
-  for (const mode of modes) {
+  // Unavailable modes are omitted; a custom/unknown current mode is preserved on its own.
+  const available = ACCESS_MODES.filter((mode) => access?.choices?.[mode.value]?.available === true);
+  if (!available.some((mode) => mode.value === access?.mode) && (access?.mode || !available.length)) {
+    const option = document.createElement("option");
+    option.value = access?.mode || "unavailable";
+    option.textContent = accessModeLabel(access?.mode);
+    option.selected = true;
+    option.disabled = true;
+    option.title = access?.description || access?.profileId || "Current task access";
+    elements.accessSelect.append(option);
+  }
+  for (const mode of available) {
     const choice = access?.choices?.[mode.value];
     const option = document.createElement("option");
     option.value = mode.value;
-    option.textContent = choice?.available === false ? `${mode.label} · unavailable` : mode.label;
-    option.disabled = choice?.available !== true;
+    option.textContent = mode.label;
     option.title = choice?.reason || (mode.value === "full" ? "Unrestricted access to files and network" : mode.label);
     option.selected = access?.mode === mode.value;
     elements.accessSelect.append(option);
-  }
-  if (!access?.mode || access.mode === "custom" || access.mode === "unavailable") {
-    const option = document.createElement("option");
-    option.value = access?.mode || "unavailable";
-    option.textContent = access?.mode === "custom" ? "Custom Access" : "Unavailable";
-    option.selected = true;
-    option.disabled = true;
-    elements.accessSelect.prepend(option);
   }
   elements.accessSelect.disabled = !state?.connected
     || !state?.thread
@@ -1663,6 +1747,7 @@ function renderState() {
   if (providerTag) elements.machine.append(" ", providerTag);
   const platform = platformLabel(state.platform);
   if (platform) elements.machine.append(` · ${platform}`);
+  elements.provider.textContent = providerName(state.provider) || "—";
   if (cwdDialog.open && !cwdDialogMatches()) cwdDialog.close();
   document.querySelector("#edit-cwd").disabled = !state.connected || !state.thread || cwdBusy;
   elements.project.textContent = state.thread?.cwd || "—";
@@ -2389,9 +2474,14 @@ const newTaskName = document.querySelector("#new-task-name");
 const newTaskCwd = document.querySelector("#new-task-cwd");
 const newTaskError = document.querySelector("#new-task-error");
 const newTaskCreate = document.querySelector("#new-task-create");
-const newTaskModel = document.querySelector("#new-task-model");
+const newTaskProviderField = document.querySelector("#new-task-provider-field");
+const newTaskProviderSlot = document.querySelector("#new-task-provider-slot");
+const newTaskModelSlot = document.querySelector("#new-task-model-slot");
+const newTaskSettings = document.querySelector(".new-task-settings");
 const newTaskEffort = document.querySelector("#new-task-effort");
 const newTaskAccess = document.querySelector("#new-task-access");
+let newTaskModel = null;
+let newTaskModelValue = "";
 let newTaskModels = [];
 let newTaskOptionsRequest = 0;
 let newTaskOptionsReady = false;
@@ -2399,18 +2489,23 @@ let newTaskOptionsLoad = Promise.resolve();
 const newTaskPreferenceKey = machineId => `codex-pocket-new-task-settings:${machineId}`;
 function newTaskEfforts(preferred) {
   newTaskEffort.replaceChildren();
-  const model = newTaskModels.find(model => model.model === newTaskModel.value);
+  const model = newTaskModels.find(model => model.model === newTaskModelValue);
   for (const effort of model?.supportedReasoningEfforts || []) newTaskEffort.add(new Option(effortLabel(effort.reasoningEffort), effort.reasoningEffort));
   const supported = value => [...newTaskEffort.options].some(option => option.value === value);
   if (supported(preferred)) newTaskEffort.value = preferred;
   else if (supported(model?.defaultReasoningEffort)) newTaskEffort.value = model.defaultReasoningEffort;
   newTaskEffort.disabled = !newTaskEffort.options.length;
 }
+function renderNewTaskAccess(access) {
+  newTaskAccess.replaceChildren();
+  for (const mode of ACCESS_MODES) if (access?.[mode.value]) newTaskAccess.add(new Option(mode.label, mode.value));
+}
 async function loadNewTaskOptions() {
   if (!newTaskDialog.open) return;
   const request = ++newTaskOptionsRequest;
   newTaskOptionsReady = false;
-  newTaskCreate.disabled = !newTaskModel.value;
+  // Keep Create available for the existing choice while a reload is in flight.
+  newTaskCreate.disabled = !newTaskModelValue;
   try {
     const query = new URLSearchParams({ machineId: newTaskMachine.id, cwd: newTaskCwd.value.trim() });
     const response = await apiFetch(`/api/tasks/options?${query}`);
@@ -2419,20 +2514,27 @@ async function loadNewTaskOptions() {
     if (!response.ok) throw new Error(value.error || "Starting settings unavailable");
     let remembered;
     try { remembered = JSON.parse(localStorage.getItem(newTaskPreferenceKey(newTaskMachine.id))); } catch {}
-    const chosen = newTaskModel.value
-      ? { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value }
+    const chosen = newTaskModelValue
+      ? { model: newTaskModelValue, effort: newTaskEffort.value, access: newTaskAccess.value }
       : remembered || value.current || {};
-    newTaskModel.replaceChildren();
-    newTaskAccess.replaceChildren();
     newTaskModels = (value.models || []).filter(model => model.model && model.supportedReasoningEfforts?.length);
-    for (const model of newTaskModels) newTaskModel.add(new Option(model.displayName || model.model, model.model));
-    for (const [mode, label] of [["ask", "Ask"], ["auto", "Auto"], ["full", "Full"]]) if (value.access?.[mode]) newTaskAccess.add(new Option(label, mode));
-    if (newTaskModels.some(model => model.model === chosen.model)) newTaskModel.value = chosen.model;
-    else if (newTaskModels.some(model => model.model === value.current?.model)) newTaskModel.value = value.current.model;
+    const preferredModel = newTaskModels.some(model => model.model === chosen.model) ? chosen.model
+      : newTaskModels.some(model => model.model === value.current?.model) ? value.current.model
+        : newTaskModels[0]?.model;
+    newTaskModel = renderChoiceControl(newTaskModelSlot, {
+      entries: newTaskModels.map(model => ({ value: model.model, label: model.displayName || model.model, title: model.description || model.model })),
+      selected: preferredModel,
+      ariaLabel: "Model",
+      id: "new-task-model",
+      emptyLabel: "No model available",
+      onChange: (value) => { newTaskModelValue = value; newTaskEfforts(); },
+    });
+    newTaskModelValue = newTaskModel ? newTaskModel.value : newTaskModels[0]?.model || "";
+    renderNewTaskAccess(value.access);
     newTaskEfforts(chosen.effort);
     if ([...newTaskAccess.options].some(option => option.value === chosen.access)) newTaskAccess.value = chosen.access;
     else if ([...newTaskAccess.options].some(option => option.value === value.current?.access)) newTaskAccess.value = value.current.access;
-    if (!newTaskModel.value || !newTaskEffort.value || !newTaskAccess.value) throw new Error("No available starting settings");
+    if (!newTaskModelValue || !newTaskEffort.value || !newTaskAccess.value) throw new Error("No available starting settings");
     newTaskOptionsReady = true;
     newTaskCreate.disabled = false;
     if (newTaskError.textContent.startsWith("Starting settings unavailable.")) newTaskError.textContent = "";
@@ -2443,20 +2545,48 @@ async function loadNewTaskOptions() {
     }
   }
 }
-newTaskModel.addEventListener("change", () => newTaskEfforts());
 newTaskCwd.addEventListener("change", () => { newTaskOptionsLoad = loadNewTaskOptions(); });
 let newTaskMachine = null;
+let newTaskGroup = null;
 
-function newTask(machine) {
+// One dialog per physical machine; the Provider field appears only when it has several runtimes.
+function renderNewTaskProvider() {
+  const providers = newTaskGroup.members.filter(member => providerName(member.provider));
+  newTaskProviderSlot.replaceChildren();
+  // Keep the field out of the layout entirely for single-provider machines.
+  if (providers.length < 2) { newTaskProviderField.remove(); return; }
+  newTaskSettings.insertBefore(newTaskProviderField, newTaskSettings.firstElementChild);
+  newTaskProviderField.hidden = false;
+  const select = document.createElement("select");
+  select.id = "new-task-provider";
+  select.setAttribute("aria-label", "Provider");
+  for (const member of providers) select.add(new Option(providerName(member.provider), member.id));
+  select.value = newTaskMachine.id;
+  select.addEventListener("change", () => {
+    const next = newTaskGroup.members.find(member => member.id === select.value);
+    if (!next || next === newTaskMachine) return;
+    newTaskMachine = next;
+    // Model, Effort and Access come from the chosen runtime's own new-task options.
+    newTaskOptionsLoad = loadNewTaskOptions();
+  });
+  newTaskProviderSlot.append(select);
+}
+
+function newTask(visual) {
   if (destinationSelection || taskActionBusy) return;
-  newTaskMachine = machine;
-  document.querySelector("#new-task-title").textContent = `New Task on ${machineProviderLabel(machine)}`;
+  newTaskGroup = visual;
+  // Prefer the selected task's provider on this machine, otherwise the machine's default one.
+  newTaskMachine = visual.members.find(member => member.id === state?.machineId) || visual.members[0];
+  document.querySelector("#new-task-title").textContent = `New Task on ${visual.name}`;
+  renderNewTaskProvider();
   newTaskName.value = "";
-  newTaskCwd.value = (machine.id === state?.machineId ? state?.thread?.cwd : "")
-    || machine.tasks?.find(task => task.selected && task.cwd?.trim())?.cwd
+  newTaskCwd.value = (newTaskMachine.id === state?.machineId ? state?.thread?.cwd : "")
+    || newTaskMachine.tasks?.find(task => task.selected && task.cwd?.trim())?.cwd
     || "";
   newTaskError.textContent = "";
-  newTaskModel.replaceChildren();
+  newTaskModelSlot.replaceChildren();
+  newTaskModel = null;
+  newTaskModelValue = "";
   newTaskAccess.replaceChildren();
   newTaskModels = [];
   newTaskEfforts();
@@ -2479,9 +2609,9 @@ newTaskForm.addEventListener("submit", async event => {
   if (!newTaskOptionsReady) await newTaskOptionsLoad;
   if (!newTaskDialog.open || taskActionBusy || optionsRequest !== newTaskOptionsRequest
     || newTaskCwd.value.trim() !== cwd || newTaskName.value.trim() !== name) return;
-  if (!newTaskOptionsReady || !newTaskModel.value || !newTaskEffort.value || !newTaskAccess.value) { newTaskError.textContent = "Choose available starting settings before creating the task."; return; }
+  if (!newTaskOptionsReady || !newTaskModelValue || !newTaskEffort.value || !newTaskAccess.value) { newTaskError.textContent = "Choose available starting settings before creating the task."; return; }
   const machineId = newTaskMachine.id;
-  const startingSettings = { model: newTaskModel.value, effort: newTaskEffort.value, access: newTaskAccess.value };
+  const startingSettings = { model: newTaskModelValue, effort: newTaskEffort.value, access: newTaskAccess.value };
   ++newTaskOptionsRequest;
   for (const control of newTaskForm.elements) control.disabled = true;
   try {
@@ -3378,7 +3508,7 @@ function renderSettings(value) {
   elements.settingsLocalName.value = value.localName || "";
   elements.settingsPin.value = "";
   elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
-  elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured. Enter a new PIN only to change it." : "No PIN configured.";
+  elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured." : "No PIN configured.";
   renderMachineSettings(value.machines);
   elements.phoneUrlList.replaceChildren();
   const urls = value.headless ? [location.origin] : Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
@@ -3564,15 +3694,7 @@ elements.messageText.addEventListener("keydown", (event) => {
     elements.composer.requestSubmit();
   }
 });
-elements.modelSelect.addEventListener("change", () => {
-  const model = currentCatalogModel(elements.modelSelect.value);
-  const efforts = model?.supportedReasoningEfforts || [];
-  const effort = efforts.some((option) => option.reasoningEffort === state?.reasoningEffort)
-    ? state.reasoningEffort
-    : model?.defaultReasoningEffort || efforts[0]?.reasoningEffort;
-  if (model && effort) updateThreadSettings(model.model, effort);
-});
-elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect.value, elements.effortSelect.value));
+elements.effortSelect.addEventListener("change", () => updateThreadSettings(elements.modelSelect?.value || state?.model, elements.effortSelect.value));
 elements.accessSelect.addEventListener("change", () => updateAccess(elements.accessSelect.value));
 function handleTranscriptScroll() {
   const scroller = transcriptScroller();

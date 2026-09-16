@@ -162,8 +162,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-group-heading { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 8px; }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-label); }
 /* Provider and host are separate restrained metadata tags; a long name clips instead of overlapping controls. */
-.machine-provider-badge, .machine-host-badge { padding: 1px 4px; border: 1px solid var(--line-soft); border-radius: 4px; color: var(--muted); font-size: var(--text-meta); font-weight: 400; white-space: nowrap; }
-.destination-group-heading .machine-provider-badge, .destination-group-heading .machine-host-badge { margin-left: 4px; }
+.machine-provider-badge, .machine-host-badge { flex: none; padding: 1px 4px; border: 1px solid var(--line-soft); border-radius: 4px; color: var(--muted); font-size: var(--text-meta); font-weight: 400; white-space: nowrap; }
 .machine-header-controls > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
 .machine-header-controls { display: flex; align-items: center; flex: none; gap: 8px; }
 .wake-action { position: relative; display: flex; flex: none; }
@@ -184,6 +183,9 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-check svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .task-actions summary svg { display: block; width: 20px; height: 20px; fill: currentColor; }
 .destination-task-label { display: contents; white-space: nowrap; }
+.destination-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.destination-task-name > .destination-task-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.destination-task-name > .task-provider-badge { flex: none; }
 .destination-check, .destination-task-label > span, .destination-task-status { grid-row: 1; line-height: 16px; }
 .destination-task-label > span { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-label > small { grid-column: 2 / -1; grid-row: 2; min-width: 0; line-height: 16px; }
@@ -234,6 +236,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .primary-button { min-height: 36px; padding: 7px 12px; border-color: rgba(69,200,138,.4); background: rgba(69,200,138,.17); color: var(--accent); font-size: var(--text-ui); }
 .danger-button { min-height: 36px; padding: 7px 12px; border-color: rgba(255,139,139,.35); color: var(--danger); background: rgba(255,139,139,.08); font-size: var(--text-ui); }
 .icon-button { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); padding: 0; font-size: 1.2rem; }
+/* Shared baseline for icon-button glyphs: outlined strokes, never filled blobs. */
+.icon-button svg { display: block; width: 18px; height: 18px; margin: auto; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .details-toggle { display: grid; place-items: center; padding: 0; }
 .sidebar-close { position: relative; }
 .sidebar-close svg { position: absolute; inset: 0; margin: auto; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
@@ -485,14 +489,14 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .settings-section { display: grid; gap: 8px; padding: 13px 0; border-top: 1px solid var(--line-soft); }
 .settings-section:first-of-type { border-top: 0; padding-top: 2px; }
 .settings-section h3 { margin-bottom: 0; }
-.settings-section h4 { margin: 6px 0 0; color: var(--muted); font-size: .68rem; }
+.settings-section h4 { margin: 0; color: var(--muted); font-size: .68rem; }
+.settings-subheading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 0; }
 .network-fields { display: grid; grid-template-columns: minmax(0,1fr) 110px; gap: 8px; }
 .settings-machines { display: grid; gap: 8px; }
 .machine-settings-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line-soft); border-radius: 9px; }
 .machine-settings-row input { min-width: 0; }
 .form-field, .settings-card .machine-settings-field { display: grid; gap: 4px; margin: 0; min-width: 0; }
 .machine-settings-empty { margin: 2px 0; color: var(--subtle); font-size: .7rem; }
-.machine-add { justify-self: start; }
 .checkbox-row { display: flex !important; align-items: center; gap: 8px; }
 .checkbox-row input { width: 17px; min-height: 17px; }
 .field-help { margin: 0; color: var(--subtle); font-size: var(--text-secondary); line-height: 1.4; }
@@ -633,7 +637,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 #settings-local-machine { display: grid; gap: 8px; }
 #settings-pin { max-width: 280px; }
 .settings-card .checkbox-row, .settings-card .enter-preference { min-height: 28px; }
-.settings-actions button, .settings-restart button, .machine-add { min-height: 40px; padding: 7px 11px; font-size: var(--text-ui); }
+.settings-actions button, .settings-restart button { min-height: 40px; padding: 7px 11px; font-size: var(--text-ui); }
 
 .task-selection-error { display: block; white-space: normal; overflow-wrap: anywhere; color: var(--danger); font-size: var(--text-secondary); font-weight: 400; line-height: 1.35; margin-top: 0; }
 
@@ -662,8 +666,15 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .settings-card input:not([type="checkbox"]), .settings-card select, .runtime-panel select, .destination-search input {
   height: var(--control-height); min-height: var(--control-height); border-radius: var(--control-radius); padding: 8px; font-size: var(--text-ui);
 }
+/* A single-choice provider renders its one value with the same box as a select. */
+.select-static {
+  display: flex; align-items: center; width: 100%; min-width: 0; margin: 0; height: var(--control-height); min-height: var(--control-height);
+  padding: 8px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: var(--control-radius); background: var(--surface);
+  color: var(--text); font-size: var(--text-ui); text-overflow: ellipsis; white-space: nowrap;
+}
+.select-static.disabled { color: var(--muted); }
 .secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button { border-radius: var(--control-radius); }
-.settings-actions button, .settings-restart button, .machine-add { min-height: var(--control-height); }
+.settings-actions button, .settings-restart button { min-height: var(--control-height); }
 .secondary-panel h3 { font-size: var(--text-heading); }
 .settings-card .field-help, .machine-settings-empty { color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
 :is(.settings-card input, .settings-card select, .runtime-panel select, .destination-search input):focus-visible {
@@ -707,10 +718,11 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .new-task-settings .form-field { min-width: 0; }
 .new-task-dialog .new-task-settings .form-field + .form-field { margin-top: 0; }
 .new-task-settings select { width: 100%; min-width: 0; min-height: 36px; padding: 6px; font-size: var(--text-ui); }
+.new-task-settings .select-static { min-height: 36px; padding: 6px; }
 @media (max-width: 860px) {
   .new-task-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .new-task-settings .form-field:first-child { grid-column: 1 / -1; }
-  .new-task-settings select { font-size: 16px; }
+  .new-task-settings .form-field:first-child, .new-task-settings #new-task-provider-field + .form-field { grid-column: 1 / -1; }
+  .new-task-settings select, .new-task-settings .select-static, .runtime-panel .select-static { font-size: 16px; }
 }
 
 /* Goal and queued messages share the composer card geometry. */

@@ -127,13 +127,14 @@
           <div class="inspector-scroll">
             <dl class="metadata">
               <div><dt>Machine</dt><dd id="machine">—</dd></div>
+              <div><dt>Provider</dt><dd id="provider">—</dd></div>
               <div class="working-path-card"><dt>Working Path</dt><dd id="project">—</dd><button id="edit-cwd" class="icon-button" type="button" aria-label="Edit Working Path" title="Edit Working Path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg></button></div>
             </dl>
             <section class="secondary-panel runtime-panel" aria-labelledby="runtime-title">
               <div class="panel-heading"><h3 id="runtime-title">Runtime</h3></div>
               <p class="field-help error-text" id="runtime-reason" hidden></p>
               <div class="form-field"><label for="model-select">Model</label>
-              <select id="model-select" aria-label="Model" disabled><option>Model</option></select></div>
+              <div class="select-slot" id="model-slot"></div></div>
               <div class="form-field"><label for="effort-select">Reasoning Effort</label>
               <select id="effort-select" aria-label="Reasoning Effort" disabled><option>Effort</option></select></div>
               <div class="form-field"><label for="access-select">Access</label>
@@ -203,12 +204,13 @@
           <div id="settings-local-machine">
             <div class="form-field"><label for="settings-local-name">Host Machine Display Name</label>
             <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname"></div>
-            <p class="field-help">Optional. This changes only the name shown in Pocket.</p>
           </div>
-          <h4>SSH Machines</h4>
-          <div class="settings-machines" id="settings-machines"></div>
-          <button class="secondary-button machine-add" id="machine-add" type="button">Add Machine</button>
+          <div class="settings-subheading">
+            <h4>SSH Machines</h4>
+            <button class="icon-button" id="machine-add" type="button" aria-label="Add SSH machine" title="Add SSH machine"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+          </div>
           <p class="field-help">Use an SSH alias configured on this Pocket host.</p>
+          <div class="settings-machines" id="settings-machines"></div>
         </section>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
         <p class="field-help" id="container-lifecycle" hidden>Container lifecycle is managed by Docker Compose.</p>
@@ -256,7 +258,10 @@
         <div class="form-field"><label for="new-task-name">Name</label><input id="new-task-name" maxlength="180" autocomplete="off"></div>
         <div class="form-field"><label for="new-task-cwd">Project Folder</label><input id="new-task-cwd" placeholder="Optional" maxlength="4096" autocomplete="off" spellcheck="false"></div>
         <div class="new-task-settings">
-          <div class="form-field"><label for="new-task-model">Model</label><select id="new-task-model"></select></div>
+          <div class="form-field" id="new-task-provider-field" hidden><label for="new-task-provider">Provider</label>
+          <div class="select-slot" id="new-task-provider-slot"></div></div>
+          <div class="form-field"><label for="new-task-model">Model</label>
+          <div class="select-slot" id="new-task-model-slot"></div></div>
           <div class="form-field"><label for="new-task-effort">Effort</label><select id="new-task-effort"></select></div>
           <div class="form-field"><label for="new-task-access">Access</label><select id="new-task-access"></select></div>
         </div>
