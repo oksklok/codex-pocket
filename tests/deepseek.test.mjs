@@ -5,23 +5,26 @@ import { mkdtemp, writeFile, readFile, rm, realpath, access, symlink, mkdir } fr
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DeepSeekHost, deepseekEnabled, deepseekEnvironment, withoutDeepseekKey, deepseekConfig, deepseekArgs, assertDeepseekConfig, constrainDeepseekRequest } from '../deepseek.ts';
-import { MachineRuntime, PocketGateway, MessageSubmissions, RpcClient, handleRequest, isMessageNotSent } from '../gateway.ts';
+import { DeepSeekHost, DEEPSEEK_HOME, deepseekEnabled, deepseekRuntimeEnabled, deepseekEnvironment, withoutDeepseekKey, deepseekConfig, deepseekArgs, assertDeepseekConfig, constrainDeepseekRequest } from '../deepseek.ts';
+import { MachineRuntime, PocketGateway, MessageSubmissions, RpcClient, handleRequest, isMessageNotSent, parseArgs, publicSettings, validateLocalConfig } from '../gateway.ts';
 import { rememberComposerDraft } from '../public/pocket-logic.js';
 
 test('DeepSeek opt-in is disabled by default and local macOS only', () => {
   assert.equal(deepseekEnabled({}, 'darwin'), false);
   assert.equal(deepseekEnabled({ POCKET_DEEPSEEK: '1' }, 'darwin'), true);
   for (const platform of ['win32', 'linux']) assert.equal(deepseekEnabled({ POCKET_DEEPSEEK: '1' }, platform), false);
-  const previous = process.env.POCKET_DEEPSEEK;
-  try {
-    delete process.env.POCKET_DEEPSEEK;
-    const gateway = new PocketGateway({ machines: [] });
-    assert.deepEqual([...gateway.runtimes.keys()], ['local']);
-    process.env.POCKET_DEEPSEEK = '1';
-    assert.deepEqual([...new PocketGateway({ machines: [{ name: 'Remote', ssh: 'remote' }] }, true).runtimes.keys()], ['ssh:remote']);
-    if (process.platform === 'darwin') assert.deepEqual([...new PocketGateway({ machines: [] }).runtimes.keys()], ['local', 'local:deepseek']);
-  } finally { if (previous === undefined) delete process.env.POCKET_DEEPSEEK; else process.env.POCKET_DEEPSEEK = previous; }
+  // Saved settings enable the runtime; the environment stays a documented override.
+  assert.equal(deepseekRuntimeEnabled({ deepseekEnabled: true }, {}, 'darwin'), true);
+  assert.equal(deepseekRuntimeEnabled({ deepseekEnabled: true }, {}, 'linux'), false);
+  assert.equal(deepseekRuntimeEnabled({ deepseekEnabled: true }, {}, 'win32'), false);
+  assert.equal(deepseekRuntimeEnabled({ deepseekEnabled: false }, {}, 'darwin'), false);
+  assert.equal(deepseekRuntimeEnabled({ deepseekEnabled: false }, { POCKET_DEEPSEEK: '1' }, 'darwin'), true);
+  assert.equal(deepseekRuntimeEnabled(undefined, { POCKET_DEEPSEEK: '1' }, 'darwin'), true);
+  // The gateway only builds the runtime from explicit, resolved options; headless never adds it.
+  assert.deepEqual([...new PocketGateway({ machines: [] }).runtimes.keys()], ['local']);
+  assert.deepEqual([...new PocketGateway({ machines: [], deepseek: { enabled: false } }).runtimes.keys()], ['local']);
+  assert.deepEqual([...new PocketGateway({ machines: [{ name: 'Remote', ssh: 'remote' }], deepseek: { enabled: true } }, true).runtimes.keys()], ['ssh:remote']);
+  assert.deepEqual([...new PocketGateway({ machines: [], deepseek: { enabled: true } }).runtimes.keys()], ['local', 'local:deepseek']);
 });
 
 test('missing key leaves only DeepSeek unavailable with a useful setup message', async () => {
@@ -497,4 +500,146 @@ test('DeepSeek isolation rejects shell_environment_policy.set entries that reint
     const config = { ...base, shell_environment_policy: { ...base.shell_environment_policy, set: { [name]: 'keep' } } };
     assert.doesNotThrow(() => assertDeepseekConfig(config, home), name);
   }
+});
+
+// --- Settings-gated enablement, the host key file, and provider metadata ---
+
+const baseConfig = { lanEnabled: false, host: '127.0.0.1', port: 4173, pin: '1234', localName: 'Mac mini', machines: [] };
+
+test('DeepSeek settings: older files load off, the flag round-trips, headless never stores it', async () => {
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { saveLocalSettings, settingsNeedRestart } = await import('../gateway.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'pocket-deepseek-settings-'));
+  try {
+    // Older settings predate the flag and must keep loading with DeepSeek off.
+    assert.equal(validateLocalConfig(baseConfig).deepseekEnabled, false);
+    assert.equal(validateLocalConfig({ ...baseConfig, deepseekEnabled: true }).deepseekEnabled, true);
+    assert.throws(() => validateLocalConfig({ ...baseConfig, deepseekEnabled: 'yes' }), /true or false/);
+    const settings = { path: join(dir, 'settings.json'), config: validateLocalConfig(baseConfig), loaded: true };
+    const saved = () => JSON.parse(readFileSync(settings.path, 'utf8'));
+    saveLocalSettings(settings, { ...baseConfig }, undefined, false);
+    assert.equal(saved().deepseekEnabled, false);
+    saveLocalSettings(settings, { ...baseConfig, deepseekEnabled: true }, undefined, false);
+    assert.equal(saved().deepseekEnabled, true);
+    assert.equal(saved().localName, 'Mac mini');
+    // Headless hosts never persist enablement.
+    saveLocalSettings(settings, { ...baseConfig, machines: [{ name: 'Remote', ssh: 'remote' }], deepseekEnabled: true }, undefined, true);
+    assert.equal(saved().deepseekEnabled, false);
+    // A saved change reports restart-required until the next manual launch.
+    const enabled = { ...settings, config: validateLocalConfig({ ...baseConfig, deepseekEnabled: true }) };
+    const disabledOptions = parseArgs([], { ...baseConfig, deepseek: { enabled: false } });
+    const enabledOptions = parseArgs([], { ...baseConfig, deepseek: { enabled: true } });
+    const expected = deepseekRuntimeEnabled(enabled.config, process.env, process.platform);
+    assert.equal(settingsNeedRestart(enabled, disabledOptions, { pin: '1234' }, [], undefined), expected);
+    assert.equal(settingsNeedRestart(enabled, enabledOptions, { pin: '1234' }, [], undefined), false);
+    // The browser only ever receives the flag, never a key or path.
+    const payload = publicSettings(enabled, null);
+    assert.equal(payload.deepseekEnabled, true);
+    assert.equal(payload.deepseekSupported, process.platform === 'darwin');
+    assert.equal(JSON.stringify(payload).includes('synthetic'), false);
+    assert.equal(Object.keys(payload).some(key => /key|secret|path/i.test(key)), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('DeepSeek startup reads the host key file only when enabled and never touches process.env', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { deepseekStartupOptions } = await import('../gateway.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'pocket-deepseek-key-'));
+  const keyPath = join(dir, 'deepseek-api-key');
+  const resolved = { path: join(dir, 'settings.json'), config: validateLocalConfig({ ...baseConfig }), loaded: true };
+  const enabled = { ...resolved, config: validateLocalConfig({ ...baseConfig, deepseekEnabled: true }) };
+  const envBefore = { ...process.env };
+  try {
+    // Disabled: the key file is never read, even though it does not exist yet.
+    assert.deepEqual(deepseekStartupOptions(resolved, {}, 'darwin', false, keyPath), { enabled: false });
+    // Enabled with a host key file and no Terminal environment.
+    writeFileSync(keyPath, 'synthetic-host-key\n', { mode: 0o600 });
+    assert.deepEqual(deepseekStartupOptions(enabled, {}, 'darwin', false, keyPath), { enabled: true, key: 'synthetic-host-key' });
+    // An explicit environment key wins; an invalid one fails instead of switching sources.
+    assert.deepEqual(deepseekStartupOptions(enabled, { DEEPSEEK_API_KEY: 'env-key' }, 'darwin', false, keyPath), { enabled: true, key: 'env-key' });
+    assert.match(deepseekStartupOptions(enabled, { DEEPSEEK_API_KEY: 'bad\nkey' }, 'darwin', false, keyPath).error, /single line/);
+    assert.match(deepseekStartupOptions(enabled, { DEEPSEEK_API_KEY: '   ' }, 'darwin', false, keyPath).error, /empty/);
+    // Headless and non-macOS hosts never enable it.
+    assert.deepEqual(deepseekStartupOptions(enabled, {}, 'darwin', true, keyPath), { enabled: false });
+    assert.deepEqual(deepseekStartupOptions(enabled, {}, 'linux', false, keyPath), { enabled: false });
+    assert.deepEqual({ ...process.env }, envBefore);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the host key file is validated strictly and rejects unsafe paths', async () => {
+  const { mkdtempSync, writeFileSync, chmodSync, mkdirSync, symlinkSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { readDeepseekKeyFile, resolveDeepseekKey } = await import('../deepseek.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'pocket-deepseek-file-'));
+  const keyPath = join(dir, 'deepseek-api-key');
+  try {
+    assert.throws(() => readDeepseekKeyFile(keyPath), /no API key file exists/);
+    writeFileSync(keyPath, 'synthetic-key', { mode: 0o600 });
+    assert.equal(readDeepseekKeyFile(keyPath), 'synthetic-key');
+    writeFileSync(keyPath, 'synthetic-key\r\n', { mode: 0o600 });
+    assert.equal(readDeepseekKeyFile(keyPath), 'synthetic-key');
+    writeFileSync(keyPath, 'synthetic-key\n\n', { mode: 0o600 });
+    assert.throws(() => readDeepseekKeyFile(keyPath), /single line/);
+    writeFileSync(keyPath, '   ', { mode: 0o600 });
+    assert.throws(() => readDeepseekKeyFile(keyPath), /empty/);
+    writeFileSync(keyPath, 'synthetic-key', { mode: 0o600 });
+    chmodSync(keyPath, 0o644);
+    assert.throws(() => readDeepseekKeyFile(keyPath), /not be accessible by other users/);
+    chmodSync(keyPath, 0o600);
+    // Symlinks, directories, and oversized files are rejected rather than followed.
+    const link = join(dir, 'link');
+    symlinkSync(keyPath, link);
+    assert.throws(() => readDeepseekKeyFile(link), /regular file/);
+    assert.throws(() => readDeepseekKeyFile(dir), /regular file/);
+    writeFileSync(keyPath, 'x'.repeat(4097), { mode: 0o600 });
+    assert.throws(() => readDeepseekKeyFile(keyPath), /unexpectedly large/);
+    // The environment key is used without reading the file.
+    assert.equal(resolveDeepseekKey({ DEEPSEEK_API_KEY: 'env-key' }, keyPath), 'env-key');
+    assert.throws(() => resolveDeepseekKey({ DEEPSEEK_API_KEY: '' }, keyPath), /empty/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an enabled runtime gets the resolved key while other runtimes and browser payloads do not', () => {
+  const key = 'synthetic-runtime-key';
+  const definition = { id: 'local:deepseek', name: 'Mac mini', ssh: null, deepseek: true, provider: 'deepseek' };
+  const runtime = new MachineRuntime({ deepseek: { enabled: true, key } }, definition, () => {});
+  try {
+    assert.equal(runtime.state.provider, 'deepseek');
+    assert.equal(runtime.machineSummary().provider, 'deepseek');
+    // The machine keeps its configured name; the provider is separate metadata.
+    assert.equal(runtime.machineSummary().name, 'Mac mini');
+    assert.equal(runtime.deepseek.proxyOptions().env.DEEPSEEK_API_KEY, key);
+    assert.equal(runtime.deepseek.proxyOptions().env.CODEX_HOME, DEEPSEEK_HOME);
+    for (const payload of [runtime.snapshot(), runtime.machineSummary(), runtime.diagnostics()]) {
+      assert.equal(JSON.stringify(payload).includes(key), false);
+    }
+    assert.equal(process.env.DEEPSEEK_API_KEY, undefined);
+  } finally { void runtime.stop(); }
+
+  const gateway = new PocketGateway({ machines: [{ name: 'Remote', ssh: 'remote' }], deepseek: { enabled: true, key, error: undefined } });
+  assert.equal(gateway.runtimes.get('local').deepseek, undefined);
+  assert.equal(gateway.runtimes.get('ssh:remote').deepseek, undefined);
+  assert.ok(gateway.runtimes.get('local:deepseek').deepseek);
+  assert.equal(gateway.runtimes.get('local').machineSummary().provider, 'openai');
+  assert.equal(gateway.runtimes.get('ssh:remote').machineSummary().provider, 'openai');
+  for (const payload of [gateway.snapshot(), gateway.listMachines()]) {
+    assert.equal(JSON.stringify(payload).includes(key), false);
+  }
+  // Disabling removes the fallback without touching anything else.
+  const disabled = new PocketGateway({ machines: [{ name: 'Remote', ssh: 'remote' }], deepseek: { enabled: false } });
+  assert.deepEqual([...disabled.runtimes.keys()], ['local', 'ssh:remote']);
+});
+
+test('an invalid key affects only DeepSeek while the other runtimes stay available', () => {
+  const gateway = new PocketGateway({ machines: [{ name: 'Remote', ssh: 'remote' }], deepseek: { enabled: true, error: 'DeepSeek is enabled but no API key file exists at /tmp/missing.' } });
+  assert.deepEqual([...gateway.runtimes.keys()], ['local', 'local:deepseek', 'ssh:remote']);
+  const deepseek = gateway.runtimes.get('local:deepseek');
+  assert.equal(deepseek.state.provider, 'deepseek');
+  assert.match(deepseek.deepseek.redact('no key loaded'), /no key loaded/);
+  assert.equal(gateway.runtimes.get('local').deepseek, undefined);
 });

@@ -570,21 +570,16 @@ test("selection hold survives transient collapse and flushes once after 500ms cl
   assert.equal(flushes, 1);
 });
 
-test("headless gateway exposes only SSH runtimes and selects the first", async () => {
+test("headless gateway exposes only SSH runtimes and selects the first", () => {
   const options = { host: "127.0.0.1", port: 4173, localName: "Local", machines: [{ name: "Remote", ssh: "remote" }] };
-  await withDeepseekFlag(undefined, async () => {
-    const gateway = new PocketGateway(options, true);
-    assert.deepEqual(gateway.listMachines().map(machine => machine.id), ["ssh:remote"]);
-    assert.equal(gateway.state.machineId, "ssh:remote");
-    assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), ["local", "ssh:remote"]);
-    assert.throws(() => new PocketGateway({ ...options, machines: [] }, true), /at least one configured SSH/);
-  });
-  // Dedicated enabled coverage: the opt-in entry appears only on macOS and never in headless mode.
-  await withDeepseekFlag("1", async () => {
-    const expected = process.platform === "darwin" ? ["local", "local:deepseek", "ssh:remote"] : ["local", "ssh:remote"];
-    assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), expected);
-    assert.deepEqual(new PocketGateway(options, true).listMachines().map(machine => machine.id), ["ssh:remote"]);
-  });
+  const gateway = new PocketGateway(options, true);
+  assert.deepEqual(gateway.listMachines().map(machine => machine.id), ["ssh:remote"]);
+  assert.equal(gateway.state.machineId, "ssh:remote");
+  assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), ["local", "ssh:remote"]);
+  // Dedicated enabled coverage: an enabled DeepSeek option adds one entry, never in headless mode.
+  assert.deepEqual(new PocketGateway({ ...options, deepseek: { enabled: true } }, false).listMachines().map(machine => machine.id), ["local", "local:deepseek", "ssh:remote"]);
+  assert.deepEqual(new PocketGateway({ ...options, deepseek: { enabled: true } }, true).listMachines().map(machine => machine.id), ["ssh:remote"]);
+  assert.throws(() => new PocketGateway({ ...options, machines: [] }, true), /at least one configured SSH/);
 });
 
 test("SSH auto-attach writer conflict preserves connection and saved-task catalog", async (t) => {
@@ -2126,9 +2121,12 @@ test('Settings preserve saved PIN without copying an environment override', asyn
     saveLocalSettings(settings,{...settings.config,pin:'1234'},'9876',false);
     saveLocalSettings(settings,{...settings.config,pin:''},'9876',false);
     assert.equal(settings.config.pin,'1234');
-    const options=parseArgs([],{...settings.config});
-    assert.equal(settingsNeedRestart(settings,options,{pin:'9876'},[],'9876'),false);
-    assert.equal(settingsNeedRestart(settings,options,{pin:'1234'},[],'9876'),true);
+    // Pin the DeepSeek opt-in so the restart comparison reflects only these settings.
+    await withDeepseekFlag(undefined, async () => {
+      const options=parseArgs([],{...settings.config,deepseek:{enabled:false}});
+      assert.equal(settingsNeedRestart(settings,options,{pin:'9876'},[],'9876'),false);
+      assert.equal(settingsNeedRestart(settings,options,{pin:'1234'},[],'9876'),true);
+    });
   } finally {
     if(previousPin===undefined)delete process.env.CODEX_POCKET_PIN;else process.env.CODEX_POCKET_PIN=previousPin;
     rmSync(dir,{recursive:true,force:true});
@@ -2136,10 +2134,11 @@ test('Settings preserve saved PIN without copying an environment override', asyn
 });
 
 test('Restart-required compares effective launch overrides and unmasked settings', async () => {
+  await withDeepseekFlag(undefined, async () => {
   const {settingsNeedRestart}=await import('../gateway.ts');
   const settings={config:{lanEnabled:true,host:'0.0.0.0',port:4173,pin:'1234',localName:'Host',machines:[]}};
   const args=['--host','127.0.0.1','--port','4888'];
-  const options=parseArgs(args,settings.config);
+  const options=parseArgs(args,{...settings.config,deepseek:{enabled:false}});
   const auth={pin:'9876'};
   assert.equal(settingsNeedRestart(settings,options,auth,args,'9876'),false);
   settings.config.host='192.168.1.10';settings.config.port=5000;settings.config.pin='5678';
@@ -2150,6 +2149,7 @@ test('Restart-required compares effective launch overrides and unmasked settings
   assert.equal(settingsNeedRestart(settings,options,auth,args,'9876'),true);
   settings.config.machines=[];
   assert.equal(settingsNeedRestart(settings,options,auth,[],'9876'),true);
+  });
 });
 
 test('Compaction alone survives release and is authoritatively reconciled on reattach', async () => {

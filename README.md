@@ -154,7 +154,7 @@ npm run test:browser
 
 `npm start` runs the gateway directly without the menu-bar host and uses the same saved settings. With no saved LAN configuration it listens on localhost. `CODEX_BIN` can select a local Codex executable; `--host`, `--port`, and `CODEX_POCKET_PIN` override saved network settings. Non-loopback listening requires a four-digit PIN and the network precautions above.
 
-An optional macOS-only [DeepSeek runtime](docs/deepseek.md) can run alongside the normal local/SSH entries. It is disabled by default and uses a separate Codex home and owned endpoint. The guide includes foreground opt-in, credential handling, live validation, and disable steps.
+An optional macOS-only [DeepSeek runtime](docs/deepseek.md) can run alongside the normal local/SSH entries. Enable it in **Settings → Runtimes** (off by default, applied on the next manual restart) and supply its key file; it appears as a separate provider-labelled entry with its own Codex home and owned endpoint. The guide covers the host key file, the foreground environment override, validation, and disable steps.
 
 Build the native host with `macos/build-app.sh`. For a read-only connectivity check, use `npm run probe -- --list-only` or `npm run probe-remote -- devbox --list-only`. [SPIKE_REPORT.md](SPIKE_REPORT.md) records the original historical experiment, not the current feature list.
 

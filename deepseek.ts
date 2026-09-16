@@ -3,10 +3,14 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 
 export const DEEPSEEK_MODEL = "deepseek-flash";
 export const DEEPSEEK_HOME = join(homedir(), ".codex-pocket", "deepseek");
+// Host-owned credential file used when DEEPSEEK_API_KEY is not supplied explicitly.
+export const DEEPSEEK_KEY_DIR = join(homedir(), ".codex-pocket", "secrets");
+export const DEEPSEEK_KEY_PATH = join(DEEPSEEK_KEY_DIR, "deepseek-api-key");
+export const DEEPSEEK_KEY_HINT = `Create ${DEEPSEEK_KEY_PATH} with directory permissions 700 and file permissions 600.`;
 export const DEEPSEEK_PROVIDER = {
   name: "DeepSeek", base_url: "https://api.deepseek.com", wire_api: "responses",
   env_key: "DEEPSEEK_API_KEY", requires_openai_auth: false, supports_websockets: false, supports_standalone_web_search: false,
@@ -18,6 +22,54 @@ export function deepseekEnabled(env = process.env, platform = process.platform):
   return platform === "darwin" && env.POCKET_DEEPSEEK === "1";
 }
 
+// The environment flag stays a documented override; the saved setting enables normal menu-bar use.
+export function deepseekRuntimeEnabled(settings: { deepseekEnabled?: boolean } | undefined, env = process.env, platform = process.platform): boolean {
+  return platform === "darwin" && (deepseekEnabled(env, platform) || settings?.deepseekEnabled === true);
+}
+
+export function normalizeDeepseekKey(value: unknown, source: string): string {
+  if (typeof value !== "string") throw new Error(`DeepSeek API key from ${source} must be text`);
+  if (/[\r\n\0]/.test(value)) throw new Error(`DeepSeek API key from ${source} must be a single line without control characters`);
+  const key = value.trim();
+  if (!key) throw new Error(`DeepSeek API key from ${source} is empty`);
+  return key;
+}
+
+export function readDeepseekKeyFile(path = DEEPSEEK_KEY_PATH): string {
+  let stats;
+  try { stats = lstatSync(path); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new Error(`DeepSeek is enabled but no API key file exists at ${path}, and DEEPSEEK_API_KEY is not set. ${DEEPSEEK_KEY_HINT}`);
+    }
+    throw new Error(`DeepSeek API key file could not be inspected (${code ?? "unknown error"}): ${path}`);
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) throw new Error(`DeepSeek API key path must be a regular file, not a link or directory: ${path}`);
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) throw new Error(`DeepSeek API key file must be owned by the current user: ${path}`);
+  if ((stats.mode & 0o077) !== 0) throw new Error(`DeepSeek API key file must not be accessible by other users; run chmod 600 ${path}`);
+  if (stats.size > 4096) throw new Error(`DeepSeek API key file is unexpectedly large: ${path}`);
+  let content: string;
+  try { content = readFileSync(path, "utf8"); }
+  catch { throw new Error(`DeepSeek API key file could not be read: ${path}`); }
+  // One key with an optional single trailing newline; anything else is a configuration mistake.
+  return normalizeDeepseekKey(content.replace(/\r?\n$/, ""), `file ${path}`);
+}
+
+// An explicitly supplied environment key always wins. An invalid value must fail instead of
+// silently switching sources, so this never falls back to the file after a rejected value.
+export function resolveDeepseekKey(env = process.env, path = DEEPSEEK_KEY_PATH): string {
+  if (Object.prototype.hasOwnProperty.call(env, "DEEPSEEK_API_KEY")) {
+    return normalizeDeepseekKey(env.DEEPSEEK_API_KEY, "the DEEPSEEK_API_KEY environment variable");
+  }
+  return readDeepseekKeyFile(path);
+}
+
+export function resolveDeepseekCredentials(env = process.env, path = DEEPSEEK_KEY_PATH): { key?: string; error?: string } {
+  try { return { key: resolveDeepseekKey(env, path) }; }
+  catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
+}
+
 // Also used for ordinary children: opting in must not give the OpenAI/SSH runtime this key.
 export function withoutDeepseekKey(env = process.env): NodeJS.ProcessEnv {
   const clean = { ...env };
@@ -25,9 +77,9 @@ export function withoutDeepseekKey(env = process.env): NodeJS.ProcessEnv {
   return clean;
 }
 
-export function deepseekEnvironment(env = process.env, home = DEEPSEEK_HOME): NodeJS.ProcessEnv {
-  const key = env.DEEPSEEK_API_KEY?.trim();
-  if (!key) throw new Error("DeepSeek needs DEEPSEEK_API_KEY in the Pocket host environment. See docs/deepseek.md for foreground launch steps.");
+export function deepseekEnvironment(env = process.env, home = DEEPSEEK_HOME, supplied?: string): NodeJS.ProcessEnv {
+  const key = supplied ? normalizeDeepseekKey(supplied, "the resolved DeepSeek credential") : env.DEEPSEEK_API_KEY?.trim();
+  if (!key) throw new Error(`DeepSeek needs DEEPSEEK_API_KEY in the host environment, or a host key file. ${DEEPSEEK_KEY_HINT} See docs/deepseek.md.`);
   if (/[\r\n\0]/.test(key)) throw new Error("DEEPSEEK_API_KEY must contain a single API key, without embedded newlines");
   const clean = withoutDeepseekKey(env);
   for (const name of Object.keys(clean)) {
@@ -64,27 +116,46 @@ export class DeepSeekHost {
   private starting: Promise<void> | null = null;
   private stopping = false;
   private key: string;
+  private keyError: string | null = null;
   private env: NodeJS.ProcessEnv;
-  constructor(home = DEEPSEEK_HOME, env = process.env) {
+  // Credentials arrive pre-resolved from the gateway; process.env is never modified.
+  constructor(home = DEEPSEEK_HOME, env = process.env, credentials?: { key?: string; error?: string }) {
     this.env = { ...env };
     this.home = home;
     this.socket = join(home, "pocket.sock");
-    this.key = env.DEEPSEEK_API_KEY?.trim() ?? "";
+    if (credentials?.error) {
+      this.key = "";
+      this.keyError = credentials.error;
+    } else if (typeof credentials?.key === "string") {
+      try { this.key = normalizeDeepseekKey(credentials.key, "the host key file"); }
+      catch (error) { this.key = ""; this.keyError = error instanceof Error ? error.message : String(error); }
+    } else if (Object.prototype.hasOwnProperty.call(this.env, "DEEPSEEK_API_KEY")) {
+      try { this.key = normalizeDeepseekKey(this.env.DEEPSEEK_API_KEY, "the DEEPSEEK_API_KEY environment variable"); }
+      catch (error) { this.key = ""; this.keyError = error instanceof Error ? error.message : String(error); }
+    } else {
+      this.key = "";
+      this.keyError = `DeepSeek is enabled but no API key is available. Set DEEPSEEK_API_KEY in the host environment, or add the host key file. ${DEEPSEEK_KEY_HINT} See docs/deepseek.md.`;
+    }
   }
 
   redact(text: string): string {
     return this.key ? text.split(this.key).join("[REDACTED]") : text;
   }
 
+  private resolvedEnvironment(): NodeJS.ProcessEnv {
+    if (this.keyError) throw new Error(this.keyError);
+    return deepseekEnvironment(this.env, this.home, this.key);
+  }
+
   proxyOptions() {
-    return { env: deepseekEnvironment(this.env, this.home), args: [...deepseekArgs(this.home), "--sock", this.socket], cwd: this.home };
+    return { env: this.resolvedEnvironment(), args: [...deepseekArgs(this.home), "--sock", this.socket], cwd: this.home };
   }
 
   async start(): Promise<void> {
     if (this.stopping) throw new Error("DeepSeek runtime is stopping");
     if (this.starting) return this.starting;
     if (this.child) return;
-    const env = deepseekEnvironment(this.env, this.home);
+    const env = this.resolvedEnvironment();
     this.starting = this.launch(env).finally(() => { this.starting = null; });
     return this.starting;
   }

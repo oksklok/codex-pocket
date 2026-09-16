@@ -102,6 +102,8 @@ const elements = {
   settingsPinState: document.querySelector("#settings-pin-state"),
   settingsTheme: document.querySelector("#settings-theme"),
   settingsLocalName: document.querySelector("#settings-local-name"),
+  settingsDeepseekSection: document.querySelector("#settings-deepseek"),
+  settingsDeepseek: document.querySelector("#settings-deepseek-enabled"),
   settingsMachines: document.querySelector("#settings-machines"),
   machineAdd: document.querySelector("#machine-add"),
   settingsRestart: document.querySelector("#settings-restart"),
@@ -608,6 +610,28 @@ function threadLabel(thread) {
   return thread.name || "Untitled Task";
 }
 
+// Providers are explicit metadata; an unknown provider shows no badge instead of a guess.
+function providerName(provider) {
+  if (provider === "deepseek") return "DeepSeek";
+  if (provider === "openai") return "OpenAI";
+  return null;
+}
+
+function providerBadge(provider) {
+  const label = providerName(provider);
+  if (!label) return null;
+  const badge = document.createElement("span");
+  badge.className = "machine-provider-badge";
+  badge.textContent = label;
+  return badge;
+}
+
+function machineProviderLabel(machine) {
+  const provider = providerName(machine?.provider);
+  const name = machine?.name || "Machine";
+  return provider ? `${name} [${provider}]` : name;
+}
+
 function setConnection(connected, failed = false) {
   elements.connection.className = `connection ${connected ? "connected" : failed ? "failed" : ""}`;
   elements.connectionLabel.textContent = connected ? "Live" : failed ? "Disconnected" : "Connecting";
@@ -616,10 +640,15 @@ function setConnection(connected, failed = false) {
 function renderDestinationButton() {
   const machine = machines.find((candidate) => candidate.id === state?.machineId);
   const machineName = machine?.name || state?.machine || "Machine";
+  const provider = providerName(machine?.provider);
   const selectedThread = loadedThreads.find((thread) => thread.id === state?.thread?.id) || state?.thread;
   const taskName = selectedThread ? threadLabel(selectedThread) : state?.connected ? "No saved task" : "Unavailable";
-  elements.destinationLabel.textContent = `${machineName} / ${taskName}`;
-  elements.destinationButton.title = `${machineName} / ${taskName}`;
+  // The provider stays visible next to the name without changing the machine's own name.
+  elements.destinationLabel.replaceChildren(machineName);
+  const badge = providerBadge(machine?.provider);
+  if (badge) elements.destinationLabel.append(" ", badge);
+  elements.destinationLabel.append(` / ${taskName}`);
+  elements.destinationButton.title = `${provider ? `${machineName} [${provider}]` : machineName} / ${taskName}`;
   elements.destinationButton.disabled = submittingMessage || updatingModel
     || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
 }
@@ -682,7 +711,7 @@ function renderDestinationSwitcher(force = false) {
   for (const catalogMachine of catalogMachines) {
     const latest = machines.find(machine => machine.id === catalogMachine.id);
     const machine = { ...catalogMachine, ...(latest ? { connected: latest.connected, canWake: latest.canWake ?? catalogMachine.canWake } : {}) };
-    const machineMatches = `${machine.name || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
+    const machineMatches = `${machine.name || ""} ${providerName(machine.provider) || ""} ${machine.platform || ""}`.toLowerCase().includes(query);
     const pendingDelete = taskActionTarget?.action === "delete" && taskActionTarget.machineId === machine.id
       && taskActionTarget.archived === archived ? taskActionTarget : null;
     const orderedTasks = [...(Array.isArray(machine.tasks) ? machine.tasks : [])];
@@ -715,6 +744,9 @@ function renderDestinationSwitcher(force = false) {
     heading.className = "destination-group-heading";
     const name = document.createElement("strong");
     name.textContent = machine.name || "Machine";
+    // Provider first, then the host badge, each as separate restrained metadata.
+    const providerTag = providerBadge(machine.provider);
+    if (providerTag) name.append(" ", providerTag);
     if (machine.local === true) {
       const badge = document.createElement("span");
       badge.className = "machine-host-badge";
@@ -1625,7 +1657,12 @@ function renderState() {
   const startedAt = state.turn?.startedAt;
   const completedAt = state.turn?.completedAt;
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
-  elements.machine.textContent = [state.machine, platformLabel(state.platform)].filter(Boolean).join(" · ") || "—";
+  // The provider is separate metadata next to the machine name, never part of the name.
+  elements.machine.replaceChildren(state.machine || "—");
+  const providerTag = providerBadge(state.provider);
+  if (providerTag) elements.machine.append(" ", providerTag);
+  const platform = platformLabel(state.platform);
+  if (platform) elements.machine.append(` · ${platform}`);
   if (cwdDialog.open && !cwdDialogMatches()) cwdDialog.close();
   document.querySelector("#edit-cwd").disabled = !state.connected || !state.thread || cwdBusy;
   elements.project.textContent = state.thread?.cwd || "—";
@@ -2413,7 +2450,7 @@ let newTaskMachine = null;
 function newTask(machine) {
   if (destinationSelection || taskActionBusy) return;
   newTaskMachine = machine;
-  document.querySelector("#new-task-title").textContent = `New Task on ${machine.name}`;
+  document.querySelector("#new-task-title").textContent = `New Task on ${machineProviderLabel(machine)}`;
   newTaskName.value = "";
   newTaskCwd.value = (machine.id === state?.machineId ? state?.thread?.cwd : "")
     || machine.tasks?.find(task => task.selected && task.cwd?.trim())?.cwd
@@ -3178,6 +3215,7 @@ function serverSettingsValue() {
     port: Number(elements.settingsPort.value),
     pin: elements.settingsPin.value,
     localName: elements.settingsLocalName.value.trim(),
+    deepseekEnabled: elements.settingsDeepseek.checked,
     machines: machineSettingsValue(),
   };
 }
@@ -3330,6 +3368,10 @@ function renderSettings(value) {
   elements.quitPocket.closest(".settings-quit").hidden = Boolean(value.headless);
   document.querySelector("#container-lifecycle").hidden = !value.headless;
   document.querySelector("#settings-local-machine").hidden = Boolean(value.headless);
+  // The macOS-only runtime checkbox is hidden wherever it cannot run.
+  elements.settingsDeepseekSection.hidden = !value.deepseekSupported;
+  elements.settingsDeepseek.checked = Boolean(value.deepseekEnabled);
+  elements.settingsDeepseek.disabled = Boolean(value.headless);
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";
   elements.settingsPort.value = String(value.port || 4173);

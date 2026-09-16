@@ -12,7 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
-import { DeepSeekHost, deepseekEnabled, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
+import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekRuntimeEnabled, resolveDeepseekCredentials, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
@@ -33,6 +33,8 @@ type Options = {
   thread?: string;
   localName: string;
   machines: MachineConfig[];
+  // Resolved once at startup when DeepSeek is enabled; the key never touches process.env.
+  deepseek?: { enabled: boolean; key?: string; error?: string };
 };
 type MachineConfig = {
   name: string;
@@ -45,6 +47,7 @@ type MachineDefinition = {
   ssh: string | null;
   wakeMac?: string;
   deepseek?: boolean;
+  provider?: "openai" | "deepseek";
 };
 type LocalConfig = {
   lanEnabled: boolean;
@@ -53,6 +56,7 @@ type LocalConfig = {
   pin: string | null;
   localName: string;
   machines: MachineConfig[];
+  deepseekEnabled: boolean;
 };
 type LocalSettings = {
   path: string;
@@ -179,6 +183,7 @@ type PocketState = {
   connectionError: string | null;
   machineId: string;
   machine: string;
+  provider: "openai" | "deepseek" | null;
   transport: string;
   platform: string;
   userAgent: string;
@@ -276,6 +281,7 @@ const SAFE_CONFIG: LocalConfig = {
   pin: null,
   localName: "",
   machines: [],
+  deepseekEnabled: false,
 };
 
 function usage(): never {
@@ -291,8 +297,8 @@ Options:
 Environment:
   CODEX_BIN      Codex executable to spawn (default: codex)
   CODEX_POCKET_PIN Four-digit PIN required for non-loopback hosts
-  POCKET_DEEPSEEK  Set to 1 for the optional local macOS DeepSeek runtime
-  DEEPSEEK_API_KEY Host-only credential for that runtime (see docs/deepseek.md)
+  POCKET_DEEPSEEK  Set to 1 to force the optional macOS DeepSeek runtime on
+  DEEPSEEK_API_KEY Optional host credential override; otherwise the key file is read
 `);
   process.exit(0);
 }
@@ -380,7 +386,7 @@ function validateMachines(value: unknown): MachineConfig[] {
   });
 }
 
-function validateLocalConfig(value: unknown, overridePin: string | null | undefined = process.env.CODEX_POCKET_PIN): LocalConfig {
+export function validateLocalConfig(value: unknown, overridePin: string | null | undefined = process.env.CODEX_POCKET_PIN): LocalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected a JSON object");
   const candidate = value as JsonObject;
   if (typeof candidate.lanEnabled !== "boolean") throw new Error("lanEnabled must be true or false");
@@ -398,6 +404,9 @@ function validateLocalConfig(value: unknown, overridePin: string | null | undefi
   if (typeof localName !== "string" || localName.trim().length > 80) {
     throw new Error("localName must be 80 characters or fewer");
   }
+  if (candidate.deepseekEnabled !== undefined && typeof candidate.deepseekEnabled !== "boolean") {
+    throw new Error("deepseekEnabled must be true or false");
+  }
   return {
     lanEnabled: candidate.lanEnabled,
     host: candidate.host,
@@ -405,6 +414,8 @@ function validateLocalConfig(value: unknown, overridePin: string | null | undefi
     pin: candidate.pin,
     localName: localName.trim(),
     machines: validateMachines(candidate.machines),
+    // Older settings predate this flag and must keep loading.
+    deepseekEnabled: candidate.deepseekEnabled === undefined ? false : candidate.deepseekEnabled as boolean,
   };
 }
 
@@ -437,6 +448,8 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, overr
     pin,
     localName: candidate.localName ?? settings.config.localName,
     machines: candidate.machines ?? settings.config.machines,
+    // DeepSeek is macOS-only; containers and headless hosts stay unchanged.
+    deepseekEnabled: headless ? false : candidate.deepseekEnabled ?? settings.config.deepseekEnabled,
   }, overridePin);
   if (headless && !config.machines.length) throw new Error("Headless Pocket requires at least one SSH machine");
   const temporaryPath = `${settings.path}.tmp`;
@@ -447,7 +460,7 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, overr
   return config;
 }
 
-function publicSettings(settings: LocalSettings, fallbackPin: string | null): JsonObject {
+export function publicSettings(settings: LocalSettings, fallbackPin: string | null): JsonObject {
   return {
     hostName: localMachineName(),
     headless: HEADLESS,
@@ -456,9 +469,30 @@ function publicSettings(settings: LocalSettings, fallbackPin: string | null): Js
     port: settings.config.port,
     pinConfigured: /^\d{4}$/.test(settings.config.pin ?? fallbackPin ?? ""),
     localName: settings.config.localName,
+    deepseekEnabled: settings.config.deepseekEnabled === true,
+    // The macOS-only runtime is unavailable to containers and headless hosts.
+    deepseekSupported: process.platform === "darwin" && !HEADLESS,
     phoneUrls: phoneUrls(settings.config),
     machines: settings.config.machines.map((machine) => ({ ...machine })),
   };
+}
+
+// The saved flag plus the documented environment override decide the runtime at launch.
+function deepseekLaunchEnabled(settings: LocalSettings): boolean {
+  return !HEADLESS && deepseekRuntimeEnabled(settings.config);
+}
+
+// Reads the host credential only when the runtime is actually enabled. The key never enters
+// process.env, saved settings, or any runtime other than the isolated DeepSeek one.
+export function deepseekStartupOptions(
+  settings: LocalSettings,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  headless: boolean = HEADLESS,
+  keyPath: string = DEEPSEEK_KEY_PATH,
+): Options["deepseek"] {
+  if (headless || !deepseekRuntimeEnabled(settings.config, env, platform)) return { enabled: false };
+  return { enabled: true, ...resolveDeepseekCredentials(env, keyPath) };
 }
 
 export function settingsNeedRestart(settings: LocalSettings, options: Options, auth: AuthConfig, launchArgs: string[] = [], overridePin: string | undefined = process.env.CODEX_POCKET_PIN): boolean {
@@ -474,7 +508,8 @@ export function settingsNeedRestart(settings: LocalSettings, options: Options, a
     || desired.port !== options.port
     || desired.localName !== options.localName
     || !secretMatches(desiredPin ?? "", auth.pin ?? "")
-    || JSON.stringify(desired.machines) !== JSON.stringify(options.machines);
+    || JSON.stringify(desired.machines) !== JSON.stringify(options.machines)
+    || deepseekLaunchEnabled(settings) !== (options.deepseek?.enabled === true);
 }
 
 function browserUrl(host: string, port: number): string {
@@ -1853,7 +1888,7 @@ export class MachineRuntime {
     this.submissions = submissions;
     this.options = options;
     this.definition = definition;
-    this.deepseek = definition.deepseek ? new DeepSeekHost() : undefined;
+    this.deepseek = definition.deepseek ? new DeepSeekHost(undefined, process.env, this.options.deepseek) : undefined;
     this.onQuotaChange = onQuotaChange;
     this.onTaskStatus = onTaskStatus;
     this.state = {
@@ -1862,6 +1897,7 @@ export class MachineRuntime {
       connectionError: null,
       machineId: definition.id,
       machine: definition.name,
+      provider: definition.provider ?? null,
       transport: definition.ssh ? `SSH · ${definition.ssh}` : "Local",
       platform: "unknown",
       userAgent: "unknown",
@@ -2139,6 +2175,7 @@ export class MachineRuntime {
     return {
       id: this.definition.id,
       name: this.definition.name,
+      provider: this.definition.provider ?? null,
       ssh: this.definition.ssh,
       transport: this.state.transport,
       platform: this.state.platform,
@@ -4282,9 +4319,12 @@ export class PocketGateway {
 
   constructor(options: Options, headless = HEADLESS) {
     const definitions: MachineDefinition[] = [
-      ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null }]),
-      ...(!headless && deepseekEnabled() ? [{ id: "local:deepseek", name: `${options.localName || localMachineName()} · DeepSeek`, ssh: null, deepseek: true }] : []),
-      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac })),
+      ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null, provider: "openai" as const }]),
+      // The provider is separate metadata; the machine name stays the configured name.
+      ...(!headless && options.deepseek?.enabled === true
+        ? [{ id: "local:deepseek", name: options.localName || localMachineName(), ssh: null, deepseek: true, provider: "deepseek" as const }]
+        : []),
+      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac, provider: "openai" as const })),
     ];
     if (!definitions.length) throw new Error("Headless Pocket requires at least one configured SSH machine");
     this.selectedMachineId = definitions[0].id;
@@ -4373,6 +4413,7 @@ export class PocketGateway {
       return {
         id,
         name: summary.name,
+        provider: summary.provider,
         platform: summary.platform,
         local: id === "local" || id === "local:deepseek",
         canWake: summary.canWake,
@@ -5189,6 +5230,7 @@ async function main(): Promise<void> {
     port: settings.config.port,
     localName: settings.config.localName,
     machines: settings.config.machines,
+    deepseek: deepseekStartupOptions(settings),
   });
   const authRequired = !isLoopbackHost(options.host);
   const pin = Object.prototype.hasOwnProperty.call(process.env, "CODEX_POCKET_PIN")
