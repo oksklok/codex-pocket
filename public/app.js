@@ -1641,7 +1641,7 @@ function renderState() {
   elements.contextPercent.textContent = context ? `${context.lastKnown ? "~" : ""}${context.usedPercent}%` : "—";
   elements.contextFill.style.width = `${context?.usedPercent ?? 0}%`;
   elements.context.title = context ? `${context.lastKnown ? "Last known · " : ""}${context.usedPercent}% context used · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
-  elements.runtimeReason.textContent = state.machineId === "local" ? state.connectionError || "" : "";
+  elements.runtimeReason.textContent = ["local", "local:deepseek"].includes(state.machineId) ? state.connectionError || "" : "";
   elements.runtimeReason.hidden = !elements.runtimeReason.textContent;
   renderComposer();
 }

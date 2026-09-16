@@ -12,6 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
+import { DeepSeekHost, deepseekEnabled, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
@@ -43,6 +44,7 @@ type MachineDefinition = {
   name: string;
   ssh: string | null;
   wakeMac?: string;
+  deepseek?: boolean;
 };
 type LocalConfig = {
   lanEnabled: boolean;
@@ -289,6 +291,8 @@ Options:
 Environment:
   CODEX_BIN      Codex executable to spawn (default: codex)
   CODEX_POCKET_PIN Four-digit PIN required for non-loopback hosts
+  POCKET_DEEPSEEK  Set to 1 for the optional local macOS DeepSeek runtime
+  DEEPSEEK_API_KEY Host-only credential for that runtime (see docs/deepseek.md)
 `);
   process.exit(0);
 }
@@ -879,15 +883,18 @@ function connectProxy(
   onClose: (error?: Error) => void,
   registerAbort: (abort: () => void) => void,
   sshAlias?: string,
+  isolated?: ReturnType<DeepSeekHost["proxyOptions"]>,
 ): Promise<Wire> {
   return new Promise((resolve, reject) => {
     const codexBin = process.env.CODEX_BIN || "codex";
     const command = sshAlias ? process.env.SSH_BIN || "ssh" : codexBin;
     const args = sshAlias
       ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshAlias, "codex", "app-server", "proxy"]
-      : ["app-server", "proxy"];
+      : ["app-server", "proxy", ...(isolated?.args ?? [])];
     const child: ChildProcessWithoutNullStreams = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
+      env: isolated?.env ?? withoutDeepseekKey(),
+      ...(isolated ? { cwd: isolated.cwd } : {}),
     });
     const websocketKey = randomBytes(16).toString("base64");
     const expectedAccept = createHash("sha1")
@@ -1028,6 +1035,7 @@ function connectProxy(
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
+      if (isolated) { stderr = "Isolated DeepSeek proxy failed; check its endpoint and CLI."; return; }
       stderr = (stderr + chunk).slice(-4000);
       const text = sshAlias ? compact(chunk, 400) : chunk.trim();
       if (text) console.error(`${sshAlias ? `${sshAlias} SSH proxy` : "app-server proxy"}: ${text}`);
@@ -1096,6 +1104,8 @@ function connectWebSocket(
 }
 
 export class RpcClient {
+  private deepseek: DeepSeekHost | undefined;
+  constructor(deepseek?: DeepSeekHost) { this.deepseek = deepseek; }
   private wire!: Wire;
   private abortTransport: (() => void) | null = null;
   private closing = false;
@@ -1107,11 +1117,14 @@ export class RpcClient {
   onClose: (error?: Error) => void = () => {};
 
   async connect(ws?: string, sshAlias?: string): Promise<void> {
+    const isolated = this.deepseek?.proxyOptions();
+    if (isolated && (ws || sshAlias)) throw new Error("DeepSeek only supports its isolated local proxy");
     const onPayload = (payload: Buffer) => {
       if (this.closing) return;
       this.onRawPayload(payload.length);
       try {
-        this.receive(JSON.parse(payload.toString("utf8")));
+        const text = payload.toString("utf8");
+        this.receive(JSON.parse(this.deepseek ? this.deepseek.redact(text) : text));
       } catch (error) {
         this.disconnect(error instanceof Error ? error : new Error(String(error)));
       }
@@ -1119,7 +1132,7 @@ export class RpcClient {
     const registerAbort = (abort: () => void) => { this.abortTransport = abort; };
     const wire = ws
       ? await connectWebSocket(ws, onPayload, (error) => this.disconnect(error), registerAbort)
-      : await connectProxy(onPayload, (error) => this.disconnect(error), registerAbort, sshAlias);
+      : await connectProxy(onPayload, (error) => this.disconnect(error), registerAbort, sshAlias, isolated);
     if (this.closing) {
       wire.close();
       throw new Error("app-server connection closed");
@@ -1128,7 +1141,23 @@ export class RpcClient {
     this.abortTransport = null;
   }
 
-  request(method: string, params: JsonObject | undefined = {}, timeoutMs = 20_000): Promise<any> {
+  async request(method: string, params: JsonObject | undefined = {}, timeoutMs = 20_000): Promise<any> {
+    if (this.deepseek) {
+      params = constrainDeepseekRequest(method, params ?? {}, this.deepseek.home);
+      if (["thread/start", "thread/resume", "thread/settings/update", "turn/start"].includes(method)) {
+        let cwd = params.cwd;
+        if (!cwd && params.threadId) {
+          const read = await this.request("thread/read", { threadId: params.threadId, includeTurns: false });
+          if (read.thread?.modelProvider !== "deepseek") throw new Error("Refusing a non-DeepSeek task in the isolated runtime");
+          cwd = read.thread?.cwd;
+          if (method === "thread/resume" && ["low", "high", "max"].includes(read.thread?.reasoningEffort)) {
+            params.config.model_reasoning_effort = read.thread.reasoningEffort;
+          }
+        }
+        const effective = await this.request("config/read", { ...(cwd ? { cwd } : {}), includeLayers: false });
+        assertDeepseekConfig(effective.config, this.deepseek.home);
+      }
+    }
     if (this.closing || !this.wire) return Promise.reject(new Error("app-server connection closed"));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
@@ -1171,6 +1200,7 @@ export class RpcClient {
   }
 
   private receive(message: JsonObject): void {
+    if (this.deepseek) message = JSON.parse(this.deepseek.redact(JSON.stringify(message)));
     if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
       const id = Number(message.id);
       const pending = this.pending.get(id);
@@ -1622,7 +1652,7 @@ export async function stageMessageFiles(value: unknown, submissionId: unknown, s
         ? `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`
         : `umask 077; d="\${TMPDIR:-/tmp}/${directory}"; mkdir -p -- "$d" && p="$d/"${shellQuote(filename)} && cat > "$p" && printf '%s' "$p"`;
       path = await new Promise<string>((resolve, reject) => {
-        const child = spawn(process.env.SSH_BIN || "ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshAlias, command], { stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(process.env.SSH_BIN || "ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshAlias, command], { stdio: ["pipe", "pipe", "pipe"], env: withoutDeepseekKey() });
         let output = "", errorOutput = "", settled = false;
         const finish = (error?: Error) => {
           if (settled) return;
@@ -1669,6 +1699,7 @@ function readRemoteImage(sshAlias: string, remotePath: string, windows: boolean)
       : `cat -- ${shellQuote(remotePath)}`;
     const child = spawn(command, ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshAlias, remoteCommand], {
       stdio: ["ignore", "pipe", "pipe"],
+      env: withoutDeepseekKey(),
     });
     const chunks: Buffer[] = [];
     let length = 0;
@@ -1737,6 +1768,7 @@ function normalizeInputQuestions(params: JsonObject): PocketInputQuestion[] | nu
 }
 
 export class MachineRuntime {
+  private deepseek: DeepSeekHost | undefined;
   readonly state: PocketState;
   private rpc: RpcClient | null = null;
   private codexHome: string | null = null;
@@ -1788,6 +1820,7 @@ export class MachineRuntime {
     this.submissions = submissions;
     this.options = options;
     this.definition = definition;
+    this.deepseek = definition.deepseek ? new DeepSeekHost() : undefined;
     this.onQuotaChange = onQuotaChange;
     this.onTaskStatus = onTaskStatus;
     this.state = {
@@ -1878,6 +1911,7 @@ export class MachineRuntime {
     }
     if (this.rpc === rpc) this.rpc = null;
     rpc?.close();
+    await this.deepseek?.stop();
     for (const response of this.subscribers) response.end();
     this.subscribers.clear();
   }
@@ -2317,7 +2351,7 @@ export class MachineRuntime {
     this.state.pending = [];
     this.pendingServerRequests.clear();
     this.broadcast("status", this.statusPayload());
-    const rpc = new RpcClient();
+    const rpc = new RpcClient(this.deepseek);
     this.rpc = rpc;
     const current = () => this.rpc === rpc && !this.shuttingDown;
     rpc.onRawPayload = (bytes) => {
@@ -2330,14 +2364,16 @@ export class MachineRuntime {
       if (this.rpc === rpc) this.handleClose(error);
     };
     try {
+      if (this.deepseek) await this.deepseek.start();
+      if (!current()) return;
       try {
         await rpc.connect(this.definition.ssh ? undefined : this.options.ws, this.definition.ssh ?? undefined);
       } catch (error) {
         // Only the local proxy's missing shared socket warrants starting its daemon.
-        if (!current() || this.definition.ssh || this.options.ws || !/failed to connect to socket/i.test(String(error)) || !/No such file/i.test(String(error))) throw error;
+        if (!current() || this.deepseek || this.definition.ssh || this.options.ws || !/failed to connect to socket/i.test(String(error)) || !/No such file/i.test(String(error))) throw error;
         try {
           await new Promise<void>((resolve, reject) => {
-            const starting = execFile(process.env.CODEX_BIN || "codex", ["app-server", "daemon", "start"], { timeout: 15_000 }, (failure) => {
+            const starting = execFile(process.env.CODEX_BIN || "codex", ["app-server", "daemon", "start"], { timeout: 15_000, env: withoutDeepseekKey() }, (failure) => {
               if (this.daemonStart === starting) this.daemonStart = null;
               failure ? reject(failure) : resolve();
             });
@@ -2356,10 +2392,15 @@ export class MachineRuntime {
       if (!current()) return;
       rpc.notify("initialized");
       this.codexHome = typeof initialized?.codexHome === "string" ? initialized.codexHome : null;
+      if (this.deepseek) {
+        if (this.codexHome !== this.deepseek.home) throw new Error("DeepSeek server returned an unexpected CODEX_HOME");
+        assertDeepseekConfig((await rpc.request("config/read", { includeLayers: false })).config, this.deepseek.home);
+      }
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.technicalConnectionError = null;
       await Promise.all([this.loadModels(), this.loadAccessConstraints()]);
+      if (this.deepseek && (this.state.models.length !== 1 || this.state.models[0].model !== DEEPSEEK_MODEL)) throw new Error("DeepSeek model catalog isolation check failed");
       if (!current()) return;
       const loadedThreads = await this.refreshLoadedThreads();
       if (!current()) return;
@@ -2481,6 +2522,7 @@ export class MachineRuntime {
   }
 
   private async refreshQuota(): Promise<void> {
+    if (this.deepseek) return;
     if (!this.rpc || !this.state.connected) return;
     const rpc = this.rpc;
     try {
@@ -2658,7 +2700,7 @@ export class MachineRuntime {
     const workspace = profiles.some(p => p.id === ":workspace" && p.allowed);
     return { models: this.state.models, current: { model: this.state.model, effort: this.state.reasoningEffort, access: this.state.access?.mode }, access: {
       ask: workspace && (!this.allowedReviewers || this.allowedReviewers.includes("user")),
-      auto: workspace && (!this.allowedReviewers || this.allowedReviewers.includes("auto_review")),
+      auto: !this.deepseek && workspace && (!this.allowedReviewers || this.allowedReviewers.includes("auto_review")),
       full: profiles.some(p => [":danger-full-access", ":full-access"].includes(p.id) && p.allowed),
     } };
   }
@@ -2882,7 +2924,7 @@ export class MachineRuntime {
     const restrictedAvailable = currentRestricted || workspaceProfile?.allowed === true;
     const restrictedReason = restrictedAvailable ? null : "The normal workspace profile is unavailable on this machine or project";
     const askAvailable = restrictedAvailable && reviewerAllowed("user");
-    const autoAvailable = restrictedAvailable && reviewerAllowed("auto_review");
+    const autoAvailable = !this.deepseek && restrictedAvailable && reviewerAllowed("auto_review");
     const profile = this.permissionProfiles.find((candidate) => candidate.id === profileId);
     this.state.access = {
       mode: isFull ? "full" : reviewer === "auto_review" ? "auto" : reviewer === "user" ? "ask" : "custom",
@@ -4180,6 +4222,10 @@ export class MachineRuntime {
 
 export class PocketGateway {
   readonly submissions = new MessageSubmissions();
+  private deepseekSubmissions = new MessageSubmissions();
+  submissionStore(machineId: unknown = this.selectedMachineId): MessageSubmissions {
+    return machineId === "local:deepseek" ? this.deepseekSubmissions : this.submissions;
+  }
   private runtimes = new Map<string, MachineRuntime>();
   private selectedMachineId = "local";
   private subscribers = new Set<ServerResponse>();
@@ -4200,6 +4246,7 @@ export class PocketGateway {
   constructor(options: Options, headless = HEADLESS) {
     const definitions: MachineDefinition[] = [
       ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null }]),
+      ...(!headless && deepseekEnabled() ? [{ id: "local:deepseek", name: `${options.localName || localMachineName()} · DeepSeek`, ssh: null, deepseek: true }] : []),
       ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac })),
     ];
     if (!definitions.length) throw new Error("Headless Pocket requires at least one configured SSH machine");
@@ -4212,7 +4259,7 @@ export class PocketGateway {
       };
       this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition, () => this.refreshQuotaSource(), status => {
         for (const response of this.subscribers) this.writeSse(response, "task-status", status);
-      }, this.submissions));
+      }, this.submissionStore(definition.id)));
     }
   }
 
@@ -4240,7 +4287,7 @@ export class PocketGateway {
   }
 
   snapshot(): JsonObject {
-    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota, submissionEpoch: this.submissions.epoch, machines: this.listMachines() };
+    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota, submissionEpoch: this.submissionStore().epoch, machines: this.listMachines() };
   }
 
   hostStatus(options: Options): JsonObject {
@@ -4290,7 +4337,7 @@ export class PocketGateway {
         id,
         name: summary.name,
         platform: summary.platform,
-        local: id === "local",
+        local: id === "local" || id === "local:deepseek",
         canWake: summary.canWake,
         connected: Boolean(runtime.state.connected),
         catalogAvailable,
@@ -4434,7 +4481,7 @@ export class PocketGateway {
 
   sendQueuedMessage(machineId: unknown, action: unknown, threadId: unknown, queueId: unknown, submissionId?: string): Promise<JsonObject> {
     return this.enqueue(() => this.requireSelected(machineId, threadId).sendQueuedMessage(action, threadId, queueId ?? null,
-      submissionId ? { id: submissionId, receipts: this.submissions } : undefined));
+      submissionId ? { id: submissionId, receipts: this.submissionStore(machineId) } : undefined));
   }
 
   editQueuedMessage(body: JsonObject): Promise<JsonObject> {
@@ -4505,7 +4552,9 @@ export class PocketGateway {
       console.warn("Quota warning: connected runtimes report incompatible limit windows; using one source without aggregation.");
     }
     let next: PocketQuota;
-    if (selected) {
+    if (this.selectedMachineId === "local:deepseek") {
+      next = { available: false, stale: false, sourceMachineId: null, sourceMachine: null, limitName: null, windows: [], updatedAt: null };
+    } else if (selected) {
       const [machineId, runtime] = selected;
       const value = runtime.quotaSnapshot()!;
       next = {
@@ -4871,15 +4920,17 @@ export async function handleRequest(
   }
   if (method === "POST" && url.pathname === "/api/message") {
     let submissionId: unknown;
+    let receipts = gateway.submissionStore();
     try {
       const body = await readJsonBody(request, Math.ceil((MAX_INPUT_IMAGES_BYTES + MAX_INPUT_FILES_BYTES) * 4 / 3) + 65_536);
       submissionId = body.submissionId;
-      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => body.question
+      receipts = gateway.submissionStore(body.machineId);
+      sendJson(response, 202, await receipts.run(body.submissionId, () => body.question
         ? gateway.answerAsyncQuestion(body.machineId, body.question)
         : gateway.sendMessage(body.machineId, body.text, body.action, body.images, body.files, body.submissionId, body.threadId)), gateway);
     } catch (error) {
       const submission = typeof submissionId === "string" && /^[a-zA-Z0-9-]{8,100}$/.test(submissionId)
-        ? await gateway.submissions.recover(submissionId) : null;
+        ? await receipts.recover(submissionId) : null;
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error), ...(submission ? { submission } : {}) }, gateway);
     }
     return;
@@ -4899,13 +4950,15 @@ export async function handleRequest(
   }
   if (method === "POST" && url.pathname === "/api/message/queue") {
     let submissionId: unknown;
+    let receipts = gateway.submissionStore();
     try {
       const body = await readJsonBody(request);
       submissionId = body.submissionId;
-      sendJson(response, 202, await gateway.submissions.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action, body.threadId, body.queueId, body.submissionId)), gateway);
+      receipts = gateway.submissionStore(body.machineId);
+      sendJson(response, 202, await receipts.run(body.submissionId, () => gateway.sendQueuedMessage(body.machineId, body.action, body.threadId, body.queueId, body.submissionId)), gateway);
     } catch (error) {
       const submission = typeof submissionId === "string" && /^[a-zA-Z0-9-]{8,100}$/.test(submissionId)
-        ? await gateway.submissions.recover(submissionId) : null;
+        ? await receipts.recover(submissionId) : null;
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error), ...(submission ? { submission } : {}) }, gateway);
     }
     return;
@@ -5017,7 +5070,7 @@ export async function handleRequest(
   if (url.pathname === "/api/state") {
     try {
       const submissionId = url.searchParams.get("submissionId");
-      const submission = submissionId ? await gateway.submissions.recover(submissionId) : null;
+      const submission = submissionId ? await gateway.submissionStore().recover(submissionId) : null;
       sendJson(response, 200, { ...gateway.snapshot(), ...(submission ? { submission } : {}) }, gateway);
     } catch (error) {
       sendJson(response, 400, { error: String(error instanceof Error ? error.message : error) }, gateway);
