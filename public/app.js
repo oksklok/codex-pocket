@@ -105,7 +105,7 @@ const elements = {
   settingsTheme: document.querySelector("#settings-theme"),
   settingsLocalName: document.querySelector("#settings-local-name"),
   settingsDeepseekSection: document.querySelector("#settings-deepseek"),
-  settingsDeepseek: document.querySelector("#settings-deepseek-enabled"),
+  settingsDeepseekError: document.querySelector("#settings-deepseek-error"),
   settingsMachines: document.querySelector("#settings-machines"),
   machineAdd: document.querySelector("#machine-add"),
   settingsRestart: document.querySelector("#settings-restart"),
@@ -766,32 +766,40 @@ function renderDestinationSwitcher(force = false) {
 
   for (const visual of visualGroups) {
     const multiProvider = visual.providers.length > 1;
-    const machineMatches = `${visual.name} ${visual.providers.join(" ")} ${visual.members.map(member => member.platform || "").join(" ")}`
-      .toLowerCase().includes(query);
-    // Providers keep their own task order and their own pinned pending-delete slot.
-    const sections = visual.members.map(member => {
-      const pendingDelete = taskActionTarget?.action === "delete" && taskActionTarget.machineId === member.id
-        && taskActionTarget.archived === archived ? taskActionTarget : null;
-      const orderedTasks = [...(Array.isArray(member.tasks) ? member.tasks : [])];
-      // A refresh may omit the task before its delete response arrives.
-      if (pendingDelete?.task && !orderedTasks.some(task => task.id === pendingDelete.threadId)) orderedTasks.push(pendingDelete.task);
-      const memberTasks = orderedTasks.filter((task) => {
-        if (!query || machineMatches) return true;
-        return `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
-      });
-      if (pendingDelete) {
-        const index = memberTasks.findIndex(task => task.id === pendingDelete.threadId);
-        // Capture and pin the visible slot for this query, after hidden rows are removed.
-        if (pendingDelete.query !== query) {
-          pendingDelete.query = query;
-          pendingDelete.position = index;
-        }
-        if (index >= 0 && pendingDelete.position >= 0) memberTasks.splice(pendingDelete.position, 0, ...memberTasks.splice(index, 1));
+    // Physical-machine matching and provider matching stay separate: the machine name shows all
+    // of that machine's tasks, a provider name shows only that provider's tasks.
+    const machineMatch = Boolean(query) && (`${visual.name} ${visual.members.map(member => member.platform || "").join(" ")}`).toLowerCase().includes(query);
+    const providerMatch = Boolean(query) && visual.providers.some(provider => provider.toLowerCase().includes(query));
+    const taskMatches = (task) => `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
+    const rows = [];
+    for (const member of visual.members) {
+      const providerText = (providerName(member.provider) || "").toLowerCase();
+      for (const task of (Array.isArray(member.tasks) ? member.tasks : [])) {
+        // No query, or a physical-machine match, keeps every row; otherwise the provider name
+        // or the task's own fields must match.
+        if (query && !machineMatch && !providerText.includes(query) && !taskMatches(task)) continue;
+        rows.push({ member, task });
       }
-      return { member, tasks: memberTasks };
-    });
-    const tasks = sections.flatMap(section => section.tasks);
-    if ((archived || query && !machineMatches) && !tasks.length) continue;
+    }
+    const pendingDelete = taskActionTarget?.action === "delete" && taskActionTarget.archived === archived ? taskActionTarget : null;
+    const pendingMember = pendingDelete ? visual.members.find(member => member.id === pendingDelete.machineId) : null;
+    // A refresh may omit the task before its delete response arrives.
+    if (pendingMember && pendingDelete.task && !rows.some(entry => entry.member === pendingMember && entry.task.id === pendingDelete.threadId)) {
+      rows.push({ member: pendingMember, task: pendingDelete.task });
+    }
+    // One global order per physical machine: the existing comparator, then the runtime id.
+    rows.sort((left, right) => compareTaskOrder(left.task, right.task) || String(left.member.id).localeCompare(String(right.member.id)));
+    if (pendingDelete) {
+      const index = rows.findIndex(entry => entry.member.id === pendingDelete.machineId && entry.task.id === pendingDelete.threadId);
+      // Capture and pin the visible slot for this query, after hidden rows are removed.
+      if (pendingDelete.query !== query) {
+        pendingDelete.query = query;
+        pendingDelete.position = index;
+      }
+      if (index >= 0 && pendingDelete.position >= 0) rows.splice(pendingDelete.position, 0, ...rows.splice(index, 1));
+    }
+    const tasks = rows.map(entry => entry.task);
+    if ((archived || (query && !machineMatch && !providerMatch)) && !tasks.length) continue;
 
     const connected = visual.members.some(member => member.connected);
     const catalogAvailable = visual.members.some(member => member.connected && member.catalogAvailable !== false);
@@ -891,8 +899,8 @@ function renderDestinationSwitcher(force = false) {
       }));
     }
 
-    // Rows iterate each provider's own task list in order, carrying their runtime identity.
-    for (const { member, task } of sections.flatMap(section => section.tasks.map(task => ({ member: section.member, task })))) {
+    // Rows carry their real runtime identity even though the group is ordered globally.
+    for (const { member, task } of rows) {
       const memberCatalogAvailable = member.connected && member.catalogAvailable !== false;
       const selected = member.id === state?.machineId && task.id === state?.thread?.id;
       const row = document.createElement("button");
@@ -939,7 +947,9 @@ function renderDestinationSwitcher(force = false) {
       actions.className = "task-actions";
       const summary = document.createElement("summary");
       summary.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>';
-      summary.setAttribute("aria-label", `Actions for ${task.name}`);
+      // Same-name tasks across providers stay distinguishable to assistive tech.
+      const taskProvider = multiProvider ? providerName(member.provider) : null;
+      summary.setAttribute("aria-label", `Actions for ${taskProvider ? `${task.name} [${taskProvider}]` : task.name}`);
       actions.append(summary);
       const menu = document.createElement("div");
       menu.className = "task-action-menu";
@@ -1743,8 +1753,6 @@ function renderState() {
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
   // The provider is separate metadata next to the machine name, never part of the name.
   elements.machine.replaceChildren(state.machine || "—");
-  const providerTag = providerBadge(state.provider);
-  if (providerTag) elements.machine.append(" ", providerTag);
   const platform = platformLabel(state.platform);
   if (platform) elements.machine.append(` · ${platform}`);
   elements.provider.textContent = providerName(state.provider) || "—";
@@ -3345,7 +3353,6 @@ function serverSettingsValue() {
     port: Number(elements.settingsPort.value),
     pin: elements.settingsPin.value,
     localName: elements.settingsLocalName.value.trim(),
-    deepseekEnabled: elements.settingsDeepseek.checked,
     machines: machineSettingsValue(),
   };
 }
@@ -3498,10 +3505,9 @@ function renderSettings(value) {
   elements.quitPocket.closest(".settings-quit").hidden = Boolean(value.headless);
   document.querySelector("#container-lifecycle").hidden = !value.headless;
   document.querySelector("#settings-local-machine").hidden = Boolean(value.headless);
-  // The macOS-only runtime checkbox is hidden wherever it cannot run.
-  elements.settingsDeepseekSection.hidden = !value.deepseekSupported;
-  elements.settingsDeepseek.checked = Boolean(value.deepseekEnabled);
-  elements.settingsDeepseek.disabled = Boolean(value.headless);
+  // DeepSeek needs no toggle; only a broken host credential is worth surfacing here.
+  elements.settingsDeepseekSection.hidden = !value.deepseekError;
+  elements.settingsDeepseekError.textContent = value.deepseekError || "";
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";
   elements.settingsPort.value = String(value.port || 4173);
@@ -3896,7 +3902,8 @@ async function startApp() {
   elements.appShell.hidden = false;
   if (matchMedia("(min-width: 1100px)").matches) {
     if (sidebarPreference("details", true)) openInspector(); else closeInspector();
-    if (sidebarPreference("tasks", false)) openDestinationSwitcher(false);
+    // First desktop launch opens both sidebars; saved preferences always win.
+    if (sidebarPreference("tasks", true)) openDestinationSwitcher(false);
   } else {
     closeInspector();
   }

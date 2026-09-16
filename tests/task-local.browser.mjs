@@ -451,7 +451,7 @@ try {
  if(outcome==='unrelated'){
  await page.waitForFunction(()=>document.querySelector('#send-queue').disabled);
  assert.equal(runtime.state.queuedMessage.deliveryUnknown,true);
- }else if(outcome==='replacement')assert.equal(await page.locator('#queue-text').textContent(),'Keep replacement');
+ }else if(outcome==='replacement')await page.waitForFunction(()=>document.querySelector('#queue-text').textContent==='Keep replacement');
  else {await page.waitForFunction(()=>document.querySelector('#queue-banner').hidden);assert.equal(runtime.taskQueues.size,0);assert.equal(runtime.state.queuedMessage,null);}
  assert.equal((await queueGateway.submissions.recover(enqueueId)).status,'accepted');assert.equal(sends,1);assert.equal(queuePosts,0);
  }
@@ -588,7 +588,9 @@ try {
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  for(const key of ['command','tool','search','review'])assert.equal(await page.locator(`#display-${key}`).isChecked(),false);
  assert.equal(await page.locator('#display-files').isChecked(),true);
- await page.evaluate(()=>localStorage.removeItem('codex-pocket-info-display'));await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ // Sidebar restore covers saved values, not the first-launch default; pin them explicitly.
+ await page.evaluate(()=>{localStorage.removeItem('codex-pocket-info-display');localStorage.setItem('codex-pocket-tasks-open','false');localStorage.setItem('codex-pocket-details-open','true');});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  const reloadReady=async()=>{await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));await page.waitForTimeout(210);};
  if(width>=1100){
  assert.equal(await page.locator('#destination-button').getAttribute('aria-expanded'),'false');

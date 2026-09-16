@@ -12,7 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
-import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekRuntimeEnabled, resolveDeepseekCredentials, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
+import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekCredentialStatus, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
@@ -58,7 +58,6 @@ type LocalConfig = {
   pin: string | null;
   localName: string;
   machines: MachineConfig[];
-  deepseekEnabled: boolean;
 };
 type LocalSettings = {
   path: string;
@@ -283,7 +282,6 @@ const SAFE_CONFIG: LocalConfig = {
   pin: null,
   localName: "",
   machines: [],
-  deepseekEnabled: false,
 };
 
 function usage(): never {
@@ -299,8 +297,7 @@ Options:
 Environment:
   CODEX_BIN      Codex executable to spawn (default: codex)
   CODEX_POCKET_PIN Four-digit PIN required for non-loopback hosts
-  POCKET_DEEPSEEK  Set to 1 to force the optional macOS DeepSeek runtime on
-  DEEPSEEK_API_KEY Optional host credential override; otherwise the key file is read
+  DEEPSEEK_API_KEY Optional DeepSeek credential override (macOS); otherwise the host key file is read
 `);
   process.exit(0);
 }
@@ -406,9 +403,6 @@ export function validateLocalConfig(value: unknown, overridePin: string | null |
   if (typeof localName !== "string" || localName.trim().length > 80) {
     throw new Error("localName must be 80 characters or fewer");
   }
-  if (candidate.deepseekEnabled !== undefined && typeof candidate.deepseekEnabled !== "boolean") {
-    throw new Error("deepseekEnabled must be true or false");
-  }
   return {
     lanEnabled: candidate.lanEnabled,
     host: candidate.host,
@@ -416,8 +410,6 @@ export function validateLocalConfig(value: unknown, overridePin: string | null |
     pin: candidate.pin,
     localName: localName.trim(),
     machines: validateMachines(candidate.machines),
-    // Older settings predate this flag and must keep loading.
-    deepseekEnabled: candidate.deepseekEnabled === undefined ? false : candidate.deepseekEnabled as boolean,
   };
 }
 
@@ -450,8 +442,6 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, overr
     pin,
     localName: candidate.localName ?? settings.config.localName,
     machines: candidate.machines ?? settings.config.machines,
-    // DeepSeek is macOS-only; containers and headless hosts stay unchanged.
-    deepseekEnabled: headless ? false : candidate.deepseekEnabled ?? settings.config.deepseekEnabled,
   }, overridePin);
   if (headless && !config.machines.length) throw new Error("Headless Pocket requires at least one SSH machine");
   const temporaryPath = `${settings.path}.tmp`;
@@ -462,7 +452,7 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, overr
   return config;
 }
 
-export function publicSettings(settings: LocalSettings, fallbackPin: string | null): JsonObject {
+export function publicSettings(settings: LocalSettings, fallbackPin: string | null, deepseekError: string | null = null): JsonObject {
   return {
     hostName: localMachineName(),
     headless: HEADLESS,
@@ -471,30 +461,27 @@ export function publicSettings(settings: LocalSettings, fallbackPin: string | nu
     port: settings.config.port,
     pinConfigured: /^\d{4}$/.test(settings.config.pin ?? fallbackPin ?? ""),
     localName: settings.config.localName,
-    deepseekEnabled: settings.config.deepseekEnabled === true,
-    // The macOS-only runtime is unavailable to containers and headless hosts.
-    deepseekSupported: process.platform === "darwin" && !HEADLESS,
+    // DeepSeek is a provider, not a toggle: only a broken credential needs surfacing here.
+    deepseekError,
     phoneUrls: phoneUrls(settings.config),
     machines: settings.config.machines.map((machine) => ({ ...machine })),
   };
 }
 
-// The saved flag plus the documented environment override decide the runtime at launch.
-function deepseekLaunchEnabled(settings: LocalSettings): boolean {
-  return !HEADLESS && deepseekRuntimeEnabled(settings.config);
-}
-
-// Reads the host credential only when the runtime is actually enabled. The key never enters
-// process.env, saved settings, or any runtime other than the isolated DeepSeek one.
+// DeepSeek is exposed on macOS whenever a valid credential exists; a broken credential is
+// surfaced in Settings instead of failing the whole host. The key never enters process.env,
+// saved settings, or any runtime other than the isolated DeepSeek one.
 export function deepseekStartupOptions(
-  settings: LocalSettings,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   headless: boolean = HEADLESS,
   keyPath: string = DEEPSEEK_KEY_PATH,
 ): Options["deepseek"] {
-  if (headless || !deepseekRuntimeEnabled(settings.config, env, platform)) return { enabled: false };
-  return { enabled: true, ...resolveDeepseekCredentials(env, keyPath) };
+  if (headless || platform !== "darwin") return { enabled: false };
+  const credentials = deepseekCredentialStatus(env, keyPath);
+  if (credentials.error) return { enabled: false, error: credentials.error };
+  if (!credentials.key) return { enabled: false };
+  return { enabled: true, key: credentials.key };
 }
 
 export function settingsNeedRestart(settings: LocalSettings, options: Options, auth: AuthConfig, launchArgs: string[] = [], overridePin: string | undefined = process.env.CODEX_POCKET_PIN): boolean {
@@ -510,8 +497,7 @@ export function settingsNeedRestart(settings: LocalSettings, options: Options, a
     || desired.port !== options.port
     || desired.localName !== options.localName
     || !secretMatches(desiredPin ?? "", auth.pin ?? "")
-    || JSON.stringify(desired.machines) !== JSON.stringify(options.machines)
-    || deepseekLaunchEnabled(settings) !== (options.deepseek?.enabled === true);
+    || JSON.stringify(desired.machines) !== JSON.stringify(options.machines);
 }
 
 function browserUrl(host: string, port: number): string {
@@ -4955,7 +4941,7 @@ export async function handleRequest(
   }
   if (url.pathname === "/api/settings" && method === "GET") {
     sendJson(response, 200, {
-      settings: publicSettings(settings, auth.pin),
+      settings: publicSettings(settings, auth.pin, options.deepseek?.error ?? null),
       effective: { host: options.host, port: options.port, pinRequired: auth.required },
       restartRequired: settingsNeedRestart(settings, options, auth, launchArgs),
     }, gateway);
@@ -4967,7 +4953,7 @@ export async function handleRequest(
       sendJson(response, 200, {
         saved: true,
         restartRequired: settingsNeedRestart(settings, options, auth, launchArgs),
-        settings: publicSettings(settings, auth.pin),
+        settings: publicSettings(settings, auth.pin, options.deepseek?.error ?? null),
       }, gateway);
     } catch (error) {
       sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, gateway);
@@ -5235,7 +5221,7 @@ async function main(): Promise<void> {
     port: settings.config.port,
     localName: settings.config.localName,
     machines: settings.config.machines,
-    deepseek: deepseekStartupOptions(settings),
+    deepseek: deepseekStartupOptions(),
   });
   const authRequired = !isLoopbackHost(options.host);
   const pin = Object.prototype.hasOwnProperty.call(process.env, "CODEX_POCKET_PIN")

@@ -1,14 +1,12 @@
 # Optional local DeepSeek runtime
 
-DeepSeek runs **through Codex app-server**, alongside the existing OpenAI runtimes. It is disabled by default and macOS-only. The task list shows one `<local machine name> [Host]` group for the Mac; when it has more than one runtime, each task row carries a small `[OpenAI]` or `[DeepSeek]` badge, and **New Task** offers a Provider choice. The machine name is never rewritten; the provider is separate metadata, and the runtimes keep their own ids, tasks, drafts, queues, receipts and sessions. There is no browser-to-DeepSeek connection, automatic failover, or conversation migration.
+DeepSeek runs **through Codex app-server**, alongside the existing OpenAI runtimes. It is macOS-only and appears only when a valid credential exists. The task list shows one `<local machine name> [Host]` group for the Mac; when it has more than one runtime, each task row carries a small `[OpenAI]` or `[DeepSeek]` badge, and **New Task** offers a Provider choice. The machine name is never rewritten; the provider is separate metadata, and the runtimes keep their own ids, tasks, drafts, queues, receipts and sessions. There is no browser-to-DeepSeek connection, automatic failover, or conversation migration.
 
-## Enable from Settings
+## When DeepSeek appears
 
-Normal menu-bar Pocket can run the fallback. Open **Settings → Runtimes**, tick **Enable DeepSeek**, and save. The change applies on the **next manual restart**: restart Pocket yourself (the menu-bar Restart, or Quit and launch again). Pocket never restarts itself, and a running instance keeps its current runtimes until then. Disabling removes the entry on the next launch while keeping its sessions, isolation home, and receipts.
+There is no provider toggle. On macOS, Pocket exposes DeepSeek at launch whenever a credential resolves: `DEEPSEEK_API_KEY` is set and valid, or the host key file below exists and is valid.
 
-The checkbox is hidden on Linux and in Docker/headless hosts, and those hosts never create the runtime. It only records a boolean in Pocket's existing private settings file; older settings files without the flag keep working with DeepSeek off.
-
-The runtime needs the host key file below. Without it, the DeepSeek entry still exists and reports the setup error; the other runtimes are unaffected.
+With no credential at all, DeepSeek is simply absent from the available providers and the OpenAI runtimes are unchanged. If a credential exists but is unsafe, unreadable, or invalid, DeepSeek is still left out and **Settings → Runtimes** shows that configuration error instead of accepting it silently. Linux, Windows, and Docker/headless hosts never create the runtime. Removing the credential removes the provider on the next launch while keeping its sessions, isolation home, and receipts.
 
 ## Host key file
 
@@ -20,11 +18,9 @@ When `DEEPSEEK_API_KEY` is not explicitly set, Pocket reads the key from:
 
 Create the directory with permissions `700` and the file with `600`, and put one key in it, optionally with a single trailing newline (`chmod 700 ~/.codex-pocket/secrets; chmod 600 ~/.codex-pocket/secrets/deepseek-api-key`).
 
-The value is passed directly to the DeepSeek supervisor/server/proxy. It is never written to saved settings, browser responses or storage, logs, diagnostics, command arguments, or the environment of ordinary OpenAI/SSH children. A missing, unreadable, oversized, symlinked, non-regular, or too-permissive file is reported clearly instead of being used. If `DEEPSEEK_API_KEY` **is** set, it wins; an explicitly supplied but invalid value (for example an empty string or one with embedded newlines) fails clearly rather than falling back to the file. There is no key-entry UI, Keychain integration, configurable secret path, or automatic migration.
+The value is passed directly to the DeepSeek supervisor/server/proxy. It is never written to saved settings, browser responses or storage, logs, diagnostics, command arguments, or the environment of ordinary OpenAI/SSH children. An unreadable, oversized, symlinked, non-regular, or too-permissive file is reported in Settings instead of being used. If `DEEPSEEK_API_KEY` **is** set, it wins; an explicitly supplied but invalid value (for example an empty string or one with embedded newlines) is reported rather than falling back to the file. There is no key-entry UI, Keychain integration, configurable secret path, or automatic migration.
 
-## Foreground launch override
-
-The environment flag remains a documented override for a foreground instance; normal menu-bar use does not need it.
+## Foreground launch
 
 Quit the **Pocket menu-bar host** before launching this foreground instance. Leave ChatGPT/Codex and its daemon running. A menu-bar app does not generally inherit a terminal's environment.
 
@@ -33,7 +29,6 @@ From this checkout, with Node 22.6+ available:
 ```sh
 (
   set +x
-  export POCKET_DEEPSEEK=1
   export DEEPSEEK_API_KEY
   IFS= read -r DEEPSEEK_API_KEY < "$HOME/Documents/deepseek-api-key.txt"
   export CODEX_BIN="$HOME/.local/bin/codex"
@@ -41,7 +36,7 @@ From this checkout, with Node 22.6+ available:
 )
 ```
 
-The file must contain only the API key. `POCKET_DEEPSEEK=1` forces the runtime on for that launch even when the saved setting is off. Pocket does not persist the key or expose it through settings. The subshell confines these environment changes to this launch. Do not enable shell tracing. If `node` is not on PATH on this Mac, replace `node` above with:
+The file must contain only the API key; supplying it in the environment is enough to expose DeepSeek for that launch. Pocket does not persist the key or expose it through settings. The subshell confines these environment changes to this launch. Do not enable shell tracing. If `node` is not on PATH on this Mac, replace `node` above with:
 
 ```sh
 "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
@@ -57,7 +52,7 @@ Open the printed local URL and choose the separate DeepSeek entry when creating 
 - Both server and proxy receive the separate home and pinned provider configuration. Effective configuration is checked on connection and before task start/resume, settings changes, and new turns. Trusted project model settings cannot redirect this runtime to OpenAI. Incompatible provider/auth/storage settings fail closed. Symlinked homes/configuration are rejected.
 - The API key comes from `DEEPSEEK_API_KEY` or the host key file and is passed only to the DeepSeek supervisor/server/proxy; it is never added to `process.env`. Ordinary local/SSH children have it removed. Agent shells exclude it and OpenAI credentials, and configuration that would reintroduce those names through `shell_environment_policy.set` is rejected; login shells are disabled for this runtime. Standalone `command/exec` calls explicitly unset it as well. Project MCP servers, notification commands, and hooks are rejected because this version does not provision credential isolation for those extra processes. The key is still a host secret, not a security boundary against software running as the same OS user or deliberate file access with Full access.
 - Runtime identity separates task catalogs, drafts, choices, queues, and receipts. DeepSeek has a separate receipt store and epoch. No existing conversation is copied.
-- To disable: clear **Enable DeepSeek** in Settings and restart Pocket, or Ctrl-C a foreground instance that was started with the environment override. Keep `~/.codex-pocket/deepseek` to resume its sessions on a later launch. This does not alter `~/.codex`, shell profiles, launchctl, the official app, or the Codex installation.
+- To remove the provider: delete `~/.codex-pocket/secrets/deepseek-api-key` and unset `DEEPSEEK_API_KEY`, then restart Pocket. Keep `~/.codex-pocket/deepseek` to resume its sessions on a later launch. This does not alter `~/.codex`, shell profiles, launchctl, the official app, or the Codex installation.
 
 ## Supported controls
 

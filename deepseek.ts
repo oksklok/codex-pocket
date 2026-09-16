@@ -18,15 +18,6 @@ export const DEEPSEEK_PROVIDER = {
 // Names and patterns every DeepSeek child strips from its environment.
 export const DEEPSEEK_SHELL_ENV_EXCLUDE = ["DEEPSEEK_API_KEY", "OPENAI_*", "CODEX_*TOKEN*"];
 
-export function deepseekEnabled(env = process.env, platform = process.platform): boolean {
-  return platform === "darwin" && env.POCKET_DEEPSEEK === "1";
-}
-
-// The environment flag stays a documented override; the saved setting enables normal menu-bar use.
-export function deepseekRuntimeEnabled(settings: { deepseekEnabled?: boolean } | undefined, env = process.env, platform = process.platform): boolean {
-  return platform === "darwin" && (deepseekEnabled(env, platform) || settings?.deepseekEnabled === true);
-}
-
 export function normalizeDeepseekKey(value: unknown, source: string): string {
   if (typeof value !== "string") throw new Error(`DeepSeek API key from ${source} must be text`);
   if (/[\r\n\0]/.test(value)) throw new Error(`DeepSeek API key from ${source} must be a single line without control characters`);
@@ -56,18 +47,30 @@ export function readDeepseekKeyFile(path = DEEPSEEK_KEY_PATH): string {
   return normalizeDeepseekKey(content.replace(/\r?\n$/, ""), `file ${path}`);
 }
 
-// An explicitly supplied environment key always wins. An invalid value must fail instead of
-// silently switching sources, so this never falls back to the file after a rejected value.
-export function resolveDeepseekKey(env = process.env, path = DEEPSEEK_KEY_PATH): string {
+// Credential source classification: a resolved key, a configuration error, or nothing at all.
+// An explicitly supplied environment key always wins; an invalid value is reported instead of
+// silently switching sources, while a simply absent credential is not an error.
+export function deepseekCredentialStatus(env = process.env, path = DEEPSEEK_KEY_PATH): { key?: string; error?: string } {
   if (Object.prototype.hasOwnProperty.call(env, "DEEPSEEK_API_KEY")) {
-    return normalizeDeepseekKey(env.DEEPSEEK_API_KEY, "the DEEPSEEK_API_KEY environment variable");
+    try { return { key: normalizeDeepseekKey(env.DEEPSEEK_API_KEY, "the DEEPSEEK_API_KEY environment variable") }; }
+    catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
   }
-  return readDeepseekKeyFile(path);
+  try { lstatSync(path); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return {};
+    return { error: `DeepSeek API key file could not be inspected (${code ?? "unknown error"}): ${path}` };
+  }
+  try { return { key: readDeepseekKeyFile(path) }; }
+  catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
 }
 
-export function resolveDeepseekCredentials(env = process.env, path = DEEPSEEK_KEY_PATH): { key?: string; error?: string } {
-  try { return { key: resolveDeepseekKey(env, path) }; }
-  catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
+// Strict resolution for callers that already know DeepSeek should be available.
+export function resolveDeepseekKey(env = process.env, path = DEEPSEEK_KEY_PATH): string {
+  const status = deepseekCredentialStatus(env, path);
+  if (status.error) throw new Error(status.error);
+  if (!status.key) throw new Error(`DeepSeek has no API key. Set DEEPSEEK_API_KEY or add the host key file. ${DEEPSEEK_KEY_HINT}`);
+  return status.key;
 }
 
 // Also used for ordinary children: opting in must not give the OpenAI/SSH runtime this key.
