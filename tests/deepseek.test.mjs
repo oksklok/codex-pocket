@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DeepSeekHost, deepseekEnabled, deepseekEnvironment, withoutDeepseekKey, deepseekConfig, deepseekArgs, assertDeepseekConfig, constrainDeepseekRequest } from '../deepseek.ts';
-import { MachineRuntime, PocketGateway, MessageSubmissions, RpcClient, handleRequest } from '../gateway.ts';
+import { MachineRuntime, PocketGateway, MessageSubmissions, RpcClient, handleRequest, isMessageNotSent } from '../gateway.ts';
 import { rememberComposerDraft } from '../public/pocket-logic.js';
 
 test('DeepSeek opt-in is disabled by default and local macOS only', () => {
@@ -364,4 +364,137 @@ test('OpenAI queued Steer receipts keep recovering through the shared store', as
     const recovered = await pollSubmission(submissionId);
     assert.equal(recovered.submission.status, 'accepted');
   } finally { await harness.close(); }
+});
+
+// --- Preflight vs. post-dispatch delivery outcomes (real RpcClient, mocked wire) ---
+
+function isolatedRpc(send) {
+  const rpc = new RpcClient(new DeepSeekHost('/isolated', { DEEPSEEK_API_KEY: randomBytes(32).toString('hex') }));
+  rpc.wire = { close() {}, send };
+  return rpc;
+}
+
+function reply(rpc, id, result) { queueMicrotask(() => rpc.receive({ id, result })); }
+
+async function settle() { for (let i = 0; i < 10; i += 1) await Promise.resolve(); }
+
+test('DeepSeek preflight timeout is a definitive not-sent failure with zero turn/start calls', async () => {
+  const sent = [];
+  const rpc = isolatedRpc(message => { sent.push(message.method); });
+  let failure;
+  await assert.rejects(rpc.request('turn/start', { threadId: 'thread-1', input: [] }, 50), error => { failure = error; return true; });
+  assert.equal(isMessageNotSent(failure), true);
+  assert.match(failure.message, /thread\/read timed out/);
+  assert.deepEqual(sent, ['thread/read']);
+  // The marker, not the wording, decides the receipt outcome.
+  const receipts = new MessageSubmissions();
+  const id = `${receipts.epoch}-presend-timeout`;
+  await assert.rejects(receipts.run(id, async () => { throw failure; }));
+  assert.equal((await receipts.recover(id)).status, 'rejected');
+});
+
+test('DeepSeek preflight isolation failure is a definitive not-sent failure', async () => {
+  const sent = [];
+  const rpc = isolatedRpc(message => {
+    sent.push(message.method);
+    if (message.method === 'config/read') reply(rpc, message.id, { config: { model_provider: 'openai' } });
+  });
+  await assert.rejects(rpc.request('turn/start', { cwd: '/project', input: [] }, 2_000),
+    error => isMessageNotSent(error) && /isolation check/.test(error.message));
+  assert.deepEqual(sent, ['config/read']);
+});
+
+test('DeepSeek preflight and the dispatched RPC share one timeout budget', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const sent = [];
+  const rpc = isolatedRpc(message => {
+    sent.push(message.method);
+    // Answer the preflight late: 60% of the caller's 1s budget.
+    if (message.method === 'config/read') setTimeout(() => rpc.receive({ id: message.id, result: { config: effectiveConfig('/isolated') } }), 600);
+  });
+  let outcome = 'pending';
+  const pending = rpc.request('turn/start', { cwd: '/project', input: [] }, 1_000)
+    .then(() => { outcome = 'resolved'; }, error => { outcome = error; });
+  await settle();
+  assert.deepEqual(sent, ['config/read']);
+  t.mock.timers.tick(600);
+  await settle();
+  assert.deepEqual(sent, ['config/read', 'turn/start']);
+  assert.equal(outcome, 'pending');
+  t.mock.timers.tick(399);
+  assert.equal(outcome, 'pending');
+  t.mock.timers.tick(1);
+  await settle();
+  assert.ok(outcome instanceof Error && /turn\/start timed out/.test(outcome.message) && !isMessageNotSent(outcome));
+  await pending;
+});
+
+test('DeepSeek post-dispatch timeout stays uncertain and cannot duplicate the send', async () => {
+  const sent = [];
+  const rpc = isolatedRpc(message => {
+    sent.push(message.method);
+    if (message.method === 'config/read') reply(rpc, message.id, { config: effectiveConfig('/isolated') });
+  });
+  let failure;
+  await assert.rejects(rpc.request('turn/start', { cwd: '/project', input: [] }, 50), error => { failure = error; return true; });
+  assert.equal(isMessageNotSent(failure), false);
+  assert.match(failure.message, /turn\/start timed out/);
+  assert.equal(sent.filter(method => method === 'turn/start').length, 1);
+  const receipts = new MessageSubmissions();
+  const id = `${receipts.epoch}-postsend-timeout`;
+  await assert.rejects(receipts.run(id, async () => { throw failure; }));
+  assert.equal((await receipts.recover(id)).status, 'unknown');
+});
+
+test('DeepSeek queued Start preflight timeout keeps a retryable queue and sends nothing', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const harness = await queuedReceiptHarness();
+  const { gateway, deepseek } = harness;
+  try {
+    gateway.selectedMachineId = 'local:deepseek';
+    const sent = [];
+    const rpc = isolatedRpc(message => {
+      sent.push(message.method);
+      if (message.method === 'thread/turns/list') reply(rpc, message.id, { data: [], nextCursor: null });
+    });
+    deepseek.rpc = rpc;
+    activeThread(deepseek);
+    await deepseek.sendMessage('Queued start text', 'queue');
+    const queued = deepseek.state.queuedMessage;
+    deepseek.autoAttach = false;
+    deepseek.handleNotification({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });
+    // Same call the /api/message/queue route makes: the receipt store wraps the gateway send.
+    const receipts = gateway.submissionStore('local:deepseek');
+    const submissionId = `${receipts.epoch}-deepseek-presend`;
+    const pending = receipts.run(submissionId, () => gateway.sendQueuedMessage('local:deepseek', 'start', 'thread-1', queued.id, submissionId))
+      .then(() => 'accepted', error => error);
+    await settle();
+    assert.deepEqual(sent, ['thread/read']);
+    t.mock.timers.tick(20_000);
+    await settle();
+    const outcome = await pending;
+    assert.equal(isMessageNotSent(outcome), true);
+    assert.match(outcome.message, /thread\/read timed out/);
+    assert.equal(sent.includes('turn/start'), false);
+    // Definitive failure keeps the queue for a manual retry instead of blocking it as uncertain.
+    assert.equal(deepseek.state.queuedMessage?.threadId, 'thread-1');
+    assert.equal(deepseek.state.queuedMessage?.deliveryUnknown, false);
+    assert.equal((await receipts.recover(submissionId)).status, 'rejected');
+  } finally { await harness.close(); }
+});
+
+test('DeepSeek isolation rejects shell_environment_policy.set entries that reintroduce excluded credentials', () => {
+  const home = '/isolated';
+  const base = effectiveConfig(home);
+  for (const name of ['DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'OPENAI_ORG_ID', 'CODEX_GITHUB_TOKEN', 'CODEX_TOKEN', 'openai_api_key']) {
+    const config = { ...base, shell_environment_policy: { ...base.shell_environment_policy, set: { [name]: 'synthetic-value' } } };
+    assert.throws(() => assertDeepseekConfig(config, home), /isolation check failed/, name);
+  }
+  assert.throws(() => assertDeepseekConfig({
+    ...base, shell_environment_policy: { ...base.shell_environment_policy, set: ['DEEPSEEK_API_KEY'] },
+  }, home), /isolation check failed/);
+  for (const name of ['PATH', 'HOME', 'CODEX_HOME', 'MY_API_KEY', 'MY_TOKEN']) {
+    const config = { ...base, shell_environment_policy: { ...base.shell_environment_policy, set: { [name]: 'keep' } } };
+    assert.doesNotThrow(() => assertDeepseekConfig(config, home), name);
+  }
 });

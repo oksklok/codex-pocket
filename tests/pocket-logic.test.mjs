@@ -29,6 +29,18 @@ import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient, parseArgs
 const machine = { id: "local" };
 const task = { id: "thread-1", status: "failed" };
 
+// Runtime-catalog tests must pin the opt-in flag instead of inheriting the host shell's POCKET_DEEPSEEK.
+async function withDeepseekFlag(value, run) {
+  const previous = process.env.POCKET_DEEPSEEK;
+  if (value === undefined) delete process.env.POCKET_DEEPSEEK;
+  else process.env.POCKET_DEEPSEEK = value;
+  try { return await run(); }
+  finally {
+    if (previous === undefined) delete process.env.POCKET_DEEPSEEK;
+    else process.env.POCKET_DEEPSEEK = previous;
+  }
+}
+
 test("selected task status trusts fresh live phase over stale catalog status", () => {
   assert.equal(destinationTaskStatus(machine, task, {
     machineId: "local",
@@ -558,13 +570,21 @@ test("selection hold survives transient collapse and flushes once after 500ms cl
   assert.equal(flushes, 1);
 });
 
-test("headless gateway exposes only SSH runtimes and selects the first", () => {
+test("headless gateway exposes only SSH runtimes and selects the first", async () => {
   const options = { host: "127.0.0.1", port: 4173, localName: "Local", machines: [{ name: "Remote", ssh: "remote" }] };
-  const gateway = new PocketGateway(options, true);
-  assert.deepEqual(gateway.listMachines().map(machine => machine.id), ["ssh:remote"]);
-  assert.equal(gateway.state.machineId, "ssh:remote");
-  assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), ["local", "ssh:remote"]);
-  assert.throws(() => new PocketGateway({ ...options, machines: [] }, true), /at least one configured SSH/);
+  await withDeepseekFlag(undefined, async () => {
+    const gateway = new PocketGateway(options, true);
+    assert.deepEqual(gateway.listMachines().map(machine => machine.id), ["ssh:remote"]);
+    assert.equal(gateway.state.machineId, "ssh:remote");
+    assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), ["local", "ssh:remote"]);
+    assert.throws(() => new PocketGateway({ ...options, machines: [] }, true), /at least one configured SSH/);
+  });
+  // Dedicated enabled coverage: the opt-in entry appears only on macOS and never in headless mode.
+  await withDeepseekFlag("1", async () => {
+    const expected = process.platform === "darwin" ? ["local", "local:deepseek", "ssh:remote"] : ["local", "ssh:remote"];
+    assert.deepEqual(new PocketGateway(options, false).listMachines().map(machine => machine.id), expected);
+    assert.deepEqual(new PocketGateway(options, true).listMachines().map(machine => machine.id), ["ssh:remote"]);
+  });
 });
 
 test("SSH auto-attach writer conflict preserves connection and saved-task catalog", async (t) => {
@@ -973,6 +993,7 @@ test("cross-machine selection releases only the previous task after target accep
 });
 
 test("startup and background reconnect attach only the selected runtime while catalogs stay live", async (t) => {
+  await withDeepseekFlag(undefined, async () => {
   const resumes = [];
   t.mock.method(RpcClient.prototype, "connect", async function (_ws, alias) { this.testMachine = alias || "local"; });
   t.mock.method(RpcClient.prototype, "notify", () => {});
@@ -1007,6 +1028,7 @@ test("startup and background reconnect attach only the selected runtime while ca
     a.handleNotification({ method: "account/rateLimits/updated", params: {} });
     assert.equal(quotaRefreshes, 1);
   } finally { await gateway.stop(); }
+  });
 });
 
 test("release preserves a waiting queue and clears attached state after existing operations settle", async () => {
@@ -2414,6 +2436,7 @@ test('Wake MAC normalization, config round-trip, and exact magic packet', async 
 });
 
 test('Wake resolves configured SSH MAC, preserves selection, and nudges existing reconnect only after UDP success', async t => {
+  await withDeepseekFlag(undefined, async () => {
   const dgram=(await import('node:dgram')).default;
   const {syncBuiltinESMExports}=await import('node:module');
   const {EventEmitter}=await import('node:events');
@@ -2460,6 +2483,7 @@ test('Wake resolves configured SSH MAC, preserves selection, and nudges existing
     await gateway.wakeMachine('ssh:pc');
     assert.equal(pc.reconnectTimer,null);assert.equal(pc.reconnectDelayIndex,0);
   } finally {if(pc.reconnectTimer)clearTimeout(pc.reconnectTimer);t.mock.restoreAll();syncBuiltinESMExports();}
+  });
 });
 
 test('Goal notifications expose only useful fields for the selected task and reset on release', async () => {

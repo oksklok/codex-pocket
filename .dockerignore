@@ -3,5 +3,8 @@
 !package.json
 !package-lock.json
 !gateway.ts
+!deepseek.ts
+!deepseek-server.mjs
+!deepseek-models.json
 !public/
 !public/**

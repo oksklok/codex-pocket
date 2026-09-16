@@ -11,6 +11,8 @@ export const DEEPSEEK_PROVIDER = {
   name: "DeepSeek", base_url: "https://api.deepseek.com", wire_api: "responses",
   env_key: "DEEPSEEK_API_KEY", requires_openai_auth: false, supports_websockets: false, supports_standalone_web_search: false,
 };
+// Names and patterns every DeepSeek child strips from its environment.
+export const DEEPSEEK_SHELL_ENV_EXCLUDE = ["DEEPSEEK_API_KEY", "OPENAI_*", "CODEX_*TOKEN*"];
 
 export function deepseekEnabled(env = process.env, platform = process.platform): boolean {
   return platform === "darwin" && env.POCKET_DEEPSEEK === "1";
@@ -40,7 +42,7 @@ export function deepseekConfig(home = DEEPSEEK_HOME): Record<string, any> {
     model_reasoning_effort: "high", web_search: "disabled", review_model: DEEPSEEK_MODEL,
     sqlite_home: home, log_dir: join(home, "logs"), allow_login_shell: false,
     "model_providers.deepseek": DEEPSEEK_PROVIDER,
-    "shell_environment_policy.exclude": ["DEEPSEEK_API_KEY", "OPENAI_*", "CODEX_*TOKEN*"],
+    "shell_environment_policy.exclude": [...DEEPSEEK_SHELL_ENV_EXCLUDE],
     "features.multi_agent": false, "features.remote_control": false,
   };
 }
@@ -122,6 +124,17 @@ export class DeepSeekHost {
   }
 }
 
+function matchesExcludedName(pattern: string, name: string): boolean {
+  const source = pattern.split("*").map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp(`^${source}$`, "i").test(name);
+}
+
+// shell_environment_policy.set runs after exclude, so an entry there can reintroduce a stripped name.
+function reintroducesCredential(set: unknown): boolean {
+  const names = Array.isArray(set) ? set : set && typeof set === "object" ? Object.keys(set) : [];
+  return names.some(name => DEEPSEEK_SHELL_ENV_EXCLUDE.some(pattern => matchesExcludedName(pattern, String(name))));
+}
+
 export function assertDeepseekConfig(config: any, home = DEEPSEEK_HOME): void {
   const provider = config?.model_providers?.deepseek;
   if (config?.model_provider !== "deepseek" || config?.model !== DEEPSEEK_MODEL
@@ -133,7 +146,8 @@ export function assertDeepseekConfig(config: any, home = DEEPSEEK_HOME): void {
     || config?.allow_login_shell !== false
     || Object.keys(config?.mcp_servers ?? {}).length > 0 || config?.notify?.length > 0 || config?.hooks
     || config?.experimental_thread_store || config?.experimental_thread_store_endpoint
-    || !config?.shell_environment_policy?.exclude?.includes("DEEPSEEK_API_KEY")) {
+    || !config?.shell_environment_policy?.exclude?.includes("DEEPSEEK_API_KEY")
+    || reintroducesCredential(config?.shell_environment_policy?.set)) {
     throw new Error("DeepSeek isolation check failed: effective project configuration must use Pocket's DeepSeek provider, model catalog, endpoint and shell credential exclusion.");
   }
 }

@@ -1142,33 +1142,54 @@ export class RpcClient {
   }
 
   async request(method: string, params: JsonObject | undefined = {}, timeoutMs = 20_000): Promise<any> {
-    if (this.deepseek) {
-      params = constrainDeepseekRequest(method, params ?? {}, this.deepseek.home);
+    const deadline = Date.now() + timeoutMs;
+    const deepseek = this.deepseek;
+    if (deepseek) {
+      params = constrainDeepseekRequest(method, params ?? {}, deepseek.home);
       if (["thread/start", "thread/resume", "thread/settings/update", "turn/start"].includes(method)) {
-        let cwd = params.cwd;
-        if (!cwd && params.threadId) {
-          const read = await this.request("thread/read", { threadId: params.threadId, includeTurns: false });
-          if (read.thread?.modelProvider !== "deepseek") throw new Error("Refusing a non-DeepSeek task in the isolated runtime");
-          cwd = read.thread?.cwd;
-          if (method === "thread/resume" && ["low", "high", "max"].includes(read.thread?.reasoningEffort)) {
-            params.config.model_reasoning_effort = read.thread.reasoningEffort;
-          }
-        }
-        const effective = await this.request("config/read", { ...(cwd ? { cwd } : {}), includeLayers: false });
-        assertDeepseekConfig(effective.config, this.deepseek.home);
+        await this.assertDeepseekTarget(deepseek, method, params as Record<string, any>, deadline);
       }
     }
     if (this.closing || !this.wire) return Promise.reject(new Error("app-server connection closed"));
+    // The preflight shares this budget, so a consumed deadline must never dispatch.
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new MessageNotSentError(`${method} was not sent: the request deadline expired during verification`);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} timed out`));
-      }, timeoutMs);
+      }, remaining);
       this.pending.set(id, { resolve, reject, timer });
       try { this.wire.send(params === undefined ? { method, id } : { method, id, params }); }
       catch (error) { this.disconnect(error instanceof Error ? error : new Error(String(error))); }
     });
+  }
+
+  // DeepSeek re-checks provider isolation before a mutation. Those reads must finish inside the
+  // caller's budget, and any failure before the mutation dispatches is definitively not-sent.
+  private async assertDeepseekTarget(deepseek: DeepSeekHost, method: string, params: Record<string, any>, deadline: number): Promise<void> {
+    const budget = (): number => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new MessageNotSentError(`${method} was not sent: the request deadline expired during verification`);
+      return remaining;
+    };
+    try {
+      let cwd = params.cwd;
+      if (!cwd && params.threadId) {
+        const read = await this.request("thread/read", { threadId: params.threadId, includeTurns: false }, budget());
+        if (read.thread?.modelProvider !== "deepseek") throw new Error("Refusing a non-DeepSeek task in the isolated runtime");
+        cwd = read.thread?.cwd;
+        if (method === "thread/resume" && ["low", "high", "max"].includes(read.thread?.reasoningEffort)) {
+          params.config.model_reasoning_effort = read.thread.reasoningEffort;
+        }
+      }
+      const effective = await this.request("config/read", { ...(cwd ? { cwd } : {}), includeLayers: false }, budget());
+      assertDeepseekConfig(effective.config, deepseek.home);
+    } catch (error) {
+      if (isMessageNotSent(error)) throw error;
+      throw new MessageNotSentError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   notify(method: string, params: JsonObject = {}): void {
@@ -1551,6 +1572,17 @@ function messageImagePaths(text: string): string[] {
   return paths;
 }
 
+// A request that never reached the wire is a definitive failure, not an uncertain delivery.
+// The marker is explicit so callers never have to infer it from an error message.
+export class MessageNotSentError extends Error {
+  readonly notSent = true;
+  constructor(message: string) { super(message); this.name = "MessageNotSentError"; }
+}
+
+export function isMessageNotSent(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { notSent?: unknown }).notSent === true);
+}
+
 // Only message POSTs use these bounded, in-memory receipts. Recovery never repeats a POST.
 export class MessageSubmissions {
   readonly epoch = randomBytes(6).toString("hex");
@@ -1579,7 +1611,8 @@ export class MessageSubmissions {
       return result;
     } catch (error) {
       receipt.error = compact(error instanceof Error ? error.message : String(error), 300);
-      receipt.status = /timed out|closed|disconnected/i.test(receipt.error) ? "unknown" : "rejected";
+      receipt.status = isMessageNotSent(error) ? "rejected"
+        : /timed out|closed|disconnected/i.test(receipt.error) ? "unknown" : "rejected";
       throw error;
     } finally {
       finish();
@@ -3318,7 +3351,8 @@ export class MachineRuntime {
       try { result = await this.sendMessageNow(queued.text, "steer", queued.images, [], undefined, queued.files); }
       catch (error) {
         if (queued.submission?.confirmed) return queued.submission.confirmed;
-        if (/timed out|closed|disconnected/i.test(String(error))) {
+        // A preflight failure never reached the wire: keep the queue retryable instead of uncertain.
+        if (!isMessageNotSent(error) && /timed out|closed|disconnected/i.test(String(error))) {
           queued.deliveryUnknown = true;
           queued.error = compact(String(error), 240);
           const recovered = this.recoverQueuedDelivery(queued, queued.submission, this.recentHistory, this.recentHistoryOldest);
@@ -4134,7 +4168,8 @@ export class MachineRuntime {
       });
       return true;
     } catch (error) {
-      if (/timed out|closed|disconnected/i.test(String(error))) {
+      const notSent = isMessageNotSent(error);
+      if (!notSent && /timed out|closed|disconnected/i.test(String(error))) {
         queued.deliveryUnknown = true;
         queued.error = compact(String(error), 240);
         if (this.recoverQueuedDelivery(queued, queued.submission, this.recentHistory, this.recentHistoryOldest)) {
@@ -4145,11 +4180,13 @@ export class MachineRuntime {
       if (current() && this.state.queuedMessage === queued) {
         this.state.queuedMessage = {
           ...queued,
-          deliveryUnknown: /timed out|closed|disconnected/i.test(String(error)),
+          deliveryUnknown: !notSent && /timed out|closed|disconnected/i.test(String(error)),
           error: compact(error instanceof Error ? error.message : String(error), 240),
         };
         this.broadcast("queue", { queuedMessage: this.state.queuedMessage, message: this.messageCapability() });
       }
+      // The manual Start caller owns this error so the receipt records a definitive not-sent.
+      if (tracked && notSent) throw error;
       return false;
     } finally {
       if (current()) this.startingQueuedMessage = false;
