@@ -6,7 +6,7 @@ DeepSeek runs **through Codex app-server**, alongside the existing OpenAI runtim
 
 There is no provider toggle. On macOS, Pocket exposes DeepSeek at launch whenever a credential resolves: `DEEPSEEK_API_KEY` is set and valid, or the host key file below exists and is valid.
 
-With no credential at all, DeepSeek is simply absent from the available providers and the OpenAI runtimes are unchanged. If a credential exists but is unsafe, unreadable, or invalid, DeepSeek is still left out and **Settings → Runtimes** shows that configuration error instead of accepting it silently. Linux, Windows, and Docker/headless hosts never create the runtime. Removing the credential removes the provider on the next launch while keeping its sessions, isolation home, and receipts.
+With no credential at all, DeepSeek is simply absent from the available providers and the OpenAI runtimes are unchanged. If a credential exists but is unsafe, unreadable, or invalid, DeepSeek is still left out and **Settings → Runtimes** shows that configuration error instead of accepting it silently. Linux, Windows, and Docker/headless hosts never create the runtime. Removing the credential removes the provider on the next launch; its sessions and other state stay on disk in the isolation home, but message submission receipts live only in the host process memory, so a removed or restarted provider cannot recover a pending submission from them.
 
 ## Host key file
 
@@ -42,7 +42,7 @@ The file must contain only the API key; supplying it in the environment is enoug
 "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
 ```
 
-Open the printed local URL and choose the separate DeepSeek entry when creating a task. Existing local and SSH entries remain available. Missing credentials leave DeepSeek unavailable with setup instructions; they do not prevent the other runtimes from connecting. LAN access still uses Pocket's existing host/PIN settings.
+Open the printed local URL and choose the separate DeepSeek entry when creating a task. Existing local and SSH entries remain available. A missing credential simply leaves DeepSeek out of the available providers, and a credential that exists but is unsafe or invalid is reported in **Settings → Runtimes**; neither affects the other runtimes. LAN access still uses Pocket's existing host/PIN settings.
 
 ## Isolation and lifecycle
 
@@ -51,7 +51,7 @@ Open the printed local URL and choose the separate DeepSeek entry when creating 
 - An exclusive `pocket-owner` lock prevents duplicate hosts. A small supervisor stops its specific child when Pocket exits or loses IPC. A dropped proxy reconnects to the same owned server; a dead server is restarted by the existing runtime backoff. Normal exit removes the owned endpoint and lock, while keeping sessions. An unowned endpoint or stale ownership lock fails clearly rather than attaching to or killing another process. If the supervisor itself is forcibly killed, inspect the lock's PID and endpoint before removing stale files; never use broad process-killing commands.
 - Both server and proxy receive the separate home and pinned provider configuration. Effective configuration is checked on connection and before task start/resume, settings changes, and new turns. Trusted project model settings cannot redirect this runtime to OpenAI. Incompatible provider/auth/storage settings fail closed. Symlinked homes/configuration are rejected.
 - The API key comes from `DEEPSEEK_API_KEY` or the host key file and is passed only to the DeepSeek supervisor/server/proxy; it is never added to `process.env`. Ordinary local/SSH children have it removed. Agent shells exclude it and OpenAI credentials, and configuration that would reintroduce those names through `shell_environment_policy.set` is rejected; login shells are disabled for this runtime. Standalone `command/exec` calls explicitly unset it as well. Project MCP servers, notification commands, and hooks are rejected because this version does not provision credential isolation for those extra processes. The key is still a host secret, not a security boundary against software running as the same OS user or deliberate file access with Full access.
-- Runtime identity separates task catalogs, drafts, choices, queues, and receipts. DeepSeek has a separate receipt store and epoch. No existing conversation is copied.
+- Runtime identity separates task catalogs, drafts, choices, queues, and receipts. DeepSeek has a separate receipt store and epoch, and those receipts are in-memory like the OpenAI ones. No existing conversation is copied.
 - To remove the provider: delete `~/.codex-pocket/secrets/deepseek-api-key` and unset `DEEPSEEK_API_KEY`, then restart Pocket. Keep `~/.codex-pocket/deepseek` to resume its sessions on a later launch. This does not alter `~/.codex`, shell profiles, launchctl, the official app, or the Codex installation.
 
 ## Supported controls

@@ -27,6 +27,8 @@ const OPTIONS = {
 };
 let selected = normal;
 let deepseekError = null;
+let taskGate = null;
+let taskFail = false;
 const clients = new Set();
 const selections = [];
 const snapshot = () => ({ ...selected.snapshot(), quota: { available: false, windows: [] }, submissionEpoch: selected === normal ? 'normal' : selected.state.machineId });
@@ -34,7 +36,7 @@ const push = () => { for (const response of clients) response.write(`event: snap
 const readBody = request => new Promise(resolve => { let text = ''; request.on('data', chunk => { text += chunk; }); request.on('end', () => resolve(text)); });
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
-  const json = value => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
+  const json = (value, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
   if (url.pathname === '/events') {
     response.writeHead(200, { 'Content-Type': 'text/event-stream' }); clients.add(response); push();
     request.on('close', () => clients.delete(response)); return;
@@ -49,6 +51,12 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/api/history') return json({ machineId: selected.state.machineId, threadId: selectedTask.id, turns: [], nextCursor: null });
   if (url.pathname === '/api/machines') return json({ machines: [normal, fallback, remote].map(r => r.machineSummary()) });
   if (url.pathname === '/api/tasks/options') return json(OPTIONS[url.searchParams.get('machineId')] || OPTIONS.local);
+  if (url.pathname === '/api/tasks') {
+    JSON.parse(await readBody(request) || '{}');
+    if (taskGate) await taskGate;
+    if (taskFail) return json({ error: 'Fixture task action failed' }, 409);
+    return json(snapshot());
+  }
   if (url.pathname === '/api/navigation/select') {
     const body = JSON.parse(await readBody(request) || '{}');
     selections.push({ machineId: body.machineId, threadId: body.threadId, expectedMachineId: body.expectedMachineId });
@@ -186,6 +194,70 @@ try {
   await page.locator('#new-task-cancel').click();
   await closeSwitcher();
 
+  // A pending delete follows the current query: hidden for another provider, restored in place.
+  await openSwitcher();
+  const searchBox = page.locator('#destination-search');
+  await searchBox.fill('');
+  await rows().nth(3).locator('summary').click();
+  await rows().nth(3).getByRole('button', { name: 'Delete', exact: true }).click();
+  let releaseTaskGate;
+  taskGate = new Promise(resolve => { releaseTaskGate = resolve; });
+  await page.locator('#task-dialog-submit').click();
+  await rows().nth(3).getByText('Deleting…', { exact: true }).waitFor();
+  // The refreshed catalog omits the task while its delete is still in flight.
+  TASKS.local = TASKS.local.filter(task => task.id !== 'openai-old');
+  await page.locator('#destination-refresh').click();
+  await page.waitForFunction(() => !document.querySelector('#destination-refresh').disabled);
+  assert.deepEqual(await rowNames(), ['DeepSeek newest', 'Same task ID', 'Same task ID', 'OpenAI older'], 'pending row restored while the query shows it');
+  assert.equal(await rows().nth(3).getByText('Deleting…', { exact: true }).count(), 1);
+  await searchBox.fill('DeepSeek');
+  assert.deepEqual(await rowNames(), ['DeepSeek newest', 'Same task ID']);
+  assert.equal(await rows().getByText('Deleting…', { exact: true }).count(), 0, 'pending OpenAI row stays hidden under a provider search');
+  await searchBox.fill('OpenAI');
+  assert.deepEqual(await rowNames(), ['Same task ID', 'OpenAI older']);
+  assert.equal(await rows().nth(1).getByText('Deleting…', { exact: true }).count(), 1, 'restored for a matching provider');
+  await searchBox.fill('older');
+  assert.deepEqual(await rowNames(), ['OpenAI older'], 'restored for matching task text');
+  await searchBox.fill('Mac mini');
+  assert.deepEqual(await rowNames(), ['DeepSeek newest', 'Same task ID', 'Same task ID', 'OpenAI older'], 'restored for a physical-machine match');
+  await searchBox.fill('');
+  assert.equal(await rows().nth(3).getByText('Deleting…', { exact: true }).count(), 1, 'pinned in its visible slot');
+  releaseTaskGate(); taskGate = null;
+  await page.waitForFunction(() => ![...document.querySelectorAll('.destination-task-text')].some(node => node.textContent === 'OpenAI older'));
+  await closeSwitcher();
+
+  // A create busy on one runtime disables only that physical machine's + control.
+  await openSwitcher();
+  const macCreate = page.locator('.destination-group').first().locator('.machine-header-controls .icon-button[aria-label="New task"]');
+  const otherCreate = page.locator('.destination-group').nth(1).locator('.machine-header-controls .icon-button[aria-label="New task"]');
+  let releaseCreateGate;
+  taskGate = new Promise(resolve => { releaseCreateGate = resolve; });
+  await macCreate.click();
+  await page.locator('#new-task-dialog[open]').waitFor();
+  await page.locator('#new-task-provider').selectOption('local:deepseek');
+  await page.locator('#new-task-model-static').filter({ hasText: 'DeepSeek-Flash' }).waitFor();
+  await page.locator('#new-task-name').fill('Gated DeepSeek create');
+  await page.locator('#new-task-create').click();
+  await page.waitForFunction(() => document.querySelector('.destination-group .machine-header-controls .icon-button[aria-label="New task"]').disabled);
+  assert.equal(await macCreate.isDisabled(), true, 'the Mac mini + is disabled during a DeepSeek create');
+  assert.equal(await otherCreate.isDisabled(), false, 'another physical machine stays usable');
+  releaseCreateGate(); taskGate = null;
+  await page.waitForFunction(() => !document.querySelector('.destination-group .machine-header-controls .icon-button[aria-label="New task"]').disabled);
+  assert.equal(await macCreate.isDisabled(), false, 'the control recovers after success');
+  // The same control recovers after a failed create.
+  taskFail = true;
+  await macCreate.click();
+  await page.locator('#new-task-dialog[open]').waitFor();
+  await page.locator('#new-task-provider').selectOption('local:deepseek');
+  await page.locator('#new-task-model-static').filter({ hasText: 'DeepSeek-Flash' }).waitFor();
+  await page.locator('#new-task-name').fill('Failing DeepSeek create');
+  await page.locator('#new-task-create').click();
+  await page.locator('#new-task-error').filter({ hasText: 'Fixture task action failed' }).waitFor();
+  assert.equal(await macCreate.isDisabled(), false, 'the control recovers after a failure');
+  await page.locator('#new-task-cancel').click();
+  taskFail = false;
+  await closeSwitcher();
+
   // The Settings close glyph is drawn, the SSH + control works at both widths, and a broken
   // DeepSeek credential is the only DeepSeek-related thing Settings shows (no toggle).
   for (const width of [1280, 390]) {
@@ -254,5 +326,5 @@ try {
   assert.equal(await mobilePage.locator('#app-shell').evaluate(node => node.classList.contains('inspector-closed')), true, 'details overlay stays closed on mobile');
   assert.equal(await mobilePage.evaluate(() => localStorage.getItem('codex-pocket-tasks-open')), null, 'mobile never stores a desktop sidebar preference');
   await mobile.close();
-  console.log('PASS: one physical-machine group ordered globally across providers, separate machine/provider search, single provider presentation in Task Details, provider-qualified action labels where needed, no DeepSeek toggle (error only), Settings X drawn, unclipped badge borders, SSH + control at both widths, and desktop first-launch sidebars open');
+  console.log('PASS: one physical-machine group ordered globally across providers, separate machine/provider search, pending-delete rows follow the current query and keep their pinned slot, group-wide create busy state, single provider presentation in Task Details, provider-qualified action labels where needed, no DeepSeek toggle (error only), Settings X drawn, unclipped badge borders, SSH + control at both widths, and desktop first-launch sidebars open');
 } finally { await browser.close(); server.closeAllConnections(); for (const response of clients) response.end(); await new Promise(resolve => server.close(resolve)); }

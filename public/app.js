@@ -771,20 +771,22 @@ function renderDestinationSwitcher(force = false) {
     const machineMatch = Boolean(query) && (`${visual.name} ${visual.members.map(member => member.platform || "").join(" ")}`).toLowerCase().includes(query);
     const providerMatch = Boolean(query) && visual.providers.some(provider => provider.toLowerCase().includes(query));
     const taskMatches = (task) => `${task.name || ""} ${task.preview || ""} ${task.project || ""} ${task.cwd || ""}`.toLowerCase().includes(query);
+    // One visibility rule for normal rows and for the pending-delete row restored below.
+    const rowVisible = (member, task) => !query || machineMatch
+      || (providerName(member.provider) || "").toLowerCase().includes(query) || taskMatches(task);
     const rows = [];
     for (const member of visual.members) {
-      const providerText = (providerName(member.provider) || "").toLowerCase();
       for (const task of (Array.isArray(member.tasks) ? member.tasks : [])) {
-        // No query, or a physical-machine match, keeps every row; otherwise the provider name
-        // or the task's own fields must match.
-        if (query && !machineMatch && !providerText.includes(query) && !taskMatches(task)) continue;
+        if (!rowVisible(member, task)) continue;
         rows.push({ member, task });
       }
     }
     const pendingDelete = taskActionTarget?.action === "delete" && taskActionTarget.archived === archived ? taskActionTarget : null;
     const pendingMember = pendingDelete ? visual.members.find(member => member.id === pendingDelete.machineId) : null;
-    // A refresh may omit the task before its delete response arrives.
-    if (pendingMember && pendingDelete.task && !rows.some(entry => entry.member === pendingMember && entry.task.id === pendingDelete.threadId)) {
+    // A refresh may omit the task before its delete response arrives; restore it only while the
+    // current query would still show it.
+    if (pendingMember && pendingDelete.task && rowVisible(pendingMember, pendingDelete.task)
+      && !rows.some(entry => entry.member === pendingMember && entry.task.id === pendingDelete.threadId)) {
       rows.push({ member: pendingMember, task: pendingDelete.task });
     }
     // One global order per physical machine: the existing comparator, then the runtime id.
@@ -886,7 +888,10 @@ function renderDestinationSwitcher(force = false) {
     create.setAttribute("aria-label", "New task");
     create.title = "New task";
     create.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
-    create.disabled = !machine.connected || (taskActionBusy && taskActionTarget?.machineId === machine.id && taskActionTarget.action === "create");
+    // Any create busy for one of this physical machine's runtimes disables its own + control only.
+    const creatingHere = taskActionBusy && taskActionTarget?.action === "create"
+      && visual.members.some(member => member.id === taskActionTarget.machineId);
+    create.disabled = !machine.connected || creatingHere;
     create.addEventListener("click", () => newTask(visual));
     if (!archived) controls.append(create);
     group.append(heading);
