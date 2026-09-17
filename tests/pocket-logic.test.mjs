@@ -24,10 +24,11 @@ import {
   resolvedAsyncAnswer,
   rememberComposerDraft,
   compareModelDisplayOrder,
+  modelGpt56Tier,
   modelVersionParts,
   sortModelsForDisplay,
 } from "../public/pocket-logic.js";
-import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient, parseArgs, RESTART_HELPER, restartUrlForRequest } from "../gateway.ts";
+import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient, parseArgs, quotaWindowLabel, RESTART_HELPER, restartUrlForRequest } from "../gateway.ts";
 
 const machine = { id: "local" };
 const task = { id: "thread-1", status: "failed" };
@@ -3539,4 +3540,49 @@ test("model menu ordering is one deterministic order for differently ordered cat
   assert.deepEqual(modelVersionParts(model("models/gpt-5.5-turbo")), [5, 5]);
   assert.equal(modelVersionParts(model("astra")), null);
   assert.equal(compareModelDisplayOrder(model("gpt-6"), model("gpt-5.6")) < 0, true);
+});
+
+test("recognized GPT-5.6 tiers use Pocket's Sol/Terra/Luna display policy", () => {
+  const model = (id, displayName = id) => ({ model: id, displayName, supportedReasoningEfforts: [{ reasoningEffort: "high" }] });
+  const sol = model("gpt-5.6-sol", "GPT-5.6 Sol");
+  const terra = model("gpt-5.6-terra", "GPT-5.6 Terra");
+  const luna = model("gpt-5.6-luna", "GPT-5.6 Luna");
+  assert.deepEqual(
+    sortModelsForDisplay([luna, sol, terra]).map((entry) => entry.model),
+    ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+  );
+  // The tier words may live in the id or the display name, and the policy is order-independent.
+  assert.deepEqual(
+    sortModelsForDisplay([model("gpt-5.6-tier-c", "Luna preview"), model("gpt-5.6-tier-a", "Sol preview"), terra]).map((entry) => entry.model),
+    ["gpt-5.6-tier-a", "gpt-5.6-terra", "gpt-5.6-tier-c"],
+  );
+  // Generation descending still wins: GPT-6 before any 5.6 tier, and other generations keep the fallback.
+  assert.deepEqual(
+    sortModelsForDisplay([luna, model("gpt-6"), sol, model("gpt-5.5")]).map((entry) => entry.model),
+    ["gpt-6", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"],
+  );
+  // Unknown 5.6 entries keep the deterministic name order after the recognized tiers.
+  assert.deepEqual(
+    sortModelsForDisplay([model("gpt-5.6-zeta"), sol, model("gpt-5.6-alpha")]).map((entry) => entry.model),
+    ["gpt-5.6-sol", "gpt-5.6-alpha", "gpt-5.6-zeta"],
+  );
+  // The tier policy never reaches other generations or unknown families.
+  assert.equal(modelGpt56Tier(model("gpt-6-sol")), null);
+  assert.equal(modelGpt56Tier(model("sol")), null);
+  assert.equal(modelGpt56Tier(model("gpt-5.6", "GPT-5.6")), null);
+  assert.equal(modelGpt56Tier(terra), 1);
+});
+
+test("quota window labels read as durations and never assume a weekly secondary window", () => {
+  assert.equal(quotaWindowLabel(10_080, "Primary"), "Weekly");
+  assert.equal(quotaWindowLabel(20_160, "Primary"), "2-week");
+  assert.equal(quotaWindowLabel(1_440, "Primary"), "Daily");
+  assert.equal(quotaWindowLabel(4_320, "Primary"), "3-day");
+  assert.equal(quotaWindowLabel(300, "Secondary"), "5-hour");
+  assert.equal(quotaWindowLabel(60, "Secondary"), "Hourly");
+  assert.equal(quotaWindowLabel(30, "Secondary"), "30-minute");
+  // Missing or unusable durations keep the provided fallback instead of inventing a window.
+  assert.equal(quotaWindowLabel(null, "Secondary"), "Secondary");
+  assert.equal(quotaWindowLabel(0, "Secondary"), "Secondary");
+  assert.equal(quotaWindowLabel(-5, "Secondary"), "Secondary");
 });

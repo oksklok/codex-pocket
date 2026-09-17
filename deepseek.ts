@@ -285,6 +285,8 @@ export class DeepSeekBalanceMonitor {
   private cache: DeepSeekBalance | null = null;
   private inflight: Promise<DeepSeekBalance | null> | null = null;
   private controller: AbortController | null = null;
+  // Attempt time, tracked separately from the successful updatedAt, so failed refreshes cool down too.
+  private lastAttemptAt: number | null = null;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly timeoutMs: number;
@@ -313,9 +315,13 @@ export class DeepSeekBalanceMonitor {
   refresh(force = false): Promise<DeepSeekBalance | null> {
     if (this.inflight) return this.inflight;
     if (!this.key) return Promise.resolve(this.cache);
-    if (!force && this.cache?.available && this.now() - (this.cache.updatedAt ?? 0) < this.minIntervalMs) {
+    const now = this.now();
+    // The cooldown covers an empty cache and an expired last-known value: every attempt, success or
+    // failure (network error, non-2xx including 429, malformed body or timeout), sets the attempt time.
+    if (!force && this.lastAttemptAt !== null && now - this.lastAttemptAt < this.minIntervalMs) {
       return Promise.resolve(this.snapshot());
     }
+    this.lastAttemptAt = now;
     const controller = new AbortController();
     this.controller = controller;
     this.inflight = this.request(controller).finally(() => {

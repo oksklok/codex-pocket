@@ -634,23 +634,42 @@ try {
  const header=document.querySelector('.machine-settings-header'),add=document.querySelector('#machine-add');
  const row=document.querySelector('.machine-settings-row'),remove=row.querySelector('.machine-remove');
  const labels=[...header.querySelectorAll(':scope > span, .machine-settings-actions-cell > span')];
+ const helper=header.querySelector('.machine-settings-helper'),actions=header.querySelector('.machine-settings-actions-cell');
  const centreX=node=>{const r=node.getBoundingClientRect();return r.left+r.width/2;};
  const boxes=node=>node.getBoundingClientRect();
  return {
  labelBottoms:labels.map(node=>boxes(node).bottom),
  addCentre:centreX(add),removeCentre:centreX(remove),
  header:boxes(header),row:boxes(row),
+ helperInHeader:helper.parentElement===header,helperRight:boxes(helper).right,addLeft:boxes(add).left,
+ actionsRowStart:getComputedStyle(actions).gridRowStart,actionsRowEnd:getComputedStyle(actions).gridRowEnd,
  headerPadRight:getComputedStyle(header).paddingRight,rowPadRight:getComputedStyle(row).paddingRight,
  headerPadBottom:getComputedStyle(header).paddingBottom,
  headerBorderRight:getComputedStyle(header).borderRightWidth,rowBorderRight:getComputedStyle(row).borderRightWidth,
  };
  });
  assert.equal(headerGeometry.labelBottoms.every(bottom=>Math.abs(bottom-headerGeometry.labelBottoms[0])<1),true,'the four header labels bottom-align');
+ assert.equal(headerGeometry.helperInHeader,true,'the helper is part of the shared header grid');
+ assert(headerGeometry.helperRight<=headerGeometry.addLeft+1,'the + reserves its column so helper text never runs under it');
+ assert.equal(headerGeometry.actionsRowStart,'1');assert.equal(headerGeometry.actionsRowEnd,'3','the + spans the helper and label rows');
  assert(Math.abs(headerGeometry.addCentre-headerGeometry.removeCentre)<1,`+ and delete share an x centre (${headerGeometry.addCentre} vs ${headerGeometry.removeCentre})`);
  assert.equal(headerGeometry.header.left,headerGeometry.row.left);assert.equal(headerGeometry.header.right,headerGeometry.row.right);
  assert.equal(headerGeometry.headerPadRight,headerGeometry.rowPadRight);assert.equal(headerGeometry.headerBorderRight,headerGeometry.rowBorderRight);
  assert.equal(parseFloat(headerGeometry.headerPadBottom),0,'the header drops its lower padding');
  assert(headerGeometry.row.top-headerGeometry.header.bottom<10,'labels sit close to the first row');
+ }
+ if(width<600){
+ // On mobile the helper and + share one compact row, with one add control inside the header.
+ const compact=await page.evaluate(()=>{
+ const header=document.querySelector('.machine-settings-header'),helper=header.querySelector('.machine-settings-helper'),add=document.querySelector('#machine-add');
+ const hb=helper.getBoundingClientRect(),ab=add.getBoundingClientRect();
+ return { helperVisible:helper.offsetParent!==null,addInHeader:header.contains(add),helperRight:hb.right,addLeft:ab.left,
+ shareRow:Math.abs((hb.top+hb.height/2)-(ab.top+ab.height/2))<Math.max(hb.height,ab.height) };
+ });
+ assert.equal(compact.helperVisible,true);
+ assert.equal(compact.addInHeader,true,'the single add control stays in the header');
+ assert(compact.helperRight<=compact.addLeft+1,'helper and + share the row without overlap');
+ assert.equal(compact.shareRow,true,'the helper and + form one compact row');
  }
  assert.equal(await page.getByRole('button',{name:'Move Laptop up',exact:true}).isDisabled(),true);
  assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
@@ -1359,19 +1378,39 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  const badge=page.locator('.destination-task.selected .task-provider-badge, .machine-provider-badge').first();
  if(await badge.count()){const border=await badge.evaluate(node=>getComputedStyle(node).borderTopColor);assert.notEqual(border,'rgba(0, 0, 0, 0)','badge borders stay visible');assert.equal(isNeutral(border),true,'badge borders stay neutral');}
  if(width>=1100){
+ // Sidebar toggles keep one resting surface whether open or closed, and hover never changes it.
  const tasksButton=page.locator('#destination-button');
- const tasksActive=await tasksButton.evaluate(node=>getComputedStyle(node).backgroundColor);
+ const tasksOpenBg=await tasksButton.evaluate(node=>getComputedStyle(node).backgroundColor);
  await tasksButton.hover();await page.waitForTimeout(60);
- assert.equal(await tasksButton.evaluate(node=>getComputedStyle(node).backgroundColor),tasksActive,'hover keeps the active Tasks surface');
- await page.locator('#inspector-button').click();await page.waitForTimeout(210);
+ assert.equal(await tasksButton.evaluate(node=>getComputedStyle(node).backgroundColor),tasksOpenBg,'hover keeps the Tasks resting surface');
  const detailsButton=page.locator('#inspector-button');
- const detailsActive=await detailsButton.evaluate(node=>getComputedStyle(node).backgroundColor);
+ const detailsClosedBg=await detailsButton.evaluate(node=>getComputedStyle(node).backgroundColor);
+ const paneClosed=await detailsButton.locator('.details-pane').evaluate(node=>getComputedStyle(node).fill);
+ await detailsButton.click();await page.waitForTimeout(210);
+ assert.equal(await detailsButton.getAttribute('aria-expanded'),'true');
+ assert.equal(await detailsButton.getAttribute('aria-label'),'Hide task details');
+ const detailsOpenBg=await detailsButton.evaluate(node=>getComputedStyle(node).backgroundColor);
+ assert.equal(detailsOpenBg,detailsClosedBg,'the Details toggle keeps one resting surface');
+ assert.equal(detailsOpenBg,tasksOpenBg,'both toggles share one resting surface');
  await detailsButton.hover();await page.waitForTimeout(60);
- assert.equal(await detailsButton.evaluate(node=>getComputedStyle(node).backgroundColor),detailsActive,'hover keeps the active Details surface');
- assert.equal(detailsActive,tasksActive,'both toggles share one active surface');
- await page.locator('#inspector-button').click();await page.waitForTimeout(210);
+ assert.equal(await detailsButton.evaluate(node=>getComputedStyle(node).backgroundColor),detailsOpenBg,'hover keeps the Details resting surface');
+ const paneOpen=await detailsButton.locator('.details-pane').evaluate(node=>getComputedStyle(node).fill);
+ assert.notEqual(paneOpen,paneClosed,'the Details pane icon distinguishes open from closed');
+ await detailsButton.click();await page.waitForTimeout(210);
+ assert.equal(await detailsButton.getAttribute('aria-label'),'Show task details');
+ // The Tasks toggle resting surface is the same open and closed.
+ await dismissTasks();await closed();
+ assert.equal(await tasksButton.evaluate(node=>getComputedStyle(node).backgroundColor),tasksOpenBg,'the Tasks toggle keeps one resting surface open or closed');
+ await open();await page.waitForTimeout(210);
  }
  await dismissTasks();await closed();
+ // Meter labels are readable and the quota preference names the balance too.
+ assert.equal(await page.locator('#context-chip .quota-label').textContent(),'Context');
+ assert.equal(await page.locator('#context-chip .quota-percent').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true,'the Context value is not clipped');
+ await settingsOpen();
+ assert.equal((await page.locator('label:has(#show-quota)').textContent()).trim(),'Show Quota or Balance');
+ await page.locator('#settings-close').click();
+ await page.locator('#settings-screen').waitFor({state:'hidden'});
  active=savedActive;
  }
 // Isolated browser checks use the same real frontend and synthetic server.
@@ -1407,9 +1446,8 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  // Finish the synthetic turn before checking idle-task archive/delete controls.
  Object.assign(runtime.state,{turn:{id:'next-turn',status:'completed'},phase:'done',threadStatus:'idle'});runtime.broadcast('turn',{turn:runtime.state.turn,phase:'done',threadStatus:'idle'});
  await open();
- assert.equal(await page.locator('.machine-host-badge').count(),1);
- assert.equal(await page.locator('.machine-host-badge').textContent(),'Host');
- assert.equal(await page.locator('.destination-group').last().locator('.machine-host-badge').count(),0);
+ assert.equal(await page.locator('.machine-host-badge').count(),0,'the heading shows no visible Host pill');
+ assert.equal(await page.locator('.destination-group').first().locator('.machine-toggle').evaluate(n=>n.textContent.includes('Host')),true,'the host designation stays in the accessibility text');
  let releaseCatalog; navigationGate=new Promise(r=>releaseCatalog=r);
  const before=calls.filter(c=>c==='/api/navigation').length;
  await page.locator('#destination-refresh').click();
@@ -1810,6 +1848,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await open();await page.locator('.destination-group').waitFor();
  assert.equal(await page.locator('.destination-group').count(),1);
  assert.equal(await page.locator('.machine-host-badge').count(),0);
+ assert.equal(await page.locator('.machine-toggle').evaluate(n=>n.textContent.includes('Host')),false,'headless SSH headings never claim a host');
  await settingsOpen();
  assert.equal(await page.locator('#settings-local-machine').isVisible(),false);
  assert.equal(await page.getByLabel('Host Machine Display Name',{exact:true}).isVisible(),false);

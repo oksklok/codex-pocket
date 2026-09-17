@@ -37,8 +37,10 @@
         </div>
         <div class="destination-control">
           <button class="destination-button" id="destination-button" type="button" aria-haspopup="dialog" aria-expanded="false">
-            <span id="destination-label">Connecting…</span>
-            <span class="machine-provider-badge" id="destination-provider" hidden></span>
+            <span class="destination-text" id="destination-text">
+              <span id="destination-label">Connecting…</span>
+              <span class="machine-provider-badge" id="destination-provider" hidden></span>
+            </span>
             <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg>
           </button>
 
@@ -46,7 +48,7 @@
         <div class="phase-row">
           <span class="phase-pill" id="phase-pill">Connecting</span>
           <span class="elapsed" id="elapsed">—</span>
-          <span class="quota-chip context-chip" id="context-chip" title="Context usage unavailable"><span class="quota-window"><span class="quota-label">Ctx</span><span class="quota-percent" id="context-percent">—</span><span class="quota-track"><span class="quota-fill" id="context-fill"></span></span></span></span>
+          <span class="quota-chip context-chip" id="context-chip" title="Context usage unavailable"><span class="quota-window"><span class="quota-label">Context</span><span class="quota-percent" id="context-percent">—</span><span class="quota-track"><span class="quota-fill" id="context-fill"></span></span></span></span>
           <span class="quota-chip" id="quota-chip" title="Quota unavailable">Quota —</span>
         </div>
         <div class="topbar-actions">
@@ -57,7 +59,7 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.73v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.73l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/></svg>
           </button>
           <button class="secondary-button icon-button details-toggle" id="inspector-button" type="button" aria-expanded="false" aria-label="Toggle task details" title="Toggle task details">
-            <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3.5 3.5h13v13h-13zM12 3.5v13"/></svg>
+            <svg aria-hidden="true" viewBox="0 0 20 20"><path class="details-pane" d="M12 4h4v12h-4z"/><path d="M3.5 3.5h13v13h-13zM12 3.5v13"/></svg>
           </button>
         </div>
       </header>
@@ -191,7 +193,7 @@
           <label class="checkbox-row translucent-preference"><input id="translucent-ui" type="checkbox" checked> Translucent UI</label>
           <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show Project Names in Tasks</label>
           <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show Context Usage</label>
-          <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show Quota</label>
+          <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show Quota or Balance</label>
           <label class="enter-preference"><input id="enter-sends" type="checkbox" checked> Enter Sends Message</label>
           <p class="field-help">Saved in this browser only.</p>
         </section>
@@ -206,7 +208,6 @@
             <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname"></div>
           </div>
           <div class="settings-subheading"><h4>SSH Machines</h4></div>
-          <p class="field-help">Use an SSH alias configured on this Pocket host.</p>
           <button class="icon-button" id="machine-add" type="button" aria-label="Add SSH machine" title="Add SSH machine"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
           <div class="settings-machines" id="settings-machines"></div>
         </section>

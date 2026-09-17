@@ -610,17 +610,29 @@ function renderBalanceQuota(balance) {
   elements.quota.classList.add("balance");
   const entries = Array.isArray(balance.entries) ? balance.entries : [];
   const usable = Boolean(balance.available) && entries.length > 0;
+  const insufficient = balance.isAvailable === false;
   elements.quota.classList.toggle("stale", !usable || Boolean(balance.stale));
-  elements.quota.classList.toggle("insufficient", balance.isAvailable === false);
+  elements.quota.classList.toggle("insufficient", insufficient);
+  const text = document.createElement("span");
+  text.className = "quota-balance-text";
+  // A non-shrinking flag keeps insufficient funds recognizable even when the amount truncates.
+  if (insufficient) {
+    const flag = document.createElement("span");
+    flag.className = "balance-flag";
+    flag.setAttribute("aria-hidden", "true");
+    flag.textContent = "!";
+    elements.quota.append(flag);
+  }
+  elements.quota.append(text);
   if (!usable) {
     // A failed or malformed fetch is never rendered as a zero balance.
-    elements.quota.textContent = "Balance —";
+    text.textContent = "Balance —";
     elements.quota.title = "DeepSeek balance unavailable";
     elements.quota.setAttribute("aria-label", "DeepSeek balance unavailable");
     return;
   }
-  const funds = balance.isAvailable === false ? " · insufficient" : "";
-  elements.quota.textContent = `Balance ${entries.map(formatBalanceEntry).join(" · ")}${funds}`;
+  text.textContent = `Balance ${entries.map(formatBalanceEntry).join(" · ")}`;
+  const funds = insufficient ? " · insufficient funds" : "";
   const stale = balance.stale ? " · last known" : "";
   elements.quota.title = `DeepSeek account balance: ${entries.map((entry) => `${entry.currency} ${entry.total}`).join(", ")}${funds}${stale}`;
   elements.quota.setAttribute("aria-label", elements.quota.title);
@@ -895,13 +907,9 @@ function renderDestinationSwitcher(force = false) {
     toggle.setAttribute("aria-expanded", String(!collapsed));
     toggle.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>';
     toggle.append(name);
-    // The header is the physical machine only; the host badge is a flex sibling of the
-    // truncating name, so its border is never clipped by the name's overflow.
+    // The host designation stays in the accessibility text and Settings, not as a visible pill.
     if (machine.local === true) {
-      const badge = document.createElement("span");
-      badge.className = "machine-host-badge";
-      badge.textContent = "Host";
-      toggle.append(badge);
+      toggle.append(Object.assign(document.createElement("span"), { className: "sr-only", textContent: " Host" }));
     }
     toggle.addEventListener("click", () => {
       if (collapsedMachines.has(machine.id)) collapsedMachines.delete(machine.id);
@@ -3418,6 +3426,9 @@ function updateInspectorButtonState() {
     : !elements.appShell.classList.contains("inspector-closed");
   elements.inspectorButton.setAttribute("aria-expanded", String(open));
   elements.inspectorButton.classList.toggle("active", open);
+  const label = open ? "Hide task details" : "Show task details";
+  elements.inspectorButton.setAttribute("aria-label", label);
+  elements.inspectorButton.title = label;
 }
 function openInspector() {
   saveSidebarPreference("details", true);
@@ -3529,6 +3540,8 @@ function renderMachineSettings(values) {
   // The header always renders so the add control stays available even with no machines.
   const header = document.createElement("div");
   header.className = "machine-settings-header";
+  // The helper shares the header grid with the labels so the + can reserve its own column.
+  header.append(Object.assign(document.createElement("p"), { className: "machine-settings-helper field-help", textContent: "Use an SSH alias configured on this Pocket host." }));
   for (const text of ["Display Name", "SSH Alias", "Wake MAC (optional)"]) {
     header.append(Object.assign(document.createElement("span"), { textContent: text, ariaHidden: "true" }));
   }

@@ -34,7 +34,7 @@
   /* One neutral active surface is shared by navigation hover, selection and the sidebar toggles. */
   --selected-bg: #333333;
   --selected-border: #4a4a4a;
-  --badge-border: #3a3a3a;
+  --badge-border: #565656;
   --placeholder: #8a8a8a;
   --text-heading: .875rem;
   --text-ui: .8125rem;
@@ -55,7 +55,7 @@
   --activity-collaboration: #7652b8; --activity-search: #087f8f; --activity-image: #ad3e88; --activity-neutral: #6e6e6e;
   --topbar: rgba(247,247,247,.96); --composer-bg: rgba(247,247,247,.98); --soft-surface: rgba(239,239,239,.72);
   --activity-bg: rgba(239,239,239,.72); --backdrop: rgba(20,20,20,.38);
-  --selected-bg: #e9e9e9; --selected-border: #c9c9c9; --badge-border: #c9c9c9; --placeholder: #767676;
+  --selected-bg: #e9e9e9; --selected-border: #c9c9c9; --badge-border: #b0b0b0; --placeholder: #767676;
 }
 
 @media (prefers-color-scheme: light) {
@@ -68,7 +68,7 @@
     --activity-collaboration: #7652b8; --activity-search: #087f8f; --activity-image: #ad3e88; --activity-neutral: #6e6e6e;
     --topbar: rgba(247,247,247,.96); --composer-bg: rgba(247,247,247,.98); --soft-surface: rgba(239,239,239,.72);
     --activity-bg: rgba(239,239,239,.72); --backdrop: rgba(20,20,20,.38);
-    --selected-bg: #e9e9e9; --selected-border: #c9c9c9; --badge-border: #c9c9c9; --placeholder: #767676;
+    --selected-bg: #e9e9e9; --selected-border: #c9c9c9; --badge-border: #b0b0b0; --placeholder: #767676;
   }
 }
 
@@ -136,13 +136,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: de
 .destination-control { position: relative; min-width: 0; }
 .destination-button {
   position: relative; width: 100%; min-height: 36px; display: grid;
-  grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 8px; padding: 6px 9px 6px 11px;
+  grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 6px 9px 6px 11px;
   overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong);
   color: var(--text); cursor: pointer; font-size: var(--text-ui); font-weight: 700; text-align: left;
 }
-.destination-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The provider tag is its own layout item after the truncating machine/task text. */
-.destination-button #destination-provider { overflow: visible; }
+/* The text and its provider tag shrink together; only the chevron stays at the far right. */
+.destination-text { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.destination-text #destination-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.destination-text #destination-provider { flex: none; overflow: visible; }
 .destination-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform 160ms ease; }
 .destination-button[aria-expanded="true"] svg { transform: rotate(180deg); }
 .destination-backdrop { position: fixed; z-index: 8; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(8,8,8,.62); opacity: 0; transition: opacity 160ms ease; }
@@ -172,10 +173,11 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-group + .destination-group { border-top: 1px solid var(--line-soft); padding-top: 12px; }
 .destination-group-heading { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 8px; }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-label); }
-/* Provider and host are separate restrained metadata tags; a long name clips instead of overlapping controls. */
-.machine-provider-badge, .machine-host-badge {
+/* Provider tags are restrained neutral metadata; a strong enough border stays visible on the gray
+   selected/hovered surfaces, in both the task rows and the top selector. */
+.machine-provider-badge {
   flex: none; padding: 1px 5px; border: 1px solid var(--badge-border); border-radius: 4px;
-  background: transparent; color: var(--muted); font-size: var(--text-meta); font-weight: 500; line-height: 1.3; white-space: nowrap;
+  background: transparent; color: var(--muted); font-size: var(--text-meta); font-weight: 600; line-height: 1.3; white-space: nowrap;
 }
 .machine-header-controls > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
 .machine-header-controls { display: flex; align-items: center; flex: none; gap: 8px; }
@@ -212,7 +214,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .phase-row, .topbar-actions, .connection, .panel-heading, .inspector-heading, .settings-heading, .settings-actions, .composer-actions {
   display: flex; align-items: center;
 }
-.phase-row { grid-column: 4; gap: 7px; white-space: nowrap; }
+.phase-row { grid-column: 4; gap: 7px; white-space: nowrap; flex-wrap: wrap; }
 .phase-pill {
   display: inline-flex; align-items: center; min-height: 28px; padding: 4px 9px;
   border-radius: 999px; background: rgba(139,184,255,.12); color: var(--blue); font-size: var(--text-label); font-weight: 750;
@@ -223,14 +225,18 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .phase-pill.unavailable { background: rgba(255,139,139,.13); color: var(--danger); }
 .phase-pill.failed { background: rgba(255,139,139,.13); color: var(--danger); }
 .elapsed { color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
+/* Widths follow the readable label ("Context", "Weekly", "Balance $12.34") instead of clipping them. */
 .quota-chip {
-  display: inline-flex; align-items: center; width: 76px; min-height: 28px; padding: 3px 7px;
+  display: inline-flex; align-items: center; width: auto; min-width: 90px; max-width: 100%; min-height: 28px; padding: 3px 8px;
   overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px; color: var(--muted);
   font-size: .62rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap;
 }
-.quota-chip.multiple { width: 144px; }
+.context-chip { min-width: 92px; }
+.quota-chip.multiple { min-width: 150px; max-width: 320px; }
 .quota-chip.stale { opacity: .72; }
-.quota-chip.balance { width: auto; max-width: 168px; }
+.quota-chip.balance { max-width: 240px; gap: 4px; }
+.quota-chip.balance .quota-balance-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-chip.balance .balance-flag { flex: none; color: var(--danger); font-weight: 800; }
 .quota-chip.balance.insufficient { border-color: rgba(255,139,139,.38); color: var(--danger); }
 .quota-window { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1px 4px; }
 .quota-window + .quota-window { margin-left: 6px; padding-left: 6px; border-left: 1px solid var(--line-soft); }
@@ -261,8 +267,9 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .sidebar-close svg { position: absolute; inset: 0; margin: auto; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 .details-toggle svg, .settings-button svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .settings-button { display: grid; place-items: center; padding: 0; }
-/* Both sidebar toggles and the selected task row share one neutral active surface. */
-.details-toggle.active, .destination-button[aria-expanded="true"] { border-color: var(--selected-border); background: var(--selected-bg); color: var(--text); }
+/* Sidebar toggles keep one resting surface whether open or closed; state shows through the icon. */
+.details-toggle .details-pane { fill: none; stroke: none; }
+.details-toggle.active .details-pane { fill: currentColor; }
 .text-button { padding: 5px 8px; background: transparent; color: var(--muted); font-size: var(--text-label); }
 
 .workspace { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; overflow: hidden; }
@@ -566,14 +573,12 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 @media (max-width: 520px) {
-  .phase-row { gap: 4px; }
-  .context-chip { flex: 0 0 58px; }
+  /* Wrap whole meter cards before shrinking their labels or clipping a single-currency amount. */
+  .phase-row { gap: 5px; flex-wrap: wrap; }
   .phase-pill.working { flex-shrink: 0; padding-inline: 6px; }
   .phase-pill { max-width: 126px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .elapsed { display: none; }
-  .quota-chip { width: 72px; padding-inline: 6px; font-size: .6rem; }
-  .quota-chip.multiple { width: 126px; }
-  .quota-chip.balance { max-width: 118px; }
+  .quota-chip { max-width: 100%; }
   .topbar-actions { gap: 4px; }
   .message { margin-bottom: 14px; }
   .message.user { max-width: 94%; }
@@ -664,15 +669,22 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 
 .detail-image { cursor: zoom-in; }
 
-/* The header shares the rows' border/padding geometry so column edges and control centres line up. */
-.machine-settings-header { display: grid; grid-template-columns: minmax(0, 1fr); align-items: end; gap: 8px; padding: 8px 8px 0; border: 1px solid transparent; }
+/* Helper, column labels and + share one grid; the + reserves its own column across both rows. */
+.machine-settings-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; padding: 8px 8px 0; border: 1px solid transparent; }
 .machine-settings-header > span { display: none; }
-.machine-settings-actions-cell { display: flex; align-items: flex-end; justify-content: flex-end; }
+.machine-settings-helper { grid-column: 1; grid-row: 1; margin: 0; }
+.machine-settings-actions-cell { grid-column: 2; grid-row: 1 / 3; display: flex; align-items: flex-end; justify-content: flex-end; }
 .machine-settings-actions-cell > span { display: none; }
 .machine-settings-row [data-machine-ssh] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (min-width: 600px) {
   .machine-settings-header, .machine-settings-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1.3fr) 120px; gap: 8px; }
   .machine-settings-header { padding: 8px 8px 0; color: var(--muted); font-size: var(--text-label); }
+  .machine-settings-helper { grid-column: 1 / 4; grid-row: 1; }
+  .machine-settings-header > span { display: block; grid-row: 2; }
+  .machine-settings-header > span:nth-of-type(1) { grid-column: 1; }
+  .machine-settings-header > span:nth-of-type(2) { grid-column: 2; }
+  .machine-settings-header > span:nth-of-type(3) { grid-column: 3; }
+  .machine-settings-actions-cell { grid-column: 4; grid-row: 1 / 3; }
   .machine-settings-header > span, .machine-settings-actions-cell > span { display: block; }
   /* The add control sits at the right of the Actions header, above the row actions. */
   .machine-settings-actions-cell { justify-content: space-between; }

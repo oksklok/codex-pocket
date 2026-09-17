@@ -747,3 +747,59 @@ test('a late DeepSeek balance response never replaces the OpenAI quota after swi
   assert.equal(gateway.quota.balance, null, 'the late response is ignored while OpenAI is selected');
   assert.deepEqual(gateway.quota.windows.map(window => window.remainingPercent), [62]);
 });
+
+test('balance refresh cooldown applies after every failure type and recovers after it expires', async () => {
+  const good = { is_available: true, balance_infos: [{ currency: 'USD', total_balance: '1.00' }] };
+  const failures = {
+    'network error': () => Promise.reject(new Error('network down')),
+    'HTTP 429': () => Promise.resolve({ ok: false, status: 429, json: async () => ({ error: 'slow down' }) }),
+    'malformed response': () => Promise.resolve({ ok: true, status: 200, json: async () => ({ unexpected: true }) }),
+    'timeout': (url, options) => new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new Error('aborted')))),
+  };
+  let clock = 1_000;
+  for (const [name, failure] of Object.entries(failures)) {
+    let calls = 0;
+    let mode = failure;
+    const monitor = new DeepSeekBalanceMonitor({ key: 'synthetic-key' }, {
+      now: () => clock, minIntervalMs: 5_000, timeoutMs: 10,
+      fetchImpl: (url, options) => { calls += 1; return mode(url, options); },
+    });
+    // An empty cache: the failed attempt still sets the cooldown, so repeated refreshes make no extra request.
+    assert.equal(await monitor.refresh(), null, `${name}: a failure never becomes a value`);
+    assert.equal(calls, 1, `${name}: the first attempt reaches upstream once`);
+    await monitor.refresh();
+    await monitor.refresh();
+    assert.equal(calls, 1, `${name}: repeated refreshes inside the cooldown make no extra request`);
+    clock += 5_000;
+    mode = () => Promise.resolve({ ok: true, status: 200, json: async () => good });
+    const recovered = await monitor.refresh();
+    assert.equal(calls, 2, `${name}: the request resumes only after the cooldown`);
+    assert.equal(recovered.entries[0].total, '1.00', `${name}: recovers to the real balance`);
+    clock += 5_000;
+  }
+  // An expired last-known balance: a failure keeps the successful timestamp and freshness, and cools down too.
+  let calls = 0;
+  let failing = false;
+  const monitor = new DeepSeekBalanceMonitor({ key: 'synthetic-key' }, {
+    now: () => clock, minIntervalMs: 5_000,
+    fetchImpl: () => { calls += 1; return failing ? Promise.reject(new Error('down')) : Promise.resolve({ ok: true, status: 200, json: async () => good }); },
+  });
+  clock += 100_000;
+  const successAt = clock;
+  const first = await monitor.refresh();
+  assert.equal(calls, 1);
+  assert.equal(first.updatedAt, successAt);
+  failing = true;
+  clock += 100_000; // The last-known value is now well past the cooldown interval.
+  const stale = await monitor.refresh();
+  assert.equal(calls, 2);
+  assert.equal(stale.stale, true, 'the kept value is marked stale');
+  assert.equal(stale.updatedAt, successAt, 'a failure never rewrites the successful timestamp');
+  await monitor.refresh();
+  assert.equal(calls, 2, 'an expired last-known value still cools down after a failure');
+  clock += 5_000;
+  failing = false;
+  const recovered = await monitor.refresh();
+  assert.equal(calls, 3);
+  assert.equal(recovered.stale, false, 'a success clears the stale indication');
+});

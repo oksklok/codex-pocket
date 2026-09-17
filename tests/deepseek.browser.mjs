@@ -133,16 +133,32 @@ try {
   await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '83.42' }], updatedAt: 1 });
   assert.equal(await page.locator('#quota-chip').textContent(), 'Balance ¥83.42');
   assert.match(await page.locator('#quota-chip').getAttribute('title'), /CNY 83\.42/);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot('balance-cny-1280');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await shot('balance-cny-1280-light');
+  await page.emulateMedia({ colorScheme: 'dark' });
   await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'USD', total: '12.34' }], updatedAt: 2 });
   assert.equal(await page.locator('#quota-chip').textContent(), 'Balance $12.34');
+  assert.equal(await page.locator('#quota-chip .quota-balance-text').evaluate(node => node.scrollWidth > node.clientWidth + 1), false, 'an ordinary single-currency amount is not clipped');
   // A legitimate zero balance is shown as zero, not treated as a failure.
   await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '0.00' }], updatedAt: 3 });
   assert.equal(await page.locator('#quota-chip').textContent(), 'Balance ¥0.00');
   // is_available drives the insufficient-funds indication.
   await setQuota({ available: true, stale: false, isAvailable: false, entries: [{ currency: 'CNY', total: '0.00' }], updatedAt: 4 });
-  assert.match(await page.locator('#quota-chip').textContent(), /insufficient/);
+  assert.equal(await page.locator('#quota-chip').textContent(), '!Balance ¥0.00');
   assert.equal(await page.locator('#quota-chip').evaluate(node => node.classList.contains('insufficient')), true);
-  assert.match(await page.locator('#quota-chip').getAttribute('title'), /insufficient/);
+  assert.match(await page.locator('#quota-chip').getAttribute('title'), /insufficient funds/);
+  // The flag never truncates, so insufficient funds stay recognizable even when the amount is clipped.
+  await setQuota({ available: true, stale: false, isAvailable: false, entries: [{ currency: 'JPY', total: '123456789012345678901234567890.00' }], updatedAt: 4 });
+  const clipped = await page.locator('#quota-chip').evaluate(node => {
+    const text = node.querySelector('.quota-balance-text');
+    return { flag: Boolean(node.querySelector('.balance-flag')), truncated: text.scrollWidth > text.clientWidth + 1, textOverflow: getComputedStyle(text).textOverflow };
+  });
+  assert.equal(clipped.flag, true);
+  assert.equal(clipped.truncated, true, 'the amount truncates inside its own shrinking span');
+  assert.equal(clipped.textOverflow, 'ellipsis', 'the amount span ellipsizes');
+  assert.equal(await page.locator('#quota-chip .balance-flag').isVisible(), true, 'the insufficient flag stays visible');
   // A malformed or failed fetch shows "Balance —" and is never rendered as zero.
   await setQuota({ available: false, stale: false, isAvailable: null, entries: [], updatedAt: null });
   assert.equal(await page.locator('#quota-chip').textContent(), 'Balance —');
@@ -152,11 +168,43 @@ try {
   assert.equal(await page.locator('#quota-chip').evaluate(node => node.classList.contains('stale')), true);
   assert.match(await page.locator('#quota-chip').getAttribute('title'), /last known/);
   // OpenAI keeps its subscription windows; the balance slot never mixes the two.
-  quotaFixture = { available: true, stale: false, sourceMachineId: 'local', sourceMachine: 'Mac mini', limitName: 'Pro', windows: [{ id: 'primary', label: '5h', remainingPercent: 62, usedPercent: 38, windowDurationMins: 300, resetsAt: null }], updatedAt: 6, balance: null };
+  quotaFixture = { available: true, stale: false, sourceMachineId: 'local', sourceMachine: 'Mac mini', limitName: 'Pro', windows: [{ id: 'primary', label: '5-hour', remainingPercent: 62, usedPercent: 38, windowDurationMins: 300, resetsAt: null }], updatedAt: 6, balance: null };
   selected = normal; push();
   await page.waitForFunction(() => document.querySelector('#quota-chip .quota-window'));
   assert.equal(await page.locator('#quota-chip').evaluate(node => node.classList.contains('balance')), false);
-  assert.equal(await page.locator('#quota-chip').textContent(), '5h62%');
+  assert.equal(await page.locator('#quota-chip').textContent(), '5-hour62%');
+  // Several windows carry their own readable duration labels without clipping.
+  quotaFixture = { available: true, stale: false, sourceMachineId: 'local', sourceMachine: 'Mac mini', limitName: 'Pro', windows: [
+    { id: 'primary', label: 'Weekly', remainingPercent: 88, usedPercent: 12, windowDurationMins: 10_080, resetsAt: null },
+    { id: 'secondary', label: '5-hour', remainingPercent: 41, usedPercent: 59, windowDurationMins: 300, resetsAt: null },
+  ], updatedAt: 6, balance: null };
+  push();
+  await page.waitForFunction(() => document.querySelector('#quota-chip .quota-window + .quota-window'));
+  assert.deepEqual(await page.locator('#quota-chip .quota-label').allTextContents(), ['Weekly', '5-hour']);
+  assert.deepEqual(await page.locator('#quota-chip .quota-percent').allTextContents(), ['88%', '41%']);
+  assert.equal(await page.locator('#quota-chip .quota-label').first().evaluate(node => node.scrollWidth > node.clientWidth + 1), false, 'a normal window label is not clipped');
+  // A narrow screen wraps whole meter cards rather than clipping an ordinary single-currency amount.
+  selected = fallback;
+  await page.setViewportSize({ width: 320, height: 844 });
+  if (await page.locator('#destination-button').getAttribute('aria-expanded') === 'true') {
+    await page.locator('#destination-close').evaluate(node => node.click());
+    await page.waitForFunction(() => document.querySelector('#destination-button').getAttribute('aria-expanded') === 'false');
+    await page.waitForTimeout(220);
+  }
+  await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'USD', total: '12.34' }], updatedAt: 2 });
+  const narrowBalance = await page.evaluate(() => {
+    const text = document.querySelector('#quota-chip .quota-balance-text');
+    const button = document.querySelector('#settings-button').getBoundingClientRect();
+    const details = document.querySelector('#inspector-button').getBoundingClientRect();
+    return {
+      clipped: text.scrollWidth > text.clientWidth + 1,
+      onScreen: button.right <= innerWidth + 0.5 && button.width > 0 && details.right <= innerWidth + 0.5,
+    };
+  });
+  assert.equal(narrowBalance.clipped, false, 'an ordinary amount is not clipped at 320px');
+  assert.equal(narrowBalance.onScreen, true, 'the sidebar controls stay reachable at 320px');
+  await shot('balance-320');
+  await page.setViewportSize({ width: 1280, height: 844 });
   // The same #show-quota preference owns this slot; no separate balance toggle was added.
   assert.equal(await page.locator('#show-quota').count(), 1);
   assert.equal(await page.locator('#show-balance').count(), 0);
@@ -170,13 +218,54 @@ try {
   assert.equal(await page.locator('#provider').textContent(), 'DeepSeek');
   assert.deepEqual(await page.locator('#access-select option').allTextContents(), ['Ask for Approval', 'Full Access']);
 
-  // The provider tag is its own layout item after the truncating machine/task text.
+  // The provider sits immediately after the machine/task text; only the chevron hugs the far right.
   assert.equal(await page.locator('#destination-label').textContent(), 'Mac mini / Same task ID');
   assert.equal(await page.locator('#destination-provider').textContent(), 'DeepSeek');
   assert.deepEqual(
     await page.locator('#destination-button > *').evaluateAll(nodes => nodes.map(node => node.id || node.tagName.toLowerCase())),
-    ['destination-label', 'destination-provider', 'svg']);
+    ['destination-text', 'svg']);
+  const adjacency = () => page.evaluate(() => {
+    const text = document.querySelector('.destination-text');
+    const label = document.querySelector('#destination-label');
+    const badge = document.querySelector('#destination-provider');
+    const chevron = document.querySelector('#destination-button > svg');
+    const button = document.querySelector('#destination-button');
+    return {
+      badgeInsideText: badge.parentElement === text && label.parentElement === text,
+      gap: badge.getBoundingClientRect().left - label.getBoundingClientRect().right,
+      labelClipped: label.scrollWidth > label.clientWidth + 1,
+      badgeVisible: badge.getBoundingClientRect().width > 0,
+      chevronRightInset: button.getBoundingClientRect().right - chevron.getBoundingClientRect().right,
+    };
+  });
+  const shortLayout = await adjacency();
+  assert.equal(shortLayout.badgeInsideText, true, 'the badge sits inside the shrinking text group');
+  assert.ok(shortLayout.gap >= 3 && shortLayout.gap <= 10, `the badge follows the text immediately (gap ${shortLayout.gap})`);
+  assert.equal(shortLayout.chevronRightInset <= 12, true, 'only the chevron stays at the far right');
+  // Mobile keeps the badge adjacent to the (usually untruncated) text too.
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.locator('#destination-button').getAttribute('aria-expanded') === 'true') {
+    await page.locator('#destination-close').evaluate(node => node.click());
+    await page.waitForFunction(() => document.querySelector('#destination-button').getAttribute('aria-expanded') === 'false');
+  }
+  await page.waitForTimeout(120);
+  await shot('destination-390');
+  const mobileLayout = await adjacency();
+  assert.equal(mobileLayout.badgeVisible, true, 'the badge stays visible at 390px');
+  assert.ok(mobileLayout.gap >= 3 && mobileLayout.gap <= 10, 'the badge stays adjacent to the text at 390px');
+  await page.setViewportSize({ width: 1280, height: 844 });
   assert.equal(await page.locator('#destination-button').getAttribute('title'), 'Mac mini / Same task ID [DeepSeek]');
+  // A long task name truncates the text first while the provider badge stays visible and adjacent.
+  const originalThread = fallback.state.thread;
+  fallback.state.thread = { ...selectedTask, name: 'A very long DeepSeek task name that must truncate before the provider tag appears' };
+  selected = fallback; push();
+  await page.waitForFunction(() => document.querySelector('#destination-label').textContent.includes('very long DeepSeek'));
+  const longLayout = await adjacency();
+  assert.equal(longLayout.labelClipped, true, 'a long task name truncates inside its own span');
+  assert.equal(longLayout.badgeVisible, true, 'the provider badge stays visible beside a long name');
+  assert.ok(longLayout.gap >= 3 && longLayout.gap <= 10, 'the badge stays adjacent when the text truncates');
+  fallback.state.thread = originalThread; selected = fallback; push();
+  await page.waitForFunction(() => document.querySelector('#destination-label').textContent === 'Mac mini / Same task ID');
 
   // A long single-model value ellipsizes inside its own control and keeps the full tooltip.
   const detailsModelText = page.locator('#model-select-static .select-static-text');
@@ -217,9 +306,11 @@ try {
   await shot('tasks-1280-dark');
   assert.equal(await page.locator('.destination-group').count(), 2, 'Mac mini and the SSH machine');
   const hostGroup = page.locator('.destination-group').first();
-  assert.equal((await hostGroup.locator('.machine-toggle').textContent()).trim(), 'Mac miniHost');
+  // The visible Host pill is gone; the host designation stays in the accessibility text.
+  assert.equal((await hostGroup.locator('.machine-toggle').textContent()).trim(), 'Mac mini Host');
+  assert.equal(await page.locator('.machine-host-badge').count(), 0, 'no visible Host pill in any heading');
   assert.equal(await hostGroup.locator('.destination-group-heading .machine-provider-badge').count(), 0);
-  assert.equal(await hostGroup.locator('.machine-host-badge').textContent(), 'Host');
+  assert.equal(await hostGroup.locator('.machine-toggle').evaluate(node => node.textContent.includes('Host')), true);
 
   // Rows are ordered globally across providers: newest DeepSeek task first.
   assert.deepEqual(await rowNames(), ['DeepSeek newest', 'Same task ID', 'Same task ID', 'OpenAI older']);
@@ -513,6 +604,12 @@ try {
         })(),
         aboveCards: rect.bottom <= note.getBoundingClientRect().top + 0.5,
         labelsVisible: [...header.querySelectorAll(':scope > span')].some(span => span.offsetParent !== null),
+        helper: (() => {
+          const helper = header.querySelector('.machine-settings-helper');
+          if (!helper) return null;
+          const helperBox = helper.getBoundingClientRect();
+          return { inHeader: helper.parentElement === header, text: helper.textContent, helperRight: helperBox.right, addLeft: rect.left };
+        })(),
       };
     });
     assert.equal(placement.inHeader, true);
@@ -521,6 +618,10 @@ try {
     assert.equal(placement.rightAligned, true, `add control is right aligned at ${width}`);
     assert.equal(placement.aboveCards, true, `add control sits above the cards at ${width}`);
     assert.equal(placement.labelsVisible, width >= 600, `column labels follow the desktop layout at ${width}`);
+    assert.notEqual(placement.helper, null, 'the helper lives in the shared header grid even with an empty list');
+    assert.equal(placement.helper.inHeader, true);
+    assert.match(placement.helper.text, /SSH alias/);
+    assert.ok(placement.helper.helperRight <= placement.helper.addLeft + 0.5, 'the helper never runs under the + control');
     if (width >= 600) {
       // All four header labels bottom-align, including the add control beside "Actions".
       const headerBottoms = await page.evaluate(() => {
@@ -546,20 +647,28 @@ try {
   await page.locator('#settings-screen').waitFor({ state: 'hidden' });
   deepseekError = null;
 
-  // Labels never clip their badge border, including a long machine name.
+  // The machine heading no longer shows a Host pill; a long name truncates and never overlaps the
+  // header controls, and the row provider badge keeps a drawn, transparent border.
   await page.setViewportSize({ width: 390, height: 844 });
   await openSwitcher();
-  const clipping = await page.locator('.destination-group').first().evaluate(group => {
-    const badge = group.querySelector('.machine-host-badge');
-    const box = badge.getBoundingClientRect();
+  const heading = await page.locator('.destination-group').first().evaluate(group => {
+    const name = group.querySelector('.machine-toggle strong');
+    const box = name.getBoundingClientRect();
+    const badge = group.querySelector('.task-provider-badge');
+    const badgeStyle = getComputedStyle(badge);
     return {
-      borderTop: getComputedStyle(badge).borderTopWidth, boxTop: box.top,
-      controlsLeft: group.querySelector('.machine-header-controls').getBoundingClientRect().left, badgeRight: box.right,
+      textOverflow: getComputedStyle(name).textOverflow, nameRight: box.right,
+      controlsLeft: group.querySelector('.machine-header-controls').getBoundingClientRect().left,
+      hostPill: Boolean(group.querySelector('.machine-host-badge')),
+      badgeBorderWidth: badgeStyle.borderTopWidth, badgeBorder: badgeStyle.borderTopColor, badgeBg: badgeStyle.backgroundColor,
     };
   });
-  assert.notEqual(clipping.borderTop, '0px');
-  assert.ok(clipping.boxTop > 0, 'badge has a real box');
-  assert.ok(clipping.badgeRight <= clipping.controlsLeft + 0.5, 'badge never overlaps the header controls');
+  assert.equal(heading.hostPill, false, 'the heading shows no Host pill');
+  assert.equal(heading.textOverflow, 'ellipsis', 'the machine name can truncate');
+  assert.ok(heading.nameRight <= heading.controlsLeft + 0.5, 'the machine name never overlaps the header controls');
+  assert.notEqual(heading.badgeBorderWidth, '0px');
+  assert.notEqual(heading.badgeBorder, 'rgba(0, 0, 0, 0)', 'the row provider badge border is visible');
+  assert.equal(heading.badgeBg, 'rgba(0, 0, 0, 0)', 'the row provider badge stays transparent');
 
   // History that contains a search card makes an otherwise-disabled filter available again.
   historySearch = true;
@@ -570,29 +679,44 @@ try {
   assert.equal(await page.locator('#display-collaboration').evaluate(node => node.closest('label').hidden), true, 'nothing restores an unrelated filter');
   historySearch = false;
 
-  // Selected surfaces share one opaque shade per theme; metadata badges keep a visible border.
+  // The selected row keeps one opaque neutral surface per theme; provider badges keep a visible
+  // border and stay transparent, and the open Tasks toggle keeps its own resting surface.
   await openSwitcher();
   const readSurfaces = () => page.evaluate(() => {
     const row = document.querySelector('.destination-task.selected');
     const button = document.querySelector('#destination-button');
     const badge = document.querySelector('.destination-task.selected .task-provider-badge');
+    const topBadge = document.querySelector('#destination-provider');
+    const style = node => {
+      const computed = getComputedStyle(node);
+      return { bg: computed.backgroundColor, border: computed.borderTopColor, borderWidth: computed.borderTopWidth };
+    };
     return {
-      rowBg: getComputedStyle(row).backgroundColor, rowBorder: getComputedStyle(row).borderTopColor,
-      buttonBg: getComputedStyle(button).backgroundColor, buttonBorder: getComputedStyle(button).borderTopColor,
-      badgeBorder: getComputedStyle(badge).borderTopColor,
+      row: style(row), button: style(button), badge: style(badge), topBadge: style(topBadge),
+      buttonExpanded: button.getAttribute('aria-expanded'),
     };
   });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForTimeout(120);
+  const openButtonBg = (await readSurfaces()).button.bg;
   for (const scheme of ['dark', 'light']) {
     await page.emulateMedia({ colorScheme: scheme });
     await page.waitForTimeout(250);
     await shot(`selected-1280-${scheme}`);
     const surfaces = await readSurfaces();
-    assert.equal(surfaces.rowBg, surfaces.buttonBg, `selected background matches in ${scheme}`);
-    assert.equal(surfaces.rowBorder, surfaces.buttonBorder, `selected border matches in ${scheme}`);
-    assert.ok(!surfaces.rowBg.startsWith('rgba('), 'the selected shade is opaque, not a translucent overlay');
-    assert.notEqual(surfaces.badgeBorder, 'rgba(0, 0, 0, 0)', 'badge border stays visible on a selected row');
+    assert.equal(surfaces.buttonExpanded, 'true');
+    assert.ok(!surfaces.row.bg.startsWith('rgba('), `the selected shade is opaque in ${scheme}`);
+    assert.notEqual(surfaces.row.bg, surfaces.button.bg, `the open Tasks toggle keeps its resting surface in ${scheme}`);
+    for (const kind of ['badge', 'topBadge']) {
+      assert.notEqual(surfaces[kind].borderWidth, '0px', `the ${kind} border is drawn in ${scheme}`);
+      assert.notEqual(surfaces[kind].border, 'rgba(0, 0, 0, 0)', `the ${kind} border stays visible in ${scheme}`);
+      assert.equal(surfaces[kind].bg, 'rgba(0, 0, 0, 0)', `the ${kind} stays transparent in ${scheme}`);
+    }
   }
   await page.emulateMedia({ colorScheme: 'dark' });
+  await closeSwitcher();
+  assert.equal((await readSurfaces()).button.bg, openButtonBg, 'the Tasks toggle keeps one resting surface open or closed');
+  await openSwitcher();
 
   // Task list rhythm: 8px between the search field and the first machine header.
   const rhythm = await page.evaluate(() => (

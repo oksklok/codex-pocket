@@ -826,12 +826,15 @@ function numberTime(value: unknown, fallback = Date.now()): number {
   return fallback;
 }
 
-function quotaWindowLabel(durationMins: number | null, fallback: string): string {
+// One shared wording for the browser meter and the macOS menu, derived from the reported duration
+// rather than assuming a fixed weekly secondary window.
+export function quotaWindowLabel(durationMins: number | null, fallback: string): string {
   if (!durationMins || durationMins <= 0) return fallback;
-  if (durationMins % 10_080 === 0) return `${durationMins / 10_080}w`;
-  if (durationMins % 1_440 === 0) return `${durationMins / 1_440}d`;
-  if (durationMins % 60 === 0) return `${durationMins / 60}h`;
-  return `${durationMins}m`;
+  const plural = (count: number, unit: string) => count === 1 ? unit : `${count}-${unit}`;
+  if (durationMins % 10_080 === 0) { const weeks = durationMins / 10_080; return weeks === 1 ? "Weekly" : plural(weeks, "week"); }
+  if (durationMins % 1_440 === 0) { const days = durationMins / 1_440; return days === 1 ? "Daily" : plural(days, "day"); }
+  if (durationMins % 60 === 0) { const hours = durationMins / 60; return hours === 1 ? "Hourly" : plural(hours, "hour"); }
+  return plural(durationMins, "minute");
 }
 
 function normalizeRateLimits(value: any): RuntimeQuota | null {
