@@ -29,6 +29,7 @@ let selected = normal;
 let deepseekError = null;
 let taskGate = null;
 let taskFail = false;
+let historySearch = false;
 const clients = new Set();
 const selections = [];
 const snapshot = () => ({ ...selected.snapshot(), quota: { available: false, windows: [] }, submissionEpoch: selected === normal ? 'normal' : selected.state.machineId });
@@ -48,7 +49,13 @@ const server = createServer(async (request, response) => {
       tasks: r.state.connected ? TASKS[r.state.machineId] : [],
     })),
   });
-  if (url.pathname === '/api/history') return json({ machineId: selected.state.machineId, threadId: selectedTask.id, turns: [], nextCursor: null });
+  if (url.pathname === '/api/history') return json({
+    machineId: selected.state.machineId, threadId: selectedTask.id, nextCursor: null,
+    turns: historySearch ? [{
+      id: 'history-turn', status: 'completed', messages: [],
+      activities: [{ id: 'history-search', kind: 'search', label: 'Web search', status: 'completed', createdAt: 1 }],
+    }] : [],
+  });
   if (url.pathname === '/api/machines') return json({ machines: [normal, fallback, remote].map(r => r.machineSummary()) });
   if (url.pathname === '/api/tasks/options') return json(OPTIONS[url.searchParams.get('machineId')] || OPTIONS.local);
   if (url.pathname === '/api/tasks') {
@@ -100,12 +107,31 @@ try {
   assert.equal(await input.inputValue(), 'DeepSeek draft');
 
   // Task Details names the provider once: machine value plus an explicit Provider row.
-  assert.match(await page.locator('#destination-label').textContent(), /Mac mini\s*DeepSeek/);
-  assert.equal(await page.locator('#destination-label .machine-provider-badge').textContent(), 'DeepSeek');
   assert.equal(await page.locator('#machine').textContent(), 'Mac mini · macOS');
   assert.equal(await page.locator('#machine .machine-provider-badge').count(), 0);
   assert.equal(await page.locator('#provider').textContent(), 'DeepSeek');
   assert.deepEqual(await page.locator('#access-select option').allTextContents(), ['Ask for Approval', 'Full Access']);
+
+  // The provider tag is its own layout item after the truncating machine/task text.
+  assert.equal(await page.locator('#destination-label').textContent(), 'Mac mini / Same task ID');
+  assert.equal(await page.locator('#destination-provider').textContent(), 'DeepSeek');
+  assert.deepEqual(
+    await page.locator('#destination-button > *').evaluateAll(nodes => nodes.map(node => node.id || node.tagName.toLowerCase())),
+    ['destination-label', 'destination-provider', 'svg']);
+  assert.equal(await page.locator('#destination-button').getAttribute('title'), 'Mac mini / Same task ID [DeepSeek]');
+
+  // Display filters: a positively disabled feature hides its filter, unknown capability never does.
+  const filterHidden = key => page.locator(`#display-${key}`).evaluate(node => node.closest('label').hidden);
+  assert.equal(await filterHidden('search'), true, 'DeepSeek disables web search');
+  assert.equal(await filterHidden('collaboration'), true, 'DeepSeek disables subagents');
+  assert.equal(await filterHidden('reasoning'), false);
+  assert.equal(await filterHidden('review'), false, 'Review tracks code-review events, not the approval reviewer');
+  assert.equal(await filterHidden('images'), false, 'Image filters activity cards, not vision support');
+  // Hide All must not overwrite the saved preference of an inapplicable filter.
+  await page.evaluate(() => localStorage.setItem('codex-pocket-info-display', JSON.stringify({ search: true })));
+  await page.evaluate(() => document.querySelector('#display-hide-all').click());
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('codex-pocket-info-display')).search), true, 'hidden filters keep their saved preference');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('codex-pocket-info-display')).reasoning), false, 'applicable filters still change');
 
   const openSwitcher = async () => {
     if (await page.locator('#destination-button').getAttribute('aria-expanded') !== 'true') await page.locator('#destination-button').click();
@@ -115,11 +141,17 @@ try {
     if (await page.locator('#destination-button').getAttribute('aria-expanded') === 'true') await page.locator('#destination-button').click();
     await page.waitForFunction(() => document.querySelector('#destination-button').getAttribute('aria-expanded') === 'false');
   };
+  const shot = async (name) => {
+    if (process.env.POCKET_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.POCKET_SCREENSHOT_DIR}/${name}.png` });
+  };
   const rows = () => page.locator('.destination-group').first().locator('.destination-entry');
   const rowNames = () => rows().locator('.destination-task-text').allTextContents();
   const rowProviders = () => rows().locator('.task-provider-badge').allTextContents();
 
   await openSwitcher();
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForTimeout(250);
+  await shot('tasks-1280-dark');
   assert.equal(await page.locator('.destination-group').count(), 2, 'Mac mini and the SSH machine');
   const hostGroup = page.locator('.destination-group').first();
   assert.equal((await hostGroup.locator('.machine-toggle').textContent()).trim(), 'Mac miniHost');
@@ -157,11 +189,11 @@ try {
   selections.length = 0;
   // The DeepSeek row is already selected, so switch to the OpenAI twin first and back.
   await rows().nth(2).locator('.destination-task').click();
-  await page.waitForFunction(() => document.querySelector('#destination-label').textContent.includes('OpenAI'));
+  await page.waitForFunction(() => document.querySelector('#destination-provider').textContent === 'OpenAI');
   assert.deepEqual(selections.at(-1), { machineId: 'local', threadId: 'same-thread', expectedMachineId: 'local:deepseek' });
   assert.deepEqual(await page.locator('#access-select option').allTextContents(), ['Ask for Approval', 'Approve for Me', 'Full Access']);
   await rows().nth(1).locator('.destination-task').click();
-  await page.waitForFunction(() => document.querySelector('#destination-label').textContent.includes('DeepSeek'));
+  await page.waitForFunction(() => document.querySelector('#destination-provider').textContent === 'DeepSeek');
   assert.deepEqual(selections.at(-1), { machineId: 'local:deepseek', threadId: 'same-thread', expectedMachineId: 'local' });
   assert.deepEqual(await page.locator('#access-select option').allTextContents(), ['Ask for Approval', 'Full Access']);
 
@@ -193,6 +225,57 @@ try {
   assert.deepEqual(await page.locator('#new-task-model option').allTextContents(), ['GPT-A', 'GPT-B']);
   await page.locator('#new-task-cancel').click();
   await closeSwitcher();
+
+  // New Task layout: Provider and Model take a full row each, Effort and Access share columns.
+  const dialogRects = async (width) => {
+    await page.setViewportSize({ width, height: 844 });
+    await openSwitcher();
+    await page.locator('.destination-group').first().locator('.machine-header-controls .icon-button[aria-label="New task"]').click();
+    await page.locator('#new-task-dialog[open]').waitFor();
+    await page.locator('#new-task-model-static').waitFor();
+    await shot(`new-task-${width}`);
+    if (width === 1280) {
+      await page.emulateMedia({ colorScheme: 'light' });
+      await shot('new-task-1280-light');
+      await page.emulateMedia({ colorScheme: 'dark' });
+    }
+    const rects = await page.evaluate(() => {
+      const box = selector => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+      };
+      return {
+        dialog: box('#new-task-dialog'), name: box('#new-task-name'), cwd: box('#new-task-cwd'),
+        provider: box('#new-task-provider'), model: box('#new-task-model-static'),
+        effort: box('#new-task-effort'), access: box('#new-task-access'),
+        effortField: (() => { const rect = document.querySelector('#new-task-effort').closest('.form-field').getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height }; })(),
+        accessField: (() => { const rect = document.querySelector('#new-task-access').closest('.form-field').getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height }; })(),
+        cwdPlaceholder: getComputedStyle(document.querySelector('#new-task-cwd'), '::placeholder').color,
+      };
+    });
+    await page.locator('#new-task-cancel').click();
+    return rects;
+  };
+  const boxesOverlap = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5
+    && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
+  await page.emulateMedia({ colorScheme: 'dark' });
+  for (const width of [1280, 390]) {
+    const rects = await dialogRects(width);
+    for (const [a, b] of [['name', 'cwd'], ['cwd', 'provider'], ['provider', 'model'], ['model', 'effort'], ['model', 'access'], ['effort', 'access']]) {
+      assert.equal(boxesOverlap(rects[a], rects[b]), false, `${a}/${b} must not overlap at ${width}`);
+    }
+    for (const key of ['provider', 'model']) {
+      assert.ok(rects[key].width > rects.dialog.width * 0.7, `${key} spans the dialog at ${width}`);
+      assert.ok(rects[key].right <= rects.dialog.right, `${key} stays inside the dialog at ${width}`);
+    }
+    assert.equal(Math.round(rects.model.height), Math.round(rects.effort.height), 'read-only value matches the selector height');
+    const baselinePlaceholder = await page.evaluate(() => getComputedStyle(document.querySelector('#destination-search'), '::placeholder').color);
+    assert.equal(rects.cwdPlaceholder, baselinePlaceholder, `dialog placeholders share the same colour at ${width}`);
+    assert.equal(Math.round(rects.effortField.top), Math.round(rects.accessField.top), `Effort and Access share a row at ${width}`);
+    assert.equal(Math.round(rects.effortField.width), Math.round(rects.accessField.width), `Effort and Access keep equal columns at ${width}`);
+    assert.equal(Math.round(rects.accessField.left - rects.effortField.right), 8, `columns keep the grid gap at ${width}`);
+  }
+  await page.setViewportSize({ width: 1280, height: 844 });
 
   // A pending delete follows the current query: hidden for another provider, restored in place.
   await openSwitcher();
@@ -264,6 +347,21 @@ try {
     await page.setViewportSize({ width, height: 844 });
     await page.locator('#settings-button').click();
     await page.locator('#settings-machines-title').waitFor({ state: 'visible' });
+    await page.locator('.machine-settings-header').waitFor({ state: 'attached' });
+    // Scroll the settings card so the machines area is visible in the capture.
+    await page.waitForTimeout(150);
+    await page.evaluate(() => {
+      const card = document.querySelector('.settings-card');
+      const header = document.querySelector('.machine-settings-header');
+      if (card && header) card.scrollTop += header.getBoundingClientRect().top - 60;
+    });
+    await page.waitForTimeout(120);
+    await shot(`settings-machines-${width}`);
+    if (width === 1280) {
+      await page.emulateMedia({ colorScheme: 'light' });
+      await shot('settings-machines-1280-light');
+      await page.emulateMedia({ colorScheme: 'dark' });
+    }
     assert.equal(await page.locator('#settings-deepseek').isVisible(), false, 'no DeepSeek toggle without an error');
     const glyph = await page.locator('#settings-close svg').evaluate(svg => ({
       fill: getComputedStyle(svg).fill, stroke: getComputedStyle(svg).stroke,
@@ -274,8 +372,30 @@ try {
     assert.ok(glyph.width > 10 && glyph.height > 10, 'settings X has a drawn box');
     assert.equal(await page.locator('#machine-add').getAttribute('aria-label'), 'Add SSH machine');
     const before = await page.locator('.machine-settings-row').count();
+    // With no machines configured the single add control is still present, right aligned and never aria-hidden.
+    const placement = await page.evaluate(() => {
+      const button = document.querySelector('#machine-add');
+      const header = document.querySelector('.machine-settings-header');
+      const note = document.querySelector('.machine-settings-empty') || document.querySelector('.machine-settings-row');
+      const rect = button.getBoundingClientRect();
+      return {
+        inHeader: Boolean(button.closest('.machine-settings-actions-cell')) && header.contains(button),
+        ariaHiddenAncestor: Boolean(button.closest('[aria-hidden="true"]')),
+        visible: rect.width > 0 && rect.height > 0,
+        rightAligned: header.getBoundingClientRect().right - rect.right <= 9,
+        aboveCards: rect.bottom <= note.getBoundingClientRect().top + 0.5,
+        labelsVisible: [...header.querySelectorAll(':scope > span')].some(span => span.offsetParent !== null),
+      };
+    });
+    assert.equal(placement.inHeader, true);
+    assert.equal(placement.ariaHiddenAncestor, false, 'the add control is never under aria-hidden');
+    assert.equal(placement.visible, true, 'add control stays available with an empty list');
+    assert.equal(placement.rightAligned, true, `add control is right aligned at ${width}`);
+    assert.equal(placement.aboveCards, true, `add control sits above the cards at ${width}`);
+    assert.equal(placement.labelsVisible, width >= 600, `column labels follow the desktop layout at ${width}`);
     await page.locator('#machine-add').click();
     assert.equal(await page.locator('.machine-settings-row').count(), before + 1);
+    assert.equal(await page.locator('.machine-settings-row').last().locator('[data-machine-name]').evaluate(node => node === document.activeElement), true, 'focus lands on the new row');
     await page.locator('#settings-close').click();
     await page.locator('#settings-screen').waitFor({ state: 'hidden' });
   }
@@ -304,6 +424,60 @@ try {
   assert.ok(clipping.boxTop > 0, 'badge has a real box');
   assert.ok(clipping.badgeRight <= clipping.controlsLeft + 0.5, 'badge never overlaps the header controls');
 
+  // History that contains a search card makes an otherwise-disabled filter available again.
+  historySearch = true;
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#destination-label')?.textContent.includes('Same task ID'));
+  assert.equal(await page.locator('#display-search').evaluate(node => node.closest('label').hidden), false, 'a search card in history restores its filter');
+  assert.equal(await page.locator('#display-collaboration').evaluate(node => node.closest('label').hidden), true, 'nothing restores an unrelated filter');
+  historySearch = false;
+
+  // Selected surfaces share one opaque shade per theme; metadata badges keep a visible border.
+  await openSwitcher();
+  const readSurfaces = () => page.evaluate(() => {
+    const row = document.querySelector('.destination-task.selected');
+    const button = document.querySelector('#destination-button');
+    const badge = document.querySelector('.destination-task.selected .task-provider-badge');
+    return {
+      rowBg: getComputedStyle(row).backgroundColor, rowBorder: getComputedStyle(row).borderTopColor,
+      buttonBg: getComputedStyle(button).backgroundColor, buttonBorder: getComputedStyle(button).borderTopColor,
+      badgeBorder: getComputedStyle(badge).borderTopColor,
+    };
+  });
+  for (const scheme of ['dark', 'light']) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.waitForTimeout(250);
+    await shot(`selected-1280-${scheme}`);
+    const surfaces = await readSurfaces();
+    assert.equal(surfaces.rowBg, surfaces.buttonBg, `selected background matches in ${scheme}`);
+    assert.equal(surfaces.rowBorder, surfaces.buttonBorder, `selected border matches in ${scheme}`);
+    assert.ok(!surfaces.rowBg.startsWith('rgba('), 'the selected shade is opaque, not a translucent overlay');
+    assert.notEqual(surfaces.badgeBorder, 'rgba(0, 0, 0, 0)', 'badge border stays visible on a selected row');
+  }
+  await page.emulateMedia({ colorScheme: 'dark' });
+
+  // Task list rhythm: 8px between the search field and the first machine header.
+  const rhythm = await page.evaluate(() => (
+    document.querySelector('.destination-group-heading').getBoundingClientRect().top
+      - document.querySelector('.destination-search').getBoundingClientRect().bottom
+  ));
+  assert.equal(Math.round(rhythm), 8);
+
+  // One placeholder treatment, inheriting each field's typography.
+  const placeholders = await page.evaluate(() => {
+    const read = selector => {
+      const node = document.querySelector(selector);
+      return { placeholder: getComputedStyle(node, '::placeholder').color, size: getComputedStyle(node, '::placeholder').fontSize, value: getComputedStyle(node).fontSize };
+    };
+    return { search: read('#destination-search'), composer: read('#message-text') };
+  });
+  assert.equal(placeholders.search.size, placeholders.search.value, 'placeholder inherits the search typography');
+  assert.equal(placeholders.search.size, '16px', 'task search text stays 16px');
+  assert.equal(placeholders.composer.size, '16px', 'composer text stays 16px');
+  assert.equal(placeholders.composer.size, placeholders.composer.value);
+  const placeholderColor = placeholders.search.placeholder;
+
   // First desktop launch opens both sidebars in a fresh profile; saved preferences always win.
   const origin = `http://127.0.0.1:${server.address().port}`;
   const desktop = await browser.newContext({ viewport: { width: 1280, height: 844 } });
@@ -326,5 +500,5 @@ try {
   assert.equal(await mobilePage.locator('#app-shell').evaluate(node => node.classList.contains('inspector-closed')), true, 'details overlay stays closed on mobile');
   assert.equal(await mobilePage.evaluate(() => localStorage.getItem('codex-pocket-tasks-open')), null, 'mobile never stores a desktop sidebar preference');
   await mobile.close();
-  console.log('PASS: one physical-machine group ordered globally across providers, separate machine/provider search, pending-delete rows follow the current query and keep their pinned slot, group-wide create busy state, single provider presentation in Task Details, provider-qualified action labels where needed, no DeepSeek toggle (error only), Settings X drawn, unclipped badge borders, SSH + control at both widths, and desktop first-launch sidebars open');
+  console.log('PASS: one physical-machine group with provider tag after the task text, shared selected surfaces in both themes, capability-aware Display filters with history exceptions, New Task full-width Provider/Model rows with Effort+Access columns at desktop and mobile, placeholder typography, 8px list rhythm, SSH add control beside Actions and above the cards, global provider ordering, separate machine/provider search, pending-delete visibility and pinning, group-wide create busy state, provider-qualified labels, and desktop first-launch sidebars');
 } finally { await browser.close(); server.closeAllConnections(); for (const response of clients) response.end(); await new Promise(resolve => server.close(resolve)); }

@@ -624,7 +624,9 @@ try {
  await page.waitForFunction(()=>document.querySelector('meta[name="theme-color"]').content==='#f6f8fa');
 
  for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).isVisible(),width<600);
- assert.equal(await page.locator('.machine-settings-header').isVisible(),width>=600);
+ // The header row always exists (it holds the add control); its column labels are desktop-only.
+ assert.equal(await page.locator('.machine-settings-header').isVisible(),true);
+ assert.equal(await page.locator('.machine-settings-header > span').first().isVisible(),width>=600);
  if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Wake MAC (optional)','Actions']);}
  assert.equal(await page.getByRole('button',{name:'Move Laptop up',exact:true}).isDisabled(),true);
  assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
@@ -830,7 +832,7 @@ try {
  assert.equal(oneLineHeight,40);
  if(width>=1100)assert(await row('Owned task').locator('.task-selection-error').evaluate(e=>Math.abs(e.getBoundingClientRect().height-parseFloat(getComputedStyle(e).lineHeight))<0.1));
  const spacing=await page.evaluate(()=>({gap:document.querySelector('.destination-group-heading').getBoundingClientRect().top-document.querySelector('#destination-search').getBoundingClientRect().bottom,nextPadding:getComputedStyle(document.querySelectorAll('.destination-group')[1]).paddingTop,nextBorder:getComputedStyle(document.querySelectorAll('.destination-group')[1]).borderTopWidth}));
- assert(spacing.gap>=0&&spacing.gap<=6,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
+ assert.equal(Math.round(spacing.gap),8,JSON.stringify(spacing));assert.equal(spacing.nextPadding,'12px');assert.equal(spacing.nextBorder,'1px');
  await settingsOpen();await page.locator('#show-projects').evaluate(e=>{e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});await settingsSave();
  await row('Current task').locator('.task-project').waitFor();await aligned(row('Current task'));await centered();
  assert(await row('Current task').locator('.destination-task').evaluate(e=>{const r=e.getBoundingClientRect(),name=e.querySelector('.destination-task-label > span').getBoundingClientRect(),sub=e.querySelector('small').getBoundingClientRect();return r.height>=58&&sub.top-name.bottom>=4&&r.bottom-sub.bottom>=8;}));

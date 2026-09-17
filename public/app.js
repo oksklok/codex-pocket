@@ -41,6 +41,7 @@ const elements = {
   project: document.querySelector("#project"),
   destinationButton: document.querySelector("#destination-button"),
   destinationLabel: document.querySelector("#destination-label"),
+  destinationProvider: document.querySelector("#destination-provider"),
   destinationSwitcher: document.querySelector("#destination-switcher"),
   destinationBackdrop: document.querySelector("#destination-backdrop"),
   destinationSearch: document.querySelector("#destination-search"),
@@ -680,12 +681,11 @@ function renderDestinationButton() {
   const provider = providerName(machine?.provider);
   const selectedThread = loadedThreads.find((thread) => thread.id === state?.thread?.id) || state?.thread;
   const taskName = selectedThread ? threadLabel(selectedThread) : state?.connected ? "No saved task" : "Unavailable";
-  // The provider stays visible next to the name without changing the machine's own name.
-  elements.destinationLabel.replaceChildren(machineName);
-  const badge = providerBadge(machine?.provider);
-  if (badge) elements.destinationLabel.append(" ", badge);
-  elements.destinationLabel.append(` / ${taskName}`);
-  elements.destinationButton.title = `${provider ? `${machineName} [${provider}]` : machineName} / ${taskName}`;
+  // Machine / task truncates on its own; the provider tag is a separate item after it.
+  elements.destinationLabel.textContent = `${machineName} / ${taskName}`;
+  elements.destinationProvider.textContent = provider || "";
+  elements.destinationProvider.hidden = !provider;
+  elements.destinationButton.title = provider ? `${machineName} / ${taskName} [${provider}]` : `${machineName} / ${taskName}`;
   elements.destinationButton.disabled = submittingMessage || updatingModel
     || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
 }
@@ -1255,8 +1255,37 @@ function renderPlan() {
   }
 }
 
+// Each Display option filters its own activity kind; the key matches the saved preference name.
+const DISPLAY_ACTIVITY_KINDS = [
+  ["reasoning", "reasoning"], ["command", "command"], ["tool", "tool"], ["search", "search"],
+  ["files", "files"], ["collaboration", "collaboration"], ["images", "image"], ["review", "review"],
+  ["compaction", "compaction"],
+];
+const DISPLAY_CONTROLS = {
+  reasoning: elements.displayReasoning, command: elements.displayCommands, tool: elements.displayTool,
+  search: elements.displaySearch, files: elements.displayFiles, collaboration: elements.displayCollaboration,
+  images: elements.displayImages, review: elements.displayReview, compaction: elements.displayCompaction,
+};
+
+// Historical or live activity for a kind means its filter still matters, even if the runtime
+// currently disables the feature that produced it.
+function activityKindPresent(kind) {
+  for (const activity of liveActivities.values()) if (activity.kind === kind) return true;
+  for (const activity of historyActivities.values()) if (activity.kind === kind) return true;
+  for (const activity of state?.activities || []) if (activity.kind === kind) return true;
+  return false;
+}
+
 function renderDisplayControls() {
   const preferences = settingsDisplayDraft || displayPreferences;
+  // A filter is hidden only when the runtime positively disables the feature AND the task has no
+  // activity of that kind; unknown capability never hides a control.
+  const capabilities = state?.capabilities || {};
+  for (const [key, kind] of DISPLAY_ACTIVITY_KINDS) {
+    const control = DISPLAY_CONTROLS[key];
+    const supported = capabilities[kind] !== false || activityKindPresent(kind);
+    if (control) control.closest("label").hidden = !supported;
+  }
   elements.displayFiles.checked = preferences.files;
   elements.displayCommands.checked = preferences.command;
   elements.displayTool.checked = preferences.tool;
@@ -2184,6 +2213,8 @@ function activityNode(activity) {
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
   observeTranscriptSelection();
   deferredTranscript = false;
+  // Loading history can introduce activity kinds whose filters were hidden as unsupported.
+  renderDisplayControls();
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
   const messages = reconcileConfirmedSteers([...all.values()]).sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
@@ -3414,6 +3445,20 @@ function updateSettingsSave() {
 function renderMachineSettings(values) {
   elements.settingsMachines.replaceChildren();
   const configured = Array.isArray(values) ? values : [];
+  // The header always renders so the add control stays available even with no machines.
+  const header = document.createElement("div");
+  header.className = "machine-settings-header";
+  for (const text of ["Display Name", "SSH Alias", "Wake MAC (optional)"]) {
+    header.append(Object.assign(document.createElement("span"), { textContent: text, ariaHidden: "true" }));
+  }
+  // The add control lives in the Actions header cell (right-aligned, above the row actions) and is
+  // moved out of the heading so a single accessible control exists at every width.
+  const actionsCell = document.createElement("div");
+  actionsCell.className = "machine-settings-actions-cell";
+  actionsCell.append(Object.assign(document.createElement("span"), { textContent: "Actions", ariaHidden: "true" }));
+  actionsCell.append(elements.machineAdd);
+  header.append(actionsCell);
+  elements.settingsMachines.append(header);
   if (!configured.length) {
     const empty = document.createElement("p");
     empty.className = "machine-settings-empty";
@@ -3422,11 +3467,6 @@ function renderMachineSettings(values) {
     updateSettingsSave();
     return;
   }
-  const header = document.createElement("div");
-  header.className = "machine-settings-header";
-  header.setAttribute("aria-hidden", "true");
-  for (const text of ["Display Name", "SSH Alias", "Wake MAC (optional)", "Actions"]) header.append(Object.assign(document.createElement("span"), { textContent: text }));
-  elements.settingsMachines.append(header);
   configured.forEach((machine, index) => {
     const row = document.createElement("div");
     row.className = "machine-settings-row";
@@ -3756,7 +3796,12 @@ for (const [element, key] of [
 
 for (const [id, visible] of [["display-show-all", true], ["display-hide-all", false]]) {
   document.getElementById(id).addEventListener("click", () => {
-    for (const key of ["reasoning", "command", "tool", "search", "files", "collaboration", "images", "review", "compaction"]) (settingsDisplayDraft || displayPreferences)[key] = visible;
+    const preferences = settingsDisplayDraft || displayPreferences;
+    // Hidden categories keep whatever the user saved for them.
+    for (const [key, control] of Object.entries(DISPLAY_CONTROLS)) {
+      if (control?.closest("label")?.hidden) continue;
+      preferences[key] = visible;
+    }
     if (settingsDisplayDraft) { renderDisplayControls(); updateSettingsSave(); return; }
     saveDisplayPreferences();
     renderDisplayControls();

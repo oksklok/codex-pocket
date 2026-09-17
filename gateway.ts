@@ -12,7 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
-import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekCredentialStatus, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
+import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStatus, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
@@ -1986,6 +1986,7 @@ export class MachineRuntime {
     const snapshot = JSON.parse(JSON.stringify(this.state));
     delete snapshot.metrics;
     snapshot.message = this.messageCapability();
+    snapshot.capabilities = this.activityCapabilities();
     snapshot.asyncAnswers = this.asyncAnswers;
     snapshot.taskNameWarning = this.pendingTaskNames.get(this.state.thread?.id ?? "")?.warning ?? null;
     snapshot.taskTerminalResults = { ...this.terminalResults };
@@ -4240,6 +4241,17 @@ export class MachineRuntime {
 
   private computePhase(): PocketState["phase"] {
     return pocketPhase(this.state) as PocketState["phase"];
+  }
+
+  // Activity kinds this runtime's configuration positively disables. `null` means unknown, which
+  // the client must treat as "not unsupported" rather than hiding the filter.
+  private activityCapabilities(): JsonObject {
+    if (!this.deepseek) return { search: null, collaboration: null };
+    const config = deepseekConfig(this.deepseek.home);
+    return {
+      search: config.web_search !== "disabled",
+      collaboration: config["features.multi_agent"] !== false,
+    };
   }
 
   private messageCapability(): JsonObject {
