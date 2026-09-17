@@ -248,6 +248,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 #access-select.full-access {
   border-color: rgba(255,139,139,.48); background: rgba(255,139,139,.12); color: var(--danger); font-weight: 750;
 }
+/* Keyboard focus strengthens the warning tint while the border and readable text stay unchanged. */
+#access-select.full-access:focus-visible { background-color: rgba(255,139,139,.26); }
 .topbar-actions { grid-column: 5; justify-content: flex-end; gap: 7px; }
 .connection { display: none; }
 
@@ -812,7 +814,11 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .activity-chevron svg, .machine-row-actions .text-button svg { width: 16px; height: 16px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 /* Caret-less controls show keyboard focus through a restrained existing background shade (never a
-   perimeter effect). Text fields are intentionally absent: their caret and selection are the cue. */
-:is(button, summary, [role="button"]):focus-visible { background-color: var(--selected-bg); }
+   perimeter effect). Text fields are intentionally absent: their caret and selection are the cue.
+   The translucent backdrops and the image viewer's close control keep their own treatments below. */
+:is(button, summary, [role="button"]):not(.destination-backdrop):not(.inspector-backdrop):not(#close-image):focus-visible { background-color: var(--selected-bg); }
 select:focus-visible { background-color: var(--selected-bg); }
 :is(.checkbox-row, .enter-preference, .display-option, .input-choice, .tasks-archived):has(input:focus-visible) { background-color: var(--selected-bg); border-radius: 6px; }
+/* The image viewer stays dark in both themes, so its close control brightens to a still-dark shade
+   that keeps the white icon readable. */
+.image-viewer button:focus-visible { background-color: #444444; }

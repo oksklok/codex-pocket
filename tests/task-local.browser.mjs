@@ -808,7 +808,26 @@ try {
  await page.locator('#image-viewer').click({position:{x:5,y:60}});
  assert.equal(await page.locator('#image-viewer').evaluate(e=>e.open),false);
  await img.click();await page.locator('#image-viewer').waitFor();
- await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();await page.locator('#close-image').click();await card.locator('.activity-summary').click();
+ await page.locator('#close-image').click();await img.click();await page.locator('#image-viewer').waitFor();
+ // The image viewer stays dark in both themes: focus brightens the close control without a ring and
+ // keeps the white icon readable.
+ const luma=value=>{const match=/rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(value);if(!match)return null;const [r,g,b]=[1,2,3].map(i=>{const c=Number(match[i])/255;return c<=0.03928?c/12.92:((c+0.055)/1.055)**2.4;});return 0.2126*r+0.7152*g+0.0722*b;};
+ const contrast=(a,b)=>{const [hi,lo]=[luma(a),luma(b)].sort((x,y)=>y-x);return (hi+0.05)/(lo+0.05);};
+ for(const scheme of ['dark','light']){
+ await page.emulateMedia({colorScheme:scheme});await page.waitForTimeout(80);
+ await page.evaluate(()=>document.activeElement?.blur());
+ const rest=await page.locator('#close-image').evaluate(e=>getComputedStyle(e).backgroundColor);
+ await page.keyboard.press('Tab');await page.locator('#close-image').focus();
+ const focus=await page.locator('#close-image').evaluate(e=>{const s=getComputedStyle(e);return {matched:e.matches(':focus-visible'),outline:s.outlineStyle,bg:s.backgroundColor,color:s.color};});
+ assert.equal(focus.matched,true);
+ assert.equal(focus.outline,'none',`the image close button has no ring in ${scheme}`);
+ assert.notEqual(focus.bg,rest,`the image close button changes on focus in ${scheme}`);
+ assert(contrast(focus.bg,'rgb(255, 255, 255)')>=4.5,`the white icon stays readable on the focused close button in ${scheme}`);
+ assert.equal(focus.color,'rgb(255, 255, 255)',`the close icon stays white in ${scheme}`);
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/focus-close-image-${scheme}.png`});
+ }
+ await page.emulateMedia({colorScheme:'dark'});
+ await page.locator('#close-image').click();await card.locator('.activity-summary').click();
  }
  const geometry=()=>page.evaluate(()=>({
  panels:[...document.querySelectorAll('.chat-panel, #composer, #conversation')].map(e=>({width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height,x:e.getBoundingClientRect().x})),
@@ -1424,36 +1443,46 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.reload();await page.locator('[data-message-id="draft-scroll"]').waitFor();await page.waitForTimeout(200);
  const transcriptScroll=()=>page.evaluate(desktop=>{const s=desktop?document.querySelector('#conversation'):document.scrollingElement;return {top:Math.round(s.scrollTop),max:Math.round(s.scrollHeight-s.clientHeight)};},desktop);
  const draftState=()=>input.evaluate(e=>({top:Math.round(e.scrollTop),max:Math.round(e.scrollHeight-e.clientHeight),overflowY:getComputedStyle(e).overflowY,overscrollY:getComputedStyle(e).overscrollBehaviorY,scrollbarWidth:getComputedStyle(e).scrollbarWidth}));
- await input.fill(Array.from({length:40},(_,i)=>`Draft line ${i}`).join('\n'));
- await page.waitForTimeout(150);
+ // A genuinely overflowing draft, at both compact and expanded sizes.
+ const longDraft=Array.from({length:80},(_,i)=>`Draft line ${i}`).join('\n');
+ const runBoundaries=async mode=>{
+ await input.fill(longDraft);
+ await page.waitForTimeout(180);
  // fill() scrolls the focused composer into view, so park the transcript mid-list afterwards to make
  // chaining in either direction observable.
  await page.evaluate(desktop=>{const s=desktop?document.querySelector('#conversation'):document.scrollingElement;s.scrollTop=Math.round((s.scrollHeight-s.clientHeight)/2);},desktop);
  await page.waitForTimeout(120);
  const before=await transcriptScroll();
- assert(before.max>50&&before.top>50&&before.top<before.max-50,'the transcript is parked mid-list');
+ assert(before.max>50&&before.top>50&&before.top<before.max-50,`${mode}: the transcript is parked mid-list`);
  const box=await input.boundingBox();
  await page.mouse.move(box.x+box.width/2,box.y+Math.min(10,box.height/2));
  // Bottom boundary: force the draft fully down, then keep wheeling.
  await input.evaluate(e=>{e.scrollTop=e.scrollHeight;});
  await page.mouse.wheel(0,500);await page.mouse.wheel(0,500);await page.waitForTimeout(150);
  const atBottom=await draftState();
- assert(atBottom.max>0,`the long draft overflows internally at ${width}`);
- assert.equal(atBottom.top,atBottom.max,'the draft reaches its own bottom');
- assert.equal(atBottom.overflowY,'auto','overflow scrolling stays enabled');
- assert.equal(atBottom.scrollbarWidth,'none','the composer scrollbar is hidden without disabling scrolling');
- assert.deepEqual(await transcriptScroll(),before,'wheel past the draft bottom leaves the transcript stationary');
- assert.equal(atBottom.overscrollY,'contain','the draft contains scroll chaining');
+ assert(atBottom.max>0,`${mode}: the long draft overflows internally at ${width}`);
+ assert.equal(atBottom.top,atBottom.max,`${mode}: the draft reaches its own bottom`);
+ assert.equal(atBottom.overflowY,'auto',`${mode}: overflow scrolling stays enabled`);
+ assert.equal(atBottom.scrollbarWidth,'none',`${mode}: the composer scrollbar is hidden without disabling scrolling`);
+ assert.deepEqual(await transcriptScroll(),before,`${mode}: wheel past the draft bottom leaves the transcript stationary`);
+ assert.equal(atBottom.overscrollY,'contain',`${mode}: the draft contains scroll chaining`);
  // Top boundary.
  await input.evaluate(e=>{e.scrollTop=0;});
  await page.mouse.wheel(0,-500);await page.mouse.wheel(0,-500);await page.waitForTimeout(150);
- assert.equal((await draftState()).top,0,'the draft reaches its own top');
- assert.deepEqual(await transcriptScroll(),before,'wheel past the draft top leaves the transcript stationary');
- // Moving the pointer over the transcript restores ordinary conversation scrolling.
+ assert.equal((await draftState()).top,0,`${mode}: the draft reaches its own top`);
+ assert.deepEqual(await transcriptScroll(),before,`${mode}: wheel past the draft top leaves the transcript stationary`);
+ return before;
+ };
+ await runBoundaries('compact');
+ await page.locator('#expand-composer').evaluate(e=>e.click());await page.waitForTimeout(250);
+ await runBoundaries('expanded');
+ await page.locator('#expand-composer').evaluate(e=>e.click());await page.waitForTimeout(250);
+ // Moving the pointer over the transcript restores ordinary conversation scrolling (compact mode).
+ const parked=await transcriptScroll();
  const transcriptBox=await page.locator('#conversation').boundingBox();
  await page.mouse.move(transcriptBox.x+transcriptBox.width/2,transcriptBox.y+40);
  await page.mouse.wheel(0,400);await page.waitForTimeout(150);
- assert.notDeepEqual(await transcriptScroll(),before,'the transcript scrolls again with the pointer over it');
+ assert.notDeepEqual(await transcriptScroll(),parked,'the transcript scrolls again with the pointer over it');
  if(process.env.POCKET_SCREENSHOT_DIR){
  await page.emulateMedia({colorScheme:'dark'});await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-compact-${width}-dark.png`});
  await page.locator('#expand-composer').evaluate(e=>e.click());await page.waitForTimeout(250);
@@ -1470,41 +1499,78 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.setViewportSize({width,height:844});
  Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
- const focusedStyle=async selector=>{const locator=page.locator(selector).first();await page.keyboard.press('Tab');await locator.focus();return locator.evaluate(node=>{const s=getComputedStyle(node);return {focused:node.matches(':focus-visible'),outline:s.outlineStyle,outlineWidth:s.outlineWidth,shadow:s.boxShadow,border:s.borderTopColor,bg:s.backgroundColor};});};
- const composerBefore=await input.evaluate(e=>{const s=getComputedStyle(e);return {border:s.borderTopColor,bg:s.backgroundColor};});
+ const restStyle=node=>{const s=getComputedStyle(node);return {bg:s.backgroundColor,border:s.borderTopColor,color:s.color};};
+ // Compares the real resting and focused appearances, not just "background is nontransparent".
+ const focusDelta=async selector=>{
+ const locator=page.locator(selector).first();
+ await page.evaluate(()=>document.activeElement?.blur());
+ const resting=await locator.evaluate(restStyle);
+ await page.keyboard.press('Tab');await locator.focus();
+ const focused=await locator.evaluate(node=>{const s=getComputedStyle(node);return {matched:node.matches(':focus-visible'),outline:s.outlineStyle,shadow:s.boxShadow,bg:s.backgroundColor,border:s.borderTopColor,color:s.color};});
+ return {resting,focused};
+ };
+ const composerBefore=await input.evaluate(restStyle);
  await page.keyboard.press('Tab');await input.focus();
- const composer=await input.evaluate(e=>{const s=getComputedStyle(e);return {focused:e.matches(':focus-visible'),outline:s.outlineStyle,outlineWidth:s.outlineWidth,shadow:s.boxShadow,border:s.borderTopColor,bg:s.backgroundColor};});
- assert.equal(composer.focused,true);
+ const composer=await input.evaluate(node=>{const s=getComputedStyle(node);return {matched:node.matches(':focus-visible'),outline:s.outlineStyle,shadow:s.boxShadow,border:s.borderTopColor,bg:s.backgroundColor};});
+ assert.equal(composer.matched,true);
  assert.equal(composer.outline,'none','the composer has no focus ring');
  assert.equal(composer.shadow,'none');
- assert.deepEqual({border:composer.border,bg:composer.bg},composerBefore,'the composer keeps its ordinary appearance on focus');
+ assert.equal(composer.bg,composerBefore.bg,'the composer keeps its ordinary background on focus');
+ assert.equal(composer.border,composerBefore.border,'the composer keeps its ordinary border on focus');
  assert.equal(await input.evaluate(e=>{e.value='Caret check';e.setSelectionRange(4,4);return e.selectionStart;}),4,'the caret and selection still work');
  await input.fill('');
  await open();await page.waitForTimeout(210);
- const search=await focusedStyle('#destination-search');
- assert.equal(search.focused,true);assert.equal(search.outline,'none','the task search has no focus ring');
+ const search=await focusDelta('#destination-search');
+ assert.equal(search.focused.matched,true);assert.equal(search.focused.outline,'none','the task search has no focus ring');
+ assert.equal(search.focused.bg,search.resting.bg,'the task search keeps its ordinary background on focus');
+ assert.equal(search.focused.border,search.resting.border,'the task search keeps its ordinary border on focus');
  await dismissTasks();await closed();
  await settingsOpen();
- const host=await focusedStyle('#settings-host');
- assert.equal(host.outline,'none','settings text fields have no focus ring');
- const theme=await focusedStyle('#settings-theme');
- assert.equal(theme.outline,'none','settings selects have no focus ring');
- assert.notEqual(theme.bg,'rgba(0, 0, 0, 0)','selects still show keyboard focus');
- const checkbox=await focusedStyle('#show-quota');
- assert.equal(checkbox.outline,'none','settings checkboxes have no focus ring');
- assert.notEqual(await page.locator('label.checkbox-row:has(#show-quota)').evaluate(node=>getComputedStyle(node).backgroundColor),'rgba(0, 0, 0, 0)','the checkbox row shows keyboard focus without a ring');
- const cancel=await focusedStyle('#settings-cancel');
- assert.equal(cancel.outline,'none','buttons have no focus ring');
- assert.notEqual(cancel.bg,'rgba(0, 0, 0, 0)','buttons still show keyboard focus');
+ const host=await focusDelta('#settings-host');
+ assert.equal(host.focused.outline,'none','settings text fields have no focus ring');
+ assert.equal(host.focused.bg,host.resting.bg,'settings text fields keep their ordinary background on focus');
+ assert.equal(host.focused.border,host.resting.border,'settings text fields keep their ordinary border on focus');
+ const theme=await focusDelta('#settings-theme');
+ assert.equal(theme.focused.outline,'none','settings selects have no focus ring');
+ assert.notEqual(theme.focused.bg,theme.resting.bg,'settings selects change appearance on keyboard focus');
+ const rowBefore=await page.locator('label.checkbox-row:has(#show-quota)').evaluate(node=>getComputedStyle(node).backgroundColor);
+ const checkbox=await focusDelta('#show-quota');
+ assert.equal(checkbox.focused.outline,'none','settings checkboxes have no focus ring');
+ const rowAfter=await page.locator('label.checkbox-row:has(#show-quota)').evaluate(node=>getComputedStyle(node).backgroundColor);
+ assert.notEqual(rowAfter,rowBefore,'the checkbox row changes appearance on keyboard focus');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/focus-settings-${width}.png`});
+ const cancel=await focusDelta('#settings-cancel');
+ assert.equal(cancel.focused.outline,'none','buttons have no focus ring');
+ assert.notEqual(cancel.focused.bg,cancel.resting.bg,'buttons change appearance on keyboard focus');
  await page.locator('#settings-close').click();await page.locator('#settings-screen').waitFor({state:'hidden'});
  if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
  await page.waitForTimeout(200);
  await page.locator('#access-select').evaluate(e=>e.classList.add('full-access'));
- const full=await focusedStyle('#access-select');
- assert.equal(full.outline,'none');
- assert.match(full.border,/255,\s*139,\s*139/,'the Full Access border stays');
- assert.match(full.bg,/255,\s*139,\s*139/,'the Full Access background stays');
+ const full=await focusDelta('#access-select');
+ assert.equal(full.focused.outline,'none');
+ assert.match(full.resting.bg,/255,\s*139,\s*139/,'Full Access keeps its warning tint');
+ assert.notEqual(full.focused.bg,full.resting.bg,'Full Access changes appearance on keyboard focus');
+ assert.equal(full.focused.border,full.resting.border,'Full Access keeps its warning border on focus');
+ assert.equal(full.focused.color,full.resting.color,'Full Access keeps its readable warning text on focus');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/focus-full-access-${width}.png`});
  await page.locator('#access-select').evaluate(e=>e.classList.remove('full-access'));
+ // Translucent backdrop buttons stay unchanged on focus (they are still focusable).
+ if(width<1100){
+ // Close the inspector so the Tasks control and its backdrop are reachable.
+ if(await page.locator('#inspector-button').getAttribute('aria-expanded')==='true'){await page.locator('#inspector-close').evaluate(e=>e.click());await page.waitForTimeout(210);}
+ await open();await page.waitForTimeout(210);
+ const tasksBackdrop=await focusDelta('#destination-backdrop');
+ assert.equal(tasksBackdrop.focused.matched,true,'the Tasks backdrop stays focusable');
+ assert.equal(tasksBackdrop.focused.outline,'none');
+ assert.equal(tasksBackdrop.focused.bg,tasksBackdrop.resting.bg,'the Tasks backdrop background is unchanged on focus');
+ await dismissTasks();await closed();
+ await page.locator('#inspector-button').evaluate(e=>e.click());await page.waitForTimeout(210);
+ const infoBackdrop=await focusDelta('#inspector-backdrop');
+ assert.equal(infoBackdrop.focused.matched,true,'the Details backdrop stays focusable');
+ assert.equal(infoBackdrop.focused.outline,'none');
+ assert.equal(infoBackdrop.focused.bg,infoBackdrop.resting.bg,'the Details backdrop background is unchanged on focus');
+ await page.locator('#inspector-close').evaluate(e=>e.click());await page.waitForTimeout(210);
+ }
  }
  // A forced-colors/high-contrast request keeps the system focus indicator.
  await page.setViewportSize({width:1280,height:844});
