@@ -9,6 +9,8 @@ const normal = new MachineRuntime({}, { id: 'local', name: 'Mac mini', ssh: null
 const fallback = new MachineRuntime({}, { id: 'local:deepseek', name: 'Mac mini', ssh: null, deepseek: true, provider: 'deepseek', group: 'local' }, () => {});
 const remote = new MachineRuntime({}, { id: 'ssh:test', name: 'Test machine', ssh: 'test', provider: 'openai', group: 'ssh:test' }, () => {});
 const selectedTask = { id: 'same-thread', name: 'Same task ID', cwd: '/disposable', status: 'idle' };
+// Long enough to overflow a half-width read-only control, so ellipsis behaviour is observable.
+const LONG_MODEL_NAME = 'DeepSeek-Flash Extended Preview With A Very Long Marketing Name For Enterprise Deployments';
 // Deliberately interleaved recency so a global order is observable across providers.
 const TASKS = {
   local: [{ ...selectedTask, updatedAt: 30 }, { id: 'openai-old', name: 'OpenAI older', cwd: '/disposable', status: 'idle', updatedAt: 10 }],
@@ -17,12 +19,18 @@ const TASKS = {
 };
 for (const runtime of [normal, fallback, remote]) {
   Object.assign(runtime.state, { connected: true, thread: selectedTask, threadStatus: 'idle', phase: 'ready', platform: runtime === remote ? 'linux / Linux' : 'darwin / macOS', model: runtime === fallback ? 'deepseek-flash' : 'gpt-x' });
+  runtime.state.models = [{
+    model: runtime === fallback ? 'deepseek-flash' : 'gpt-x',
+    displayName: runtime === fallback ? LONG_MODEL_NAME : 'GPT-X',
+    supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }],
+    defaultReasoningEffort: 'low',
+  }];
   runtime.state.access = { mode: 'ask', choices: { ask: { available: true }, auto: { available: runtime !== fallback }, full: { available: true } } };
   runtime.canAcceptDirectInput = true; runtime.rpc = {};
 }
 const OPTIONS = {
   local: { models: [{ model: 'gpt-x', displayName: 'GPT-X', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }], defaultReasoningEffort: 'low' }], current: { model: 'gpt-x', effort: 'low', access: 'ask' }, access: { ask: true, auto: true, full: true } },
-  'local:deepseek': { models: [{ model: 'deepseek-flash', displayName: 'DeepSeek-Flash', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }, { reasoningEffort: 'max' }], defaultReasoningEffort: 'high' }], current: { model: 'deepseek-flash', effort: 'high', access: 'ask' }, access: { ask: true, auto: false, full: true } },
+  'local:deepseek': { models: [{ model: 'deepseek-flash', displayName: LONG_MODEL_NAME, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }, { reasoningEffort: 'max' }], defaultReasoningEffort: 'high' }], current: { model: 'deepseek-flash', effort: 'high', access: 'ask' }, access: { ask: true, auto: false, full: true } },
   'ssh:test': { models: [{ model: 'gpt-a', displayName: 'GPT-A', supportedReasoningEfforts: [{ reasoningEffort: 'low' }], defaultReasoningEffort: 'low' }, { model: 'gpt-b', displayName: 'GPT-B', supportedReasoningEfforts: [{ reasoningEffort: 'high' }], defaultReasoningEffort: 'high' }], current: { model: 'gpt-a', effort: 'low', access: 'ask' }, access: { ask: true, auto: true, full: true } },
 };
 let selected = normal;
@@ -95,6 +103,9 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   const input = page.locator('#message-text');
+  const shot = async (name) => {
+    if (process.env.POCKET_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.POCKET_SCREENSHOT_DIR}/${name}.png` });
+  };
   await input.fill('OpenAI draft');
   selected = fallback; push();
   await page.waitForFunction(() => document.querySelector('#message-text').value === '');
@@ -120,6 +131,14 @@ try {
     ['destination-label', 'destination-provider', 'svg']);
   assert.equal(await page.locator('#destination-button').getAttribute('title'), 'Mac mini / Same task ID [DeepSeek]');
 
+  // A long single-model value ellipsizes inside its own control and keeps the full tooltip.
+  const detailsModelText = page.locator('#model-select-static .select-static-text');
+  assert.equal(await detailsModelText.textContent(), LONG_MODEL_NAME);
+  assert.equal(await detailsModelText.getAttribute('title'), LONG_MODEL_NAME);
+  assert.equal(await detailsModelText.evaluate(node => getComputedStyle(node).textOverflow), 'ellipsis');
+  assert.equal(await detailsModelText.evaluate(node => node.scrollWidth > node.clientWidth), true, 'the long model name is truncated');
+  assert.equal(await page.locator('#model-select-static').evaluate(node => node.getBoundingClientRect().right <= node.closest('.runtime-panel').getBoundingClientRect().right + 0.5), true, 'the value stays inside its control');
+
   // Display filters: a positively disabled feature hides its filter, unknown capability never does.
   const filterHidden = key => page.locator(`#display-${key}`).evaluate(node => node.closest('label').hidden);
   assert.equal(await filterHidden('search'), true, 'DeepSeek disables web search');
@@ -140,9 +159,6 @@ try {
   const closeSwitcher = async () => {
     if (await page.locator('#destination-button').getAttribute('aria-expanded') === 'true') await page.locator('#destination-button').click();
     await page.waitForFunction(() => document.querySelector('#destination-button').getAttribute('aria-expanded') === 'false');
-  };
-  const shot = async (name) => {
-    if (process.env.POCKET_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.POCKET_SCREENSHOT_DIR}/${name}.png` });
   };
   const rows = () => page.locator('.destination-group').first().locator('.destination-entry');
   const rowNames = () => rows().locator('.destination-task-text').allTextContents();
@@ -205,7 +221,7 @@ try {
   await page.locator('#new-task-model-static').waitFor();
   assert.equal(await providerSelect.inputValue(), 'local:deepseek', 'defaults to the selected task provider');
   assert.deepEqual(await providerSelect.locator('option').allTextContents(), ['OpenAI', 'DeepSeek']);
-  assert.equal(await page.locator('#new-task-model-static').textContent(), 'DeepSeek-Flash');
+  assert.equal(await page.locator('#new-task-model-static').textContent(), LONG_MODEL_NAME);
   assert.deepEqual(await page.locator('#new-task-effort option').allTextContents(), ['Low', 'High', 'Max']);
   assert.deepEqual(await page.locator('#new-task-access option').allTextContents(), ['Ask for Approval', 'Full Access']);
   await providerSelect.selectOption('local');
@@ -251,6 +267,10 @@ try {
         effortField: (() => { const rect = document.querySelector('#new-task-effort').closest('.form-field').getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height }; })(),
         accessField: (() => { const rect = document.querySelector('#new-task-access').closest('.form-field').getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height }; })(),
         cwdPlaceholder: getComputedStyle(document.querySelector('#new-task-cwd'), '::placeholder').color,
+        modelText: (() => {
+          const span = document.querySelector('#new-task-model-static .select-static-text');
+          return { title: span.getAttribute('title'), overflow: getComputedStyle(span).textOverflow, truncated: span.scrollWidth > span.clientWidth };
+        })(),
       };
     });
     await page.locator('#new-task-cancel').click();
@@ -259,7 +279,7 @@ try {
   const boxesOverlap = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5
     && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
   await page.emulateMedia({ colorScheme: 'dark' });
-  for (const width of [1280, 390]) {
+  for (const width of [1280, 390, 320]) {
     const rects = await dialogRects(width);
     for (const [a, b] of [['name', 'cwd'], ['cwd', 'provider'], ['provider', 'model'], ['model', 'effort'], ['model', 'access'], ['effort', 'access']]) {
       assert.equal(boxesOverlap(rects[a], rects[b]), false, `${a}/${b} must not overlap at ${width}`);
@@ -271,9 +291,19 @@ try {
     assert.equal(Math.round(rects.model.height), Math.round(rects.effort.height), 'read-only value matches the selector height');
     const baselinePlaceholder = await page.evaluate(() => getComputedStyle(document.querySelector('#destination-search'), '::placeholder').color);
     assert.equal(rects.cwdPlaceholder, baselinePlaceholder, `dialog placeholders share the same colour at ${width}`);
-    assert.equal(Math.round(rects.effortField.top), Math.round(rects.accessField.top), `Effort and Access share a row at ${width}`);
-    assert.equal(Math.round(rects.effortField.width), Math.round(rects.accessField.width), `Effort and Access keep equal columns at ${width}`);
-    assert.equal(Math.round(rects.accessField.left - rects.effortField.right), 8, `columns keep the grid gap at ${width}`);
+    if (width > 380) {
+      assert.equal(Math.round(rects.effortField.top), Math.round(rects.accessField.top), `Effort and Access share a row at ${width}`);
+      assert.equal(Math.round(rects.effortField.width), Math.round(rects.accessField.width), `Effort and Access keep equal columns at ${width}`);
+      assert.equal(Math.round(rects.accessField.left - rects.effortField.right), 8, `columns keep the grid gap at ${width}`);
+    } else {
+      // Too narrow for "Ask for Approval" in a half-width control, so the row stacks.
+      assert.equal(Math.round(rects.accessField.top - rects.effortField.bottom), 12, `Effort and Access stack at ${width}`);
+      assert.equal(Math.round(rects.effortField.left), Math.round(rects.accessField.left));
+      assert.equal(Math.round(rects.effortField.width), Math.round(rects.accessField.width));
+    }
+    assert.equal(rects.modelText.title, LONG_MODEL_NAME, `dialog keeps the full model tooltip at ${width}`);
+    assert.equal(rects.modelText.overflow, 'ellipsis');
+    assert.equal(rects.modelText.truncated, true, `dialog truncates the long model name at ${width}`);
   }
   await page.setViewportSize({ width: 1280, height: 844 });
 
@@ -393,6 +423,15 @@ try {
     assert.equal(placement.rightAligned, true, `add control is right aligned at ${width}`);
     assert.equal(placement.aboveCards, true, `add control sits above the cards at ${width}`);
     assert.equal(placement.labelsVisible, width >= 600, `column labels follow the desktop layout at ${width}`);
+    if (width >= 600) {
+      // Every header cell shares one vertical centre with the add control beside "Actions".
+      const headerCenters = await page.evaluate(() => {
+        const header = document.querySelector('.machine-settings-header');
+        const nodes = [...header.querySelectorAll(':scope > span, .machine-settings-actions-cell > span'), document.querySelector('#machine-add')];
+        return nodes.map(node => { const rect = node.getBoundingClientRect(); return rect.top + rect.height / 2; });
+      });
+      assert.equal(headerCenters.every(center => Math.abs(center - headerCenters[0]) < 1), true, `header cells align vertically at ${width}`);
+    }
     await page.locator('#machine-add').click();
     assert.equal(await page.locator('.machine-settings-row').count(), before + 1);
     assert.equal(await page.locator('.machine-settings-row').last().locator('[data-machine-name]').evaluate(node => node === document.activeElement), true, 'focus lands on the new row');
@@ -500,5 +539,5 @@ try {
   assert.equal(await mobilePage.locator('#app-shell').evaluate(node => node.classList.contains('inspector-closed')), true, 'details overlay stays closed on mobile');
   assert.equal(await mobilePage.evaluate(() => localStorage.getItem('codex-pocket-tasks-open')), null, 'mobile never stores a desktop sidebar preference');
   await mobile.close();
-  console.log('PASS: one physical-machine group with provider tag after the task text, shared selected surfaces in both themes, capability-aware Display filters with history exceptions, New Task full-width Provider/Model rows with Effort+Access columns at desktop and mobile, placeholder typography, 8px list rhythm, SSH add control beside Actions and above the cards, global provider ordering, separate machine/provider search, pending-delete visibility and pinning, group-wide create busy state, provider-qualified labels, and desktop first-launch sidebars');
+  console.log('PASS: one physical-machine group with provider tag after the task text, shared selected surfaces in both themes, capability-aware Display filters with history exceptions, New Task full-width Provider/Model rows with ellipsizing read-only values and Effort+Access columns (stacked at 320px, side by side at 390px and desktop), aligned Settings header cells, placeholder typography, 8px list rhythm, SSH add control beside Actions and above the cards, global provider ordering, separate machine/provider search, pending-delete visibility and pinning, group-wide create busy state, provider-qualified labels, and desktop first-launch sidebars');
 } finally { await browser.close(); server.closeAllConnections(); for (const response of clients) response.end(); await new Promise(resolve => server.close(resolve)); }

@@ -189,6 +189,7 @@ let nextCursor = null;
 let source = null;
 const NEAR_BOTTOM_PX = 200;
 let shouldFollowConversation = true;
+let transcriptScrollBottomGap = 0;
 let transcriptScrollTop = 0;
 let transcriptScrollElement = null;
 let historyEpoch = 0;
@@ -647,7 +648,13 @@ function renderChoiceControl(slot, { entries, selected, ariaLabel, id, disabled,
     value.id = `${id}-static`;
     value.className = "select-static";
     value.setAttribute("aria-label", ariaLabel);
-    value.textContent = entries.length ? entries[0].label : emptyLabel;
+    // A flex container clips direct text without an ellipsis, so the value lives in its own
+    // shrinking element; the full value stays in the DOM and in the tooltip.
+    const text = document.createElement("span");
+    text.className = "select-static-text";
+    text.textContent = entries.length ? entries[0].label : emptyLabel;
+    text.title = text.textContent;
+    value.append(text);
     if (disabled) value.classList.add("disabled");
     slot.append(value);
     if (label) label.setAttribute("for", value.id);
@@ -2339,6 +2346,7 @@ function transcriptScroller() {
 function rememberTranscriptScroll() {
   transcriptScrollElement = transcriptScroller();
   transcriptScrollTop = transcriptScrollElement.scrollTop;
+  transcriptScrollBottomGap = transcriptScrollElement.scrollHeight - transcriptScrollElement.scrollTop - transcriptScrollElement.clientHeight;
 }
 
 function updateJumpLatest() {
@@ -3750,7 +3758,12 @@ elements.accessSelect.addEventListener("change", () => updateAccess(elements.acc
 function handleTranscriptScroll() {
   const scroller = transcriptScroller();
   const top = scroller.scrollTop;
-  const upward = scroller === transcriptScrollElement && top < transcriptScrollTop;
+  // Deliberate scrolling away moves the position up *and* increases the distance from the bottom.
+  // A shorter document (the composer shrinking after a send) clamps scrollTop but keeps the same
+  // distance, and a taller transcript viewport only changes the distance, so neither ends following.
+  const gap = scroller.scrollHeight - top - scroller.clientHeight;
+  const upward = scroller === transcriptScrollElement
+    && top < transcriptScrollTop && gap > transcriptScrollBottomGap + 1;
   // Preserve known layout reconciliation; input cancels its pending frame above.
   if (composerResizeFrame === null || top < composerResizeScrollTop) {
     if (upward) shouldFollowConversation = false;

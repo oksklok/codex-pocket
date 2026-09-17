@@ -509,7 +509,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .settings-machines { display: grid; gap: 8px; }
 .machine-settings-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line-soft); border-radius: 9px; }
 .machine-settings-row input { min-width: 0; }
-.form-field, .settings-card .machine-settings-field { display: grid; gap: 4px; margin: 0; min-width: 0; }
+.form-field, .settings-card .machine-settings-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; min-width: 0; }
 .machine-settings-empty { margin: 2px 0; color: var(--subtle); font-size: .7rem; }
 .checkbox-row { display: flex !important; align-items: center; gap: 8px; }
 .checkbox-row input { width: 17px; min-height: 17px; }
@@ -658,7 +658,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 
 .detail-image { cursor: zoom-in; }
 
-.machine-settings-header { display: grid; grid-template-columns: minmax(0, 1fr); }
+.machine-settings-header { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; }
 .machine-settings-header > span { display: none; }
 .machine-settings-actions-cell { display: flex; align-items: center; justify-content: flex-end; }
 .machine-settings-actions-cell > span { display: none; }
@@ -695,6 +695,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   color: var(--text); font-size: var(--text-ui); text-overflow: ellipsis; white-space: nowrap;
 }
 .select-static.disabled { color: var(--muted); }
+.select-slot { min-width: 0; }
+.select-static > .select-static-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button { border-radius: var(--control-radius); }
 .settings-actions button, .settings-restart button { min-height: var(--control-height); }
 .secondary-panel h3 { font-size: var(--text-heading); }
@@ -748,6 +750,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 }
 @media (max-width: 860px) {
   .new-task-settings select, .new-task-settings .select-static, .runtime-panel .select-static { font-size: 16px; }
+}
+/* Narrow dialogs cannot fit "Ask for Approval" in a half-width control, so the row stacks. */
+@media (max-width: 380px) {
+  .new-task-settings { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Goal and queued messages share the composer card geometry. */

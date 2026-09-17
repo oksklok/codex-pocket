@@ -1098,6 +1098,68 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.evaluate(()=>delete visualViewport.height);
 
  }
+ // A confirmed send keeps following through the composer shrink and later replies.
+ {
+ const desktop=width>860;
+ const scroller=()=>desktop?document.querySelector('#conversation'):document.scrollingElement;
+ const gap=()=>page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;},desktop);
+ runtime.rpc={request:async()=>({data:[]})};
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:null,threadStatus:'idle',phase:'done',queuedMessage:null,pending:[],
+ liveMessages:Array.from({length:40},(_,i)=>({id:`follow-${i}`,role:'assistant',text:`Follow message ${i}\n\nEnough content to scroll the transcript.`,createdAt:i+1,complete:true})),activities:[]});
+ composerPost='success';messageUnknown=false;
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await page.getByText('Follow message 39',{exact:false}).waitFor();await page.waitForTimeout(250);
+ assert(await gap()<2,'starts following at the bottom');
+ // A long prompt grows the composer, then the confirmed send clears it and shrinks the layout.
+ const longPrompt=Array.from({length:14},(_,i)=>`Prompt line ${i}`).join('\n');
+ // Set the draft through the real input handler without letting the test scroll the page.
+ const typePrompt=async value=>{await input.evaluate((node,text)=>{node.value=text;node.dispatchEvent(new Event('input',{bubbles:true}));},value);await page.waitForTimeout(250);};
+ await typePrompt(longPrompt);
+ assert(await gap()<2,'keeps following while the composer grows');
+ // Click through the DOM so the test never scrolls the page to reach the button.
+ await page.locator('#send-message').evaluate(node=>node.click());
+ await page.waitForFunction(()=>document.querySelector('#message-text').value==='');await page.waitForTimeout(350);
+ assert(await gap()<2,'keeps following after the composer shrinks');
+ assert.equal(await page.locator('#jump-latest').isVisible(),false);
+ // Replies and tool cards still land at the bottom because following was never cancelled.
+ runtime.broadcast('assistant_delta',{id:'follow-39',delta:`\n\n${'Streamed reply text '.repeat(40)}`});
+ await page.waitForTimeout(250);
+ assert(await gap()<2,'keeps following streamed replies');
+ runtime.handleNotification({method:'item/completed',params:{threadId:task.id,turnId:'follow-turn',item:{id:'follow-command',type:'commandExecution',command:'npm test',status:'completed',aggregatedOutput:'Tests passed'}}});
+ await page.waitForTimeout(250);
+ assert(await gap()<2,'keeps following tool cards');
+ assert.equal(await page.locator('#jump-latest').isVisible(),false);
+ // Deliberate scrolling away survives a pending send; a confirmed send still shows the new turn.
+ await page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;d.scrollTop=d.scrollHeight-d.clientHeight-320;},desktop);
+ await page.waitForTimeout(250);
+ assert(await gap()>250,'deliberate upward scrolling is honoured');
+ assert.equal(await page.locator('#jump-latest').isVisible(),true);
+ let releaseSend;uiGate=new Promise(resolve=>releaseSend=resolve);
+ // Submit through the real form handler without focusing anything (no test-induced scroll).
+ await typePrompt(longPrompt);await page.evaluate(()=>document.querySelector('#composer').requestSubmit());
+ await page.waitForFunction(()=>document.querySelector('#send-message').disabled);
+ await page.waitForTimeout(300);
+ assert(await gap()>250,'a pending send does not yank a reader back to the bottom');
+ assert.equal(await page.locator('#jump-latest').isVisible(),true,'a pending send keeps Jump to Latest available');
+ releaseSend();uiGate=null;
+ await page.waitForFunction(()=>document.querySelector('#message-text').value==='');await page.waitForTimeout(350);
+ assert(await gap()<2,'the confirmed send shows the new turn');
+ assert.equal(await page.locator('#jump-latest').isVisible(),false);
+ runtime.broadcast('assistant_delta',{id:'follow-39',delta:`\n\n${'After the confirmed send. '.repeat(30)}`});
+ await page.waitForTimeout(250);
+ assert(await gap()<2,'following continues after a confirmed send');
+ // Jump to Latest restores following after deliberately scrolling away again.
+ await page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;d.scrollTop=d.scrollHeight-d.clientHeight-320;},desktop);
+ await page.waitForTimeout(250);
+ assert(await gap()>250,'scrolling away again is honoured');
+ assert.equal(await page.locator('#jump-latest').isVisible(),true);
+ await page.locator('#jump-latest').click();
+ await page.waitForFunction(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight<2;},desktop);
+ runtime.broadcast('assistant_delta',{id:'follow-39',delta:`\n\n${'Following again. '.repeat(20)}`});
+ await page.waitForTimeout(250);
+ assert(await gap()<2,'following resumes after Jump to Latest');
+ await typePrompt('');
+ }
  }
  // Isolated browser checks use the same real frontend and synthetic server.
  for(const width of [390,1080,1100,1280]){
