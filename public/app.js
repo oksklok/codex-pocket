@@ -189,9 +189,13 @@ let nextCursor = null;
 let source = null;
 const NEAR_BOTTOM_PX = 200;
 let shouldFollowConversation = true;
+let transcriptUpwardScroll = 0;
 let transcriptScrollBottomGap = 0;
 let transcriptScrollTop = 0;
 let transcriptScrollElement = null;
+// Send-scoped navigation guard: a confirmed send may re-anchor an untouched view, but deliberate
+// reading after the send wins. The token lives for one composer submission (including recovery).
+let pendingSendNavigation = null;
 let historyEpoch = 0;
 let historyRequest = null;
 let threadsRequest = null;
@@ -261,7 +265,7 @@ function openImage(img) {
   viewer.open(img);
 }
 
-function toggleComposer() {
+function toggleComposer({ refocus = true } = {}) {
   const textarea = elements.messageText;
   const { selectionStart, selectionEnd, selectionDirection, scrollTop } = textarea;
   composerExpanded = !composerExpanded;
@@ -270,6 +274,8 @@ function toggleComposer() {
   elements.expandComposer.setAttribute("aria-expanded", String(composerExpanded));
   fitExpandedComposer();
   resizeComposer();
+  // A programmatic collapse must not steal focus (and its mobile jump) from a reader who navigated away.
+  if (!refocus) return;
   textarea.focus({ preventScroll: true });
   textarea.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
   textarea.scrollTop = scrollTop;
@@ -410,6 +416,10 @@ async function postMessageAction(url, body) {
   const requested = { ...body, threadId: body.threadId ?? state?.thread?.id, turnId: state?.turn?.id,
     text: body.text ?? state?.queuedMessage?.text, images: body.images ?? state?.queuedMessage?.images, files: body.files ?? state?.queuedMessage?.files, previousMessageIds: [...historyMessages.keys(), ...liveMessages.keys()] };
   const requestedEpoch = historyEpoch;
+  const sendNavigation = composerSubmission
+    ? { machineId: requested.machineId, threadId: requested.threadId, overridden: false }
+    : null;
+  if (sendNavigation) pendingSendNavigation = sendNavigation;
   const current = () => requestedEpoch === historyEpoch && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id;
   const confirmed = (result) => {
     if (url === "/api/message" && requested.action === "start"
@@ -418,18 +428,21 @@ async function postMessageAction(url, body) {
       newTaskLeaveWarning = null;
       renderDestinationSwitcher(true);
     }
-    if (composerSubmission && composerExpanded && requested.machineId === state?.machineId
-      && requested.threadId === state?.thread?.id) toggleComposer();
+    const sameTask = requested.machineId === state?.machineId && requested.threadId === state?.thread?.id;
+    // A reader who navigated after pressing Send keeps their place; an untouched view still lands on the new turn.
+    const keepReading = Boolean(sendNavigation?.overridden) && sameTask;
+    if (composerSubmission && composerExpanded && sameTask) toggleComposer({ refocus: !keepReading });
     if ((requested.action === "steer" || (requested.action === "start" && url === "/api/message"))
       && requested.text && !requested.images?.length && !requested.files?.length
-      && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) {
+      && sameTask) {
       const id = `confirmed-steer-${submissionId}`;
       liveMessages.set(id, { id, role: "user", text: requested.text.replace(/\r\n/g, "\n"),
         turnId: result.turnId || requested.turnId, createdAt: Date.now(), complete: true,
         confirmedSteer: { previousMessageIds: requested.previousMessageIds } });
       renderConversation();
     }
-    if (composerSubmission && requested.machineId === state?.machineId && requested.threadId === state?.thread?.id) jumpToLatest(true);
+    if (composerSubmission && sameTask && !keepReading) jumpToLatest(true);
+    settleSendNavigation(sendNavigation);
     return result;
   };
   let response, result;
@@ -445,7 +458,10 @@ async function postMessageAction(url, body) {
       throw error;
     }
   } catch (error) {
-    if (!error.deliveryUnknown && !(error instanceof TypeError) && !["AbortError", "TimeoutError"].includes(error.name)) throw error;
+    if (!error.deliveryUnknown && !(error instanceof TypeError) && !["AbortError", "TimeoutError"].includes(error.name)) {
+      settleSendNavigation(sendNavigation);
+      throw error;
+    }
     let snapshot;
     try {
       const recovered = await apiFetch(`/api/state?submissionId=${encodeURIComponent(submissionId)}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
@@ -467,9 +483,13 @@ async function postMessageAction(url, body) {
       : "Connection restored; delivery is still unconfirmed. Check the task before sending again.");
     failure.deliveryUnknown = outcome === "unknown";
     if (composerSubmission && failure.deliveryUnknown) rememberUnresolvedSubmission({ submissionId, requested, confirmed, queued: url === "/api/message/queue" || body.action === "queue", warning: failure.message });
+    if (!failure.deliveryUnknown) settleSendNavigation(sendNavigation);
     throw failure;
   }
-  if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the message");
+  if (!response.ok || !result.accepted) {
+    settleSendNavigation(sendNavigation);
+    throw new Error(result.error || "Codex did not accept the message");
+  }
   return confirmed(result);
 }
 
@@ -2317,6 +2337,7 @@ function observeTranscriptSelection() {
     selection.extend(elements.conversation, above ? 0 : elements.conversation.childNodes.length);
   }
   const selected = transcriptSelectionActive();
+  if (selected) markSendNavigationOverride();
   selectionHold.observe(selected);
   elements.appShell.classList.toggle("transcript-selection-held", selectionHold.active);
   if (!selected) return;
@@ -2347,6 +2368,24 @@ function rememberTranscriptScroll() {
   transcriptScrollElement = transcriptScroller();
   transcriptScrollTop = transcriptScrollElement.scrollTop;
   transcriptScrollBottomGap = transcriptScrollElement.scrollHeight - transcriptScrollElement.scrollTop - transcriptScrollElement.clientHeight;
+}
+
+// A deliberate transcript navigation after pressing Send (an upward scroll or a text selection)
+// overrides the pending automatic jump, scoped to the task that owns the in-flight submission.
+function markSendNavigationOverride() {
+  const pending = pendingSendNavigation;
+  if (pending && !pending.overridden
+    && pending.machineId === state?.machineId && pending.threadId === state?.thread?.id) pending.overridden = true;
+}
+
+// Jump to Latest is an explicit request to follow again, so it drops any pending override.
+function clearSendNavigationOverride() {
+  if (pendingSendNavigation) pendingSendNavigation.overridden = false;
+}
+
+// Retire the guard once its submission reaches a final outcome; an unconfirmed send keeps it for recovery.
+function settleSendNavigation(pending) {
+  if (pending && pendingSendNavigation === pending) pendingSendNavigation = null;
 }
 
 function updateJumpLatest() {
@@ -2426,6 +2465,7 @@ function resetConversationState() {
   nextCursor = null;
   historyRequest = null;
   shouldFollowConversation = true;
+  transcriptUpwardScroll = 0;
   submittingInputRequestId = null;
   submittingInterrupt = false;
   sendingQueuedMessage = false;
@@ -3759,15 +3799,24 @@ function handleTranscriptScroll() {
   const scroller = transcriptScroller();
   const top = scroller.scrollTop;
   // Deliberate scrolling away moves the position up *and* increases the distance from the bottom.
-  // A shorter document (the composer shrinking after a send) clamps scrollTop but keeps the same
-  // distance, and a taller transcript viewport only changes the distance, so neither ends following.
+  // A layout clamp (the composer shrinking after a send) drops scrollTop but keeps the same
+  // distance, and a taller transcript viewport only changes the distance, so neither counts.
   const gap = scroller.scrollHeight - top - scroller.clientHeight;
-  const upward = scroller === transcriptScrollElement
-    && top < transcriptScrollTop && gap > transcriptScrollBottomGap + 1;
+  const sameScroller = scroller === transcriptScrollElement;
+  const movedUp = sameScroller ? Math.max(0, transcriptScrollTop - top) : 0;
+  const grewFromBottom = sameScroller ? gap - transcriptScrollBottomGap : 0;
+  // A wheel gesture can arrive as many sub-threshold steps, so accumulate the part of each step
+  // that genuinely moved the content rather than a layout clamp. Anything that moves back down
+  // (or clamps by keeping the same distance) clears the accumulation, so a round trip never counts.
+  if (movedUp > 0.5 && grewFromBottom > 0.5) transcriptUpwardScroll += Math.min(movedUp, grewFromBottom);
+  else transcriptUpwardScroll = 0;
+  const upward = transcriptUpwardScroll > 1;
   // Preserve known layout reconciliation; input cancels its pending frame above.
   if (composerResizeFrame === null || top < composerResizeScrollTop) {
-    if (upward) shouldFollowConversation = false;
-    else if (scroller.scrollHeight - top - scroller.clientHeight <= 2) shouldFollowConversation = true;
+    if (upward) {
+      shouldFollowConversation = false;
+      markSendNavigationOverride();
+    } else if (gap <= 2) shouldFollowConversation = true;
   }
   rememberTranscriptScroll();
   updateJumpLatest();
@@ -3777,7 +3826,7 @@ elements.conversation.addEventListener("scroll", handleTranscriptScroll);
 document.addEventListener("scroll", () => {
   if (transcriptScroller() === document.scrollingElement) handleTranscriptScroll();
 });
-elements.jumpLatest.addEventListener("click", () => jumpToLatest());
+elements.jumpLatest.addEventListener("click", () => { clearSendNavigationOverride(); jumpToLatest(); });
 elements.inspectorButton.addEventListener("click", toggleInspector);
 elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);

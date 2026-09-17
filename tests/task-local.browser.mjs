@@ -1160,6 +1160,128 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert(await gap()<2,'following resumes after Jump to Latest');
  await typePrompt('');
  }
+ // Repeated 1px upward wheel steps must accumulate into deliberate scrolling away.
+ {
+ const desktop=width>860;
+ const gap=()=>page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;},desktop);
+ const top=()=>page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollTop;},desktop);
+ const transcriptPoint=async()=>desktop?await page.locator('#conversation').boundingBox().then(r=>({x:r.x+r.width/2,y:r.y+40})):{x:195,y:120};
+ runtime.rpc={request:async()=>({data:[]})};
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:null,threadStatus:'idle',phase:'done',queuedMessage:null,pending:[],
+ liveMessages:Array.from({length:40},(_,i)=>({id:`wheel-${i}`,role:'assistant',text:`Wheel message ${i}\n\nEnough content to scroll the transcript.`,createdAt:i+1,complete:true})),activities:[]});
+ composerPost='success';messageUnknown=false;
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await page.getByText('Wheel message 39',{exact:false}).waitFor();await page.waitForTimeout(250);
+ assert(await gap()<2,'wheel case starts following');
+ // A pure layout clamp (the composer growing, then shrinking) involves no transcript navigation, so it must keep following.
+ const longPrompt=Array.from({length:14},(_,i)=>`Prompt line ${i}`).join('\n');
+ const typePrompt=async value=>{await input.evaluate((node,text)=>{node.value=text;node.dispatchEvent(new Event('input',{bubbles:true}));},value);await page.waitForTimeout(250);};
+ await typePrompt(longPrompt);
+ assert(await gap()<2,'the composer grow clamp keeps following');
+ await typePrompt('');
+ assert(await gap()<2,'the composer shrink clamp alone keeps following');
+ assert.equal(await page.locator('#jump-latest').isVisible(),false,'a pure layout clamp keeps Jump to Latest hidden');
+ // Many 1px wheel steps must accumulate: discarding them event by event would leave following on.
+ const point=await transcriptPoint();
+ await page.mouse.move(point.x,point.y);
+ const topBefore=await top();
+ for(let i=0;i<240;i++)await page.mouse.wheel(0,-1);
+ await page.waitForTimeout(200);
+ const topAfter=await top();
+ assert(topBefore-topAfter>200,`small wheel steps accumulate upward (moved ${topBefore-topAfter}px)`);
+ assert.equal(await page.locator('#jump-latest').isVisible(),true,'small upward steps show Jump to Latest');
+ runtime.broadcast('assistant_delta',{id:'wheel-39',delta:`\n\n${'Streamed while reading. '.repeat(40)}`});
+ await page.waitForTimeout(250);
+ assert(Math.abs(await top()-topAfter)<2,'streamed content does not re-anchor a reader who scrolled up in small steps');
+ assert(await gap()>150,'the reader stays scrolled away through streamed content');
+ await page.locator('#jump-latest').click();
+ await page.waitForFunction(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight<2;},desktop);
+ runtime.broadcast('assistant_delta',{id:'wheel-39',delta:`\n\n${'Following after the wheel. '.repeat(20)}`});
+ await page.waitForTimeout(250);
+ assert(await gap()<2,'Jump to Latest resumes following after small wheel steps');
+ await typePrompt('');
+ }
+ // Deliberate scrolling after Send overrides the pending automatic jump.
+ {
+ const desktop=width>860;
+ const gap=()=>page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;},desktop);
+ const top=()=>page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollTop;},desktop);
+ const transcriptPoint=async()=>desktop?await page.locator('#conversation').boundingBox().then(r=>({x:r.x+r.width/2,y:r.y+40})):{x:195,y:120};
+ runtime.rpc={request:async()=>({data:[]})};
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:null,threadStatus:'idle',phase:'done',queuedMessage:null,pending:[],
+ liveMessages:Array.from({length:40},(_,i)=>({id:`late-${i}`,role:'assistant',text:`Late message ${i}\n\nEnough content to scroll the transcript.`,createdAt:i+1,complete:true})),activities:[]});
+ composerPost='success';messageUnknown=false;
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await page.getByText('Late message 39',{exact:false}).waitFor();await page.waitForTimeout(250);
+ assert(await gap()<2,'send-override case starts following');
+ const longPrompt=Array.from({length:14},(_,i)=>`Prompt line ${i}`).join('\n');
+ const typePrompt=async value=>{await input.evaluate((node,text)=>{node.value=text;node.dispatchEvent(new Event('input',{bubbles:true}));},value);await page.waitForTimeout(200);};
+ let releaseSend;uiGate=new Promise(resolve=>releaseSend=resolve);
+ await typePrompt(longPrompt);await page.evaluate(()=>document.querySelector('#composer').requestSubmit());
+ await page.waitForFunction(()=>document.querySelector('#send-message').disabled);
+ await page.waitForTimeout(150);
+ // The user scrolls up with real wheel input while the send is still unconfirmed.
+ const point=await transcriptPoint();
+ await page.mouse.move(point.x,point.y);
+ await page.mouse.wheel(0,-500);
+ await page.waitForTimeout(200);
+ const heldTop=await top();
+ assert(await gap()>300,'scrolling after Send moves the reader away while the send is pending');
+ releaseSend();uiGate=null;
+ await page.waitForFunction(()=>document.querySelector('#message-text').value==='');await page.waitForTimeout(400);
+ assert(await gap()>200,'the confirmation does not pull the reader back down');
+ assert(Math.abs(await top()-heldTop)<3,'the reading position is stable through the confirmation');
+ assert.equal(await page.locator('#jump-latest').isVisible(),true,'Jump to Latest stays available after the confirmation');
+ runtime.broadcast('assistant_delta',{id:'late-39',delta:`\n\n${'Reply after the send. '.repeat(30)}`});
+ await page.waitForTimeout(250);
+ assert(Math.abs(await top()-heldTop)<3,'subsequent output keeps the reading position');
+ await page.locator('#jump-latest').click();
+ await page.waitForFunction(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight<2;},desktop);
+ runtime.broadcast('assistant_delta',{id:'late-39',delta:`\n\n${'Following after the override. '.repeat(20)}`});
+ await page.waitForTimeout(250);
+ assert(await gap()<2,'Jump to Latest restores following after the send override');
+ await typePrompt('');
+ }
+ // Selecting transcript text after Send overrides the pending automatic jump and keeps the selection.
+ {
+ const desktop=width>860;
+ const gap=()=>page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight;},desktop);
+ const top=()=>page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollTop;},desktop);
+ runtime.rpc={request:async()=>({data:[]})};
+ Object.assign(runtime.state,{machineId:'local',thread:task,connected:true,turn:null,threadStatus:'idle',phase:'done',queuedMessage:null,pending:[],
+ liveMessages:Array.from({length:40},(_,i)=>({id:`select-${i}`,role:'assistant',text:`Select message ${i}\n\nEnough content to scroll the transcript.`,createdAt:i+1,complete:true})),activities:[]});
+ composerPost='success';messageUnknown=false;
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await page.getByText('Select message 39',{exact:false}).waitFor();await page.waitForTimeout(250);
+ // Scroll away before the send so a jump to the new turn would be visible, then select text after pressing Send.
+ await page.evaluate(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;d.scrollTop=d.scrollHeight-d.clientHeight-320;},desktop);
+ await page.waitForTimeout(250);
+ assert(await gap()>250,'the selection case has scrolled away before the send');
+ const longPrompt=Array.from({length:14},(_,i)=>`Prompt line ${i}`).join('\n');
+ const typePrompt=async value=>{await input.evaluate((node,text)=>{node.value=text;node.dispatchEvent(new Event('input',{bubbles:true}));},value);await page.waitForTimeout(200);};
+ let releaseSend;uiGate=new Promise(resolve=>releaseSend=resolve);
+ await typePrompt(longPrompt);await page.evaluate(()=>document.querySelector('#composer').requestSubmit());
+ await page.waitForFunction(()=>document.querySelector('#send-message').disabled);
+ await page.waitForTimeout(150);
+ const heldTop=await top();
+ await page.evaluate(()=>{const node=document.querySelector('#conversation .message-body');const range=document.createRange();range.selectNodeContents(node);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);});
+ await page.waitForTimeout(150);
+ const selectedText=await page.evaluate(()=>getSelection().toString());
+ assert(selectedText.length>0,'the transcript selection is active while the send is pending');
+ releaseSend();uiGate=null;
+ await page.waitForFunction(()=>document.querySelector('#message-text').value==='');await page.waitForTimeout(400);
+ assert.equal(await page.evaluate(()=>getSelection().toString()),selectedText,'the confirmation preserves the transcript selection');
+ assert(Math.abs(await top()-heldTop)<3,'the confirmation keeps the reading position while text is selected');
+ // Clearing the selection is the last deliberate reading step; Jump to Latest then restores following.
+ await page.evaluate(()=>getSelection()?.removeAllRanges());
+ await page.waitForTimeout(700);
+ await page.locator('#jump-latest').click();
+ await page.waitForFunction(desktop=>{const d=desktop?document.querySelector('#conversation'):document.scrollingElement;return d.scrollHeight-d.scrollTop-d.clientHeight<2;},desktop);
+ runtime.broadcast('assistant_delta',{id:'select-39',delta:`\n\n${'Following after the selection. '.repeat(20)}`});
+ await page.waitForTimeout(250);
+ assert(await gap()<2,'Jump to Latest restores following after the selection');
+ await typePrompt('');
+ }
  }
  // Isolated browser checks use the same real frontend and synthetic server.
  for(const width of [390,1080,1100,1280]){
