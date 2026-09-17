@@ -110,6 +110,9 @@ const elements = {
   settingsDeepseekError: document.querySelector("#settings-deepseek-error"),
   settingsMachines: document.querySelector("#settings-machines"),
   machineAdd: document.querySelector("#machine-add"),
+  machinesToggle: document.querySelector("#machines-toggle"),
+  machinesCount: document.querySelector("#machines-count"),
+  machinesBody: document.querySelector("#machines-body"),
   settingsRestart: document.querySelector("#settings-restart"),
   restartPocket: document.querySelector("#restart-pocket"),
   quitPocket: document.querySelector("#quit-pocket"),
@@ -292,6 +295,11 @@ function fitExpandedComposer() {
 let settingsValue = null;
 let settingsBaseline = null;
 let settingsDisplayDraft = null;
+// SSH machine list state: the draft keeps every machine's unsaved values, and only one inline
+// editor is open at a time so collapsing or switching editors never loses edits.
+let machineDraft = [];
+let machineEditorIndex = null;
+let machinesExpanded = true;
 let savingSettings = false;
 let restartingPocket = false;
 let quittingPocket = false;
@@ -693,13 +701,14 @@ function providerName(provider) {
   return null;
 }
 
-function providerBadge(provider) {
+// Providers are plain secondary metadata after a separator, never a bordered badge.
+function providerLabel(provider) {
   const label = providerName(provider);
   if (!label) return null;
-  const badge = document.createElement("span");
-  badge.className = "machine-provider-badge";
-  badge.textContent = label;
-  return badge;
+  const meta = document.createElement("span");
+  meta.className = "provider-label";
+  meta.textContent = label;
+  return meta;
 }
 
 // One choice is a value, not a picker: render read-only text until a second option exists.
@@ -988,13 +997,10 @@ function renderDestinationSwitcher(force = false) {
       const taskName = document.createElement("span");
       taskName.className = "destination-task-name";
       taskName.append(Object.assign(document.createElement("span"), { className: "destination-task-text", textContent: threadLabel(task) }));
-      // Provider badges appear on rows only when this machine actually exposes several.
+      // Provider labels appear on rows only when this machine actually exposes several.
       if (multiProvider) {
-        const taskProvider = providerBadge(member.provider);
-        if (taskProvider) {
-          taskProvider.classList.add("task-provider-badge");
-          taskName.append(taskProvider);
-        }
+        const taskProvider = providerLabel(member.provider);
+        if (taskProvider) taskName.append(taskProvider);
       }
       label.append(taskName);
       const taskError = [newTaskLeaveWarning, destinationTaskError].find(error => error?.machineId === member.id && error?.threadId === task.id)?.message || "";
@@ -3467,10 +3473,11 @@ function closeSettings() {
 }
 
 function machineSettingsValue() {
-  return [...elements.settingsMachines.querySelectorAll(".machine-settings-row")].map((row) => ({
-    name: row.querySelector("[data-machine-name]").value.trim(),
-    ssh: row.querySelector("[data-machine-ssh]").value.trim(),
-    ...(row.querySelector("[data-machine-wake-mac]").value.trim() ? { wakeMac: row.querySelector("[data-machine-wake-mac]").value.trim() } : {}),
+  // Values live in the draft so collapsed editors and unsaved edits survive switches and reorders.
+  return machineDraft.map((machine) => ({
+    name: machine.name.trim(),
+    ssh: machine.ssh.trim(),
+    ...(machine.wakeMac.trim() ? { wakeMac: machine.wakeMac.trim() } : {}),
   }));
 }
 
@@ -3534,103 +3541,141 @@ function updateSettingsSave() {
       && JSON.stringify(localSettingsValue()) === settingsBaseline.local);
 }
 
-function renderMachineSettings(values) {
-  elements.settingsMachines.replaceChildren();
-  const configured = Array.isArray(values) ? values : [];
-  // The header always renders so the add control stays available even with no machines.
-  const header = document.createElement("div");
-  header.className = "machine-settings-header";
-  // The helper shares the header grid with the labels so the + can reserve its own column.
-  header.append(Object.assign(document.createElement("p"), { className: "machine-settings-helper field-help", textContent: "Use an SSH alias configured on this Pocket host." }));
-  for (const text of ["Display Name", "SSH Alias", "Wake MAC (optional)"]) {
-    header.append(Object.assign(document.createElement("span"), { textContent: text, ariaHidden: "true" }));
+function machineNameText(machine, index) {
+  return machine.name.trim() || `Machine ${index + 1}`;
+}
+
+function machineSshText(machine) {
+  return machine.ssh.trim() || "No SSH alias";
+}
+
+// The one field (if any) that blocks saving this machine; mirrors the native field constraints.
+function invalidMachineField(machine) {
+  if (!machine.name.trim()) return "name";
+  if (!machine.ssh.trim() || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(machine.ssh.trim())) return "ssh";
+  return null;
+}
+
+function machineEditorInput(dataset, value, { maxLength, placeholder, pattern, required, label }) {
+  const input = document.createElement("input");
+  input.dataset[dataset] = "";
+  input.type = "text";
+  input.maxLength = maxLength;
+  if (placeholder) input.placeholder = placeholder;
+  if (pattern) input.pattern = pattern;
+  if (required) input.required = true;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", label);
+  input.value = value || "";
+  return input;
+}
+
+function renderMachineEditor(machine, index) {
+  const editor = document.createElement("div");
+  editor.className = "machine-editor";
+  editor.dataset.machineEditor = String(index);
+  const fields = document.createElement("div");
+  fields.className = "machine-editor-fields";
+  const name = machineEditorInput("machineName", machine.name, { maxLength: 80, placeholder: "Name", required: true, label: `Machine ${index + 1} name` });
+  const ssh = machineEditorInput("machineSsh", machine.ssh, { maxLength: 128, placeholder: "SSH alias", pattern: "[A-Za-z0-9][A-Za-z0-9._-]*", required: true, label: `Machine ${index + 1} SSH alias` });
+  const wakeMac = machineEditorInput("machineWakeMac", machine.wakeMac, { maxLength: 17, placeholder: "AA:BB:CC:DD:EE:FF", label: `Machine ${index + 1} Wake MAC (optional)` });
+  for (const [input, title, key] of [[name, "Display Name", "name"], [ssh, "SSH Alias", "ssh"], [wakeMac, "Wake MAC (optional)", "wakeMac"]]) {
+    input.addEventListener("input", () => { machineDraft[index][key] = input.value; });
+    const label = document.createElement("label");
+    label.className = "machine-settings-field";
+    label.append(Object.assign(document.createElement("span"), { textContent: title }), input);
+    fields.append(label);
   }
-  // The add control lives in the Actions header cell (right-aligned, above the row actions) and is
-  // moved out of the heading so a single accessible control exists at every width.
-  const actionsCell = document.createElement("div");
-  actionsCell.className = "machine-settings-actions-cell";
-  actionsCell.append(Object.assign(document.createElement("span"), { textContent: "Actions", ariaHidden: "true" }));
-  actionsCell.append(elements.machineAdd);
-  header.append(actionsCell);
-  elements.settingsMachines.append(header);
-  if (!configured.length) {
-    const empty = document.createElement("p");
-    empty.className = "machine-settings-empty";
-    empty.textContent = "No remote machines configured.";
-    elements.settingsMachines.append(empty);
-    updateSettingsSave();
-    return;
-  }
-  configured.forEach((machine, index) => {
-    const row = document.createElement("div");
-    row.className = "machine-settings-row";
-    const name = document.createElement("input");
-    name.dataset.machineName = "";
-    name.type = "text";
-    name.maxLength = 80;
-    name.placeholder = "Name";
-    name.setAttribute("aria-label", `Machine ${index + 1} name`);
-    name.required = true;
-    name.value = machine.name || "";
-    const ssh = document.createElement("input");
-    ssh.dataset.machineSsh = "";
-    ssh.type = "text";
-    ssh.maxLength = 128;
-    ssh.pattern = "[A-Za-z0-9][A-Za-z0-9._-]*";
-    ssh.placeholder = "SSH alias";
-    ssh.autocomplete = "off";
-    ssh.spellcheck = false;
-    ssh.setAttribute("aria-label", `Machine ${index + 1} SSH alias`);
-    ssh.required = true;
-    ssh.value = machine.ssh || "";
-    const wakeMac = document.createElement("input");
-    wakeMac.dataset.machineWakeMac = "";
-    wakeMac.type = "text";
-    wakeMac.maxLength = 17;
-    wakeMac.placeholder = "AA:BB:CC:DD:EE:FF";
-    wakeMac.autocomplete = "off";
-    wakeMac.spellcheck = false;
-    wakeMac.setAttribute("aria-label", `Machine ${index + 1} Wake MAC (optional)`);
-    wakeMac.value = machine.wakeMac || "";
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "icon-button";
-    remove.setAttribute("aria-label", `Remove ${machine.name || `machine ${index + 1}`}`);
-    remove.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg>';
-    remove.addEventListener("click", () => {
-      const next = machineSettingsValue();
-      next.splice(index, 1);
-      renderMachineSettings(next);
+  editor.append(fields);
+  const controls = document.createElement("div");
+  controls.className = "machine-row-actions";
+  for (const direction of [-1, 1]) {
+    const target = index + direction;
+    const move = document.createElement("button");
+    move.type = "button";
+    move.className = "text-button";
+    move.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${direction < 0 ? "M12 19V5m-6 6 6-6 6 6" : "M12 5v14m-6-6 6 6 6-6"}"/></svg>`;
+    move.title = `Move ${machineNameText(machine, index)} ${direction < 0 ? "up" : "down"}`;
+    move.setAttribute("aria-label", move.title);
+    move.disabled = target < 0 || target >= machineDraft.length;
+    move.addEventListener("click", () => {
+      [machineDraft[index], machineDraft[target]] = [machineDraft[target], machineDraft[index]];
+      if (machineEditorIndex === index) machineEditorIndex = target;
+      else if (machineEditorIndex === target) machineEditorIndex = index;
+      renderMachineSettings();
+      const moved = elements.settingsMachines.querySelector(`[data-machine-editor="${machineEditorIndex}"]`);
+      (moved?.querySelectorAll(".machine-row-actions button")[direction < 0 ? 0 : 1] || moved?.querySelector("[data-machine-name]"))?.focus();
     });
-    const controls = document.createElement("div");
-    controls.className = "machine-row-actions";
-    for (const direction of [-1, 1]) {
-      const move = document.createElement("button");
-      move.type = "button";
-      move.className = "text-button";
-      move.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${direction < 0 ? "M12 19V5m-6 6 6-6 6 6" : "M12 5v14m-6-6 6 6 6-6"}"/></svg>`;
-      move.title = `Move ${machine.name || `machine ${index + 1}`} ${direction < 0 ? "up" : "down"}`;
-      move.setAttribute("aria-label", move.title);
-      move.disabled = index + direction < 0 || index + direction >= configured.length;
-      move.addEventListener("click", () => {
-        const next = machineSettingsValue();
-        [next[index], next[index + direction]] = [next[index + direction], next[index]];
-        renderMachineSettings(next);
-      });
-      controls.append(move);
-    }
-    remove.title = remove.getAttribute("aria-label");
-    remove.className = "text-button machine-remove";
-    controls.append(remove);
-    for (const [input, title] of [[name, "Display Name"], [ssh, "SSH Alias"], [wakeMac, "Wake MAC (optional)"]]) {
-      const label = document.createElement("label");
-      label.className = "machine-settings-field";
-      label.append(Object.assign(document.createElement("span"), { textContent: title }), input);
-      row.append(label);
-    }
-    row.append(controls);
-    elements.settingsMachines.append(row);
+    controls.append(move);
+  }
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "text-button machine-remove";
+  remove.setAttribute("aria-label", `Remove ${machineNameText(machine, index)}`);
+  remove.title = remove.getAttribute("aria-label");
+  remove.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg>';
+  remove.addEventListener("click", () => {
+    machineDraft.splice(index, 1);
+    if (machineEditorIndex === index) machineEditorIndex = null;
+    else if (machineEditorIndex !== null && machineEditorIndex > index) machineEditorIndex -= 1;
+    renderMachineSettings();
+    const summaries = elements.settingsMachines.querySelectorAll(".machine-summary");
+    (summaries[Math.min(index, summaries.length - 1)] || elements.machineAdd)?.focus();
   });
+  controls.append(remove);
+  editor.append(controls);
+  return editor;
+}
+
+function renderMachineEntry(machine, index) {
+  const entry = document.createElement("div");
+  entry.className = "machine-entry";
+  const open = machineEditorIndex === index;
+  const summary = document.createElement("button");
+  summary.type = "button";
+  summary.className = "machine-summary";
+  summary.setAttribute("aria-expanded", String(open));
+  summary.setAttribute("aria-label", `${machineNameText(machine, index)}, ${machineSshText(machine)}`);
+  const text = document.createElement("span");
+  text.className = "machine-summary-text";
+  const name = Object.assign(document.createElement("strong"), { className: "machine-summary-name", textContent: machineNameText(machine, index) });
+  const ssh = Object.assign(document.createElement("small"), { className: "machine-summary-ssh", textContent: machineSshText(machine) });
+  text.append(name, ssh);
+  const chevron = document.createElement("svg");
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.setAttribute("viewBox", "0 0 24 24");
+  chevron.classList.add("machine-summary-chevron");
+  chevron.innerHTML = '<path d="m9 5 7 7-7 7"/>';
+  summary.append(text, chevron);
+  summary.addEventListener("click", () => {
+    machineEditorIndex = open ? null : index;
+    renderMachineSettings();
+    const target = open ? elements.settingsMachines.querySelectorAll(".machine-summary")[index]
+      : elements.settingsMachines.querySelector(`[data-machine-editor="${index}"] [data-machine-name]`);
+    target?.focus();
+  });
+  entry.append(summary);
+  if (open) entry.append(renderMachineEditor(machine, index));
+  return entry;
+}
+
+function renderMachineSettings(values) {
+  if (Array.isArray(values)) {
+    machineDraft = values.map((machine) => ({ name: machine.name || "", ssh: machine.ssh || "", wakeMac: machine.wakeMac || "" }));
+    machineEditorIndex = null;
+    machinesExpanded = true;
+  }
+  elements.machinesCount.textContent = String(machineDraft.length);
+  elements.machinesToggle.setAttribute("aria-expanded", String(machinesExpanded));
+  elements.machinesBody.hidden = !machinesExpanded;
+  elements.settingsMachines.replaceChildren();
+  if (!machinesExpanded) { updateSettingsSave(); return; }
+  if (!machineDraft.length) {
+    elements.settingsMachines.append(Object.assign(document.createElement("p"), { className: "machine-settings-empty", textContent: "No remote machines configured." }));
+  } else {
+    machineDraft.forEach((machine, index) => elements.settingsMachines.append(renderMachineEntry(machine, index)));
+  }
   updateSettingsSave();
 }
 
@@ -3960,10 +4005,15 @@ elements.settingsPin.addEventListener("input", () => {
   elements.settingsStatus.classList.remove("error-text");
 });
 elements.machineAdd.addEventListener("click", () => {
-  const next = machineSettingsValue();
-  next.push({ name: "", ssh: "" });
-  renderMachineSettings(next);
-  elements.settingsMachines.querySelector(".machine-settings-row:last-child [data-machine-name]")?.focus();
+  machineDraft.push({ name: "", ssh: "", wakeMac: "" });
+  machinesExpanded = true;
+  machineEditorIndex = machineDraft.length - 1;
+  renderMachineSettings();
+  elements.settingsMachines.querySelector(`[data-machine-editor="${machineEditorIndex}"] [data-machine-name]`)?.focus();
+});
+elements.machinesToggle.addEventListener("click", () => {
+  machinesExpanded = !machinesExpanded;
+  renderMachineSettings();
 });
 elements.settingsForm.addEventListener("input", updateSettingsSave);
 elements.settingsForm.addEventListener("change", updateSettingsSave);
@@ -3977,6 +4027,19 @@ elements.settingsForm.addEventListener("submit", async (event) => {
     elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access.";
     elements.settingsStatus.classList.add("error-text");
     elements.settingsPin.focus();
+    return;
+  }
+  // Native constraint validation only sees the open editor, so reveal the first closed machine that
+  // would fail (empty name or SSH alias, or an invalid alias) and make its field reachable.
+  const invalidMachine = machineDraft.findIndex((machine) => invalidMachineField(machine));
+  if (invalidMachine >= 0) {
+    machinesExpanded = true;
+    machineEditorIndex = invalidMachine;
+    renderMachineSettings();
+    const editor = elements.settingsMachines.querySelector(`[data-machine-editor="${invalidMachine}"]`);
+    const field = editor?.querySelector(invalidMachineField(machineDraft[invalidMachine]) === "name" ? "[data-machine-name]" : "[data-machine-ssh]");
+    field?.focus();
+    field?.reportValidity?.();
     return;
   }
   savingSettings = true;
@@ -4034,11 +4097,11 @@ elements.restartPocket.addEventListener("click", async () => {
 elements.quitPocket.addEventListener("click", async () => {
   if (quittingPocket) return;
   const hostName = settingsValue?.hostName || state?.hostName || "this Mac";
-  if (!window.confirm(`Quit Codex Pocket on ${hostName}?\n\nPocket will stop and you won't be able to reconnect until Codex Pocket.app is launched again on that Mac.`)) return;
+  if (!window.confirm(`Quit Pocket on ${hostName}?\n\nPocket will stop and you won't be able to reconnect until Codex Pocket.app is launched again on that Mac.`)) return;
   quittingPocket = true;
   elements.quitPocket.disabled = true;
-  elements.quitPocket.textContent = "Quitting Codex Pocket…";
-  elements.settingsStatus.textContent = "Quitting Codex Pocket…";
+  elements.quitPocket.textContent = "Quitting…";
+  elements.settingsStatus.textContent = "Quitting…";
   elements.settingsStatus.classList.remove("error-text");
   try {
     const response = await apiFetch("/api/shutdown", { method: "POST" });
@@ -4048,7 +4111,7 @@ elements.quitPocket.addEventListener("click", async () => {
   } catch (error) {
     quittingPocket = false;
     elements.quitPocket.disabled = false;
-    elements.quitPocket.textContent = "Quit Codex Pocket";
+    elements.quitPocket.textContent = "Quit Pocket";
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");
   }

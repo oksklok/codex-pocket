@@ -39,7 +39,7 @@
           <button class="destination-button" id="destination-button" type="button" aria-haspopup="dialog" aria-expanded="false">
             <span class="destination-text" id="destination-text">
               <span id="destination-label">Connecting…</span>
-              <span class="machine-provider-badge" id="destination-provider" hidden></span>
+              <span class="provider-label" id="destination-provider" hidden></span>
             </span>
             <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 8 4 4 4-4"/></svg>
           </button>
@@ -207,13 +207,22 @@
             <div class="form-field"><label for="settings-local-name">Host Machine Display Name</label>
             <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname"></div>
           </div>
-          <div class="settings-subheading"><h4>SSH Machines</h4></div>
-          <button class="icon-button" id="machine-add" type="button" aria-label="Add SSH machine" title="Add SSH machine"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-          <div class="settings-machines" id="settings-machines"></div>
+          <div class="machines-heading">
+            <button class="machines-toggle" id="machines-toggle" type="button" aria-expanded="true" aria-controls="machines-body">
+              <svg class="machines-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>
+              <strong>SSH Machines</strong>
+              <span class="machines-count" id="machines-count">0</span>
+            </button>
+            <button class="icon-button" id="machine-add" type="button" aria-label="Add SSH machine" title="Add SSH machine"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+          </div>
+          <div class="machines-body" id="machines-body">
+            <p class="field-help">Use an SSH alias configured on this Pocket host.</p>
+            <div class="settings-machines" id="settings-machines"></div>
+          </div>
         </section>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
         <p class="field-help" id="container-lifecycle" hidden>Container lifecycle is managed by Docker Compose.</p>
-        <div class="settings-quit"><p>Stop the host app and release its local and remote connections.</p><button class="danger-button" id="quit-pocket" type="button">Quit Codex Pocket</button></div>
+        <div class="settings-quit"><p>Stops Pocket on the host machine.</p><button class="danger-button" id="quit-pocket" type="button">Quit Pocket</button></div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
         <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit" disabled>Save</button></div>
       </form>

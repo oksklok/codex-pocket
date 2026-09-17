@@ -183,6 +183,35 @@ try {
   assert.deepEqual(await page.locator('#quota-chip .quota-label').allTextContents(), ['Weekly', '5-hour']);
   assert.deepEqual(await page.locator('#quota-chip .quota-percent').allTextContents(), ['88%', '41%']);
   assert.equal(await page.locator('#quota-chip .quota-label').first().evaluate(node => node.scrollWidth > node.clientWidth + 1), false, 'a normal window label is not clipped');
+  // Balance sizing is content-driven at desktop, 390px and 320px: a larger amount widens the pill
+  // rather than shrinking its text, and multiple currencies stay separate.
+  for (const width of [1280, 390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    selected = fallback;
+    await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '83.42' }], updatedAt: 1 });
+    const ordinary = await page.locator('#quota-chip').evaluate(node => {
+      const text = node.querySelector('.quota-balance-text');
+      return { width: node.getBoundingClientRect().width, font: getComputedStyle(text).fontSize, clipped: text.scrollWidth > text.clientWidth + 1, text: text.textContent };
+    });
+    assert.equal(ordinary.text, 'Balance ¥83.42');
+    assert.equal(ordinary.clipped, false, `an ordinary balance is not clipped at ${width}`);
+    await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '1234567890123.45' }], updatedAt: 1 });
+    const large = await page.locator('#quota-chip').evaluate(node => {
+      const text = node.querySelector('.quota-balance-text');
+      return { width: node.getBoundingClientRect().width, font: getComputedStyle(text).fontSize, clipped: text.scrollWidth > text.clientWidth + 1, overflow: getComputedStyle(text).textOverflow };
+    });
+    assert.equal(large.font, ordinary.font, `the balance font size is constant at ${width}`);
+    assert.ok(large.width >= ordinary.width, `a larger amount never shrinks the pill at ${width}`);
+    if (large.clipped) assert.equal(large.overflow, 'ellipsis', `an oversized amount ellipsizes instead of shrinking at ${width}`);
+    await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '83.42' }, { currency: 'USD', total: '12.34' }], updatedAt: 1 });
+    assert.equal(await page.locator('#quota-chip').textContent(), 'Balance ¥83.42 · $12.34');
+    const multiTitle = await page.locator('#quota-chip').getAttribute('title');
+    assert.match(multiTitle, /CNY 83\.42/);
+    assert.match(multiTitle, /USD 12\.34/);
+    assert.doesNotMatch(multiTitle, /95\.76/, `currencies are never summed at ${width}`);
+    await shot(`balance-widths-${width}`);
+  }
+  await page.setViewportSize({ width: 1280, height: 844 });
   // A narrow screen wraps whole meter cards rather than clipping an ordinary single-currency amount.
   selected = fallback;
   await page.setViewportSize({ width: 320, height: 844 });
@@ -214,7 +243,7 @@ try {
 
   // Task Details names the provider once: machine value plus an explicit Provider row.
   assert.equal(await page.locator('#machine').textContent(), 'Mac mini · macOS');
-  assert.equal(await page.locator('#machine .machine-provider-badge').count(), 0);
+  assert.equal(await page.locator('#machine .provider-label').count(), 0);
   assert.equal(await page.locator('#provider').textContent(), 'DeepSeek');
   assert.deepEqual(await page.locator('#access-select option').allTextContents(), ['Ask for Approval', 'Full Access']);
 
@@ -298,7 +327,7 @@ try {
   };
   const rows = () => page.locator('.destination-group').first().locator('.destination-entry');
   const rowNames = () => rows().locator('.destination-task-text').allTextContents();
-  const rowProviders = () => rows().locator('.task-provider-badge').allTextContents();
+  const rowProviders = () => rows().locator('.provider-label').allTextContents();
 
   await openSwitcher();
   await page.emulateMedia({ colorScheme: 'dark' });
@@ -309,14 +338,14 @@ try {
   // The visible Host pill is gone; the host designation stays in the accessibility text.
   assert.equal((await hostGroup.locator('.machine-toggle').textContent()).trim(), 'Mac mini Host');
   assert.equal(await page.locator('.machine-host-badge').count(), 0, 'no visible Host pill in any heading');
-  assert.equal(await hostGroup.locator('.destination-group-heading .machine-provider-badge').count(), 0);
+  assert.equal(await hostGroup.locator('.destination-group-heading .provider-label').count(), 0);
   assert.equal(await hostGroup.locator('.machine-toggle').evaluate(node => node.textContent.includes('Host')), true);
 
   // Rows are ordered globally across providers: newest DeepSeek task first.
   assert.deepEqual(await rowNames(), ['DeepSeek newest', 'Same task ID', 'Same task ID', 'OpenAI older']);
   assert.deepEqual(await rowProviders(), ['DeepSeek', 'DeepSeek', 'OpenAI', 'OpenAI']);
-  // The OpenAI-only machine keeps its rows free of redundant provider badges.
-  assert.equal(await page.locator('.destination-group').nth(1).locator('.task-provider-badge').count(), 0);
+  // The OpenAI-only machine keeps its rows free of redundant provider labels.
+  assert.equal(await page.locator('.destination-group').nth(1).locator('.provider-label').count(), 0);
   // Same-name tasks stay distinguishable to assistive tech, provider-qualified only when needed.
   assert.equal(await hostGroup.locator('.destination-entry').nth(1).locator('summary').getAttribute('aria-label'), 'Actions for Same task ID [DeepSeek]');
   assert.equal(await page.locator('.destination-group').nth(1).locator('.destination-entry').first().locator('summary').getAttribute('aria-label'), 'Actions for Remote owned task');
@@ -560,19 +589,20 @@ try {
   taskFail = false;
   await closeSwitcher();
 
-  // The Settings close glyph is drawn, the SSH + control works at both widths, and a broken
-  // DeepSeek credential is the only DeepSeek-related thing Settings shows (no toggle).
+  // The Settings close glyph is drawn, the SSH machine list is compact, and a broken DeepSeek
+  // credential is the only DeepSeek-related thing Settings shows (no toggle).
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await page.locator('#settings-button').click();
     await page.locator('#settings-machines-title').waitFor({ state: 'visible' });
-    await page.locator('.machine-settings-header').waitFor({ state: 'attached' });
+    await page.waitForFunction(() => document.querySelector('#settings-status').textContent === '');
+    await page.locator('.machines-heading').waitFor({ state: 'attached' });
     // Scroll the settings card so the machines area is visible in the capture.
     await page.waitForTimeout(150);
     await page.evaluate(() => {
       const card = document.querySelector('.settings-card');
-      const header = document.querySelector('.machine-settings-header');
-      if (card && header) card.scrollTop += header.getBoundingClientRect().top - 60;
+      const heading = document.querySelector('.machines-heading');
+      if (card && heading) card.scrollTop += heading.getBoundingClientRect().top - 60;
     });
     await page.waitForTimeout(120);
     await shot(`settings-machines-${width}`);
@@ -590,54 +620,47 @@ try {
     assert.notEqual(glyph.stroke, 'none');
     assert.ok(glyph.width > 10 && glyph.height > 10, 'settings X has a drawn box');
     assert.equal(await page.locator('#machine-add').getAttribute('aria-label'), 'Add SSH machine');
-    const before = await page.locator('.machine-settings-row').count();
-    // With no machines configured the single add control is still present, right aligned and never aria-hidden.
+    // Empty list: the section is expanded with a zero count, one accessible Add control, the helper
+    // and the empty note; nothing here is a large input.
+    assert.equal(await page.locator('#machines-count').textContent(), '0');
+    assert.equal(await page.locator('#machines-toggle').getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.locator('.machine-settings-empty').textContent(), 'No remote machines configured.');
+    assert.equal(await page.locator('.machine-entry').count(), 0);
+    assert.equal(await page.locator('.machine-editor').count(), 0);
     const placement = await page.evaluate(() => {
       const button = document.querySelector('#machine-add');
-      const header = document.querySelector('.machine-settings-header');
-      const note = document.querySelector('.machine-settings-empty') || document.querySelector('.machine-settings-row');
+      const heading = document.querySelector('.machines-heading');
+      const toggle = document.querySelector('#machines-toggle');
+      const body = document.querySelector('#machines-body');
       const rect = button.getBoundingClientRect();
       return {
-        inHeader: Boolean(button.closest('.machine-settings-actions-cell')) && header.contains(button),
+        inHeading: heading.contains(button),
         ariaHiddenAncestor: Boolean(button.closest('[aria-hidden="true"]')),
         visible: rect.width > 0 && rect.height > 0,
-        rightAligned: (() => {
-          const style = getComputedStyle(header);
-          const contentRight = header.getBoundingClientRect().right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
-          return Math.abs(contentRight - rect.right) < 1;
-        })(),
-        aboveCards: rect.bottom <= note.getBoundingClientRect().top + 0.5,
-        labelsVisible: [...header.querySelectorAll(':scope > span')].some(span => span.offsetParent !== null),
-        helper: (() => {
-          const helper = header.querySelector('.machine-settings-helper');
-          if (!helper) return null;
-          const helperBox = helper.getBoundingClientRect();
-          return { inHeader: helper.parentElement === header, text: helper.textContent, helperRight: helperBox.right, addLeft: rect.left };
-        })(),
+        rightOfToggle: rect.left >= toggle.getBoundingClientRect().right - 0.5,
+        helper: body.querySelector('.field-help').textContent,
+        bodyVisible: body.offsetParent !== null,
       };
     });
-    assert.equal(placement.inHeader, true);
+    assert.equal(placement.inHeading, true);
     assert.equal(placement.ariaHiddenAncestor, false, 'the add control is never under aria-hidden');
     assert.equal(placement.visible, true, 'add control stays available with an empty list');
-    assert.equal(placement.rightAligned, true, `add control is right aligned at ${width}`);
-    assert.equal(placement.aboveCards, true, `add control sits above the cards at ${width}`);
-    assert.equal(placement.labelsVisible, width >= 600, `column labels follow the desktop layout at ${width}`);
-    assert.notEqual(placement.helper, null, 'the helper lives in the shared header grid even with an empty list');
-    assert.equal(placement.helper.inHeader, true);
-    assert.match(placement.helper.text, /SSH alias/);
-    assert.ok(placement.helper.helperRight <= placement.helper.addLeft + 0.5, 'the helper never runs under the + control');
-    if (width >= 600) {
-      // All four header labels bottom-align, including the add control beside "Actions".
-      const headerBottoms = await page.evaluate(() => {
-        const header = document.querySelector('.machine-settings-header');
-        const nodes = [...header.querySelectorAll(':scope > span, .machine-settings-actions-cell > span'), document.querySelector('#machine-add')];
-        return nodes.map(node => node.getBoundingClientRect().bottom);
-      });
-      assert.equal(headerBottoms.every(bottom => Math.abs(bottom - headerBottoms[0]) < 1), true, `header cells bottom-align at ${width}`);
-    }
+    assert.equal(placement.rightOfToggle, true, `the add control sits at the right at ${width}`);
+    assert.match(placement.helper, /SSH alias/);
+    assert.equal(placement.bodyVisible, true);
+    // Collapsing hides the helper and list but keeps the count and Add action.
+    await page.locator('#machines-toggle').click();
+    assert.equal(await page.locator('#machines-toggle').getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.locator('#machines-body').isVisible(), false);
+    assert.equal(await page.locator('#machine-add').isVisible(), true);
+    await page.locator('#machines-toggle').click();
+    assert.equal(await page.locator('#machines-body').isVisible(), true);
+    // Add expands the section, opens a new editor and focuses its first field.
     await page.locator('#machine-add').click();
-    assert.equal(await page.locator('.machine-settings-row').count(), before + 1);
-    assert.equal(await page.locator('.machine-settings-row').last().locator('[data-machine-name]').evaluate(node => node === document.activeElement), true, 'focus lands on the new row');
+    assert.equal(await page.locator('#machines-count').textContent(), '1');
+    assert.equal(await page.locator('.machine-entry').count(), 1);
+    assert.equal(await page.locator('.machine-editor').count(), 1);
+    assert.equal(await page.locator('.machine-editor [data-machine-name]').evaluate(node => node === document.activeElement), true, 'focus lands on the new editor');
     await page.locator('#settings-close').click();
     await page.locator('#settings-screen').waitFor({ state: 'hidden' });
   }
@@ -652,27 +675,31 @@ try {
   deepseekError = null;
 
   // The machine heading no longer shows a Host pill; a long name truncates and never overlaps the
-  // header controls, and the row provider badge keeps a drawn, transparent border.
+  // header controls, and the row provider is plain secondary metadata after a subtle separator.
   await page.setViewportSize({ width: 390, height: 844 });
   await openSwitcher();
   const heading = await page.locator('.destination-group').first().evaluate(group => {
     const name = group.querySelector('.machine-toggle strong');
     const box = name.getBoundingClientRect();
-    const badge = group.querySelector('.task-provider-badge');
-    const badgeStyle = getComputedStyle(badge);
+    const label = group.querySelector('.provider-label');
+    const labelStyle = getComputedStyle(label);
     return {
       textOverflow: getComputedStyle(name).textOverflow, nameRight: box.right,
       controlsLeft: group.querySelector('.machine-header-controls').getBoundingClientRect().left,
       hostPill: Boolean(group.querySelector('.machine-host-badge')),
-      badgeBorderWidth: badgeStyle.borderTopWidth, badgeBorder: badgeStyle.borderTopColor, badgeBg: badgeStyle.backgroundColor,
+      labelText: label.textContent,
+      borderWidth: labelStyle.borderTopWidth, bg: labelStyle.backgroundColor, radius: labelStyle.borderTopLeftRadius,
+      separator: getComputedStyle(label, '::before').content,
     };
   });
   assert.equal(heading.hostPill, false, 'the heading shows no Host pill');
   assert.equal(heading.textOverflow, 'ellipsis', 'the machine name can truncate');
   assert.ok(heading.nameRight <= heading.controlsLeft + 0.5, 'the machine name never overlaps the header controls');
-  assert.notEqual(heading.badgeBorderWidth, '0px');
-  assert.notEqual(heading.badgeBorder, 'rgba(0, 0, 0, 0)', 'the row provider badge border is visible');
-  assert.equal(heading.badgeBg, 'rgba(0, 0, 0, 0)', 'the row provider badge stays transparent');
+  assert.equal(heading.labelText, 'DeepSeek');
+  assert.equal(heading.borderWidth, '0px', 'the provider label has no border');
+  assert.equal(heading.bg, 'rgba(0, 0, 0, 0)', 'the provider label has no background');
+  assert.equal(heading.radius, '0px', 'the provider label is not a rounded box');
+  assert.equal(heading.separator, '"·"', 'the provider follows a subtle separator');
 
   // History that contains a search card makes an otherwise-disabled filter available again.
   historySearch = true;
@@ -683,23 +710,33 @@ try {
   assert.equal(await page.locator('#display-collaboration').evaluate(node => node.closest('label').hidden), true, 'nothing restores an unrelated filter');
   historySearch = false;
 
-  // The selected row keeps one opaque neutral surface per theme; provider badges keep a visible
-  // border and stay transparent, and the open Tasks toggle keeps its own resting surface.
+  // The selected row keeps one opaque neutral surface per theme; providers are plain secondary
+  // metadata (no box, border or radius) and the open Tasks toggle keeps its own resting surface.
   await openSwitcher();
   const readSurfaces = () => page.evaluate(() => {
     const row = document.querySelector('.destination-task.selected');
     const button = document.querySelector('#destination-button');
-    const badge = document.querySelector('.destination-task.selected .task-provider-badge');
-    const topBadge = document.querySelector('#destination-provider');
+    const label = document.querySelector('.destination-task.selected .provider-label');
+    const topLabel = document.querySelector('#destination-provider');
     const style = node => {
       const computed = getComputedStyle(node);
-      return { bg: computed.backgroundColor, border: computed.borderTopColor, borderWidth: computed.borderTopWidth };
+      return {
+        bg: computed.backgroundColor, border: computed.borderTopColor, borderWidth: computed.borderTopWidth,
+        radius: computed.borderTopLeftRadius, color: computed.color,
+      };
     };
     return {
-      row: style(row), button: style(button), badge: style(badge), topBadge: style(topBadge),
+      row: style(row), button: style(button), label: style(label), topLabel: style(topLabel),
       buttonExpanded: button.getAttribute('aria-expanded'),
     };
   });
+  const luma = value => {
+    const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(value);
+    if (!match) return null;
+    const [r, g, b] = [1, 2, 3].map(index => { const c = Number(match[index]) / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => { const [hi, lo] = [luma(a), luma(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.waitForTimeout(120);
   const openButtonBg = (await readSurfaces()).button.bg;
@@ -711,10 +748,12 @@ try {
     assert.equal(surfaces.buttonExpanded, 'true');
     assert.ok(!surfaces.row.bg.startsWith('rgba('), `the selected shade is opaque in ${scheme}`);
     assert.notEqual(surfaces.row.bg, surfaces.button.bg, `the open Tasks toggle keeps its resting surface in ${scheme}`);
-    for (const kind of ['badge', 'topBadge']) {
-      assert.notEqual(surfaces[kind].borderWidth, '0px', `the ${kind} border is drawn in ${scheme}`);
-      assert.notEqual(surfaces[kind].border, 'rgba(0, 0, 0, 0)', `the ${kind} border stays visible in ${scheme}`);
-      assert.equal(surfaces[kind].bg, 'rgba(0, 0, 0, 0)', `the ${kind} stays transparent in ${scheme}`);
+    for (const kind of ['label', 'topLabel']) {
+      assert.equal(surfaces[kind].borderWidth, '0px', `the ${kind} has no border in ${scheme}`);
+      assert.equal(surfaces[kind].bg, 'rgba(0, 0, 0, 0)', `the ${kind} has no background in ${scheme}`);
+      assert.equal(surfaces[kind].radius, '0px', `the ${kind} is not a rounded box in ${scheme}`);
+      // The row provider must stay readable on the selected/hovered surface.
+      if (kind === 'label') assert.ok(contrast(surfaces.label.color, surfaces.row.bg) >= 4.5, `the row provider stays readable on the selected surface in ${scheme}`);
     }
   }
   await page.emulateMedia({ colorScheme: 'dark' });

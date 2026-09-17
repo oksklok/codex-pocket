@@ -548,7 +548,7 @@ try {
  await page.locator('#settings-local-name').fill('Changed');assert.equal(await save.isEnabled(),true);
  await page.locator('#settings-local-name').fill(settings.localName);assert.equal(await save.isDisabled(),true);
  await page.locator('#machine-add').click();assert.equal(await save.isEnabled(),true);
- await page.locator('.machine-settings-row').last().locator('.machine-remove').click();assert.equal(await save.isDisabled(),true);
+ await page.locator('.machine-editor .machine-remove').click();assert.equal(await save.isDisabled(),true);
  for(const exit of ['settings-cancel','settings-close','Escape']){
  await page.locator('#settings-local-name').fill('Discard me');
  await page.locator('#enter-sends').evaluate(e=>{e.checked=!e.checked;e.dispatchEvent(new Event('change',{bubbles:true}));});
@@ -615,7 +615,7 @@ try {
  assert.deepEqual(await page.evaluate(()=>['tasks','details'].map(k=>localStorage.getItem(`codex-pocket-${k}-open`))),['true','true']);
  }
  await page.locator('#settings-button').click();
- await page.locator('.machine-settings-row').first().waitFor();
+ await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');
  for(const [theme, system, color] of [['light','dark','#f7f7f7'],['dark','light','#181818'],['system','light','#f7f7f7'],['system','dark','#181818']]){
  await page.emulateMedia({colorScheme:system});await page.locator('#settings-theme').selectOption(theme);await settingsSave();await settingsOpen();
  await page.waitForFunction(color=>document.querySelector('meta[name="theme-color"]').content===color,color);
@@ -623,68 +623,83 @@ try {
  await page.emulateMedia({colorScheme:'light'});
  await page.waitForFunction(()=>document.querySelector('meta[name="theme-color"]').content==='#f7f7f7');
 
- for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).isVisible(),width<600);
- // The header row always exists (it holds the add control); its column labels are desktop-only.
- assert.equal(await page.locator('.machine-settings-header').isVisible(),true);
- assert.equal(await page.locator('.machine-settings-header > span').first().isVisible(),width>=600);
- if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Wake MAC (optional)','Actions']);}
- if(width>=600){
- // The header matches the row geometry: labels bottom-align and the + shares the delete button's x centre.
- const headerGeometry=await page.evaluate(()=>{
- const header=document.querySelector('.machine-settings-header'),add=document.querySelector('#machine-add');
- const row=document.querySelector('.machine-settings-row'),remove=row.querySelector('.machine-remove');
- const labels=[...header.querySelectorAll(':scope > span, .machine-settings-actions-cell > span')];
- const helper=header.querySelector('.machine-settings-helper'),actions=header.querySelector('.machine-settings-actions-cell');
- const centreX=node=>{const r=node.getBoundingClientRect();return r.left+r.width/2;};
- const boxes=node=>node.getBoundingClientRect();
- return {
- labelBottoms:labels.map(node=>boxes(node).bottom),
- addCentre:centreX(add),removeCentre:centreX(remove),
- header:boxes(header),row:boxes(row),
- helperInHeader:helper.parentElement===header,helperRight:boxes(helper).right,addLeft:boxes(add).left,
- actionsRowStart:getComputedStyle(actions).gridRowStart,actionsRowEnd:getComputedStyle(actions).gridRowEnd,
- headerPadRight:getComputedStyle(header).paddingRight,rowPadRight:getComputedStyle(row).paddingRight,
- headerPadBottom:getComputedStyle(header).paddingBottom,
- headerBorderRight:getComputedStyle(header).borderRightWidth,rowBorderRight:getComputedStyle(row).borderRightWidth,
- };
- });
- assert.equal(headerGeometry.labelBottoms.every(bottom=>Math.abs(bottom-headerGeometry.labelBottoms[0])<1),true,'the four header labels bottom-align');
- assert.equal(headerGeometry.helperInHeader,true,'the helper is part of the shared header grid');
- assert(headerGeometry.helperRight<=headerGeometry.addLeft+1,'the + reserves its column so helper text never runs under it');
- assert.equal(headerGeometry.actionsRowStart,'1');assert.equal(headerGeometry.actionsRowEnd,'3','the + spans the helper and label rows');
- assert(Math.abs(headerGeometry.addCentre-headerGeometry.removeCentre)<1,`+ and delete share an x centre (${headerGeometry.addCentre} vs ${headerGeometry.removeCentre})`);
- assert.equal(headerGeometry.header.left,headerGeometry.row.left);assert.equal(headerGeometry.header.right,headerGeometry.row.right);
- assert.equal(headerGeometry.headerPadRight,headerGeometry.rowPadRight);assert.equal(headerGeometry.headerBorderRight,headerGeometry.rowBorderRight);
- assert.equal(parseFloat(headerGeometry.headerPadBottom),0,'the header drops its lower padding');
- assert(headerGeometry.row.top-headerGeometry.header.bottom<10,'labels sit close to the first row');
- }
- if(width<600){
- // On mobile the helper and + share one compact row, with one add control inside the header.
- const compact=await page.evaluate(()=>{
- const header=document.querySelector('.machine-settings-header'),helper=header.querySelector('.machine-settings-helper'),add=document.querySelector('#machine-add');
- const hb=helper.getBoundingClientRect(),ab=add.getBoundingClientRect();
- return { helperVisible:helper.offsetParent!==null,addInHeader:header.contains(add),helperRight:hb.right,addLeft:ab.left,
- shareRow:Math.abs((hb.top+hb.height/2)-(ab.top+ab.height/2))<Math.max(hb.height,ab.height) };
- });
- assert.equal(compact.helperVisible,true);
- assert.equal(compact.addInHeader,true,'the single add control stays in the header');
- assert(compact.helperRight<=compact.addLeft+1,'helper and + share the row without overlap');
- assert.equal(compact.shareRow,true,'the helper and + form one compact row');
- }
- assert.equal(await page.getByRole('button',{name:'Move Laptop up',exact:true}).isDisabled(),true);
- assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
- assert.equal(await page.locator('.machine-settings-row').first().locator('button svg[aria-hidden="true"]').count(),3);
- assert.deepEqual(await page.locator('.machine-settings-row').first().locator('input').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40,40]);
- const valueSize=width>=861?'13px':'16px';
- assert((await page.locator('.settings-card input:not([type="checkbox"]), .settings-card select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize))).every(s=>s===valueSize));
- const gaps=await page.locator('.settings-card .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom));
- assert(gaps.every(g=>g===4));
- assert.deepEqual(await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>getComputedStyle(e).gap)),['4px','4px','4px','4px','4px','4px']);
- if(width<600)assert((await page.locator('.machine-settings-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom))).every(g=>g===4));
+ // SSH machines: a compact collapsible list with one inline editor at a time.
+ assert.equal(await page.locator('#machines-count').textContent(),'2');
+ assert.equal(await page.locator('#machines-toggle').getAttribute('aria-expanded'),'true');
+ assert.equal(await page.locator('.machine-entry').count(),2);
+ assert.equal(await page.locator('.machine-editor').count(),0,'no editor is open initially');
+ const summaries=page.locator('.machine-summary');
+ assert.deepEqual(await summaries.locator('.machine-summary-name').allTextContents(),['Laptop','Workstation']);
+ assert.deepEqual(await summaries.locator('.machine-summary-ssh').allTextContents(),['laptop','workstation']);
+ const summaryStyle=await summaries.first().evaluate(node=>{const s=getComputedStyle(node);return {border:s.borderTopWidth,bg:s.backgroundColor,fontSize:s.fontSize,height:node.getBoundingClientRect().height};});
+ assert.equal(summaryStyle.border,'0px','summaries are not outlined cards');
+ assert.equal(summaryStyle.bg,'rgba(0, 0, 0, 0)');
+ assert.equal(summaryStyle.fontSize,'13px','summaries read as ordinary list text, never as large inputs');
+ assert(summaryStyle.height>=40,'summaries keep a comfortable tap target');
+ assert.equal(await page.locator('.machine-entry + .machine-entry').evaluate(node=>getComputedStyle(node).borderTopWidth),'1px','entries are separated by a subtle rule');
+ // One editor at a time; switching editors preserves unsaved values.
+ await summaries.first().click();
+ assert.equal(await page.locator('.machine-editor').count(),1);
+ assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'0');
+ await page.locator('.machine-editor [data-machine-name]').fill('Laptop renamed');
+ await summaries.nth(1).click();
+ assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'1','only one editor is open');
+ assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Workstation');
+ await summaries.first().click();
+ assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed','unsaved values survive switching editors');
+ // Reordering keeps the editor associated with the same machine.
+ await page.locator('.machine-editor .machine-row-actions button').nth(1).click();
+ assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'1','the editor follows the reordered machine');
+ assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed');
+ assert.deepEqual(await summaries.locator('.machine-summary-name').allTextContents(),['Workstation','Laptop renamed']);
+ // Collapsing the section keeps the unsaved draft too.
+ await page.locator('#machines-toggle').click();
+ assert.equal(await page.locator('#machines-body').isVisible(),false);
+ await page.locator('#machines-toggle').click();
+ assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed','unsaved values survive collapsing');
+ // A closed machine with an invalid field is revealed on Save, with that field reachable.
+ await summaries.nth(1).click();
+ assert.equal(await page.locator('.machine-editor').count(),0);
+ await summaries.first().click();
+ await page.locator('.machine-editor [data-machine-ssh]').fill('');
+ await summaries.first().click();
+ assert.equal(await page.locator('.machine-editor').count(),0);
+ await save.click();
+ assert.equal(await page.locator('.machine-editor').count(),1,'Save reopens the invalid machine');
+ assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'0');
+ assert.equal(await page.locator('.machine-editor [data-machine-ssh]').evaluate(node=>node===document.activeElement),true,'the invalid SSH alias is reachable');
+ // Restore a valid alias, then remove both machines through the editor and check the count/empty state.
+ await page.locator('.machine-editor [data-machine-ssh]').fill('workstation');
+ await page.locator('.machine-editor .machine-remove').click();
+ assert.equal(await page.locator('.machine-entry').count(),1);
+ assert.equal(await page.locator('#machines-count').textContent(),'1');
+ await page.locator('.machine-summary').first().click();
+ await page.locator('.machine-editor .machine-remove').click();
+ assert.equal(await page.locator('.machine-entry').count(),0);
+ assert.equal(await page.locator('#machines-count').textContent(),'0');
+ assert.equal(await page.locator('.machine-settings-empty').isVisible(),true);
+ // Discard these machine edits and reopen Settings for the remaining checks.
+ await page.locator('#settings-close').click();
+ await page.locator('#settings-screen').waitFor({state:'hidden'});
+ // Ten machines render as ten compact summaries with a single editor on demand.
+ settings.machines=Array.from({length:10},(_,i)=>({name:`Machine ${i+1}`,ssh:`machine-${i+1}`}));
+ await settingsOpen();
+ assert.equal(await page.locator('#machines-count').textContent(),'10');
+ assert.equal(await page.locator('.machine-entry').count(),10);
+ assert.equal(await page.locator('.machine-editor').count(),0);
+ await page.locator('#machines-toggle').click();
+ assert.equal(await page.locator('#machines-count').textContent(),'10','the count stays visible while collapsed');
+ assert.equal(await page.locator('#machines-body').isVisible(),false);
+ await page.locator('#machines-toggle').click();
+ settings.machines=[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}];
+ await page.locator('#settings-close').click();
+ await page.locator('#settings-screen').waitFor({state:'hidden'});
+ await settingsOpen();
+ assert.equal(await page.locator('#machines-count').textContent(),'2');
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).display),'flex');
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).fontSize),'12px');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-top-${width}.png`});
- await page.locator('.machine-settings-row').first().scrollIntoViewIfNeeded();
+ await page.locator('.machines-heading').scrollIntoViewIfNeeded();
  if(process.env.POCKET_SCREENSHOT_DIR){
  await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
  await page.emulateMedia({colorScheme:'dark'});await page.waitForTimeout(80);
@@ -1355,7 +1370,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  // Themes stay neutral in dark mode, System matches the explicit themes, and navigation uses one active surface.
  for(const width of [1280,390]){
  await page.setViewportSize({width,height:844});
- const tokenNames=['--bg','--surface','--surface-strong','--line','--line-soft','--text','--muted','--subtle','--selected-bg','--selected-border','--badge-border','--placeholder'];
+ const tokenNames=['--bg','--surface','--surface-strong','--line','--line-soft','--text','--muted','--subtle','--selected-bg','--selected-border','--placeholder'];
  const readTokens=()=>page.evaluate(names=>{const s=getComputedStyle(document.documentElement);return Object.fromEntries(names.map(name=>[name,s.getPropertyValue(name).trim()]));},tokenNames);
  const setTheme=async(theme,scheme)=>{await page.emulateMedia({colorScheme:scheme});await page.evaluate(theme=>{document.documentElement.dataset.theme=theme;},theme);await page.waitForTimeout(40);};
  const channels=value=>{const match=/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(value);if(match)return [Number(match[1]),Number(match[2]),Number(match[3])];const hex=String(value).replace('#','');const parts=hex.length===3?hex.split('').map(c=>parseInt(c+c,16)):[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16));return parts.some(Number.isNaN)?null:parts;};
@@ -1394,10 +1409,16 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  // Keyboard focus shows through the neutral state shade and never a perimeter ring.
  await page.keyboard.press('Tab');await selectedRow.focus();
  assert(await selectedRow.evaluate((node,expected)=>{const s=getComputedStyle(node);return node.matches(':focus-visible')&&s.outlineStyle==='none'&&s.backgroundColor===expected;},hoverBg),'the focused row keeps its state shade without an outline');
- // Readable placeholder and badge chrome in dark mode.
+ // Readable placeholder and plain provider metadata in dark mode.
  assert.equal(isNeutral(await page.locator('#destination-search').evaluate(node=>getComputedStyle(node,'::placeholder').color)),true,'placeholders stay neutral');
- const badge=page.locator('.destination-task.selected .task-provider-badge, .machine-provider-badge').first();
- if(await badge.count()){const border=await badge.evaluate(node=>getComputedStyle(node).borderTopColor);assert.notEqual(border,'rgba(0, 0, 0, 0)','badge borders stay visible');assert.equal(isNeutral(border),true,'badge borders stay neutral');}
+ const provider=page.locator('.destination-task.selected .provider-label, .provider-label').first();
+ if(await provider.count()){
+ const chrome=await provider.evaluate(node=>{const s=getComputedStyle(node);return {border:s.borderTopWidth,bg:s.backgroundColor,color:s.color,text:node.textContent,separator:getComputedStyle(node,'::before').content};});
+ assert.equal(chrome.border,'0px','the provider label has no border');
+ assert.equal(chrome.bg,'rgba(0, 0, 0, 0)','the provider label has no background');
+ assert.equal(chrome.separator,'"·"','the provider follows a subtle separator');
+ assert.equal(isNeutral(chrome.color),true,'the provider label stays neutral');
+ }
  if(width>=1100){
  // Sidebar toggles keep one resting surface whether open or closed, and hover never changes it.
  const tasksButton=page.locator('#destination-button');
@@ -1578,6 +1599,32 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.keyboard.press('Tab');await page.locator('#settings-button').focus();
  assert.notEqual(await page.locator('#settings-button').evaluate(e=>getComputedStyle(e).outlineStyle),'none','forced colors keeps a system focus indicator');
  await page.emulateMedia({forcedColors:'none'});
+ // Quit Pocket stays short, on one line, and shows its pending label through the real handler.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await settingsOpen();
+ const quit=page.locator('#quit-pocket');
+ assert.equal(await quit.textContent(),'Quit Pocket');
+ assert.equal((await page.locator('.settings-quit p').textContent()).trim(),'Stops Pocket on the host machine.');
+ const quitStyle=await quit.evaluate(node=>{const s=getComputedStyle(node);return {fontSize:s.fontSize,whiteSpace:s.whiteSpace,clipped:node.scrollWidth>node.clientWidth+1,height:node.getBoundingClientRect().height};});
+ assert.equal(quitStyle.fontSize,'13px');
+ assert.equal(quitStyle.whiteSpace,'nowrap');
+ assert.equal(quitStyle.clipped,false,'the Quit button stays on one line');
+ assert(quitStyle.height>=36,'the Quit button keeps a comfortable tap target');
+ // Cancelling the confirmation leaves the label unchanged.
+ await page.evaluate(()=>{window.__confirmBase=window.confirm;window.confirm=()=>false;});
+ await quit.click();
+ assert.equal(await quit.textContent(),'Quit Pocket');
+ // The pending label shows while the shutdown request is in flight.
+ await page.evaluate(()=>{window.__fetchBase=window.fetch;window.confirm=()=>true;window.fetch=(url,...args)=>String(url).includes('/api/shutdown')?new Promise(()=>{}):window.__fetchBase(url,...args);});
+ await quit.click();
+ assert.equal(await quit.textContent(),'Quitting…');
+ assert.equal(await page.locator('#settings-status').textContent(),'Quitting…');
+ await page.evaluate(()=>{window.fetch=window.__fetchBase;window.confirm=window.__confirmBase;});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ }
 // Isolated browser checks use the same real frontend and synthetic server.
  for(const width of [390,1080,1100,1280]){
  await page.setViewportSize({width,height:844});
@@ -2214,11 +2261,13 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.getByRole('button',{name:/^Wake /}).count(),0);
  }
  await dismissTasks();await settingsOpen();
+ await page.locator('.machine-summary').first().click();
  const mac=page.locator('[data-machine-wake-mac]').first();await mac.fill('AA:BB:CC:DD:EE:FF');await mac.evaluate(e=>e.scrollIntoView({block:"center",behavior:"instant"}));
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-settings-${width}.png`});
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  await settingsSave();assert.equal(settings.machines[0].wakeMac,'AA:BB:CC:DD:EE:FF');
- await settingsOpen();assert.equal(await page.locator('[data-machine-wake-mac]').first().inputValue(),'AA:BB:CC:DD:EE:FF');
+ await settingsOpen();await page.locator('.machine-summary').first().click();
+ assert.equal(await page.locator('[data-machine-wake-mac]').first().inputValue(),'AA:BB:CC:DD:EE:FF');
  await page.locator('#settings-close').click();
  }
  // Selected goals use authoritative state, compact actions, and the existing Clear dialog.
