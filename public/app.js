@@ -3549,10 +3549,19 @@ function machineSshText(machine) {
   return machine.ssh.trim() || "No SSH alias";
 }
 
-// The one field (if any) that blocks saving this machine; mirrors the native field constraints.
-function invalidMachineField(machine) {
-  if (!machine.name.trim()) return "name";
-  if (!machine.ssh.trim() || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(machine.ssh.trim())) return "ssh";
+// Mirrors the gateway's machine rules so a collapsed editor can be revealed before any request is
+// sent: required name/SSH alias, case-insensitive unique aliases, and an optional Wake MAC in plain,
+// colon-separated or hyphen-separated hexadecimal.
+const WAKE_MAC_PATTERN = /^(?:[\da-f]{12}|[\da-f]{2}([:-])(?:[\da-f]{2}\1){4}[\da-f]{2})$/i;
+function machineFieldError(machine, index = 0, machines = []) {
+  if (!machine.name.trim()) return { field: "name", message: "Enter a display name for this machine." };
+  const ssh = machine.ssh.trim();
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(ssh) || ssh.length > 128) return { field: "ssh", message: "Enter a simple SSH alias (letters, digits, dot, dash or underscore)." };
+  if (index > 0 && machines.slice(0, index).some((previous) => previous.ssh.trim().toLowerCase() === ssh.toLowerCase())) {
+    return { field: "ssh", message: `Duplicate SSH alias: ${ssh}` };
+  }
+  const wakeMac = machine.wakeMac.trim();
+  if (wakeMac && !WAKE_MAC_PATTERN.test(wakeMac)) return { field: "wakeMac", message: "Enter a valid Wake-on-LAN MAC address." };
   return null;
 }
 
@@ -3581,7 +3590,13 @@ function renderMachineEditor(machine, index) {
   const ssh = machineEditorInput("machineSsh", machine.ssh, { maxLength: 128, placeholder: "SSH alias", pattern: "[A-Za-z0-9][A-Za-z0-9._-]*", required: true, label: `Machine ${index + 1} SSH alias` });
   const wakeMac = machineEditorInput("machineWakeMac", machine.wakeMac, { maxLength: 17, placeholder: "AA:BB:CC:DD:EE:FF", label: `Machine ${index + 1} Wake MAC (optional)` });
   for (const [input, title, key] of [[name, "Display Name", "name"], [ssh, "SSH Alias", "ssh"], [wakeMac, "Wake MAC (optional)", "wakeMac"]]) {
-    input.addEventListener("input", () => { machineDraft[index][key] = input.value; });
+    input.addEventListener("input", () => {
+      machineDraft[index][key] = input.value;
+      // Correcting a revealed value clears its custom error and the shared status message.
+      input.setCustomValidity("");
+      elements.settingsStatus.textContent = "";
+      elements.settingsStatus.classList.remove("error-text");
+    });
     const label = document.createElement("label");
     label.className = "machine-settings-field";
     label.append(Object.assign(document.createElement("span"), { textContent: title }), input);
@@ -3642,11 +3657,14 @@ function renderMachineEntry(machine, index) {
   const name = Object.assign(document.createElement("strong"), { className: "machine-summary-name", textContent: machineNameText(machine, index) });
   const ssh = Object.assign(document.createElement("small"), { className: "machine-summary-ssh", textContent: machineSshText(machine) });
   text.append(name, ssh);
-  const chevron = document.createElement("svg");
+  // A real SVG element and path; an HTML "svg" element renders nothing.
+  const chevron = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   chevron.setAttribute("aria-hidden", "true");
   chevron.setAttribute("viewBox", "0 0 24 24");
   chevron.classList.add("machine-summary-chevron");
-  chevron.innerHTML = '<path d="m9 5 7 7-7 7"/>';
+  const chevronPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  chevronPath.setAttribute("d", "m9 5 7 7-7 7");
+  chevron.append(chevronPath);
   summary.append(text, chevron);
   summary.addEventListener("click", () => {
     machineEditorIndex = open ? null : index;
@@ -4029,17 +4047,24 @@ elements.settingsForm.addEventListener("submit", async (event) => {
     elements.settingsPin.focus();
     return;
   }
-  // Native constraint validation only sees the open editor, so reveal the first closed machine that
-  // would fail (empty name or SSH alias, or an invalid alias) and make its field reachable.
-  const invalidMachine = machineDraft.findIndex((machine) => invalidMachineField(machine));
+  // Native constraint validation only sees the open editor, so reveal the first machine that would
+  // fail (missing name/SSH alias, duplicate alias, or invalid Wake MAC) and make its field reachable.
+  const invalidMachine = machineDraft.findIndex((machine, index) => machineFieldError(machine, index, machineDraft));
   if (invalidMachine >= 0) {
+    const error = machineFieldError(machineDraft[invalidMachine], invalidMachine, machineDraft);
     machinesExpanded = true;
     machineEditorIndex = invalidMachine;
     renderMachineSettings();
     const editor = elements.settingsMachines.querySelector(`[data-machine-editor="${invalidMachine}"]`);
-    const field = editor?.querySelector(invalidMachineField(machineDraft[invalidMachine]) === "name" ? "[data-machine-name]" : "[data-machine-ssh]");
-    field?.focus();
-    field?.reportValidity?.();
+    const selector = error.field === "name" ? "[data-machine-name]" : error.field === "ssh" ? "[data-machine-ssh]" : "[data-machine-wake-mac]";
+    const field = editor?.querySelector(selector);
+    if (field) {
+      field.setCustomValidity(error.message);
+      field.focus();
+      field.reportValidity();
+    }
+    elements.settingsStatus.textContent = error.message;
+    elements.settingsStatus.classList.add("error-text");
     return;
   }
   savingSettings = true;

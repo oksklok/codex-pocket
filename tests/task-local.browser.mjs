@@ -1367,6 +1367,82 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await typePrompt('');
  }
  }
+ // SSH machine chevrons are real SVGs and validation reveals collapsed/other editors without data loss.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ settings.machines=[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}];
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await settingsOpen();
+ await page.locator('.machine-summary').first().waitFor();
+ const chevron=()=>page.locator('.machine-summary .machine-summary-chevron').first();
+ for(const scheme of ['dark','light']){
+ await page.emulateMedia({colorScheme:scheme});
+ const collapsed=await chevron().evaluate(node=>({namespace:node.namespaceURI,pathNamespace:node.querySelector('path')?.namespaceURI||null,d:node.querySelector('path')?.getAttribute('d')||null,width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height,transform:getComputedStyle(node).transform}));
+ assert.equal(collapsed.namespace,'http://www.w3.org/2000/svg',`the collapsed chevron is a real SVG in ${scheme}`);
+ assert.equal(collapsed.pathNamespace,'http://www.w3.org/2000/svg',`the collapsed chevron path is SVG in ${scheme}`);
+ assert.equal(collapsed.d,'m9 5 7 7-7 7');
+ assert(collapsed.width>=10&&collapsed.height>=10,`the collapsed chevron has a drawable box in ${scheme}`);
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.locator('.settings-machines').screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/machine-chevron-${width}-collapsed-${scheme}.png`});
+ await page.locator('.machine-summary').first().click();
+ const expanded=await chevron().evaluate(node=>({namespace:node.namespaceURI,pathNamespace:node.querySelector('path')?.namespaceURI||null,transform:getComputedStyle(node).transform}));
+ assert.equal(expanded.namespace,'http://www.w3.org/2000/svg',`the expanded chevron is a real SVG in ${scheme}`);
+ assert.equal(expanded.pathNamespace,'http://www.w3.org/2000/svg');
+ assert.notEqual(expanded.transform,collapsed.transform,`the chevron rotates when expanded in ${scheme}`);
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.locator('.settings-machines').screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/machine-chevron-${width}-expanded-${scheme}.png`});
+ await page.locator('.machine-summary').first().click();
+ }
+ await page.emulateMedia({colorScheme:'dark'});
+ // An invalid Wake MAC on a collapsed machine is revealed on Save with other edits preserved.
+ await page.locator('.machine-summary').first().click();
+ await page.locator('.machine-editor [data-machine-name]').fill('Laptop renamed');
+ await page.locator('.machine-editor [data-machine-wake-mac]').fill('not-a-mac');
+ await page.locator('.machine-summary').first().click();
+ assert.equal(await page.locator('.machine-editor').count(),0);
+ await page.locator('#settings-save').click();
+ assert.equal(await page.locator('.machine-editor').count(),1,'Save reveals the invalid Wake MAC machine');
+ assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'0');
+ assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed','other unsaved edits survive the reveal');
+ assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').evaluate(node=>node===document.activeElement),true,'the Wake MAC field is focused');
+ assert.match(await page.locator('#settings-status').textContent(),/valid Wake-on-LAN MAC/i);
+ assert.equal(await page.locator('#settings-screen').evaluate(node=>node.hidden),false,'an invalid draft is not submitted');
+ assert.equal(settings.machines[0].wakeMac,undefined,'the invalid draft never reached the host');
+ // Correcting the MAC clears the custom error and saves.
+ await page.locator('.machine-editor [data-machine-wake-mac]').fill('aabbccddeeff');
+ assert.equal(await page.locator('#settings-status').textContent(),'');
+ assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').evaluate(node=>node.validationMessage),'','correcting clears the custom validity');
+ await page.locator('#settings-save').click();
+ await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
+ assert.equal(settings.machines[0].wakeMac,'aabbccddeeff','the corrected MAC is submitted');
+ assert.equal(settings.machines[0].name,'Laptop renamed','the preserved name saves too');
+ // A case-insensitive duplicate SSH alias on a collapsed machine is revealed on Save.
+ await settingsOpen();
+ await page.locator('.machine-summary').nth(1).click();
+ await page.locator('.machine-editor [data-machine-ssh]').fill('LAPTOP');
+ await page.locator('.machine-summary').nth(1).click();
+ await page.locator('#settings-save').click();
+ assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'1','Save reveals the duplicate-alias machine');
+ assert.equal(await page.locator('.machine-editor [data-machine-ssh]').evaluate(node=>node===document.activeElement),true);
+ assert.match(await page.locator('#settings-status').textContent(),/duplicate SSH alias: laptop/i);
+ assert.equal(await page.locator('.machine-summary-name').first().textContent(),'Laptop renamed','other machines keep their unsaved edits');
+ assert.equal(await page.locator('#settings-screen').evaluate(node=>node.hidden),false,'the duplicate draft is not submitted');
+ await page.locator('.machine-editor [data-machine-ssh]').fill('workstation-2');
+ assert.equal(await page.locator('#settings-status').textContent(),'');
+ await page.locator('#settings-save').click();
+ await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
+ assert.equal(settings.machines[1].ssh,'workstation-2');
+ // Blank and every accepted Wake MAC format still save.
+ for(const value of ['','AA:BB:CC:DD:EE:FF','AA-BB-CC-DD-EE-FF','aabbccddeeff']){
+ await settingsOpen();
+ await page.locator('.machine-summary').first().click();
+ await page.locator('.machine-editor [data-machine-wake-mac]').fill(value);
+ await page.locator('.machine-summary').first().click();
+ await page.locator('#settings-save').click();
+ await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
+ assert.equal(settings.machines[0].wakeMac,value===''?undefined:value,`Wake MAC "${value}" is accepted and submitted`);
+ }
+ // Restore the fixture machines for the remaining suites.
+ settings.machines=[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}];
+ }
  // Themes stay neutral in dark mode, System matches the explicit themes, and navigation uses one active surface.
  for(const width of [1280,390]){
  await page.setViewportSize({width,height:844});
