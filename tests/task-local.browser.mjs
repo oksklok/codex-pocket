@@ -700,10 +700,12 @@ try {
  assert.equal(await page.locator('#model-select').count(),0);
  assert.equal(await page.locator('#model-select-static').textContent(),'Test');
  assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().height)),[40,40]);
- assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize)),[valueSize,valueSize]);
+ // Runtime controls keep the shared UI size at every width, including a merely narrowed desktop window.
+ assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize)),['13px','13px']);
+ assert.equal(await page.locator('#model-select-static').evaluate(e=>getComputedStyle(e).fontSize),'13px');
  assert.deepEqual(await page.locator('.runtime-panel .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom)),[4,4,4]);
  await page.locator('#access-select').evaluate(e=>e.classList.add('full-access'));
- assert.equal(await page.locator('#access-select').evaluate(e=>getComputedStyle(e).fontSize),valueSize);
+ assert.equal(await page.locator('#access-select').evaluate(e=>getComputedStyle(e).fontSize),'13px');
  await page.locator('#access-select').evaluate(e=>e.classList.remove('full-access'));
  assert.equal(await page.locator('#inspector-close').isVisible(),width<861);
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/display-${width}.png`});
@@ -1370,9 +1372,9 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await selectedRow.hover();await page.waitForTimeout(60);
  assert.equal(await rowBg(selectedRow),hoverBg,'selected + hovered is unchanged');
  assert.equal(await selectedRow.evaluate(node=>getComputedStyle(node).borderTopColor),selectedBorder,'selected + hovered keeps its border');
- // A distinct keyboard-focus outline remains on rows.
+ // Keyboard focus shows through the neutral state shade and never a perimeter ring.
  await page.keyboard.press('Tab');await selectedRow.focus();
- assert(await selectedRow.evaluate(node=>({focused:node.matches(':focus-visible'),outline:getComputedStyle(node).outlineStyle,width:parseFloat(getComputedStyle(node).outlineWidth)})).then(v=>v.focused&&v.outline==='solid'&&v.width>=2));
+ assert(await selectedRow.evaluate((node,expected)=>{const s=getComputedStyle(node);return node.matches(':focus-visible')&&s.outlineStyle==='none'&&s.backgroundColor===expected;},hoverBg),'the focused row keeps its state shade without an outline');
  // Readable placeholder and badge chrome in dark mode.
  assert.equal(isNeutral(await page.locator('#destination-search').evaluate(node=>getComputedStyle(node,'::placeholder').color)),true,'placeholders stay neutral');
  const badge=page.locator('.destination-task.selected .task-provider-badge, .machine-provider-badge').first();
@@ -1413,6 +1415,103 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#settings-screen').waitFor({state:'hidden'});
  active=savedActive;
  }
+ // A long draft owns its own scrolling; boundary wheel input never chains to the transcript or page.
+ for(const width of [1280,390]){
+ const desktop=width>860;
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,
+ liveMessages:[{id:'draft-scroll',role:'assistant',text:'Transcript line.\n\n'.repeat(220),complete:true,createdAt:Date.now()}],activities:[]});
+ await page.reload();await page.locator('[data-message-id="draft-scroll"]').waitFor();await page.waitForTimeout(200);
+ const transcriptScroll=()=>page.evaluate(desktop=>{const s=desktop?document.querySelector('#conversation'):document.scrollingElement;return {top:Math.round(s.scrollTop),max:Math.round(s.scrollHeight-s.clientHeight)};},desktop);
+ const draftState=()=>input.evaluate(e=>({top:Math.round(e.scrollTop),max:Math.round(e.scrollHeight-e.clientHeight),overflowY:getComputedStyle(e).overflowY,overscrollY:getComputedStyle(e).overscrollBehaviorY,scrollbarWidth:getComputedStyle(e).scrollbarWidth}));
+ await input.fill(Array.from({length:40},(_,i)=>`Draft line ${i}`).join('\n'));
+ await page.waitForTimeout(150);
+ // fill() scrolls the focused composer into view, so park the transcript mid-list afterwards to make
+ // chaining in either direction observable.
+ await page.evaluate(desktop=>{const s=desktop?document.querySelector('#conversation'):document.scrollingElement;s.scrollTop=Math.round((s.scrollHeight-s.clientHeight)/2);},desktop);
+ await page.waitForTimeout(120);
+ const before=await transcriptScroll();
+ assert(before.max>50&&before.top>50&&before.top<before.max-50,'the transcript is parked mid-list');
+ const box=await input.boundingBox();
+ await page.mouse.move(box.x+box.width/2,box.y+Math.min(10,box.height/2));
+ // Bottom boundary: force the draft fully down, then keep wheeling.
+ await input.evaluate(e=>{e.scrollTop=e.scrollHeight;});
+ await page.mouse.wheel(0,500);await page.mouse.wheel(0,500);await page.waitForTimeout(150);
+ const atBottom=await draftState();
+ assert(atBottom.max>0,`the long draft overflows internally at ${width}`);
+ assert.equal(atBottom.top,atBottom.max,'the draft reaches its own bottom');
+ assert.equal(atBottom.overflowY,'auto','overflow scrolling stays enabled');
+ assert.equal(atBottom.scrollbarWidth,'none','the composer scrollbar is hidden without disabling scrolling');
+ assert.deepEqual(await transcriptScroll(),before,'wheel past the draft bottom leaves the transcript stationary');
+ assert.equal(atBottom.overscrollY,'contain','the draft contains scroll chaining');
+ // Top boundary.
+ await input.evaluate(e=>{e.scrollTop=0;});
+ await page.mouse.wheel(0,-500);await page.mouse.wheel(0,-500);await page.waitForTimeout(150);
+ assert.equal((await draftState()).top,0,'the draft reaches its own top');
+ assert.deepEqual(await transcriptScroll(),before,'wheel past the draft top leaves the transcript stationary');
+ // Moving the pointer over the transcript restores ordinary conversation scrolling.
+ const transcriptBox=await page.locator('#conversation').boundingBox();
+ await page.mouse.move(transcriptBox.x+transcriptBox.width/2,transcriptBox.y+40);
+ await page.mouse.wheel(0,400);await page.waitForTimeout(150);
+ assert.notDeepEqual(await transcriptScroll(),before,'the transcript scrolls again with the pointer over it');
+ if(process.env.POCKET_SCREENSHOT_DIR){
+ await page.emulateMedia({colorScheme:'dark'});await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-compact-${width}-dark.png`});
+ await page.locator('#expand-composer').evaluate(e=>e.click());await page.waitForTimeout(250);
+ await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-expanded-${width}-dark.png`});
+ await page.emulateMedia({colorScheme:'light'});await page.waitForTimeout(100);
+ await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-expanded-${width}-light.png`});
+ await page.locator('#expand-composer').evaluate(e=>e.click());await page.waitForTimeout(250);
+ await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/composer-compact-${width}-light.png`});
+ await page.emulateMedia({colorScheme:'dark'});
+ }
+ }
+ // No perimeter focus rings in normal Pocket UI; borders, warnings and non-outline feedback remain.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',goal:null,pending:[],queuedMessage:null,liveMessages:[],activities:[]});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ const focusedStyle=async selector=>{const locator=page.locator(selector).first();await page.keyboard.press('Tab');await locator.focus();return locator.evaluate(node=>{const s=getComputedStyle(node);return {focused:node.matches(':focus-visible'),outline:s.outlineStyle,outlineWidth:s.outlineWidth,shadow:s.boxShadow,border:s.borderTopColor,bg:s.backgroundColor};});};
+ const composerBefore=await input.evaluate(e=>{const s=getComputedStyle(e);return {border:s.borderTopColor,bg:s.backgroundColor};});
+ await page.keyboard.press('Tab');await input.focus();
+ const composer=await input.evaluate(e=>{const s=getComputedStyle(e);return {focused:e.matches(':focus-visible'),outline:s.outlineStyle,outlineWidth:s.outlineWidth,shadow:s.boxShadow,border:s.borderTopColor,bg:s.backgroundColor};});
+ assert.equal(composer.focused,true);
+ assert.equal(composer.outline,'none','the composer has no focus ring');
+ assert.equal(composer.shadow,'none');
+ assert.deepEqual({border:composer.border,bg:composer.bg},composerBefore,'the composer keeps its ordinary appearance on focus');
+ assert.equal(await input.evaluate(e=>{e.value='Caret check';e.setSelectionRange(4,4);return e.selectionStart;}),4,'the caret and selection still work');
+ await input.fill('');
+ await open();await page.waitForTimeout(210);
+ const search=await focusedStyle('#destination-search');
+ assert.equal(search.focused,true);assert.equal(search.outline,'none','the task search has no focus ring');
+ await dismissTasks();await closed();
+ await settingsOpen();
+ const host=await focusedStyle('#settings-host');
+ assert.equal(host.outline,'none','settings text fields have no focus ring');
+ const theme=await focusedStyle('#settings-theme');
+ assert.equal(theme.outline,'none','settings selects have no focus ring');
+ assert.notEqual(theme.bg,'rgba(0, 0, 0, 0)','selects still show keyboard focus');
+ const checkbox=await focusedStyle('#show-quota');
+ assert.equal(checkbox.outline,'none','settings checkboxes have no focus ring');
+ assert.notEqual(await page.locator('label.checkbox-row:has(#show-quota)').evaluate(node=>getComputedStyle(node).backgroundColor),'rgba(0, 0, 0, 0)','the checkbox row shows keyboard focus without a ring');
+ const cancel=await focusedStyle('#settings-cancel');
+ assert.equal(cancel.outline,'none','buttons have no focus ring');
+ assert.notEqual(cancel.bg,'rgba(0, 0, 0, 0)','buttons still show keyboard focus');
+ await page.locator('#settings-close').click();await page.locator('#settings-screen').waitFor({state:'hidden'});
+ if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
+ await page.waitForTimeout(200);
+ await page.locator('#access-select').evaluate(e=>e.classList.add('full-access'));
+ const full=await focusedStyle('#access-select');
+ assert.equal(full.outline,'none');
+ assert.match(full.border,/255,\s*139,\s*139/,'the Full Access border stays');
+ assert.match(full.bg,/255,\s*139,\s*139/,'the Full Access background stays');
+ await page.locator('#access-select').evaluate(e=>e.classList.remove('full-access'));
+ }
+ // A forced-colors/high-contrast request keeps the system focus indicator.
+ await page.setViewportSize({width:1280,height:844});
+ await page.emulateMedia({forcedColors:'active'});
+ await page.keyboard.press('Tab');await page.locator('#settings-button').focus();
+ assert.notEqual(await page.locator('#settings-button').evaluate(e=>getComputedStyle(e).outlineStyle),'none','forced colors keeps a system focus indicator');
+ await page.emulateMedia({forcedColors:'none'});
 // Isolated browser checks use the same real frontend and synthetic server.
  for(const width of [390,1080,1100,1280]){
  await page.setViewportSize({width,height:844});
@@ -1520,9 +1619,15 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  // The newer successful archived read restored connectivity even though active catalog data is cached.
  assert.equal(await page.locator('.destination-group.offline').count(),0);
  assert.equal(await page.locator('.destination-group-heading .icon-button').last().isEnabled(),true);
- await page.keyboard.press('Tab');await page.getByRole('button',{name:'New task',exact:true}).first().focus();
- assert(await page.getByRole('button',{name:'New task',exact:true}).first().evaluate(e=>{const s=getComputedStyle(e);return e.matches(':focus-visible')&&s.outlineStyle==='solid'&&parseFloat(s.outlineWidth)>=2;}));
+ await page.keyboard.press('Tab');
  const plus=page.getByRole('button',{name:'New task',exact:true}).first();
+ await plus.focus();
+ // Keyboard focus is visible without a perimeter ring; hover alone keeps the transparent resting surface.
+ const plusFocus=await plus.evaluate(e=>{const s=getComputedStyle(e);return {focused:e.matches(':focus-visible'),outline:s.outlineStyle,bg:s.backgroundColor};});
+ assert.equal(plusFocus.focused,true);
+ assert.equal(plusFocus.outline,'none','keyboard focus draws no ring');
+ assert.notEqual(plusFocus.bg,'rgba(0, 0, 0, 0)','keyboard focus still shows a state treatment');
+ await page.evaluate(()=>document.activeElement?.blur());
  await plus.hover();assert.equal(await plus.evaluate(e=>getComputedStyle(e).backgroundColor),'rgba(0, 0, 0, 0)');
  const plusRect=await plus.boundingBox(),actionRect=await page.locator('.task-actions summary').first().boundingBox();
  assert(Math.abs(plusRect.x+plusRect.width/2-actionRect.x-actionRect.width/2)<1);

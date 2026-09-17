@@ -196,7 +196,6 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-error > span { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
 /* Hover and selection share one neutral active surface; the selected + hovered pair keeps it explicitly. */
 .destination-task.selected, .destination-task.selected:hover:not(:disabled), .destination-task.selected:focus-visible { border-color: var(--selected-border); background: var(--selected-bg); color: var(--text); }
-.destination-task:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .destination-check { color: var(--accent); display: grid; place-items: center; }
 .destination-check svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .task-actions summary svg { display: block; width: 20px; height: 20px; fill: currentColor; }
@@ -397,7 +396,10 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .composer-input { position: relative; min-width: 0; min-height: 0; }
 .composer-input textarea { display: block; }
 .expanded-composer .composer-input textarea { padding-right: 44px; }
-.composer textarea { height: 40px; min-height: 40px; max-height: 112px; resize: none; padding: 8px 11px; line-height: 20px; overflow-y: auto; }
+/* The draft keeps its own scroll: containment stops wheel/touch chaining to the transcript or page,
+   and the scrollbar is hidden without disabling overflow. */
+.composer textarea { height: 40px; min-height: 40px; max-height: 112px; resize: none; padding: 8px 11px; line-height: 20px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.composer textarea::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .composer textarea:placeholder-shown { -webkit-user-select: none; user-select: none; }
 .composer-actions { align-self: end; gap: 6px; }
 .composer button { height: 40px; min-height: 40px; min-width: 66px; padding: 7px 10px; }
@@ -640,7 +642,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .destination-group-heading .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 
 .task-project { display: block; color: var(--subtle); font-size: var(--text-secondary); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
-.task-actions button:hover:not(:disabled), .task-actions button:focus-visible { background: var(--surface); outline: 1px solid var(--line); }
+.task-actions button:hover:not(:disabled), .task-actions button:focus-visible { background: var(--surface); }
 .task-actions button:active:not(:disabled) { background: var(--selected-bg); }
 .phase-pill.working::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: currentColor; animation: phase-dot 1.35s ease-in-out infinite; }
 @keyframes phase-dot { 50% { opacity: .4; transform: scale(.8); box-shadow: 0 0 0 4px rgba(69,200,138,.18); } }
@@ -718,10 +720,14 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .settings-actions button, .settings-restart button { min-height: var(--control-height); }
 .secondary-panel h3 { font-size: var(--text-heading); }
 .settings-card .field-help, .machine-settings-empty { color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
-:is(.settings-card input, .settings-card select, .runtime-panel select, .destination-search input):focus-visible {
-  border-color: var(--blue); outline: 2px solid var(--blue); outline-offset: 2px;
+/* No perimeter focus effects. Text fields keep their ordinary border/background and rely on the
+   caret and selection; caret-less controls get a restrained state treatment further down. */
+:is(input, select, textarea, button, summary, [role="button"], [tabindex]):focus { outline: none; }
+:is(input, select, textarea, button, summary, [role="button"], [tabindex]):focus-visible { outline: none; }
+/* A forced-colors/high-contrast request keeps the system focus indicator. */
+@media (forced-colors: active) {
+  :is(input, select, textarea, button, summary, [role="button"], [tabindex]):focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 }
-:is(.secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button, .task-actions summary):focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 @media (hover: hover) {
   :is(.secondary-button, .icon-button, .text-button):hover:not(:disabled):not(.active) { border-color: var(--muted); }
 }
@@ -731,7 +737,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .task-actions button { min-height: 36px; padding: 8px; }
 
 @media (max-width: 860px) {
-  .settings-card input:not([type="checkbox"]), .settings-card select, .runtime-panel select, .destination-search input { font-size: 16px; }
+  .settings-card input:not([type="checkbox"]), .settings-card select, .destination-search input { font-size: 16px; }
 }
 
 :root[data-translucent="false"] { --topbar: var(--bg); --composer-bg: var(--bg); }
@@ -752,7 +758,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .machine-toggle strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .machine-toggle svg { width: 10px; height: 10px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; transform: rotate(90deg); }
 .machine-toggle[aria-expanded="false"] svg { transform: none; }
-.machine-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .destination-group.collapsed .destination-entry, .destination-group.collapsed .destination-group-empty { display: none; }
 
 /* Provider and Model take a full row each; Effort and Access share two equal columns. */
@@ -764,9 +769,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 /* Selectors and read-only values share one box so they align on every row. */
 .new-task-settings select, .new-task-settings .select-static {
   width: 100%; min-width: 0; height: 36px; min-height: 36px; padding: 6px; font-size: var(--text-ui);
-}
-@media (max-width: 860px) {
-  .new-task-settings select, .new-task-settings .select-static, .runtime-panel .select-static { font-size: 16px; }
 }
 /* Narrow dialogs cannot fit "Ask for Approval" in a half-width control, so the row stacks. */
 @media (max-width: 380px) {
@@ -808,3 +810,9 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .working-path-card svg { width: 18px; height: 18px; stroke-linecap: round; stroke-linejoin: round; }
 
 .activity-chevron svg, .machine-row-actions .text-button svg { width: 16px; height: 16px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Caret-less controls show keyboard focus through a restrained existing background shade (never a
+   perimeter effect). Text fields are intentionally absent: their caret and selection are the cue. */
+:is(button, summary, [role="button"]):focus-visible { background-color: var(--selected-bg); }
+select:focus-visible { background-color: var(--selected-bg); }
+:is(.checkbox-row, .enter-preference, .display-option, .input-choice, .tasks-archived):has(input:focus-visible) { background-color: var(--selected-bg); border-radius: 6px; }

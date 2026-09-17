@@ -452,11 +452,15 @@ try {
           const label = document.querySelector('label[for="new-task-effort"]');
           return { text: label.textContent, clipped: label.scrollWidth > label.clientWidth + 1, visible: label.offsetParent !== null };
         })(),
+        controlFonts: ['#new-task-provider', '#new-task-model-static', '#new-task-effort', '#new-task-access']
+          .map(selector => document.querySelector(selector)).filter(Boolean).map(node => getComputedStyle(node).fontSize),
       };
     });
     assert.equal(rects.effortLabel.text, 'Reasoning Effort', `New Task names the full label at ${width}`);
     assert.equal(rects.effortLabel.clipped, false, `the full Reasoning Effort label fits at ${width}`);
     assert.equal(rects.effortLabel.visible, true, `the Reasoning Effort label is visible at ${width}`);
+    // Provider/Model/Reasoning Effort/Access keep the shared UI size instead of inflating at narrow widths.
+    assert.equal(rects.controlFonts.every(size => size === '13px'), true, `New Task controls keep the shared UI size at ${width} (${rects.controlFonts.join(', ')})`);
     assert.equal(await page.getByRole('combobox', { name: 'Reasoning Effort' }).count() >= 1, true, `the control is named Reasoning Effort at ${width}`);
     await page.locator('#new-task-cancel').click();
     return rects;
