@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, readFile, rm, realpath, access, symlink, mkdir } fr
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DeepSeekHost, DEEPSEEK_HOME, deepseekCredentialStatus, deepseekEnvironment, withoutDeepseekKey, deepseekConfig, deepseekArgs, assertDeepseekConfig, constrainDeepseekRequest } from '../deepseek.ts';
+import { DeepSeekHost, DEEPSEEK_HOME, DEEPSEEK_BALANCE_URL, deepseekCredentialStatus, deepseekEnvironment, withoutDeepseekKey, deepseekConfig, deepseekArgs, assertDeepseekConfig, constrainDeepseekRequest, DeepSeekBalanceMonitor, sanitizeDeepseekBalance } from '../deepseek.ts';
 import { MachineRuntime, PocketGateway, MessageSubmissions, RpcClient, handleRequest, isMessageNotSent, parseArgs, publicSettings, validateLocalConfig } from '../gateway.ts';
 import { rememberComposerDraft } from '../public/pocket-logic.js';
 
@@ -648,4 +648,102 @@ test('an invalid key affects only DeepSeek while the other runtimes stay availab
   assert.equal(deepseek.state.provider, 'deepseek');
   assert.match(deepseek.deepseek.redact('no key loaded'), /no key loaded/);
   assert.equal(gateway.runtimes.get('local').deepseek, undefined);
+});
+
+test('DeepSeek balance parsing keeps currencies explicit and never fabricates a value', () => {
+  const cny = sanitizeDeepseekBalance({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '83.42', granted_balance: '0.00', topped_up_balance: '83.42' }] }, 111);
+  assert.deepEqual(cny, { available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '83.42' }], updatedAt: 111 });
+  const usd = sanitizeDeepseekBalance({ is_available: false, balance_infos: [{ currency: 'usd', total_balance: '0' }] }, 5);
+  assert.deepEqual(usd, { available: true, stale: false, isAvailable: false, entries: [{ currency: 'USD', total: '0' }], updatedAt: 5 });
+  // Malformed payloads, unknown shapes and unusable amounts are rejected instead of mapped to zero.
+  for (const payload of [null, {}, { balance_infos: 'nope' }, { balance_infos: [] }, { balance_infos: [{ currency: '', total_balance: '1' }] },
+    { balance_infos: [{ currency: 'CNY', total_balance: 'free' }] }, { balance_infos: [{ currency: 'not a currency', total_balance: '1' }] }]) {
+    assert.equal(sanitizeDeepseekBalance(payload), null);
+  }
+});
+
+test('DeepSeek balance monitor shares one request, marks a last-known value stale and always resolves', async () => {
+  const payload = { is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '12.34' }] };
+  let calls = 0;
+  let resolveFirst;
+  const fetchImpl = (url, options) => {
+    calls += 1;
+    assert.equal(url, DEEPSEEK_BALANCE_URL);
+    assert.equal(options.headers.Authorization, 'Bearer synthetic-key');
+    if (calls === 1) return new Promise(resolve => { resolveFirst = () => resolve({ ok: true, json: async () => payload }); });
+    return Promise.reject(new Error('network down'));
+  };
+  let clock = 1_000;
+  const monitor = new DeepSeekBalanceMonitor({ key: 'synthetic-key' }, { fetchImpl, now: () => clock, minIntervalMs: 5_000 });
+  // Two concurrent refreshes share the single in-flight request.
+  const first = monitor.refresh();
+  const second = monitor.refresh();
+  assert.equal(monitor.snapshot(), null);
+  resolveFirst();
+  assert.deepEqual(await first, await second);
+  assert.equal(calls, 1);
+  assert.equal(monitor.snapshot().entries[0].total, '12.34');
+  // Within the minimum interval an on-demand refresh reuses the cache instead of calling upstream.
+  clock += 1_000;
+  await monitor.refresh();
+  assert.equal(calls, 1);
+  // A later failure keeps the last-known balance, clearly marked stale, and never returns zero.
+  clock += 10_000;
+  const failed = await monitor.refresh();
+  assert.equal(calls, 2);
+  assert.equal(failed.stale, true);
+  assert.equal(failed.available, true);
+  assert.equal(failed.entries[0].total, '12.34');
+  // A monitor without a usable credential does nothing and resolves to no balance.
+  const empty = new DeepSeekBalanceMonitor({ error: 'no key' }, { fetchImpl });
+  assert.equal(empty.enabled, false);
+  assert.equal(await empty.refresh(), null);
+});
+
+test('DeepSeek balance monitor times out a stalled request without throwing and cleans up on stop', async () => {
+  const monitor = new DeepSeekBalanceMonitor({ key: 'synthetic-key' }, {
+    timeoutMs: 10,
+    fetchImpl: (url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    }),
+  });
+  assert.equal(await monitor.refresh(), null);
+  // stop() aborts an in-flight request and is safe to call twice.
+  const stalled = monitor.refresh({ force: true });
+  monitor.stop();
+  monitor.stop();
+  assert.equal(await stalled, null);
+});
+
+test('a late DeepSeek balance response never replaces the OpenAI quota after switching providers', async () => {
+  const gateway = new PocketGateway({ machines: [], deepseek: { enabled: true, key: 'synthetic-key' } });
+  let releaseBalance = null;
+  const balance = { available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '83.42' }], updatedAt: 999 };
+  const fake = {
+    value: null,
+    snapshot() { return this.value ? { ...this.value, entries: this.value.entries.map(entry => ({ ...entry })) } : null; },
+    refresh() { return new Promise(resolve => { releaseBalance = () => { this.value = balance; resolve(this.snapshot()); }; }); },
+    stop() {},
+  };
+  gateway.balanceMonitor = fake;
+  gateway.selectedMachineId = 'local:deepseek';
+  gateway.refreshQuotaSource();
+  assert.deepEqual(gateway.quota.balance, { available: false, stale: false, isAvailable: null, entries: [], updatedAt: null }, 'an in-flight balance leaves a clearly unavailable slot');
+  gateway.updateBalanceWatch();
+  // The user switches back to OpenAI while the balance request is still in flight.
+  gateway.selectedMachineId = 'local';
+  gateway.updateBalanceWatch();
+  gateway.runtimes.get('local').state.connected = true;
+  gateway.runtimes.get('local').quota = {
+    fresh: true, accountId: 'acct', limitId: 'codex', limitName: 'Pro',
+    windows: [{ id: 'primary', label: '5h', remainingPercent: 62, usedPercent: 38, windowDurationMins: 300, resetsAt: null }],
+    additionalLimitCount: 0, credits: null, updatedAt: 7,
+  };
+  gateway.refreshQuotaSource();
+  assert.equal(gateway.quota.windows.length, 1);
+  assert.equal(gateway.quota.balance, null);
+  releaseBalance();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(gateway.quota.balance, null, 'the late response is ignored while OpenAI is selected');
+  assert.deepEqual(gateway.quota.windows.map(window => window.remainingPercent), [62]);
 });

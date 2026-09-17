@@ -40,7 +40,9 @@ let taskFail = false;
 let historySearch = false;
 const clients = new Set();
 const selections = [];
-const snapshot = () => ({ ...selected.snapshot(), quota: { available: false, windows: [] }, submissionEpoch: selected === normal ? 'normal' : selected.state.machineId });
+// The top-bar slot is driven by the sanitized quota/balance payload the host would send.
+let quotaFixture = { available: false, stale: false, sourceMachineId: null, sourceMachine: null, limitName: null, windows: [], updatedAt: null, balance: null };
+const snapshot = () => ({ ...selected.snapshot(), quota: quotaFixture, submissionEpoch: selected === normal ? 'normal' : selected.state.machineId });
 const push = () => { for (const response of clients) response.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`); };
 const readBody = request => new Promise(resolve => { let text = ''; request.on('data', chunk => { text += chunk; }); request.on('end', () => resolve(text)); });
 const server = createServer(async (request, response) => {
@@ -116,6 +118,51 @@ try {
   await page.waitForFunction(() => document.querySelector('#message-text').value === 'DeepSeek draft');
   assert.match(await page.locator('#quota-chip').textContent(), /—/);
   assert.equal(await input.inputValue(), 'DeepSeek draft');
+
+  // The DeepSeek account balance replaces the subscription windows in the same shared quota slot.
+  const setQuota = async (balance) => {
+    quotaFixture = {
+      available: Boolean(balance?.available), stale: Boolean(balance?.stale),
+      sourceMachineId: balance ? 'local:deepseek' : null, sourceMachine: balance ? 'Mac mini' : null,
+      limitName: null, windows: [], updatedAt: balance?.updatedAt ?? null,
+      balance: balance ?? { available: false, stale: false, isAvailable: null, entries: [], updatedAt: null },
+    };
+    push();
+    await page.waitForTimeout(80);
+  };
+  await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '83.42' }], updatedAt: 1 });
+  assert.equal(await page.locator('#quota-chip').textContent(), 'Balance ¥83.42');
+  assert.match(await page.locator('#quota-chip').getAttribute('title'), /CNY 83\.42/);
+  await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'USD', total: '12.34' }], updatedAt: 2 });
+  assert.equal(await page.locator('#quota-chip').textContent(), 'Balance $12.34');
+  // A legitimate zero balance is shown as zero, not treated as a failure.
+  await setQuota({ available: true, stale: false, isAvailable: true, entries: [{ currency: 'CNY', total: '0.00' }], updatedAt: 3 });
+  assert.equal(await page.locator('#quota-chip').textContent(), 'Balance ¥0.00');
+  // is_available drives the insufficient-funds indication.
+  await setQuota({ available: true, stale: false, isAvailable: false, entries: [{ currency: 'CNY', total: '0.00' }], updatedAt: 4 });
+  assert.match(await page.locator('#quota-chip').textContent(), /insufficient/);
+  assert.equal(await page.locator('#quota-chip').evaluate(node => node.classList.contains('insufficient')), true);
+  assert.match(await page.locator('#quota-chip').getAttribute('title'), /insufficient/);
+  // A malformed or failed fetch shows "Balance —" and is never rendered as zero.
+  await setQuota({ available: false, stale: false, isAvailable: null, entries: [], updatedAt: null });
+  assert.equal(await page.locator('#quota-chip').textContent(), 'Balance —');
+  // A last-known balance is clearly marked instead of disappearing or becoming zero.
+  await setQuota({ available: true, stale: true, isAvailable: true, entries: [{ currency: 'USD', total: '9.99' }], updatedAt: 5 });
+  assert.equal(await page.locator('#quota-chip').textContent(), 'Balance $9.99');
+  assert.equal(await page.locator('#quota-chip').evaluate(node => node.classList.contains('stale')), true);
+  assert.match(await page.locator('#quota-chip').getAttribute('title'), /last known/);
+  // OpenAI keeps its subscription windows; the balance slot never mixes the two.
+  quotaFixture = { available: true, stale: false, sourceMachineId: 'local', sourceMachine: 'Mac mini', limitName: 'Pro', windows: [{ id: 'primary', label: '5h', remainingPercent: 62, usedPercent: 38, windowDurationMins: 300, resetsAt: null }], updatedAt: 6, balance: null };
+  selected = normal; push();
+  await page.waitForFunction(() => document.querySelector('#quota-chip .quota-window'));
+  assert.equal(await page.locator('#quota-chip').evaluate(node => node.classList.contains('balance')), false);
+  assert.equal(await page.locator('#quota-chip').textContent(), '5h62%');
+  // The same #show-quota preference owns this slot; no separate balance toggle was added.
+  assert.equal(await page.locator('#show-quota').count(), 1);
+  assert.equal(await page.locator('#show-balance').count(), 0);
+  quotaFixture = { available: false, stale: false, sourceMachineId: null, sourceMachine: null, limitName: null, windows: [], updatedAt: null, balance: { available: false, stale: false, isAvailable: null, entries: [], updatedAt: null } };
+  selected = fallback; push();
+  await page.waitForFunction(() => document.querySelector('#quota-chip').textContent === 'Balance —');
 
   // Task Details names the provider once: machine value plus an explicit Provider row.
   assert.equal(await page.locator('#machine').textContent(), 'Mac mini · macOS');
@@ -242,6 +289,45 @@ try {
   await page.locator('#new-task-cancel').click();
   await closeSwitcher();
 
+  // Model menus present one deterministic newest-first order for differently ordered catalogs,
+  // and a reordering never moves the selected value or the New Task default.
+  {
+    const gpt = (version, displayName) => ({ model: `gpt-${version}`, displayName, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }], defaultReasoningEffort: 'low' });
+    const originalModels = normal.state.models;
+    const originalModel = normal.state.model;
+    const originalLocalOptions = OPTIONS.local;
+    const applyCatalog = async (models, current) => {
+      normal.state.models = models.map(model => ({ ...model }));
+      normal.state.model = current;
+      OPTIONS.local = { ...originalLocalOptions, models: models.map(model => ({ ...model })), current: { ...originalLocalOptions.current, model: current } };
+      selected = normal; push();
+      await page.waitForFunction(value => document.querySelector('#model-select')?.value === value, current);
+    };
+    const catalog = [gpt('5.5', 'GPT-5.5'), gpt('6', 'GPT-6')];
+    await page.evaluate(() => localStorage.removeItem('codex-pocket-new-task-settings:local'));
+    await applyCatalog(catalog, 'gpt-5.5');
+    assert.deepEqual(await page.locator('#model-select option').allTextContents(), ['GPT-6', 'GPT-5.5'], 'Task Details sorts newest first');
+    assert.equal(await page.locator('#model-select').inputValue(), 'gpt-5.5');
+    await applyCatalog([...catalog].reverse(), 'gpt-5.5');
+    assert.deepEqual(await page.locator('#model-select option').allTextContents(), ['GPT-6', 'GPT-5.5'], 'the display order does not depend on the catalog order');
+    assert.equal(await page.locator('#model-select').inputValue(), 'gpt-5.5', 'reordering never changes the selected model');
+    // New Task shows the same order but keeps the catalog default, not the sorted-first model.
+    OPTIONS.local = { ...originalLocalOptions, models: catalog.map(model => ({ ...model })), current: { ...originalLocalOptions.current, model: 'gpt-5.5' } };
+    await openSwitcher();
+    await page.locator('.destination-group').first().locator('.machine-header-controls .icon-button[aria-label="New task"]').click();
+    await page.locator('#new-task-dialog[open]').waitFor();
+    await page.locator('#new-task-model option[value="gpt-6"]').waitFor({ state: 'attached' });
+    assert.deepEqual(await page.locator('#new-task-model option').allTextContents(), ['GPT-6', 'GPT-5.5']);
+    assert.equal(await page.locator('#new-task-model').inputValue(), 'gpt-5.5', 'the default follows the catalog, not the sorted menu');
+    await page.locator('#new-task-cancel').click();
+    await closeSwitcher();
+    normal.state.models = originalModels;
+    normal.state.model = originalModel;
+    OPTIONS.local = originalLocalOptions;
+    selected = fallback; push();
+    await page.waitForFunction(() => document.querySelector('#destination-provider').textContent === 'DeepSeek');
+  }
+
   // New Task layout: Provider and Model take a full row each, Effort and Access share columns.
   const dialogRects = async (width) => {
     await page.setViewportSize({ width, height: 844 });
@@ -271,8 +357,16 @@ try {
           const span = document.querySelector('#new-task-model-static .select-static-text');
           return { title: span.getAttribute('title'), overflow: getComputedStyle(span).textOverflow, truncated: span.scrollWidth > span.clientWidth };
         })(),
+        effortLabel: (() => {
+          const label = document.querySelector('label[for="new-task-effort"]');
+          return { text: label.textContent, clipped: label.scrollWidth > label.clientWidth + 1, visible: label.offsetParent !== null };
+        })(),
       };
     });
+    assert.equal(rects.effortLabel.text, 'Reasoning Effort', `New Task names the full label at ${width}`);
+    assert.equal(rects.effortLabel.clipped, false, `the full Reasoning Effort label fits at ${width}`);
+    assert.equal(rects.effortLabel.visible, true, `the Reasoning Effort label is visible at ${width}`);
+    assert.equal(await page.getByRole('combobox', { name: 'Reasoning Effort' }).count() >= 1, true, `the control is named Reasoning Effort at ${width}`);
     await page.locator('#new-task-cancel').click();
     return rects;
   };
@@ -412,7 +506,11 @@ try {
         inHeader: Boolean(button.closest('.machine-settings-actions-cell')) && header.contains(button),
         ariaHiddenAncestor: Boolean(button.closest('[aria-hidden="true"]')),
         visible: rect.width > 0 && rect.height > 0,
-        rightAligned: header.getBoundingClientRect().right - rect.right <= 9,
+        rightAligned: (() => {
+          const style = getComputedStyle(header);
+          const contentRight = header.getBoundingClientRect().right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+          return Math.abs(contentRight - rect.right) < 1;
+        })(),
         aboveCards: rect.bottom <= note.getBoundingClientRect().top + 0.5,
         labelsVisible: [...header.querySelectorAll(':scope > span')].some(span => span.offsetParent !== null),
       };
@@ -424,13 +522,13 @@ try {
     assert.equal(placement.aboveCards, true, `add control sits above the cards at ${width}`);
     assert.equal(placement.labelsVisible, width >= 600, `column labels follow the desktop layout at ${width}`);
     if (width >= 600) {
-      // Every header cell shares one vertical centre with the add control beside "Actions".
-      const headerCenters = await page.evaluate(() => {
+      // All four header labels bottom-align, including the add control beside "Actions".
+      const headerBottoms = await page.evaluate(() => {
         const header = document.querySelector('.machine-settings-header');
         const nodes = [...header.querySelectorAll(':scope > span, .machine-settings-actions-cell > span'), document.querySelector('#machine-add')];
-        return nodes.map(node => { const rect = node.getBoundingClientRect(); return rect.top + rect.height / 2; });
+        return nodes.map(node => node.getBoundingClientRect().bottom);
       });
-      assert.equal(headerCenters.every(center => Math.abs(center - headerCenters[0]) < 1), true, `header cells align vertically at ${width}`);
+      assert.equal(headerBottoms.every(bottom => Math.abs(bottom - headerBottoms[0]) < 1), true, `header cells bottom-align at ${width}`);
     }
     await page.locator('#machine-add').click();
     assert.equal(await page.locator('.machine-settings-row').count(), before + 1);

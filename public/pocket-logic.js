@@ -293,3 +293,36 @@ export function compareTaskOrder(left, right) {
   return priority(right) - priority(left) || (right.updatedAt || 0) - (left.updatedAt || 0)
     || String(left.id).localeCompare(String(right.id));
 }
+
+// Recognizable GPT versions sort newest first; anything else keeps a deterministic name/id order
+// instead of guessing a quality or release ranking that the catalog does not state.
+export function modelVersionParts(model) {
+  if (!model) return null;
+  for (const text of [model.model, model.displayName]) {
+    if (typeof text !== "string") continue;
+    const match = /(?:^|[^a-z0-9])gpt[-\s]?(\d+(?:\.\d+)*)/i.exec(text)
+      || /^(\d+(?:\.\d+)*)$/.exec(text.trim());
+    if (match) return match[1].split(".").map(Number);
+  }
+  return null;
+}
+
+export function compareModelDisplayOrder(left, right) {
+  const leftVersion = modelVersionParts(left);
+  const rightVersion = modelVersionParts(right);
+  if (leftVersion && rightVersion) {
+    for (let index = 0; index < Math.max(leftVersion.length, rightVersion.length); index += 1) {
+      const difference = (rightVersion[index] ?? 0) - (leftVersion[index] ?? 0);
+      if (difference) return difference;
+    }
+  } else if (leftVersion) return -1;
+  else if (rightVersion) return 1;
+  const leftName = String(left?.displayName || left?.model || "");
+  const rightName = String(right?.displayName || right?.model || "");
+  return leftName.localeCompare(rightName) || String(left?.model || "").localeCompare(String(right?.model || ""));
+}
+
+// Presentation-only copy: callers keep their own catalog order for ids, capabilities and defaults.
+export function sortModelsForDisplay(models = []) {
+  return [...models].sort(compareModelDisplayOrder);
+}

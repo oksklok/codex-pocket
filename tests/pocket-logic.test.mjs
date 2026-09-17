@@ -23,6 +23,9 @@ import {
   reconcileConfirmedSteers,
   resolvedAsyncAnswer,
   rememberComposerDraft,
+  compareModelDisplayOrder,
+  modelVersionParts,
+  sortModelsForDisplay,
 } from "../public/pocket-logic.js";
 import { MachineRuntime, MessageSubmissions, PocketGateway, RpcClient, parseArgs, RESTART_HELPER, restartUrlForRequest } from "../gateway.ts";
 
@@ -3507,4 +3510,33 @@ test('Pocket-generated async replies preserve transport context and normalize id
     assert.equal(resolvedAsyncAnswer({...history[0],id:'unrelated'},0,history),null);
     assert.equal(sends,2);
   }
+});
+
+test("model menu ordering is one deterministic order for differently ordered catalogs", () => {
+  const model = (id, displayName = id) => ({ model: id, displayName, supportedReasoningEfforts: [{ reasoningEffort: "high" }] });
+  // Recognizable GPT versions sort numerically newest first: 6, then 5.6, then 5.5.
+  const catalogA = [model("gpt-5.5"), model("gpt-6"), model("gpt-5.6")];
+  const catalogB = [model("gpt-5.6"), model("gpt-5.5"), model("gpt-6")];
+  const expected = ["gpt-6", "gpt-5.6", "gpt-5.5"];
+  assert.deepEqual(sortModelsForDisplay(catalogA).map((entry) => entry.model), expected);
+  assert.deepEqual(sortModelsForDisplay(catalogB).map((entry) => entry.model), expected);
+  // Same generation resolves by a deterministic name/id tie-breaker, not catalog position.
+  assert.deepEqual(
+    sortModelsForDisplay([model("gpt-5.6-b"), model("gpt-5.6-a")]).map((entry) => entry.model),
+    ["gpt-5.6-a", "gpt-5.6-b"],
+  );
+  // Unrecognized names keep a deterministic name order after the recognizable versions.
+  const mixed = [model("zeta"), model("gpt-5.5"), model("alpha"), model("6")];
+  assert.deepEqual(sortModelsForDisplay(mixed).map((entry) => entry.model), ["6", "gpt-5.5", "alpha", "zeta"]);
+  // The helper copies for presentation only; the caller's catalog order, ids and capabilities are untouched.
+  const original = [model("gpt-5.5", "GPT-5.5 Preview"), model("gpt-6", "GPT-6")];
+  const sorted = sortModelsForDisplay(original);
+  assert.deepEqual(original.map((entry) => entry.model), ["gpt-5.5", "gpt-6"]);
+  assert.equal(sorted[0].supportedReasoningEfforts, original[1].supportedReasoningEfforts);
+  assert.notEqual(sorted, original);
+  // Version parsing is additive and never invents an ordering for names it cannot read.
+  assert.deepEqual(modelVersionParts(model("gpt-5.6")), [5, 6]);
+  assert.deepEqual(modelVersionParts(model("models/gpt-5.5-turbo")), [5, 5]);
+  assert.equal(modelVersionParts(model("astra")), null);
+  assert.equal(compareModelDisplayOrder(model("gpt-6"), model("gpt-5.6")) < 0, true);
 });

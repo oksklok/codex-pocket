@@ -15,6 +15,20 @@ export const DEEPSEEK_PROVIDER = {
   name: "DeepSeek", base_url: "https://api.deepseek.com", wire_api: "responses",
   env_key: "DEEPSEEK_API_KEY", requires_openai_auth: false, supports_websockets: false, supports_standalone_web_search: false,
 };
+// Official account-wide balance endpoint; queried from the host with the resolved credential only.
+export const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
+export const DEEPSEEK_BALANCE_TIMEOUT_MS = 5_000;
+export const DEEPSEEK_BALANCE_REFRESH_MS = 60_000;
+// Only sanitized balance fields ever leave the host: currency codes, amounts, availability and freshness.
+export type DeepSeekBalanceEntry = { currency: string; total: string };
+export type DeepSeekBalance = {
+  available: boolean;
+  stale: boolean;
+  isAvailable: boolean | null;
+  entries: DeepSeekBalanceEntry[];
+  updatedAt: number | null;
+};
+export const EMPTY_DEEPSEEK_BALANCE: DeepSeekBalance = { available: false, stale: false, isAvailable: null, entries: [], updatedAt: null };
 // Names and patterns every DeepSeek child strips from its environment.
 export const DEEPSEEK_SHELL_ENV_EXCLUDE = ["DEEPSEEK_API_KEY", "OPENAI_*", "CODEX_*TOKEN*"];
 
@@ -238,4 +252,103 @@ export function constrainDeepseekRequest(method: string, params: Record<string, 
   }
   if (method === "command/exec") return { ...params, env: { ...params.env, DEEPSEEK_API_KEY: null, OPENAI_API_KEY: null } };
   return params;
+}
+
+// Reduce the account balance payload to currency/amount pairs plus availability. Anything the contract
+// does not pin down (multiple currencies, non-numeric amounts, missing fields) is dropped rather than guessed.
+export function sanitizeDeepseekBalance(payload: unknown, now = Date.now()): DeepSeekBalance | null {
+  const data = payload as { is_available?: unknown; balance_infos?: unknown } | null | undefined;
+  if (!data || typeof data !== "object" || !Array.isArray(data.balance_infos)) return null;
+  const entries: DeepSeekBalanceEntry[] = [];
+  for (const info of data.balance_infos) {
+    if (!info || typeof info !== "object") continue;
+    const currency = typeof (info as any).currency === "string" ? (info as any).currency.trim().toUpperCase() : "";
+    const raw = (info as any).total_balance;
+    const total = typeof raw === "string" ? raw.trim() : typeof raw === "number" && Number.isFinite(raw) ? String(raw) : "";
+    if (!/^[A-Z]{2,8}$/.test(currency) || !/^-?\d+(?:\.\d+)?$/.test(total)) continue;
+    entries.push({ currency, total });
+  }
+  if (!entries.length) return null;
+  return {
+    available: true,
+    stale: false,
+    isAvailable: typeof data.is_available === "boolean" ? data.is_available : null,
+    entries,
+    updatedAt: now,
+  };
+}
+
+// One host-wide cache with one shared in-flight request, so several browser clients and the refresh
+// timer never multiply upstream calls. A failure keeps the last-known value marked stale, never zero.
+export class DeepSeekBalanceMonitor {
+  private key: string;
+  private cache: DeepSeekBalance | null = null;
+  private inflight: Promise<DeepSeekBalance | null> | null = null;
+  private controller: AbortController | null = null;
+  private readonly fetchImpl: typeof fetch;
+  private readonly now: () => number;
+  private readonly timeoutMs: number;
+  private readonly minIntervalMs: number;
+  constructor(
+    credentials: { key?: string; error?: string } = {},
+    options: { fetchImpl?: typeof fetch; now?: () => number; timeoutMs?: number; minIntervalMs?: number } = {},
+  ) {
+    this.key = typeof credentials.key === "string" ? credentials.key : "";
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.now = options.now ?? Date.now;
+    this.timeoutMs = options.timeoutMs ?? DEEPSEEK_BALANCE_TIMEOUT_MS;
+    // Bound on-demand refreshes so repeated client connects or quota changes cannot become a fetch loop.
+    this.minIntervalMs = options.minIntervalMs ?? 5_000;
+    if (credentials.error) this.key = "";
+  }
+
+  get enabled(): boolean {
+    return Boolean(this.key);
+  }
+
+  snapshot(): DeepSeekBalance | null {
+    return this.cache ? { ...this.cache, entries: this.cache.entries.map((entry) => ({ ...entry })) } : null;
+  }
+
+  refresh(force = false): Promise<DeepSeekBalance | null> {
+    if (this.inflight) return this.inflight;
+    if (!this.key) return Promise.resolve(this.cache);
+    if (!force && this.cache?.available && this.now() - (this.cache.updatedAt ?? 0) < this.minIntervalMs) {
+      return Promise.resolve(this.snapshot());
+    }
+    const controller = new AbortController();
+    this.controller = controller;
+    this.inflight = this.request(controller).finally(() => {
+      if (this.controller === controller) this.controller = null;
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
+  private async request(controller: AbortController): Promise<DeepSeekBalance | null> {
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(DEEPSEEK_BALANCE_URL, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.key}`, Accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`balance request failed with status ${response.status}`);
+      const parsed = sanitizeDeepseekBalance(await response.json(), this.now());
+      if (!parsed) throw new Error("balance response did not match the documented shape");
+      this.cache = parsed;
+      return this.snapshot();
+    } catch {
+      // Keep a last-known balance clearly marked as stale; a failure is never rendered as zero.
+      if (this.cache) this.cache = { ...this.cache, stale: true };
+      return this.snapshot();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  stop(): void {
+    this.controller?.abort();
+    this.controller = null;
+  }
 }

@@ -1,5 +1,6 @@
 import {
   compareTaskOrder,
+  sortModelsForDisplay,
   createSelectionHold,
   usageLimitMessage,
   enterSubmits,
@@ -597,9 +598,39 @@ function formatQuotaReset(value) {
     : { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+// The DeepSeek account-wide balance replaces the subscription windows in the same top-bar slot.
+const BALANCE_SYMBOLS = { CNY: "¥", USD: "$", EUR: "€", GBP: "£", JPY: "¥" };
+function formatBalanceEntry(entry) {
+  return `${BALANCE_SYMBOLS[entry.currency] ?? `${entry.currency} `}${entry.total}`;
+}
+
+function renderBalanceQuota(balance) {
+  elements.quota.replaceChildren();
+  elements.quota.classList.remove("multiple");
+  elements.quota.classList.add("balance");
+  const entries = Array.isArray(balance.entries) ? balance.entries : [];
+  const usable = Boolean(balance.available) && entries.length > 0;
+  elements.quota.classList.toggle("stale", !usable || Boolean(balance.stale));
+  elements.quota.classList.toggle("insufficient", balance.isAvailable === false);
+  if (!usable) {
+    // A failed or malformed fetch is never rendered as a zero balance.
+    elements.quota.textContent = "Balance —";
+    elements.quota.title = "DeepSeek balance unavailable";
+    elements.quota.setAttribute("aria-label", "DeepSeek balance unavailable");
+    return;
+  }
+  const funds = balance.isAvailable === false ? " · insufficient" : "";
+  elements.quota.textContent = `Balance ${entries.map(formatBalanceEntry).join(" · ")}${funds}`;
+  const stale = balance.stale ? " · last known" : "";
+  elements.quota.title = `DeepSeek account balance: ${entries.map((entry) => `${entry.currency} ${entry.total}`).join(", ")}${funds}${stale}`;
+  elements.quota.setAttribute("aria-label", elements.quota.title);
+}
+
 function renderQuota() {
   const quota = state?.quota;
+  if (quota?.balance) { renderBalanceQuota(quota.balance); return; }
   const windows = quota?.available && Array.isArray(quota.windows) ? quota.windows : [];
+  elements.quota.classList.remove("balance", "insufficient");
   if (windows.length === 0) {
     elements.quota.replaceChildren();
     elements.quota.textContent = "Quota —";
@@ -1190,7 +1221,7 @@ function currentCatalogModel(modelName = state?.model) {
 }
 
 function renderModelControls() {
-  const models = state?.thread ? state?.models || [] : [];
+  const models = state?.thread ? sortModelsForDisplay(state?.models || []) : [];
   const enabled = Boolean(state?.connected && state?.thread && models.length)
     && !updatingModel
     && !updatingAccess
@@ -2609,10 +2640,12 @@ async function loadNewTaskOptions() {
     const chosen = newTaskModelValue
       ? { model: newTaskModelValue, effort: newTaskEffort.value, access: newTaskAccess.value }
       : remembered || value.current || {};
-    newTaskModels = (value.models || []).filter(model => model.model && model.supportedReasoningEfforts?.length);
-    const preferredModel = newTaskModels.some(model => model.model === chosen.model) ? chosen.model
-      : newTaskModels.some(model => model.model === value.current?.model) ? value.current.model
-        : newTaskModels[0]?.model;
+    const catalogModels = (value.models || []).filter(model => model.model && model.supportedReasoningEfforts?.length);
+    // Resolve the default from the catalog order before sorting so presentation cannot change it.
+    const preferredModel = catalogModels.some(model => model.model === chosen.model) ? chosen.model
+      : catalogModels.some(model => model.model === value.current?.model) ? value.current.model
+        : catalogModels[0]?.model;
+    newTaskModels = sortModelsForDisplay(catalogModels);
     newTaskModel = renderChoiceControl(newTaskModelSlot, {
       entries: newTaskModels.map(model => ({ value: model.model, label: model.displayName || model.model, title: model.description || model.model })),
       selected: preferredModel,

@@ -12,7 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
-import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStatus, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL } from "./deepseek.ts";
+import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStatus, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL, DeepSeekBalanceMonitor, EMPTY_DEEPSEEK_BALANCE, DEEPSEEK_BALANCE_REFRESH_MS, type DeepSeekBalance } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
@@ -248,6 +248,8 @@ type PocketQuota = {
   limitName: string | null;
   windows: PocketQuotaWindow[];
   updatedAt: number | null;
+  // DeepSeek reports an account-wide monetary balance instead of percentage windows.
+  balance: DeepSeekBalance | null;
 };
 
 const MAX_TEXT = 12_000;
@@ -4314,8 +4316,12 @@ export class PocketGateway {
     limitName: null,
     windows: [],
     updatedAt: null,
+    balance: null,
   };
   private lastGoodQuota: PocketQuota | null = null;
+  private balanceMonitor: DeepSeekBalanceMonitor | null = null;
+  private balanceRefreshTimer: NodeJS.Timeout | null = null;
+  private balanceRefreshing = false;
   private warnedAccountMismatch = false;
   private warnedShapeMismatch = false;
 
@@ -4340,6 +4346,10 @@ export class PocketGateway {
         for (const response of this.subscribers) this.writeSse(response, "task-status", status);
       }, this.submissionStore(definition.id)));
     }
+    // DeepSeek's balance is account-wide, so one host-side monitor serves every client that selects it.
+    if (definitions.some((definition) => definition.id === "local:deepseek" && definition.deepseek) && options.deepseek?.enabled) {
+      this.balanceMonitor = new DeepSeekBalanceMonitor({ key: options.deepseek.key });
+    }
   }
 
   get state(): PocketState {
@@ -4347,10 +4357,14 @@ export class PocketGateway {
   }
 
   async start(): Promise<void> {
+    this.updateBalanceWatch();
     await Promise.all([...this.runtimes].map(([id, runtime]) => runtime.start(id === this.selectedMachineId)));
   }
 
   async stop(): Promise<void> {
+    if (this.balanceRefreshTimer) clearInterval(this.balanceRefreshTimer);
+    this.balanceRefreshTimer = null;
+    this.balanceMonitor?.stop();
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.stop()));
     this.subscribers.clear();
   }
@@ -4359,6 +4373,7 @@ export class PocketGateway {
     this.subscribers.add(response);
     this.selected().addSubscriber(response, false);
     this.writeSse(response, "snapshot", this.snapshot());
+    this.updateBalanceWatch();
     response.on("close", () => {
       this.subscribers.delete(response);
       for (const runtime of this.runtimes.values()) runtime.removeSubscriber(response);
@@ -4465,6 +4480,7 @@ export class PocketGateway {
         next.autoAttach = true;
         await previous.releaseTask();
         this.refreshQuotaSource();
+        this.updateBalanceWatch();
       }
       const snapshot = this.snapshot();
       for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
@@ -4504,6 +4520,7 @@ export class PocketGateway {
         next.autoAttach = true;
         await previous.releaseTask();
         this.refreshQuotaSource();
+        this.updateBalanceWatch();
         const snapshot = this.snapshot();
         for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
       }
@@ -4634,7 +4651,19 @@ export class PocketGateway {
     }
     let next: PocketQuota;
     if (this.selectedMachineId === "local:deepseek") {
-      next = { available: false, stale: false, sourceMachineId: null, sourceMachine: null, limitName: null, windows: [], updatedAt: null };
+      // Only the selected DeepSeek runtime may surface an account balance; a late response for a
+      // provider the user has already left never overwrites the OpenAI quota.
+      const balance = this.balanceMonitor?.snapshot() ?? null;
+      next = {
+        available: Boolean(balance?.available),
+        stale: Boolean(balance?.stale),
+        sourceMachineId: balance ? "local:deepseek" : null,
+        sourceMachine: balance ? this.runtimes.get("local:deepseek")?.state.machine ?? null : null,
+        limitName: null,
+        windows: [],
+        updatedAt: balance?.updatedAt ?? null,
+        balance: balance ?? { ...EMPTY_DEEPSEEK_BALANCE },
+      };
     } else if (selected) {
       const [machineId, runtime] = selected;
       const value = runtime.quotaSnapshot()!;
@@ -4646,6 +4675,7 @@ export class PocketGateway {
         limitName: value.limitName,
         windows: value.windows,
         updatedAt: value.updatedAt,
+        balance: null,
       };
       this.lastGoodQuota = next;
     } else if (this.lastGoodQuota) {
@@ -4659,11 +4689,36 @@ export class PocketGateway {
         limitName: null,
         windows: [],
         updatedAt: null,
+        balance: null,
       };
     }
     if (JSON.stringify(next) === JSON.stringify(this.quota)) return;
     this.quota = next;
     for (const response of this.subscribers) this.writeSse(response, "quota", this.quota);
+  }
+
+  // The balance slot is only relevant while the DeepSeek runtime is the selected one; on demand there,
+  // then on a coarse timer, and never per client request.
+  private updateBalanceWatch(): void {
+    const relevant = this.selectedMachineId === "local:deepseek" && Boolean(this.balanceMonitor);
+    if (!relevant) {
+      if (this.balanceRefreshTimer) clearInterval(this.balanceRefreshTimer);
+      this.balanceRefreshTimer = null;
+      return;
+    }
+    if (!this.balanceRefreshTimer) {
+      this.balanceRefreshTimer = setInterval(() => this.refreshBalance(), DEEPSEEK_BALANCE_REFRESH_MS);
+    }
+    this.refreshBalance();
+  }
+
+  private refreshBalance(): void {
+    if (this.balanceRefreshing || !this.balanceMonitor) return;
+    this.balanceRefreshing = true;
+    void this.balanceMonitor.refresh().catch(() => {}).finally(() => {
+      this.balanceRefreshing = false;
+      this.refreshQuotaSource();
+    });
   }
 
   private writeSse(response: ServerResponse, event: string, data: unknown): void {

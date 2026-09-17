@@ -616,18 +616,42 @@ try {
  }
  await page.locator('#settings-button').click();
  await page.locator('.machine-settings-row').first().waitFor();
- for(const [theme, system, color] of [['light','dark','#f6f8fa'],['dark','light','#0d1117'],['system','light','#f6f8fa'],['system','dark','#0d1117']]){
+ for(const [theme, system, color] of [['light','dark','#f7f7f7'],['dark','light','#181818'],['system','light','#f7f7f7'],['system','dark','#181818']]){
  await page.emulateMedia({colorScheme:system});await page.locator('#settings-theme').selectOption(theme);await settingsSave();await settingsOpen();
  await page.waitForFunction(color=>document.querySelector('meta[name="theme-color"]').content===color,color);
  }
  await page.emulateMedia({colorScheme:'light'});
- await page.waitForFunction(()=>document.querySelector('meta[name="theme-color"]').content==='#f6f8fa');
+ await page.waitForFunction(()=>document.querySelector('meta[name="theme-color"]').content==='#f7f7f7');
 
  for(const name of ['Display Name','SSH Alias'])assert.equal(await page.locator('.machine-settings-row').first().getByText(name,{exact:true}).isVisible(),width<600);
  // The header row always exists (it holds the add control); its column labels are desktop-only.
  assert.equal(await page.locator('.machine-settings-header').isVisible(),true);
  assert.equal(await page.locator('.machine-settings-header > span').first().isVisible(),width>=600);
  if(width>=600){assert((await page.locator('.machine-settings-row').first().boundingBox()).height<65);assert.deepEqual(await page.locator('.machine-settings-header span').allTextContents(),['Display Name','SSH Alias','Wake MAC (optional)','Actions']);}
+ if(width>=600){
+ // The header matches the row geometry: labels bottom-align and the + shares the delete button's x centre.
+ const headerGeometry=await page.evaluate(()=>{
+ const header=document.querySelector('.machine-settings-header'),add=document.querySelector('#machine-add');
+ const row=document.querySelector('.machine-settings-row'),remove=row.querySelector('.machine-remove');
+ const labels=[...header.querySelectorAll(':scope > span, .machine-settings-actions-cell > span')];
+ const centreX=node=>{const r=node.getBoundingClientRect();return r.left+r.width/2;};
+ const boxes=node=>node.getBoundingClientRect();
+ return {
+ labelBottoms:labels.map(node=>boxes(node).bottom),
+ addCentre:centreX(add),removeCentre:centreX(remove),
+ header:boxes(header),row:boxes(row),
+ headerPadRight:getComputedStyle(header).paddingRight,rowPadRight:getComputedStyle(row).paddingRight,
+ headerPadBottom:getComputedStyle(header).paddingBottom,
+ headerBorderRight:getComputedStyle(header).borderRightWidth,rowBorderRight:getComputedStyle(row).borderRightWidth,
+ };
+ });
+ assert.equal(headerGeometry.labelBottoms.every(bottom=>Math.abs(bottom-headerGeometry.labelBottoms[0])<1),true,'the four header labels bottom-align');
+ assert(Math.abs(headerGeometry.addCentre-headerGeometry.removeCentre)<1,`+ and delete share an x centre (${headerGeometry.addCentre} vs ${headerGeometry.removeCentre})`);
+ assert.equal(headerGeometry.header.left,headerGeometry.row.left);assert.equal(headerGeometry.header.right,headerGeometry.row.right);
+ assert.equal(headerGeometry.headerPadRight,headerGeometry.rowPadRight);assert.equal(headerGeometry.headerBorderRight,headerGeometry.rowBorderRight);
+ assert.equal(parseFloat(headerGeometry.headerPadBottom),0,'the header drops its lower padding');
+ assert(headerGeometry.row.top-headerGeometry.header.bottom<10,'labels sit close to the first row');
+ }
  assert.equal(await page.getByRole('button',{name:'Move Laptop up',exact:true}).isDisabled(),true);
  assert.equal(await page.getByRole('button',{name:'Move Workstation down',exact:true}).isDisabled(),true);
  assert.equal(await page.locator('.machine-settings-row').first().locator('button svg[aria-hidden="true"]').count(),3);
@@ -642,7 +666,12 @@ try {
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).fontSize),'12px');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-top-${width}.png`});
  await page.locator('.machine-settings-row').first().scrollIntoViewIfNeeded();
- if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
+ if(process.env.POCKET_SCREENSHOT_DIR){
+ await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
+ await page.emulateMedia({colorScheme:'dark'});await page.waitForTimeout(80);
+ await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}-dark.png`});
+ await page.emulateMedia({colorScheme:'light'});
+ }
  await page.locator('#settings-close').click();
  if(await page.locator('#inspector-button').getAttribute('aria-expanded')!=='true')await page.locator('#inspector-button').click();
  await page.waitForTimeout(200);await page.locator('#display-files').waitFor();
@@ -922,7 +951,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  failAction=true;
  gate=new Promise(r=>release=r);await page.getByRole('button',{name:'New task',exact:true}).first().click();
  await page.locator('#new-task-dialog').waitFor();assert.equal(await page.locator('label[for="new-task-cwd"]').textContent(),'Project Folder');assert.equal(await page.locator('#new-task-cwd').inputValue(),'/project');
- assert.equal(await page.locator('label[for="new-task-effort"]').textContent(),'Effort');
+ assert.equal(await page.locator('label[for="new-task-effort"]').textContent(),'Reasoning Effort');
  const settingsGeometry=await page.locator('.new-task-settings').evaluate(e=>{
  const [model,effort,access]=[...e.children].map(c=>c.getBoundingClientRect());
  return {rowGap:getComputedStyle(e).rowGap,columnGap:getComputedStyle(e).columnGap,vertical:effort.top-model.bottom,horizontal:access.left-effort.right,aligned:effort.top===access.top};
@@ -1283,7 +1312,69 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await typePrompt('');
  }
  }
- // Isolated browser checks use the same real frontend and synthetic server.
+ // Themes stay neutral in dark mode, System matches the explicit themes, and navigation uses one active surface.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ const tokenNames=['--bg','--surface','--surface-strong','--line','--line-soft','--text','--muted','--subtle','--selected-bg','--selected-border','--badge-border','--placeholder'];
+ const readTokens=()=>page.evaluate(names=>{const s=getComputedStyle(document.documentElement);return Object.fromEntries(names.map(name=>[name,s.getPropertyValue(name).trim()]));},tokenNames);
+ const setTheme=async(theme,scheme)=>{await page.emulateMedia({colorScheme:scheme});await page.evaluate(theme=>{document.documentElement.dataset.theme=theme;},theme);await page.waitForTimeout(40);};
+ const channels=value=>{const match=/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(value);if(match)return [Number(match[1]),Number(match[2]),Number(match[3])];const hex=String(value).replace('#','');const parts=hex.length===3?hex.split('').map(c=>parseInt(c+c,16)):[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16));return parts.some(Number.isNaN)?null:parts;};
+ const isNeutral=value=>{const c=channels(value);return Boolean(c)&&c[0]===c[1]&&c[1]===c[2];};
+ const activeBg=value=>{const c=channels(value);return Boolean(c)&&!(c[0]===0&&c[1]===0&&c[2]===0&&/rgba\(0,\s*0,\s*0,\s*0\)/.test(value));};
+ await setTheme('dark','light');
+ const dark=await readTokens();
+ for(const name of tokenNames)assert.equal(isNeutral(dark[name]),true,`${name} is neutral in dark (${dark[name]})`);
+ await setTheme('light','light');const explicitLight=await readTokens();
+ await setTheme('system','light');assert.deepEqual(await readTokens(),explicitLight,`System matches explicit Light at ${width}`);
+ await setTheme('dark','dark');const explicitDark=await readTokens();
+ await setTheme('system','dark');assert.deepEqual(await readTokens(),explicitDark,`System matches explicit Dark at ${width}`);
+ // Navigation hover and selection share one neutral surface; selected + hovered stays selected.
+ const savedActive=active;
+ active=[{...task,status:'idle',updatedAt:30},{...owned,status:'idle',updatedAt:10},...Array.from({length:9},(_,i)=>({...task,id:`nav-${i}`,name:`Nav task ${i}`,status:'idle',updatedAt:i}))];
+ await setTheme('dark','dark');
+ await page.goto(`http://127.0.0.1:${server.address().port}`);
+ await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await open();await page.waitForTimeout(210);
+ const selectedRow=page.locator('.destination-task.selected');
+ await selectedRow.waitFor();
+ assert.equal(await selectedRow.getAttribute('aria-current'),'true');
+ assert.equal(await selectedRow.locator('.destination-check svg').count(),1,'the selected row keeps its checkmark');
+ const rowBg=row=>row.evaluate(node=>getComputedStyle(node).backgroundColor);
+ const unselected=page.locator('.destination-task:not(.selected)').first();
+ await unselected.hover();await page.waitForTimeout(60);
+ const hoverBg=await rowBg(unselected);
+ assert.equal(activeBg(hoverBg),true,`unselected hover paints a neutral-gray surface (${hoverBg})`);
+ assert.equal(await rowBg(selectedRow),hoverBg,'selection uses the same neutral surface as hover');
+ const selectedBorder=await selectedRow.evaluate(node=>getComputedStyle(node).borderTopColor);
+ assert.equal(isNeutral(selectedBorder),true,`the selected border is neutral (${selectedBorder})`);
+ assert.notEqual(selectedBorder,'rgba(0, 0, 0, 0)');
+ await selectedRow.hover();await page.waitForTimeout(60);
+ assert.equal(await rowBg(selectedRow),hoverBg,'selected + hovered is unchanged');
+ assert.equal(await selectedRow.evaluate(node=>getComputedStyle(node).borderTopColor),selectedBorder,'selected + hovered keeps its border');
+ // A distinct keyboard-focus outline remains on rows.
+ await page.keyboard.press('Tab');await selectedRow.focus();
+ assert(await selectedRow.evaluate(node=>({focused:node.matches(':focus-visible'),outline:getComputedStyle(node).outlineStyle,width:parseFloat(getComputedStyle(node).outlineWidth)})).then(v=>v.focused&&v.outline==='solid'&&v.width>=2));
+ // Readable placeholder and badge chrome in dark mode.
+ assert.equal(isNeutral(await page.locator('#destination-search').evaluate(node=>getComputedStyle(node,'::placeholder').color)),true,'placeholders stay neutral');
+ const badge=page.locator('.destination-task.selected .task-provider-badge, .machine-provider-badge').first();
+ if(await badge.count()){const border=await badge.evaluate(node=>getComputedStyle(node).borderTopColor);assert.notEqual(border,'rgba(0, 0, 0, 0)','badge borders stay visible');assert.equal(isNeutral(border),true,'badge borders stay neutral');}
+ if(width>=1100){
+ const tasksButton=page.locator('#destination-button');
+ const tasksActive=await tasksButton.evaluate(node=>getComputedStyle(node).backgroundColor);
+ await tasksButton.hover();await page.waitForTimeout(60);
+ assert.equal(await tasksButton.evaluate(node=>getComputedStyle(node).backgroundColor),tasksActive,'hover keeps the active Tasks surface');
+ await page.locator('#inspector-button').click();await page.waitForTimeout(210);
+ const detailsButton=page.locator('#inspector-button');
+ const detailsActive=await detailsButton.evaluate(node=>getComputedStyle(node).backgroundColor);
+ await detailsButton.hover();await page.waitForTimeout(60);
+ assert.equal(await detailsButton.evaluate(node=>getComputedStyle(node).backgroundColor),detailsActive,'hover keeps the active Details surface');
+ assert.equal(detailsActive,tasksActive,'both toggles share one active surface');
+ await page.locator('#inspector-button').click();await page.waitForTimeout(210);
+ }
+ await dismissTasks();await closed();
+ active=savedActive;
+ }
+// Isolated browser checks use the same real frontend and synthetic server.
  for(const width of [390,1080,1100,1280]){
  await page.setViewportSize({width,height:844});
  runtime.state.thread=task;runtime.state.machineId='local';runtime.state.liveMessages=[];runtime.state.activities=[];runtime.state.pending=[];
