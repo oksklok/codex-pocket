@@ -32,6 +32,7 @@ const elements = {
   stoppedScreen: document.querySelector("#stopped-screen"),
   loginForm: document.querySelector("#login-form"),
   loginPin: document.querySelector("#login-pin"),
+  loginPinReveal: document.querySelector("#login-pin-reveal"),
   loginError: document.querySelector("#login-error"),
   connection: document.querySelector("#connection"),
   connectionLabel: document.querySelector("#connection-label"),
@@ -4424,6 +4425,20 @@ elements.loginForm.addEventListener("submit", async (event) => {
 elements.loginPin.addEventListener("input", () => {
   elements.loginPin.value = elements.loginPin.value.replace(/\D/g, "").slice(0, 4);
   elements.loginError.textContent = "";
+});
+// Keep focus (and the mobile keyboard) on the PIN field while toggling the revealed type.
+elements.loginPinReveal.addEventListener("pointerdown", (event) => event.preventDefault());
+elements.loginPinReveal.addEventListener("click", () => {
+  const pin = elements.loginPin;
+  const { selectionStart, selectionEnd, selectionDirection } = pin;
+  const revealed = pin.type === "text";
+  pin.type = revealed ? "password" : "text";
+  try { pin.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch { /* unsupported type */ }
+  const label = revealed ? "Show PIN" : "Hide PIN";
+  elements.loginPinReveal.setAttribute("aria-label", label);
+  elements.loginPinReveal.title = label;
+  elements.loginPinReveal.setAttribute("aria-pressed", String(!revealed));
+  if (document.activeElement !== pin) pin.focus({ preventScroll: true });
 });
 
 elements.settingsButton.addEventListener("click", openSettings);

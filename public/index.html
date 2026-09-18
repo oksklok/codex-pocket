@@ -15,8 +15,11 @@
       <form class="login-card" id="login-form" method="post" action="/api/login">
         <h1 id="login-title">Codex Pocket</h1>
         <p class="login-prompt">Enter PIN</p>
-        <label class="sr-only" for="login-pin">PIN</label>
-        <input id="login-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" required>
+        <div class="login-pin">
+          <label class="sr-only" for="login-pin">PIN</label>
+          <input id="login-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" required>
+          <button class="login-pin-reveal" id="login-pin-reveal" type="button" aria-label="Show PIN" title="Show PIN" aria-pressed="false"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
         <button type="submit">Unlock</button>
         <p class="form-status error-text" id="login-error" aria-live="polite"></p>
       </form>
