@@ -173,7 +173,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-group-heading { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 8px; }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-ui); font-weight: 600; }
 /* Providers are plain secondary metadata after a subtle separator, never a bordered badge. */
-.provider-label { flex: none; color: var(--muted); font-size: var(--text-label); font-weight: 500; white-space: nowrap; }
+.provider-label { flex: none; color: var(--muted); font-size: var(--text-label); font-weight: 400; white-space: nowrap; }
 .provider-label::before { content: "·"; margin-right: 5px; color: var(--subtle); }
 .machine-header-controls > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
 .machine-header-controls { display: flex; align-items: center; flex: none; gap: 8px; }
@@ -197,7 +197,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .task-actions summary svg { display: block; width: 20px; height: 20px; fill: currentColor; }
 .destination-task-label { display: contents; white-space: nowrap; }
 .destination-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.destination-task-name > .destination-task-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Task names keep one primary-text treatment in every selection state; selection stays on the row. */
+.destination-task-name > .destination-task-text { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-ui); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .destination-check, .destination-task-label > span, .destination-task-status { grid-row: 1; line-height: 16px; }
 .destination-task-label > span { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-label > small { grid-column: 2 / -1; grid-row: 2; min-width: 0; line-height: 16px; }
@@ -529,15 +530,16 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .machine-entry + .machine-entry { border-top: 1px solid var(--line-soft); }
 .machine-summary { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: var(--text-ui); }
 .machine-summary-text { display: grid; gap: 1px; min-width: 0; }
-.machine-summary-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.machine-summary-name { overflow: hidden; color: var(--text); font-size: var(--text-ui); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .machine-summary-ssh { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-label); font-weight: 400; }
 .machine-summary-chevron { flex: none; width: 16px; height: 16px; fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transform: rotate(90deg); }
 .machine-summary[aria-expanded="false"] .machine-summary-chevron { transform: none; }
 .machine-editor { display: grid; gap: 10px; margin: 0 0 6px; padding: 8px; border-radius: 8px; background: var(--soft-surface); }
-.machine-editor-fields { display: grid; gap: 8px; }
+.machine-editor-fields { display: grid; align-items: start; gap: 8px; }
 .machine-settings-field { min-width: 0; }
-.machine-settings-field > span { color: var(--muted); font-size: var(--text-label); font-weight: 500; }
-.machine-settings-field input { min-width: 0; }
+.machine-settings-label, .machine-field-help { color: var(--muted); font-size: var(--text-label); font-weight: 400; line-height: 1.35; }
+/* Values keep 13px/400 at desktop even though the wrapping label is a different weight. */
+.machine-editor input { min-width: 0; color: var(--text); font-size: var(--text-ui); font-weight: 400; }
 .form-field, .settings-card .machine-settings-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; min-width: 0; }
 .machine-settings-empty { margin: 2px 0; color: var(--subtle); font-size: var(--text-label); }
 .checkbox-row { display: flex !important; align-items: center; gap: 8px; }
@@ -686,8 +688,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 
 .detail-image { cursor: zoom-in; }
 
-/* The SSH alias reads as machine metadata in both the summary and the editor. */
-.machine-summary-ssh, .machine-editor [data-machine-ssh] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (min-width: 600px) {
   .machine-editor-fields { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }
 }

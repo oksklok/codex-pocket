@@ -638,7 +638,6 @@ try {
         ariaHiddenAncestor: Boolean(button.closest('[aria-hidden="true"]')),
         visible: rect.width > 0 && rect.height > 0,
         rightOfToggle: rect.left >= toggle.getBoundingClientRect().right - 0.5,
-        helper: body.querySelector('.field-help').textContent,
         bodyVisible: body.offsetParent !== null,
       };
     });
@@ -646,8 +645,9 @@ try {
     assert.equal(placement.ariaHiddenAncestor, false, 'the add control is never under aria-hidden');
     assert.equal(placement.visible, true, 'add control stays available with an empty list');
     assert.equal(placement.rightOfToggle, true, `the add control sits at the right at ${width}`);
-    assert.match(placement.helper, /SSH alias/);
     assert.equal(placement.bodyVisible, true);
+    assert.equal(await page.locator('#machines-body .field-help, .settings-machines > .field-help').count(), 0, 'no hint sits above the machine list');
+    assert.equal(await page.locator('.machine-field-help').count(), 0, 'the SSH and MAC hints only appear inside an editor');
     // Collapsing hides the helper and list but keeps the count and Add action.
     await page.locator('#machines-toggle').click();
     assert.equal(await page.locator('#machines-toggle').getAttribute('aria-expanded'), 'false');
@@ -661,6 +661,11 @@ try {
     assert.equal(await page.locator('.machine-entry').count(), 1);
     assert.equal(await page.locator('.machine-editor').count(), 1);
     assert.equal(await page.locator('.machine-editor [data-machine-name]').evaluate(node => node === document.activeElement), true, 'focus lands on the new editor');
+    assert.deepEqual(await page.locator('.machine-editor .machine-settings-label').allTextContents(), ['Display Name', 'SSH Alias', 'MAC Address (optional)']);
+    assert.deepEqual(await page.locator('.machine-editor .machine-field-help').allTextContents(), ['From this Pocket host’s SSH config.', 'For Wake-on-LAN.']);
+    assert.equal(await page.locator('.machine-editor [data-machine-ssh]').getAttribute('aria-describedby'), 'machine-0-ssh-help');
+    assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').getAttribute('aria-describedby'), 'machine-0-wake-help');
+    assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').getAttribute('aria-label'), 'Machine 1 MAC Address (optional)');
     await page.locator('#settings-close').click();
     await page.locator('#settings-screen').waitFor({ state: 'hidden' });
   }
@@ -722,7 +727,7 @@ try {
       const computed = getComputedStyle(node);
       return {
         bg: computed.backgroundColor, border: computed.borderTopColor, borderWidth: computed.borderTopWidth,
-        radius: computed.borderTopLeftRadius, color: computed.color,
+        radius: computed.borderTopLeftRadius, color: computed.color, size: computed.fontSize, weight: computed.fontWeight,
       };
     };
     return {
@@ -752,6 +757,8 @@ try {
       assert.equal(surfaces[kind].borderWidth, '0px', `the ${kind} has no border in ${scheme}`);
       assert.equal(surfaces[kind].bg, 'rgba(0, 0, 0, 0)', `the ${kind} has no background in ${scheme}`);
       assert.equal(surfaces[kind].radius, '0px', `the ${kind} is not a rounded box in ${scheme}`);
+      assert.equal(surfaces[kind].size, '12px', `the ${kind} uses 12px secondary metadata in ${scheme}`);
+      assert.equal(surfaces[kind].weight, '400', `the ${kind} uses regular weight in ${scheme}`);
       // The row provider must stay readable on the selected/hovered surface.
       if (kind === 'label') assert.ok(contrast(surfaces.label.color, surfaces.row.bg) >= 4.5, `the row provider stays readable on the selected surface in ${scheme}`);
     }

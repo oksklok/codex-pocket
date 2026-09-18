@@ -3565,7 +3565,7 @@ function machineFieldError(machine, index = 0, machines = []) {
   return null;
 }
 
-function machineEditorInput(dataset, value, { maxLength, placeholder, pattern, required, label }) {
+function machineEditorInput(dataset, value, { maxLength, placeholder, pattern, required, label, describedBy }) {
   const input = document.createElement("input");
   input.dataset[dataset] = "";
   input.type = "text";
@@ -3576,6 +3576,7 @@ function machineEditorInput(dataset, value, { maxLength, placeholder, pattern, r
   input.autocomplete = "off";
   input.spellcheck = false;
   input.setAttribute("aria-label", label);
+  if (describedBy) input.setAttribute("aria-describedby", describedBy);
   input.value = value || "";
   return input;
 }
@@ -3586,10 +3587,16 @@ function renderMachineEditor(machine, index) {
   editor.dataset.machineEditor = String(index);
   const fields = document.createElement("div");
   fields.className = "machine-editor-fields";
+  const sshHelpId = `machine-${index}-ssh-help`;
+  const wakeHelpId = `machine-${index}-wake-help`;
   const name = machineEditorInput("machineName", machine.name, { maxLength: 80, placeholder: "Name", required: true, label: `Machine ${index + 1} name` });
-  const ssh = machineEditorInput("machineSsh", machine.ssh, { maxLength: 128, placeholder: "SSH alias", pattern: "[A-Za-z0-9][A-Za-z0-9._-]*", required: true, label: `Machine ${index + 1} SSH alias` });
-  const wakeMac = machineEditorInput("machineWakeMac", machine.wakeMac, { maxLength: 17, placeholder: "AA:BB:CC:DD:EE:FF", label: `Machine ${index + 1} Wake MAC (optional)` });
-  for (const [input, title, key] of [[name, "Display Name", "name"], [ssh, "SSH Alias", "ssh"], [wakeMac, "Wake MAC (optional)", "wakeMac"]]) {
+  const ssh = machineEditorInput("machineSsh", machine.ssh, { maxLength: 128, placeholder: "SSH alias", pattern: "[A-Za-z0-9][A-Za-z0-9._-]*", required: true, label: `Machine ${index + 1} SSH alias`, describedBy: sshHelpId });
+  const wakeMac = machineEditorInput("machineWakeMac", machine.wakeMac, { maxLength: 17, placeholder: "AA:BB:CC:DD:EE:FF", label: `Machine ${index + 1} MAC Address (optional)`, describedBy: wakeHelpId });
+  for (const [input, title, key, help] of [
+    [name, "Display Name", "name", null],
+    [ssh, "SSH Alias", "ssh", { id: sshHelpId, text: "From this Pocket host’s SSH config." }],
+    [wakeMac, "MAC Address (optional)", "wakeMac", { id: wakeHelpId, text: "For Wake-on-LAN." }],
+  ]) {
     input.addEventListener("input", () => {
       machineDraft[index][key] = input.value;
       // Correcting a revealed value clears its custom error and the shared status message.
@@ -3599,7 +3606,8 @@ function renderMachineEditor(machine, index) {
     });
     const label = document.createElement("label");
     label.className = "machine-settings-field";
-    label.append(Object.assign(document.createElement("span"), { textContent: title }), input);
+    label.append(Object.assign(document.createElement("span"), { className: "machine-settings-label", textContent: title }), input);
+    if (help) label.append(Object.assign(document.createElement("span"), { className: "machine-field-help", id: help.id, textContent: help.text }));
     fields.append(label);
   }
   editor.append(fields);

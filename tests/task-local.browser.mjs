@@ -637,10 +637,36 @@ try {
  assert.equal(summaryStyle.fontSize,'13px','summaries read as ordinary list text, never as large inputs');
  assert(summaryStyle.height>=40,'summaries keep a comfortable tap target');
  assert.equal(await page.locator('.machine-entry + .machine-entry').evaluate(node=>getComputedStyle(node).borderTopWidth),'1px','entries are separated by a subtle rule');
+ // One intentional scheme: sans-serif, 13px/500 primary name, 12px/400 secondary alias.
+ const tokenColor=async name=>page.evaluate(name=>{const probe=Object.assign(document.createElement("span"),{style:`color:var(${name})`});document.body.append(probe);const value=getComputedStyle(probe).color;probe.remove();return value;},name);
+ const textColor=await tokenColor('--text'),mutedColor=await tokenColor('--muted');
+ const summaryType=await summaries.first().evaluate(node=>{const name=getComputedStyle(node.querySelector('.machine-summary-name')),alias=getComputedStyle(node.querySelector('.machine-summary-ssh'));return {nameSize:name.fontSize,nameWeight:name.fontWeight,nameColor:name.color,aliasSize:alias.fontSize,aliasWeight:alias.fontWeight,aliasColor:alias.color,aliasFamily:alias.fontFamily};});
+ assert.equal(summaryType.nameSize,'13px');assert.equal(summaryType.nameWeight,'500');assert.equal(summaryType.nameColor,textColor,'the summary name uses the primary color');
+ assert.equal(summaryType.aliasSize,'12px');assert.equal(summaryType.aliasWeight,'400');assert.equal(summaryType.aliasColor,mutedColor,'the summary alias uses the secondary color');
+ assert.doesNotMatch(summaryType.aliasFamily,/mono/i,'the SSH alias uses the sans-serif UI font');
+ assert.equal(await page.locator('.machine-field-help').count(),0,'the SSH hint is not shown outside an editor');
+ assert.equal(await page.locator('#machines-body > .field-help, .settings-machines > .field-help').count(),0,'no hint sits above the machine list');
  // One editor at a time; switching editors preserves unsaved values.
  await summaries.first().click();
  assert.equal(await page.locator('.machine-editor').count(),1);
  assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'0');
+ const editorType=await page.locator('.machine-editor').evaluate(node=>({
+ labels:[...node.querySelectorAll('.machine-settings-label')].map(n=>({text:n.textContent,size:getComputedStyle(n).fontSize,weight:getComputedStyle(n).fontWeight,color:getComputedStyle(n).color})),
+ help:[...node.querySelectorAll('.machine-field-help')].map(n=>({text:n.textContent,size:getComputedStyle(n).fontSize,weight:getComputedStyle(n).fontWeight,color:getComputedStyle(n).color})),
+ inputs:[...node.querySelectorAll('input')].map(n=>({size:getComputedStyle(n).fontSize,weight:getComputedStyle(n).fontWeight,color:getComputedStyle(n).color,family:getComputedStyle(n).fontFamily})),
+ sshDescribedBy:node.querySelector('[data-machine-ssh]').getAttribute('aria-describedby'),
+ wakeDescribedBy:node.querySelector('[data-machine-wake-mac]').getAttribute('aria-describedby'),
+ wakeAria:node.querySelector('[data-machine-wake-mac]').getAttribute('aria-label'),
+}));
+ assert.deepEqual(editorType.labels.map(label=>label.text),['Display Name','SSH Alias','MAC Address (optional)']);
+ assert(editorType.labels.every(label=>label.size==='12px'&&label.weight==='400'&&label.color===mutedColor),'editor labels are 12px/400 secondary');
+ assert.deepEqual(editorType.help.map(help=>help.text),['From this Pocket host’s SSH config.','For Wake-on-LAN.']);
+ assert(editorType.help.every(help=>help.size==='12px'&&help.weight==='400'&&help.color===mutedColor),'editor help is 12px/400 secondary');
+ assert(editorType.inputs.every(input=>input.weight==='400'&&input.color===textColor&&!/mono/i.test(input.family)),'editor values are regular-weight primary sans-serif');
+ // Editable fields keep the 16px mobile exception; collapsed summaries stay compact at every width.
+ assert(editorType.inputs.every(input=>input.size===(width>=861?'13px':'16px')),`editor values follow the editable-field size at ${width}`);
+ assert.equal(editorType.sshDescribedBy,'machine-0-ssh-help');assert.equal(editorType.wakeDescribedBy,'machine-0-wake-help');
+ assert.equal(editorType.wakeAria,'Machine 1 MAC Address (optional)');
  await page.locator('.machine-editor [data-machine-name]').fill('Laptop renamed');
  await summaries.nth(1).click();
  assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'1','only one editor is open');
@@ -1470,6 +1496,18 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await selectedRow.waitFor();
  assert.equal(await selectedRow.getAttribute('aria-current'),'true');
  assert.equal(await selectedRow.locator('.destination-check svg').count(),1,'the selected row keeps its checkmark');
+ // Task names keep one primary-text treatment resting, hovered and selected.
+ const tokenColor=async name=>page.evaluate(name=>{const probe=Object.assign(document.createElement("span"),{style:`color:var(${name})`});document.body.append(probe);const value=getComputedStyle(probe).color;probe.remove();return value;},name);
+ const textColor=await tokenColor('--text');
+ const nameStyle=row=>row.locator('.destination-task-text').evaluate(node=>{const s=getComputedStyle(node);return {color:s.color,size:s.fontSize,weight:s.fontWeight};});
+ const unselectedRow=page.locator('.destination-task:not(.selected)').first();
+ await page.mouse.move(0,0);await page.waitForTimeout(40);
+ const restingName=await nameStyle(unselectedRow);
+ assert.deepEqual(restingName,{color:textColor,size:'13px',weight:'400'},'the resting task name is 13px primary regular');
+ await unselectedRow.hover();await page.waitForTimeout(60);
+ assert.deepEqual(await nameStyle(unselectedRow),restingName,'the task name does not change on hover');
+ await page.mouse.move(0,0);await page.waitForTimeout(40);
+ assert.deepEqual(await nameStyle(selectedRow),restingName,'the task name does not change when selected');
  const rowBg=row=>row.evaluate(node=>getComputedStyle(node).backgroundColor);
  const unselected=page.locator('.destination-task:not(.selected)').first();
  await unselected.hover();await page.waitForTimeout(60);
