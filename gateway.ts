@@ -693,6 +693,13 @@ function cookieValue(request: IncomingMessage, name: string): string | null {
   return null;
 }
 
+// Add Secure only when the browser's own Origin proves a same-origin HTTPS login. Proxy headers
+// are deliberately not trusted, so direct HTTP/LAN logins keep their current cookie.
+export function sessionCookie(request: IncomingMessage, sessionId: string): string {
+  const secure = request.headers.origin === `https://${request.headers.host}` ? "; Secure" : "";
+  return `codex_pocket_session=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure}`;
+}
+
 function isAuthenticated(request: IncomingMessage, auth: AuthConfig): boolean {
   if (!auth.required) return true;
   const session = cookieValue(request, "codex_pocket_session");
@@ -5013,7 +5020,7 @@ export async function handleRequest(
     }
     auth.attempts.delete(client);
     sendJson(response, 200, { authenticated: true }, gateway, {
-      "Set-Cookie": `codex_pocket_session=${auth.sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`,
+      "Set-Cookie": sessionCookie(request, auth.sessionId),
     });
     return;
   }
@@ -5397,7 +5404,9 @@ async function main(): Promise<void> {
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shuttingDown = true;
-    const forceExit = setTimeout(() => process.exit(0), 2_000);
+    // Last-resort fallback only: the DeepSeek supervisor can spend up to 3s stopping its owned
+    // Codex child before it removes its lock/socket, so allow margin over that window.
+    const forceExit = setTimeout(() => process.exit(0), 5_000);
     forceExit.unref();
     shutdownPromise = (async () => {
       await gateway.stop();

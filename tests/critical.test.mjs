@@ -15,6 +15,7 @@ test.after(() => rmSync(dataDir, { recursive: true, force: true }));
 const {
   MachineRuntime, MessageSubmissions, PocketGateway, RpcClient,
   isMessageNotSent, parseArgs, saveLocalSettings, settingsNeedRestart,
+  sessionCookie,
 } = await import("../gateway.ts");
 const {
   DeepSeekHost, deepseekConfig, deepseekEnvironment, withoutDeepseekKey,
@@ -329,4 +330,17 @@ test("a DeepSeek timeout after dispatch stays uncertain and cannot duplicate the
   const id = `${receipts.epoch}-postsend`;
   await assert.rejects(receipts.run(id, async () => { throw failure; }));
   assert.equal((await receipts.recover(id)).status, "unknown", "a post-dispatch timeout must not be reported as sent");
+});
+
+test("the session cookie is Secure only for a same-origin HTTPS login", () => {
+  const base = "codex_pocket_session=sid; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400";
+  // Direct HTTP/LAN login: the Origin cannot prove HTTPS, so no Secure attribute is added.
+  const http = { headers: { host: "192.168.1.10:4173", origin: "http://192.168.1.10:4173" } };
+  assert.equal(sessionCookie(http, "sid"), base);
+  // The browser itself reports the same-origin HTTPS login.
+  const https = { headers: { host: "pocket.example.lan", origin: "https://pocket.example.lan" } };
+  assert.equal(sessionCookie(https, "sid"), `${base}; Secure`);
+  // A mismatched (or missing) Origin is never trusted even when the page is served over a proxy.
+  assert.equal(sessionCookie({ headers: { host: "pocket.example.lan", origin: "https://other.example" } }, "sid"), base);
+  assert.equal(sessionCookie({ headers: { host: "pocket.example.lan" } }, "sid"), base);
 });

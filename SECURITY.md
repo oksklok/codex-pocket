@@ -4,6 +4,8 @@ Codex Pocket can control powerful Codex actions. Treat it as a privileged local/
 
 HTTPS or a reverse proxy does not make Pocket's four-digit PIN internet-grade authentication. Do not expose Pocket publicly just because it has HTTPS.
 
+When a login arrives from the same-origin HTTPS URL, the session cookie is issued with `Secure`; direct HTTP/LAN logins keep the existing cookie without it. Pocket keys this off the browser's own `Origin` and does not trust `X-Forwarded-Proto` or any proxy header.
+
 Security fixes target current `main`. There is no maintained historical release matrix yet.
 
 ## Reporting a vulnerability
