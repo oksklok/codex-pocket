@@ -788,19 +788,30 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 @media (hover: hover) {
   :is(.secondary-button, .icon-button, .text-button, .approval-deny):hover:not(:disabled):not(.active) { border-color: var(--muted); }
   /* Accent and danger actions brighten one step; disabled controls never react. */
-  :is(.primary-button, .login-card > button[type="submit"], #send-message:not(.stop-action), .approval-approve):hover:not(:disabled) {
+  :is(.primary-button, .login-card > button[type="submit"], #send-message:not(.stop-action), .approval-approve, .async-free-text > button):hover:not(:disabled) {
     border-color: rgba(69,200,138,.62); background-color: rgba(69,200,138,.26);
   }
   :is(.danger-button, #send-message.stop-action):hover:not(:disabled) {
     border-color: rgba(255,139,139,.55); background-color: rgba(255,139,139,.18);
   }
+  /* Other neutral outlined actions (chosen async options keep their own selected border). */
+  :is(.async-options button:not(.selected), .jump-latest):hover:not(:disabled) { border-color: var(--muted); }
+  /* Borderless actions have no border to shift, so they respond with foreground instead of a fake box. */
+  :is(.composer-card .icon-button, .destination-group-heading .icon-button, .reorder-row .icon-button, .attach-image, .expand-composer, .async-answer .other-answer):hover:not(:disabled) { color: var(--text); }
+  /* The image viewer stays dark in both themes; its close control brightens to the same shade as focus. */
+  .image-viewer button:hover:not(:disabled) { background-color: #444444; }
 }
 .task-actions { top: 2px; }
 .task-actions summary { width: var(--icon-size); height: var(--icon-size); }
 .task-action-menu { padding: 4px; border-radius: var(--control-radius); }
 .task-actions button { min-height: 36px; padding: 8px; }
 
-:root[data-translucent="false"] { --topbar: var(--bg); --composer-bg: var(--bg); }
+/* Translucency is a narrow-layout choice: the preference is hidden from 861px up because desktop
+   always renders translucent, so a browser that disabled it on mobile must not stay opaque when
+   widened. Scoping the override keeps that promise without touching the stored preference. */
+@media (max-width: 860px) {
+  :root[data-translucent="false"] { --topbar: var(--bg); --composer-bg: var(--bg); }
+}
 
 .new-task-dialog { width: min(420px, calc(100% - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .new-task-dialog::backdrop { background: rgba(0,0,0,.55); }

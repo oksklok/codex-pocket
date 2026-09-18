@@ -3,8 +3,8 @@
 The current production interface was the basis for this guide. From here on it is the convention to
 follow: new work matches it, and anything that deliberately diverges has to be documented under
 Intentional exceptions below. It describes the existing visual language, not a new design system.
-Source of truth: `public/index.html`, `public/styles.css`, `public/app.js`. Where CSS tokens are
-named, the token is the preferred value.
+Implementation references: `public/index.html`, `public/styles.css`, `public/app.js`. Where CSS
+tokens are named, the token is the preferred value.
 
 ## Typography
 
@@ -45,8 +45,9 @@ One small rem scale, referenced by token everywhere except the two hero headings
 
 - Screen inset is 12px; shells, sidebars and drawers all pad 12px.
 - The transcript and composer share a centred track: conversation padding is
-  `max(16px, calc((100vw - 1050px) / 2))`, the composer/cards are `min(100%, 780px)`, messages are
-  `min(100%, 760px)`.
+  `max(16px, calc((100% - 1050px) / 2))` — a percentage of the chat column, so the track centres on
+  the real remaining space once the wide-layout sidebars reserve their width — the composer/cards
+  are `min(100%, 780px)` and messages are `min(100%, 760px)`.
 - Grids use 8px gaps; dialog field stacks use 12px vertical gaps; panel and metadata padding is 12px.
 - Shared action-row rhythm: `--action-row-gap: 8px`, `--action-row-inset: 10px`, separated from
   content by `--action-row-border` (1px `--line-soft`).
@@ -66,7 +67,7 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
   `--surface-strong` with no border.
 - Borders are 1px everywhere; there are no heavy outlines or nested borders.
 - Topbar and composer use translucent `--topbar`/`--composer-bg`; `[data-translucent="false"]`
-  collapses them to `--bg`.
+  collapses them to `--bg`, and only at ≤860px (see Mobile vs desktop).
 - Light theme re-maps the same token names; components never hard-code dark values (the image
   viewer is the deliberate exception).
 
@@ -96,10 +97,16 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
 ## States
 
 - Disabled: `opacity: .52`, `cursor: default` — except archived task rows, which stay fully opaque.
-- Hover (hover-capable devices only) is expected of every actionable button, and disabled controls
-  never react. Secondary, icon and text actions shift their border to `--muted`; primary, danger,
-  the composer Send/Stop action and the login Unlock action brighten one step within the existing
-  accent/danger tints. No transforms, shadows or animations.
+- Hover (hover-capable devices only): standard, button-like actions must visibly respond, and
+  disabled controls never react. Outlined families shift their border to `--muted` (secondary,
+  icon, text, async options, Jump to Latest, Approve/Deny); the accent and danger families
+  (primary, danger, composer Send/Stop, login Unlock, the free-text Answer submit) brighten one step
+  within their existing tints; borderless icon actions (composer-card glyphs, Attach, Expand,
+  machine-header and reorder icon actions, Other Answer) respond with a foreground change rather
+  than gaining a fake border; the image viewer's close control uses its own dark shade. Bare
+  navigation and disclosure surfaces (machine-name disclosure, activity rows, the destination
+  selector) keep their existing selected-state treatment and need no new hover chrome. No
+  transforms, shadows or animations.
 - Focus: there are no focus rings. Caret-less controls signal keyboard focus by switching to
   `--selected-bg`; checkbox/radio rows do the same as a group. Text fields deliberately have no
   focus cue — the caret and selection are the cue. `forced-colors` restores the system outline.
@@ -198,10 +205,13 @@ status paragraph is hidden. Copy rules already settled on:
 - Text fields intentionally have no focus ring; keyboard users get the caret and selection.
 - `--control-height` (40px) governs action rows; standalone secondary/primary buttons keep smaller
   defaults until a container normalizes them.
+- The login PIN field (`.login-card input`) is 56px tall, not `--control-height`, because it renders
+  1.55rem centred digits with a reserved reveal control. Every other text field uses 40px.
 - The image viewer and its close button stay dark in both themes, with their own focus/hover colours.
 - `full access` in the Access select and the `working`/`waiting`/`failed` phase pills reuse semantic
   colours as persistent state, not as decoration.
-- The translucent-UI preference is hidden at ≥861px because desktop always renders translucent.
+- The translucent-UI preference is hidden at ≥861px because desktop always renders translucent, so
+  the `[data-translucent="false"]` token override is scoped to ≤860px rather than applying globally.
 - Quit lifecycle copy may be macOS-specific. Quit is only exposed on the native macOS host, so its
   confirmation and status wording (for example "Codex Pocket.app" and "that Mac") may name the Mac;
   headless and container hosts hide Quit and use their managed lifecycle instead.

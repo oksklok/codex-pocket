@@ -2934,7 +2934,7 @@ newTaskForm.addEventListener("submit", async event => {
   if (!newTaskOptionsReady) await newTaskOptionsLoad;
   if (!newTaskDialog.open || taskActionBusy || optionsRequest !== newTaskOptionsRequest
     || newTaskCwd.value.trim() !== cwd || newTaskName.value.trim() !== name) return;
-  if (!newTaskOptionsReady || !newTaskModelValue || !newTaskEffort.value || !newTaskAccess.value) { newTaskError.textContent = "Choose available starting settings before creating the task."; return; }
+  if (!newTaskOptionsReady || !newTaskModelValue || !newTaskEffort.value || !newTaskAccess.value) { newTaskError.textContent = "Choose available starting settings before creating the task"; return; }
   const machineId = newTaskMachine.id;
   const startingSettings = { model: newTaskModelValue, effort: newTaskEffort.value, access: newTaskAccess.value };
   ++newTaskOptionsRequest;
@@ -3460,7 +3460,7 @@ async function submitStructuredInput(pending) {
   for (const question of pending.questions || []) {
     const value = requestDraft.get(question.id);
     if (!value) {
-      composerError = `Answer ${question.header || "every question"} before sending.`;
+      composerError = `Answer ${question.header || "every question"} before sending`;
       renderComposer();
       return;
     }
@@ -3470,14 +3470,14 @@ async function submitStructuredInput(pending) {
       } else if (value.type === "other" && question.isOther && String(value.value || "").trim()) {
         answers.push({ questionId: question.id, type: "other", value: value.value });
       } else {
-        composerError = `Choose an answer for ${question.header || "every question"}.`;
+        composerError = `Choose an answer for ${question.header || "every question"}`;
         renderComposer();
         return;
       }
     } else if (value.type === "text" && String(value.value || "").trim()) {
       answers.push({ questionId: question.id, type: "text", value: value.value });
     } else {
-      composerError = `Answer ${question.header || "every question"} before sending.`;
+      composerError = `Answer ${question.header || "every question"} before sending`;
       renderComposer();
       return;
     }
@@ -4483,7 +4483,7 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   const serverChanged = JSON.stringify(serverSettingsValue()) !== settingsBaseline.server;
   const pin = elements.settingsPin.value;
   if (serverChanged && elements.settingsLanEnabled.checked && !settingsValue?.pinConfigured && !/^\d{4}$/.test(pin)) {
-    elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access.";
+    elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access";
     elements.settingsStatus.classList.add("error-text");
     elements.settingsPin.focus();
     return;

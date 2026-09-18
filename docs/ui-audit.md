@@ -2,7 +2,10 @@
 
 Audit of the interface as it stood before c97d29b, against `docs/ui-style-guide.md`. The audit pass
 itself changed no production code; every finding it raised has since been fixed and now lives under
-"Resolved". No inconsistencies are open.
+"Resolved", and a final small compliance sweep closed the remaining housekeeping. No inconsistencies
+are open. This is a point-in-time record of that work, not an ongoing issue tracker: new work is
+judged against `docs/ui-style-guide.md`, and the closing "Needs visual judgment" notes are cosmetic
+observations rather than tracked defects.
 
 Method: read `public/index.html`, `public/styles.css` and `public/app.js`, then a throwaway
 Playwright pass (kept in `/tmp`, not committed) that rendered the real stylesheet at
@@ -40,6 +43,28 @@ and forced-colors handling) matched the guide.
   track and either open pane, and the Send button hit-tests as itself, in all four open/closed
   combinations at 1100, 1280, 1366, 1440 and 2048px.
 
+## Final compliance sweep
+
+The last pass tightened the guide itself and closed the remaining housekeeping. No layout,
+component or behaviour changes beyond these:
+
+- **Style guide:** "Implementation references" replaces the contradictory "Source of truth", the
+  centering example shows the container-relative `100%`, the 56px login PIN field is documented as
+  an exception to `--control-height`, and the hover rule is now practical — button-like actions must
+  respond, bare navigation/disclosure surfaces need no new chrome, and borderless icon actions
+  respond with foreground rather than gaining a fake border.
+- **Hover:** async-answer options and the free-text Answer submit, Jump to Latest, the image
+  viewer's close control, and the borderless icon actions (composer-card glyphs, Attach, Expand,
+  machine-header and reorder icons, Other Answer) now respond in the existing language. Disabled
+  controls stay inert.
+- **Copy:** the four remaining short imperative validation messages lost their trailing period
+  ("Choose available starting settings before creating the task", "Answer … before sending",
+  "Choose an answer for …", "Set a four-digit PIN before enabling LAN access"). Longer explanatory
+  messages keep their sentence punctuation.
+- **Translucency:** the `[data-translucent="false"]` token override now applies only at ≤860px, so a
+  browser that disabled translucency on mobile renders translucent again once widened. The stored
+  preference and Settings wiring are unchanged.
+
 ## Intentional exceptions (7)
 
 - **Wide-layout sidebars are navigation, not dialogs.** At ≥1100px Tasks (310px) and Task Details
@@ -64,7 +89,9 @@ and forced-colors handling) matched the guide.
   configuration state alongside the settings load, and the pre-auth `#login-error` stays
   `aria-live="polite"`. Same `.error-text` treatment, deliberately different urgency.
 
-## Needs visual judgment (5)
+## Needs visual judgment (5, non-blocking)
+
+Cosmetic observations only — none is a defect or a blocker, and they are not tracked here.
 
 - **Control corner radius drifts between 8px and 9px.** `--control-radius` is 8px and is used by
   Settings fields and the Task Details selects, but login fields, the composer textarea and every
