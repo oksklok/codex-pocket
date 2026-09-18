@@ -1,6 +1,7 @@
 import {
   compareTaskOrder,
   sortModelsForDisplay,
+  resolveModelEffort,
   createSelectionHold,
   usageLimitMessage,
   enterSubmits,
@@ -2796,10 +2797,10 @@ const newTaskPreferenceKey = machineId => `codex-pocket-new-task-settings:${mach
 function newTaskEfforts(preferred) {
   newTaskEffort.replaceChildren();
   const model = newTaskModels.find(model => model.model === newTaskModelValue);
-  for (const effort of model?.supportedReasoningEfforts || []) newTaskEffort.add(new Option(effortLabel(effort.reasoningEffort), effort.reasoningEffort));
-  const supported = value => [...newTaskEffort.options].some(option => option.value === value);
-  if (supported(preferred)) newTaskEffort.value = preferred;
-  else if (supported(model?.defaultReasoningEffort)) newTaskEffort.value = model.defaultReasoningEffort;
+  const efforts = (model?.supportedReasoningEfforts || []).map(effort => effort.reasoningEffort);
+  for (const effort of efforts) newTaskEffort.add(new Option(effortLabel(effort), effort));
+  const resolved = resolveModelEffort(efforts, preferred, model?.defaultReasoningEffort);
+  if (resolved) newTaskEffort.value = resolved;
   newTaskEffort.disabled = !newTaskEffort.options.length;
 }
 function renderNewTaskAccess(access) {
@@ -2835,7 +2836,9 @@ async function loadNewTaskOptions() {
       ariaLabel: "Model",
       id: "new-task-model",
       emptyLabel: "No model available",
-      onChange: (value) => { newTaskModelValue = value; newTaskEfforts(); },
+      // A model switch keeps the current effort (and Access) in place; it never reloads the
+      // runtime's remembered preset.
+      onChange: (value) => { const effort = newTaskEffort.value; newTaskModelValue = value; newTaskEfforts(effort); },
     });
     newTaskModelValue = newTaskModel ? newTaskModel.value : newTaskModels[0]?.model || "";
     renderNewTaskAccess(value.access);

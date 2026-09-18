@@ -348,3 +348,12 @@ export function compareModelDisplayOrder(left, right) {
 export function sortModelsForDisplay(models = []) {
   return [...models].sort(compareModelDisplayOrder);
 }
+
+// New Task keeps the caller's current effort when the selected model supports it; otherwise it uses
+// that model's catalog default and finally the first supported effort. Never per-model memory.
+export function resolveModelEffort(supported, current, fallback) {
+  const efforts = Array.isArray(supported) ? supported : [];
+  if (current && efforts.includes(current)) return current;
+  if (fallback && efforts.includes(fallback)) return fallback;
+  return efforts[0] || "";
+}

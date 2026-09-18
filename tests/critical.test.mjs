@@ -20,7 +20,7 @@ const {
   DeepSeekHost, deepseekConfig, deepseekEnvironment, withoutDeepseekKey,
   assertDeepseekConfig, constrainDeepseekRequest,
 } = await import("../deepseek.ts");
-const { reconcileSubmission } = await import("../public/pocket-logic.js");
+const { reconcileSubmission, resolveModelEffort } = await import("../public/pocket-logic.js");
 
 const selectionPath = join(dataDir, ".codex-pocket.selection.json");
 const clearRememberedSelection = () => rmSync(selectionPath, { force: true });
@@ -48,6 +48,17 @@ test("an accepted submission with a lost response reconciles once without sendin
   assert.equal(receipt.status, "accepted");
   assert.equal(receipt.turnId, "turn-1");
   assert.equal(reconcileSubmission(id, { submission: receipt }), "accepted");
+});
+
+test("a New Task model switch keeps the current effort when possible", () => {
+  // Sol/Medium -> Astra keeps Medium when Astra supports it; switching back keeps it too.
+  assert.equal(resolveModelEffort(["low", "medium", "high"], "medium", "high"), "medium");
+  assert.equal(resolveModelEffort(["low", "medium"], "medium", "low"), "medium");
+  // An unsupported effort falls back to the target model's catalog default.
+  assert.equal(resolveModelEffort(["low", "high"], "medium", "high"), "high");
+  // No usable default falls back to the first supported effort, and nothing supported stays empty.
+  assert.equal(resolveModelEffort(["low", "high"], "medium", "xhigh"), "low");
+  assert.equal(resolveModelEffort([], "medium", "high"), "");
 });
 
 test("a definite not-sent rejection stays retryable", async () => {
