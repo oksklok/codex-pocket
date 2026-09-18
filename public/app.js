@@ -806,9 +806,16 @@ function renderDestinationButton() {
   const selectedThread = loadedThreads.find((thread) => thread.id === state?.thread?.id) || state?.thread;
   // With no task selected, show only the machine name: no placeholder text and no provider suffix.
   const hasTask = Boolean(state?.thread);
+  // Match task rows: the provider suffix only disambiguates machines exposing several providers.
+  const group = machine?.group || machine?.id;
+  const providers = new Set(machines
+    .filter((candidate) => (candidate.group || candidate.id) === group)
+    .map((candidate) => providerName(candidate.provider))
+    .filter(Boolean));
   elements.destinationLabel.textContent = hasTask ? `${machineName} / ${threadLabel(selectedThread || state.thread)}` : machineName;
-  elements.destinationProvider.textContent = hasTask && provider ? provider : "";
-  elements.destinationProvider.hidden = !(hasTask && provider);
+  const showProvider = hasTask && provider && providers.size > 1;
+  elements.destinationProvider.textContent = showProvider ? provider : "";
+  elements.destinationProvider.hidden = !showProvider;
   // Wide layouts render plain text, so only the narrow selector carries a disabled state.
   elements.destinationButton.disabled = submittingMessage || updatingModel
     || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
@@ -3933,7 +3940,7 @@ elements.machineDialogRemove.addEventListener("click", async () => {
   const confirmed = await pocketConfirm({
     title: `Remove ${label} from Pocket?`,
     message: "This removes its Pocket connection configuration. Conversations and project files are not deleted.",
-    confirmLabel: "Remove Machine", danger: true,
+    confirmLabel: "Remove", danger: true,
   });
   if (!confirmed) return;
   void runMachineDialogAction(() => saveMachineConfig({ machines: savedMachines().filter((_, index) => index !== target.index) }));

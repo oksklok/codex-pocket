@@ -179,7 +179,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .machines-add-icon { display: grid; place-items: center; }
 .machines-add-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .machines-footer-reorder { display: flex; align-items: center; justify-content: flex-end; gap: var(--action-row-gap); }
-.machines-footer-actions .machines-reorder { width: var(--control-height); height: var(--control-height); min-height: var(--control-height); border: 0; background: transparent; color: var(--muted); }
+.machines-footer-actions .machines-reorder { width: var(--control-height); height: var(--control-height); min-height: var(--control-height); }
 /* Reorder mode shows only machine names; arrows move a saved machine one saved slot at a time. */
 .reorder-row { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 0 2px 8px; }
 .reorder-row + .reorder-row { border-top: 1px solid var(--line-soft); }
@@ -782,7 +782,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-dialog .form-status { margin-top: 8px; }
 .new-task-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 /* Cancel/Save pairs share one geometry across Settings, Reorder and ordinary dialogs. */
-.new-task-actions button, .settings-actions button, .machines-footer-reorder button {
+.new-task-actions button, .settings-actions button, .machines-footer-reorder button, .machine-dialog-actions button {
   min-height: var(--control-height); padding: 7px 11px; font-size: var(--text-ui);
 }
 
