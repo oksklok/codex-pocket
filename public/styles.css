@@ -167,7 +167,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 #destination-refresh svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 #destination-refresh:disabled svg { animation: refresh-spin 1.2s linear infinite; }
 @keyframes refresh-spin { to { transform: rotate(360deg); } }
-.destination-list { min-height: 80px; overflow-y: auto; padding: 0 12px 12px; }
+/* Stable gutter keeps the list width identical whether or not the scrollbar is showing. */
+.destination-list { min-height: 80px; overflow-y: auto; padding: 0 12px 12px; scrollbar-gutter: stable; }
 /* Add Machine is a fixed footer inside the Tasks sidebar, outside the scrolling task list. */
 .machines-footer { display: grid; gap: 6px; padding: var(--action-row-inset) 12px max(var(--action-row-inset), env(safe-area-inset-bottom)); border-top: var(--action-row-border); background: var(--surface); }
 .machines-restart { margin: 0; color: var(--warning); font-size: var(--text-label); font-weight: 600; }
@@ -220,6 +221,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-error > span { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
 /* Hover and selection share one neutral active surface; the selected + hovered pair keeps it explicitly. */
 .destination-task.selected, .destination-task.selected:hover:not(:disabled), .destination-task.selected:focus-visible { border-color: var(--selected-border); background: var(--selected-bg); color: var(--text); }
+/* Archived rows stay non-selectable; only real availability or busy states may dim them. */
+.destination-task.archived-available:disabled { opacity: 1; }
 .destination-check { color: var(--accent); display: grid; place-items: center; }
 .destination-check svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .task-actions summary svg { display: block; width: 20px; height: 20px; fill: currentColor; }

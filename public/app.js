@@ -1072,7 +1072,10 @@ function renderDestinationSwitcher(force = false) {
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
-      row.disabled = !member.connected || !memberCatalogAvailable || Boolean(destinationSelection) || (taskActionBusy && taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id) || task.archived;
+      const rowUnavailable = !member.connected || !memberCatalogAvailable || Boolean(destinationSelection) || (taskActionBusy && taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id);
+      // Archived rows are non-selectable but still read like normal task-list content.
+      if (task.archived && !rowUnavailable) row.classList.add("archived-available");
+      row.disabled = rowUnavailable || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
       if (task.cwd) row.title = task.cwd;
       const check = document.createElement("span");
