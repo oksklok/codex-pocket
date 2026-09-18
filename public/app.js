@@ -429,10 +429,6 @@ const ACCESS_MODES = [
 const accessModeLabel = (mode) => ACCESS_MODES.find((entry) => entry.value === mode)?.label
   || (mode === "custom" ? "Custom Access" : "Unavailable");
 
-function accessLabel(access) {
-  return access?.mode ? accessModeLabel(access.mode) : "Unavailable";
-}
-
 function showLogin(message = "") {
   source?.close();
   source = null;

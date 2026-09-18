@@ -165,7 +165,8 @@ status paragraph is hidden. Copy rules already settled on:
 
 - Transcript with a task but no history: centred, `--subtle`, `--text-label`
   ("No conversation history yet."). No task selected: "Select a task or create one."
-- Side panels (plan, activity) use the same centred `.panel-empty` treatment.
+- Empty panes do not render a shared placeholder: the Plan panel hides itself when it has no items,
+  and the transcript's no-history / no-task message is the centred `.empty-state`.
 - Sidebar list empties are left-aligned at `--subtle` `--text-secondary` inside the list padding
   ("No saved tasks", "No archived tasks", "No matching tasks").
 - With no task selected, Task Details hides metadata, Runtime, Plan and Display and shows a single

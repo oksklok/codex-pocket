@@ -79,14 +79,6 @@ export function deepseekCredentialStatus(env = process.env, path = DEEPSEEK_KEY_
   catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
 }
 
-// Strict resolution for callers that already know DeepSeek should be available.
-export function resolveDeepseekKey(env = process.env, path = DEEPSEEK_KEY_PATH): string {
-  const status = deepseekCredentialStatus(env, path);
-  if (status.error) throw new Error(status.error);
-  if (!status.key) throw new Error(`DeepSeek has no API key. Set DEEPSEEK_API_KEY or add the host key file. ${DEEPSEEK_KEY_HINT}`);
-  return status.key;
-}
-
 // Also used for ordinary children: opting in must not give the OpenAI/SSH runtime this key.
 export function withoutDeepseekKey(env = process.env): NodeJS.ProcessEnv {
   const clean = { ...env };
