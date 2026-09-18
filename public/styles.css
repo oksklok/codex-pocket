@@ -179,7 +179,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .machines-add-icon { display: grid; place-items: center; }
 .machines-add-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .machines-footer-reorder { display: flex; align-items: center; justify-content: flex-end; gap: var(--action-row-gap); }
-.machines-reorder { border: 0; background: transparent; color: var(--muted); }
+.machines-footer-actions .machines-reorder { width: var(--control-height); height: var(--control-height); min-height: var(--control-height); border: 0; background: transparent; color: var(--muted); }
 /* Reorder mode shows only machine names; arrows move a saved machine one saved slot at a time. */
 .reorder-row { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 0 2px 8px; }
 .reorder-row + .reorder-row { border-top: 1px solid var(--line-soft); }
@@ -275,7 +275,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 }
 /* Keyboard focus strengthens the warning tint while the border and readable text stay unchanged. */
 #access-select.full-access:focus-visible { background-color: rgba(255,139,139,.26); }
-.topbar-actions { grid-column: 5; justify-content: flex-end; gap: 7px; }
+.topbar-actions { grid-column: 5; justify-content: flex-end; gap: 8px; }
 .connection { display: none; }
 
 .secondary-button, .primary-button, .danger-button, .icon-button, .text-button {
@@ -596,6 +596,8 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .workspace { display: block; position: relative; }
   .chat-panel { height: 100%; }
   .conversation { padding-inline: 12px; }
+  /* Match the 12px screen inset below the final transcript entry. */
+  .conversation > :last-child { margin-bottom: 12px; }
   .composer-zone { padding-inline: 9px; }
   .jump-latest { right: 13px; }
   .activity-rich-detail { margin-inline: 7px; padding: 8px; }
@@ -617,7 +619,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .phase-pill { max-width: 126px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .elapsed { display: none; }
   .quota-chip { max-width: 100%; }
-  .topbar-actions { gap: 4px; }
   .message { margin-bottom: 14px; }
   .message.user { max-width: 94%; }
   .message-body { font-size: var(--text-heading); line-height: 1.53; }

@@ -171,7 +171,6 @@ function settleConfirm(result) {
 elements.confirmForm.addEventListener("submit", (event) => { event.preventDefault(); settleConfirm(true); });
 elements.confirmCancel.addEventListener("click", () => settleConfirm(false));
 elements.confirmDialog.addEventListener("cancel", (event) => { event.preventDefault(); settleConfirm(false); });
-elements.confirmDialog.addEventListener("close", () => { if (confirmResolve) settleConfirm(false); });
 
 const markdown = window.markdownit({ html: false, linkify: false, breaks: true, typographer: false });
 const defaultImage = markdown.renderer.rules.image;
@@ -995,7 +994,8 @@ function renderDestinationSwitcher(force = false) {
     // Chevron + name, then Info, then the inline status; Wake/New Task stay at the far right.
     const nameBlock = Object.assign(document.createElement("div"), { className: "machine-name-block" });
     nameBlock.append(toggle);
-    if (machineControlsVisible) {
+    // Archived view is a task-management surface: no setup controls, but Wake still applies.
+    if (machineControlsVisible && !archived) {
       const info = document.createElement("button");
       info.type = "button";
       info.className = "icon-button machine-info";
@@ -1196,6 +1196,24 @@ function invalidateNavigationCatalogs() {
   navigationErrors.fill("");
 }
 
+// A confirmed mutation updates the cached lists immediately so the sidebar keeps rendering the row
+// it already shows; the forced background refresh then makes both catalogs authoritative.
+function applyTaskMutationToCatalogs({ action, machineId, threadId, name }) {
+  if (!["rename", "archive", "unarchive", "delete"].includes(action)) return;
+  for (const catalog of navigationCatalogs) {
+    const machine = catalog?.machines?.find(candidate => candidate.id === machineId);
+    if (!machine || !Array.isArray(machine.tasks)) continue;
+    if (action === "rename") {
+      const task = machine.tasks.find(candidate => candidate.id === threadId);
+      if (task && name) task.name = name;
+      continue;
+    }
+    if (action === "archive" && catalog !== navigationCatalogs[0]) continue;
+    if (action === "unarchive" && catalog !== navigationCatalogs[1]) continue;
+    machine.tasks = machine.tasks.filter(task => task.id !== threadId);
+  }
+}
+
 function updateCatalogTaskStatus(catalog, { machineId, threadId, status, updatedAt }) {
   const tasks = catalog?.machines?.find(machine => machine.id === machineId)?.tasks;
   const task = tasks?.find(task => task.id === threadId);
@@ -1280,7 +1298,9 @@ function syncTasksControls() {
   const open = tasksSwitcherOpen();
   // Both the toggle icon and the (unboxed) machine/task text open or close Tasks on wide layouts.
   elements.destinationButton.setAttribute("aria-expanded", String(open));
-  elements.destinationButton.setAttribute("aria-haspopup", "dialog");
+  // The wide Tasks pane is navigation, not a dialog; only the narrow selector advertises a dialog.
+  if (isWideLayout()) elements.destinationButton.removeAttribute("aria-haspopup");
+  else elements.destinationButton.setAttribute("aria-haspopup", "dialog");
   elements.tasksToggle.setAttribute("aria-expanded", String(open));
   const label = open ? "Hide tasks" : "Show tasks";
   elements.tasksToggle.setAttribute("aria-label", label);
@@ -2970,12 +2990,7 @@ async function performTaskAction(body) {
     failure = error instanceof TypeError ? "Could not confirm the task action. Check the refreshed list before trying again." : error.message;
     try { const response = await apiFetch("/api/state"); if (response.ok) snapshot = await response.json(); } catch {}
   }
-  if (succeeded && body.action === "delete") {
-    for (const catalog of navigationCatalogs) {
-      const machine = catalog?.machines?.find(machine => machine.id === body.machineId);
-      if (machine) machine.tasks = machine.tasks.filter(task => task.id !== body.threadId);
-    }
-  }
+  if (succeeded) applyTaskMutationToCatalogs(body);
   taskActionBusy = false;
   taskActionTarget = null;
   const changed = snapshot && (snapshot.machineId !== state?.machineId || snapshot.thread?.id !== state?.thread?.id);
@@ -2986,8 +3001,14 @@ async function performTaskAction(body) {
   } else for (const entry of target.events) entry.deliver();
   if (succeeded && body.action === "delete") composerDrafts.delete(draftKey(body.machineId, body.threadId));
   if (failure && body.action !== "create") destinationTaskError = { machineId: body.machineId, threadId: body.threadId, message: taskFailureMessage(failure) };
-  invalidateNavigationCatalogs();
-  await Promise.allSettled([refreshMachines(), refreshLoadedThreads(), refreshNavigationCatalog()]);
+  // Keep the visible lists rendered while both catalogs refresh in the background; the Refresh
+  // control's disabled/spinning state is the only loading indicator for a cached list.
+  navigationEpoch += 1;
+  navigationRequests.fill(null);
+  navigationErrors.fill("");
+  renderDestinationSwitcher();
+  void Promise.allSettled([refreshNavigationCatalog(false, true), refreshNavigationCatalog(true, true)]);
+  await Promise.allSettled([refreshMachines(), refreshLoadedThreads()]);
   renderDestinationSwitcher();
   if (succeeded && body.action === "create") {
     if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
@@ -3676,6 +3697,8 @@ function closeSettings() {
   elements.settingsScreen.hidden = true;
   document.body.classList.remove("settings-open");
   settingsDisplayDraft = null;
+  // Any previewed theme is discarded; the saved theme applies again.
+  applyTheme(selectedTheme);
   restoreLocalSettingsControls();
   if (settingsValue) renderSettings(settingsValue);
   settingsBaseline = null;
@@ -3977,9 +4000,10 @@ function syncMachineReorderUi() {
 
 // Hide the whole footer only when it has nothing left: no controls, no restart hint, no error.
 function syncMachineFooterVisibility() {
-  elements.machinesFooterActions.hidden = machineReorderMode || !machineControlsVisible;
+  const setupHidden = !machineControlsVisible || archivedTasks;
+  elements.machinesFooterActions.hidden = machineReorderMode || setupHidden;
   elements.machineReorderActions.hidden = !machineReorderMode;
-  elements.machinesFooter.hidden = !machineReorderMode && !machineControlsVisible
+  elements.machinesFooter.hidden = !machineReorderMode && setupHidden
     && elements.machinesRestart.hidden && elements.machinesError.hidden;
 }
 
@@ -4396,6 +4420,8 @@ elements.settingsScreen.addEventListener("click", (event) => { if (event.target 
 elements.settingsLanEnabled.addEventListener("change", () => {
   if (elements.settingsLanEnabled.checked && elements.settingsHost.value === "127.0.0.1") elements.settingsHost.value = "0.0.0.0";
 });
+// Preview only: selectedTheme/localStorage stay untouched until Save.
+elements.settingsTheme.addEventListener("change", () => applyTheme(elements.settingsTheme.value));
 elements.settingsPin.addEventListener("input", () => {
   elements.settingsPin.value = elements.settingsPin.value.replace(/\D/g, "").slice(0, 4);
   elements.settingsStatus.textContent = "";
@@ -4457,7 +4483,7 @@ elements.restartPocket.addEventListener("click", async () => {
   const confirmed = await pocketConfirm({
     title: `Restart Pocket on ${hostName}?`,
     message: "Active Pocket work may be interrupted while the gateway restarts.",
-    confirmLabel: "Restart Pocket",
+    confirmLabel: "Restart",
   });
   if (!confirmed) return;
   restartingPocket = true;
@@ -4485,7 +4511,7 @@ elements.quitPocket.addEventListener("click", async () => {
   const confirmed = await pocketConfirm({
     title: `Quit Pocket on ${hostName}?`,
     message: "Pocket will stop and you won't be able to reconnect until Codex Pocket.app is launched again on that Mac.",
-    confirmLabel: "Quit Pocket", danger: true,
+    confirmLabel: "Quit", danger: true,
   });
   if (!confirmed) return;
   quittingPocket = true;
