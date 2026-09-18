@@ -2913,7 +2913,7 @@ document.querySelector("#new-task-cancel").addEventListener("click", () => newTa
 newTaskForm.addEventListener("submit", async event => {
   event.preventDefault();
   const name = newTaskName.value.trim(), cwd = newTaskCwd.value.trim();
-  if (!name || name.length > 180) { newTaskError.textContent = "Enter a task name up to 180 characters"; newTaskName.focus(); return; }
+  if (!name || name.length > 180) { newTaskError.textContent = "Enter a task name."; newTaskName.focus(); return; }
   if (cwd && (cwd.length > 4096 || /[\r\n\0]/.test(cwd) || !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd))) {
     newTaskError.textContent = "Enter an absolute project folder on this machine"; newTaskCwd.focus(); return;
   }
@@ -2970,7 +2970,7 @@ taskDialogForm.addEventListener("submit", event => {
   const body = { ...taskDialogAction };
   if (body.action === "rename") {
     body.name = taskDialogName.value.trim();
-    if (!body.name || body.name.length > 180) { taskDialogError.textContent = "Enter a task name up to 180 characters"; taskDialogName.focus(); return; }
+    if (!body.name || body.name.length > 180) { taskDialogError.textContent = "Enter a task name."; taskDialogName.focus(); return; }
     if (body.name === taskDialogOriginalName) { taskDialog.close(); return; }
   } else body.confirmed = true;
   taskDialog.close();
