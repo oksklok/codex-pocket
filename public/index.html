@@ -80,7 +80,7 @@
               <p class="machines-error error-text" id="machines-error" role="alert" hidden></p>
               <div class="machines-footer-actions" id="machines-footer-actions">
                 <button class="secondary-button machines-add" id="machine-add" type="button"><span class="machines-add-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>Add Machine</button>
-                <button class="icon-button machines-reorder" id="machine-reorder" type="button" aria-label="Reorder machines" title="Reorder machines"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M16 17V3m0 0-4 4m4-4 4 4"/><path d="M8 7v14m0 0-4-4m4 4 4-4"/></svg></button>
+                <button class="icon-button machines-reorder" id="machine-reorder" type="button" aria-label="Reorder machines" title="Reorder machines"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 4v16"/><path d="m3 8 4-4 4 4"/><path d="M17 20V4"/><path d="m21 16-4 4-4-4"/></svg></button>
               </div>
               <div class="machines-footer-reorder" id="machines-footer-reorder" hidden>
                 <button class="secondary-button" id="machine-reorder-cancel" type="button">Cancel</button>
@@ -171,10 +171,6 @@
               <label class="display-option"><input id="display-images" type="checkbox" checked><span>Image</span></label>
               <label class="display-option"><input id="display-review" type="checkbox" checked><span>Review</span></label>
               <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context Compaction</span></label>
-              <div class="display-divider" role="separator"></div>
-              <label class="display-option"><input id="expand-commands" type="checkbox"><span>Expand Commands by Default</span></label>
-              <label class="display-option"><input id="expand-files" type="checkbox"><span>Expand File Changes by Default</span></label>
-              <label class="display-option"><input id="wrap-files" type="checkbox"><span>Wrap File Changes</span></label>
             </section>
           </div>
         </aside>
@@ -193,7 +189,7 @@
           </div>
           <p class="field-help" id="settings-network-help">Use 0.0.0.0 for all local-network interfaces.</p>
           <details class="phone-urls" id="phone-urls" hidden>
-            <summary>Phone access</summary>
+            <summary>Phone Access</summary>
             <div class="phone-url-list" id="phone-url-list"></div>
           </details>
         </section>
@@ -205,9 +201,10 @@
         <section class="settings-section" aria-labelledby="settings-appearance-title">
           <h3 id="settings-appearance-title">Appearance</h3>
           <div class="form-field settings-inline-field" id="settings-theme-field"><label for="settings-theme">Theme</label>
-          <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+          <span class="select-slot"><select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></span></div>
           <label class="checkbox-row translucent-preference"><input id="translucent-ui" type="checkbox" checked> Translucent UI</label>
           <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show Project Names in Tasks</label>
+          <label class="checkbox-row"><input id="show-machine-controls" type="checkbox" checked> Show Machine Controls</label>
           <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show Context Usage</label>
           <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show Quota or Balance</label>
           <label class="enter-preference"><input id="enter-sends" type="checkbox" checked> Enter Sends Message</label>
@@ -218,9 +215,9 @@
           <p class="field-help error-text" id="settings-deepseek-error" role="status"></p>
         </section>
         <p class="settings-restart" id="settings-restart" hidden>Restart Codex Pocket to apply saved changes.</p>
-        <p class="field-help" id="container-lifecycle" hidden>Container lifecycle is managed by Docker Compose.</p>
+        <p class="field-help" id="container-lifecycle" hidden>Pocket is managed by Docker Compose.</p>
         <div class="settings-lifecycle" id="settings-lifecycle">
-          <p>Host lifecycle</p>
+          <p>Pocket Controls</p>
           <div class="settings-lifecycle-actions">
             <button class="secondary-button" id="restart-pocket" type="button">Restart Pocket</button>
             <button class="danger-button" id="quit-pocket" type="button">Quit Pocket</button>

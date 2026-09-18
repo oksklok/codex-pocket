@@ -173,14 +173,13 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .machines-restart { margin: 0; color: var(--warning); font-size: var(--text-label); font-weight: 600; }
 .machines-restart[hidden] { display: none; }
 .machines-error { margin: 0; font-size: var(--text-label); }
-.machines-footer-actions { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; }
-.machines-add { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 40px; }
+.machines-footer-actions { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 6px; }
+/* Specific enough to keep the shared 40px control height over .secondary-button's 34px minimum. */
+.machines-footer .machines-add { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: var(--control-height); }
 .machines-add-icon { display: grid; place-items: center; }
 .machines-add-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .machines-footer-reorder { display: flex; align-items: center; justify-content: flex-end; gap: var(--action-row-gap); }
-.machines-footer-reorder button { min-width: 76px; min-height: var(--control-height); padding: 6px 12px; }
 .machines-reorder { border: 0; background: transparent; color: var(--muted); }
-.machines-reorder svg { width: 18px; height: 18px; }
 /* Reorder mode shows only machine names; arrows move a saved machine one saved slot at a time. */
 .reorder-row { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 0 2px 8px; }
 .reorder-row + .reorder-row { border-top: 1px solid var(--line-soft); }
@@ -259,7 +258,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .quota-chip.multiple { min-width: 150px; max-width: 320px; }
 .quota-chip.stale { opacity: .72; }
 .quota-chip.balance { max-width: 240px; gap: 4px; justify-content: center; }
-.quota-chip.balance .quota-balance-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The word stays muted like the other meter labels; the amount reads like a quota percentage. */
+.quota-chip.balance .quota-balance-text { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--text); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .quota-chip.balance .balance-flag { flex: none; color: var(--danger); font-weight: 800; }
 .quota-chip.balance.insufficient { border-color: rgba(255,139,139,.38); color: var(--danger); }
 .quota-window { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 3px 4px; }
@@ -536,7 +536,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .display-panel .panel-heading { margin-bottom: 0; }
 .display-option { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-label); cursor: pointer; }
 .display-option input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent-strong); }
-.display-divider { height: 1px; margin: 2px 0; background: var(--line-soft); }
 .inspector-backdrop { display: none; }
 
 @media (min-width: 1100px) {
@@ -560,7 +559,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .phone-urls[open] > summary { border-bottom: 1px solid var(--line-soft); }
 .phone-url-list, #phone-url-list { display: grid; gap: 3px; padding: 8px 10px 10px; }
 #phone-url-list a { color: var(--accent); overflow-wrap: anywhere; }
-.settings-inline-field { grid-template-columns: minmax(0,1fr) minmax(120px, 170px); align-items: center; gap: 8px; }
+.settings-inline-field { grid-template-columns: auto minmax(120px, 170px); align-items: center; justify-content: start; gap: 8px; }
 .settings-inline-field select { width: 100%; }
 .settings-restart { margin: 0 0 10px; padding: 10px; border-radius: 9px; background: rgba(240,195,106,.08); color: var(--muted); font-size: var(--text-label); }
 .settings-lifecycle { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 10px; margin-bottom: 10px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 9px; }
@@ -592,7 +591,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .shell .topbar { position: sticky; top: 0; flex-shrink: 0; }
   /* Keep the sticky header out of Android selection-handle hit-testing during the hold. */
   .shell.transcript-selection-held .topbar { pointer-events: none; }
-  .composer-zone:not(.expanded-composer) { position: sticky; bottom: 0; z-index: 3; padding-bottom: max(var(--action-row-inset), env(safe-area-inset-bottom)); }
+  .composer-zone:not(.expanded-composer) { position: sticky; bottom: 0; z-index: 3; }
   .destination-list { padding-bottom: 12px; }
   .workspace { display: block; position: relative; }
   .chat-panel { height: 100%; }
@@ -690,8 +689,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .settings-card .field-help { font-size: var(--text-secondary); line-height: 1.4; margin: 0; }
 #settings-pin { max-width: 280px; }
 .settings-card .checkbox-row, .settings-card .enter-preference { min-height: 28px; }
-.settings-actions button, .settings-restart button { min-height: var(--control-height); padding: 7px 11px; font-size: var(--text-ui); }
-
 .task-selection-error { display: block; white-space: normal; overflow-wrap: anywhere; color: var(--danger); font-size: var(--text-secondary); font-weight: 400; line-height: 1.35; margin-top: 0; }
 
 .detail-image { cursor: zoom-in; }
@@ -701,10 +698,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   .destination-backdrop, .destination-switcher .destination-close { display: none; }
   /* Wide header: a sidebar toggle plus compact, unboxed machine/task/provider text. */
   .tasks-toggle { display: grid; place-items: center; width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); padding: 0; }
-  /* Plain, non-clickable machine/task/provider text; the toggle icon is the wide entry point. */
+  /* Unboxed machine/task/provider text; it and the toggle icon both open or close Tasks. */
   .destination-button {
     display: flex; align-items: center; width: auto; max-width: 100%; min-height: 0; padding: 0;
-    overflow: hidden; border: 0; border-radius: 0; background: none; cursor: default; pointer-events: none; font-weight: 600;
+    overflow: hidden; border: 0; border-radius: 0; background: none; cursor: pointer; font-weight: 600;
   }
   .destination-button svg { display: none; }
 }
@@ -736,8 +733,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   appearance: none; -webkit-appearance: none;
   padding-right: calc(var(--control-inset) + 20px);
 }
-.form-field:has(select) { position: relative; }
-.form-field:has(select)::after {
+.form-field:has(> select), .select-slot:has(> select) { position: relative; }
+.form-field:has(> select)::after, .select-slot:has(> select)::after {
   content: ""; position: absolute; right: var(--control-inset); bottom: 0; width: 14px; height: var(--control-height);
   background-color: var(--muted); pointer-events: none;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
@@ -747,10 +744,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   :is(.settings-card, .runtime-panel, .new-task-settings, .new-task-dialog) select {
     appearance: auto; -webkit-appearance: auto;
   }
-  .form-field:has(select)::after { display: none; }
+  .form-field:has(> select)::after, .select-slot:has(> select)::after { display: none; }
 }
 .secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button { border-radius: var(--control-radius); }
-.settings-actions button, .settings-restart button { min-height: var(--control-height); }
+.settings-actions button { min-height: var(--control-height); }
 .secondary-panel h3 { font-size: var(--text-heading); }
 .settings-card .field-help { color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
 /* No perimeter focus effects. Text fields keep their ordinary border/background and rely on the
@@ -783,7 +780,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-dialog label { color: var(--muted); font-size: var(--text-label); font-weight: 500; }
 .new-task-dialog .form-status { margin-top: 8px; }
 .new-task-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-.new-task-actions button { min-height: 40px; padding: 7px 11px; font-size: var(--text-ui); }
+/* Cancel/Save pairs share one geometry across Settings, Reorder and ordinary dialogs. */
+.new-task-actions button, .settings-actions button, .machines-footer-reorder button {
+  min-height: var(--control-height); padding: 7px 11px; font-size: var(--text-ui);
+}
 
 /* Machine Details: host and SSH fields toggle by mode; helper text sits outside the labels. */
 .machine-dialog .machine-dialog-heading { display: flex; align-items: baseline; gap: 8px; margin: 0 0 16px; }
@@ -843,8 +843,12 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .queue-banner .file-chips { grid-column: 1 / -1; margin: 0; }
 
 .queue-banner .composer-images:empty { display: none; }
-.composer-zone:not(.expanded-composer) { display: flex; flex-direction: column; gap: 8px; padding-block: 8px; }
+.composer-zone:not(.expanded-composer) { display: flex; flex-direction: column; gap: 8px; padding-block: var(--action-row-inset); }
 .composer-zone:not(.expanded-composer) > :is(.composer-card, .attention-banner, .composer-images, .file-chips) { margin-block: 0; }
+/* A real safe-area inset is the only reason the bottom padding grows. */
+@media (max-width: 860px) {
+  .composer-zone:not(.expanded-composer) { padding-bottom: max(var(--action-row-inset), env(safe-area-inset-bottom)); }
+}
 
 .queue-dialog textarea { width: 100%; min-height: 96px; max-height: 35dvh; resize: vertical; }
 

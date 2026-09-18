@@ -72,9 +72,6 @@ const elements = {
   displayCollaboration: document.querySelector("#display-collaboration"),
   displayImages: document.querySelector("#display-images"),
   displayCompaction: document.querySelector("#display-compaction"),
-  expandCommands: document.querySelector("#expand-commands"),
-  expandFiles: document.querySelector("#expand-files"),
-  wrapFiles: document.querySelector("#wrap-files"),
   composer: document.querySelector("#composer"),
   composerZone: document.querySelector(".composer-zone"),
   composerInput: document.querySelector(".composer-input"),
@@ -298,6 +295,9 @@ for (const [toggle, meter, key] of [[elements.showContext, elements.context, "co
 const showProjects = document.querySelector("#show-projects");
 try { showProjects.checked = localStorage.getItem("codex-pocket-show-projects") === "true"; } catch {}
 let projectsVisible = showProjects.checked;
+const showMachineControls = document.querySelector("#show-machine-controls");
+try { showMachineControls.checked = localStorage.getItem("codex-pocket-show-machine-controls") !== "false"; } catch {}
+let machineControlsVisible = showMachineControls.checked;
 let composerExpanded = false;
 let composing = false;
 let deferredTranscript = false;
@@ -384,7 +384,6 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => app
 function loadDisplayPreferences() {
   const defaults = {
     command: true, tool: true, search: true, review: true, files: true, reasoning: true, collaboration: true, images: true, compaction: true,
-    expandCommands: false, expandFiles: false, wrapFiles: false,
   };
   try {
     const saved = JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) || "{}") || {};
@@ -412,11 +411,6 @@ function activityVisible(activity) {
   if (activity.kind === "search") return displayPreferences.search;
   if (activity.kind === "review") return displayPreferences.review;
   return false;
-}
-
-function activityExpandsByDefault(activity) {
-  return (activity.kind === "command" && displayPreferences.expandCommands)
-    || (activity.kind === "files" && displayPreferences.expandFiles);
 }
 
 function effortLabel(value) {
@@ -671,6 +665,10 @@ function renderBalanceQuota(balance) {
   const insufficient = balance.isAvailable === false;
   elements.quota.classList.toggle("stale", !usable || Boolean(balance.stale));
   elements.quota.classList.toggle("insufficient", insufficient);
+  // The word stays muted; the amount carries the same bright weight as a quota percentage.
+  const label = document.createElement("span");
+  label.className = "quota-label";
+  label.textContent = "Balance";
   const text = document.createElement("span");
   text.className = "quota-balance-text";
   // A non-shrinking flag keeps insufficient funds recognizable even when the amount truncates.
@@ -681,15 +679,15 @@ function renderBalanceQuota(balance) {
     flag.textContent = "!";
     elements.quota.append(flag);
   }
-  elements.quota.append(text);
+  elements.quota.append(label, text);
   if (!usable) {
     // A failed or malformed fetch is never rendered as a zero balance.
-    text.textContent = "Balance —";
+    text.textContent = "—";
     elements.quota.title = "DeepSeek balance unavailable";
     elements.quota.setAttribute("aria-label", "DeepSeek balance unavailable");
     return;
   }
-  text.textContent = `Balance ${entries.map(formatBalanceEntry).join(" · ")}`;
+  text.textContent = entries.map(formatBalanceEntry).join(" · ");
   const funds = insufficient ? " · insufficient funds" : "";
   const stale = balance.stale ? " · last known" : "";
   elements.quota.title = `DeepSeek account balance: ${entries.map((entry) => `${entry.currency} ${entry.total}`).join(", ")}${funds}${stale}`;
@@ -813,8 +811,8 @@ function renderDestinationButton() {
   elements.destinationProvider.textContent = hasTask && provider ? provider : "";
   elements.destinationProvider.hidden = !(hasTask && provider);
   // Wide layouts render plain text, so only the narrow selector carries a disabled state.
-  elements.destinationButton.disabled = !isWideLayout() && (submittingMessage || updatingModel
-    || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt);
+  elements.destinationButton.disabled = submittingMessage || updatingModel
+    || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
 }
 
 async function refreshMachines() {
@@ -855,7 +853,7 @@ function renderDestinationSwitcher(force = false) {
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, projectsVisible, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
-    machineReorderMode, machineReorderBusy, machineReorderDraft,
+    machineReorderMode, machineReorderBusy, machineReorderDraft, machineControlsVisible,
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -868,6 +866,7 @@ function renderDestinationSwitcher(force = false) {
   // The saved configuration and the running connections are distinct: surface a restart hint here
   // rather than restarting on the user's behalf.
   elements.machinesRestart.hidden = !machineConfig.restartRequired;
+  syncMachineFooterVisibility();
   const query = elements.destinationSearch.value.trim().toLowerCase();
   const catalogMachines = Array.isArray(navigationCatalog?.machines) ? navigationCatalog.machines : [];
   if (navigationRequest && !catalogMachines.length) {
@@ -996,14 +995,16 @@ function renderDestinationSwitcher(force = false) {
     // Chevron + name, then Info, then the inline status; Wake/New Task stay at the far right.
     const nameBlock = Object.assign(document.createElement("div"), { className: "machine-name-block" });
     nameBlock.append(toggle);
-    const info = document.createElement("button");
-    info.type = "button";
-    info.className = "icon-button machine-info";
-    info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
-    info.title = "Machine details";
-    info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
-    info.addEventListener("click", () => openMachineDetails(machine, info));
-    nameBlock.append(info);
+    if (machineControlsVisible) {
+      const info = document.createElement("button");
+      info.type = "button";
+      info.className = "icon-button machine-info";
+      info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
+      info.title = "Machine details";
+      info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
+      info.addEventListener("click", () => openMachineDetails(machine, info));
+      nameBlock.append(info);
+    }
     if (availability) {
       const availabilityStatus = document.createElement("span");
       availabilityStatus.className = "machine-status";
@@ -1277,20 +1278,13 @@ function tasksSwitcherOpen() { return document.body.classList.contains("destinat
 function inspectorOpen() { return elements.appShell.classList.contains("inspector-open"); }
 function syncTasksControls() {
   const open = tasksSwitcherOpen();
+  // Both the toggle icon and the (unboxed) machine/task text open or close Tasks on wide layouts.
+  elements.destinationButton.setAttribute("aria-expanded", String(open));
+  elements.destinationButton.setAttribute("aria-haspopup", "dialog");
   elements.tasksToggle.setAttribute("aria-expanded", String(open));
   const label = open ? "Hide tasks" : "Show tasks";
   elements.tasksToggle.setAttribute("aria-label", label);
   elements.tasksToggle.title = label;
-  // Wide layouts show plain text: only the toggle icon is a control; the selector is narrow-only.
-  if (isWideLayout()) {
-    elements.destinationButton.removeAttribute("aria-expanded");
-    elements.destinationButton.removeAttribute("aria-haspopup");
-    elements.destinationButton.tabIndex = -1;
-  } else {
-    elements.destinationButton.setAttribute("aria-expanded", String(open));
-    elements.destinationButton.setAttribute("aria-haspopup", "dialog");
-    elements.destinationButton.removeAttribute("tabindex");
-  }
 }
 
 let destinationCloseTimer;
@@ -1474,9 +1468,6 @@ function renderDisplayControls() {
   elements.displayCollaboration.checked = preferences.collaboration;
   elements.displayImages.checked = preferences.images;
   elements.displayCompaction.checked = preferences.compaction;
-  elements.expandCommands.checked = preferences.expandCommands;
-  elements.expandFiles.checked = preferences.expandFiles;
-  elements.wrapFiles.checked = preferences.wrapFiles;
   // Show All / Hide All only act on the categories currently visible; disable the no-op one.
   const visibleCategories = DISPLAY_ACTIVITY_KINDS
     .map(([key]) => DISPLAY_CONTROLS[key])
@@ -1814,7 +1805,9 @@ function renderComposer() {
   }
   const capabilityError = !stopping && !resolvingApproval && !submittingInputRequestId
     && capability?.allowed === false && capability.reason !== "Stopping the active turn…" ? capability.reason : "";
-  const status = composerError || turnError || capabilityError || state?.taskNameWarning || "";
+  // With no task selected the conversation already says so; task-specific messages stay suppressed.
+  const noTask = !state?.thread;
+  const status = noTask ? "" : composerError || turnError || capabilityError || state?.taskNameWarning || "";
   const usageLimit = usageLimitMessage(status);
   elements.composerStatus.textContent = usageLimit || status;
   if (usageLimit) {
@@ -1825,7 +1818,7 @@ function renderComposer() {
     elements.composerStatus.append(" ", credits);
   }
   elements.composerStatus.hidden = !status;
-  elements.composerStatus.classList.toggle("error-text", Boolean(composerError || turnError));
+  elements.composerStatus.classList.toggle("error-text", !noTask && Boolean(composerError || turnError));
   renderAttention();
   renderQueue();
   renderImageThumbnails(elements.composerImages, selectedImages, true);
@@ -2218,7 +2211,8 @@ function detailField(label, value, className = "detail-code") {
 
 function diffNode(value) {
   const wrapper = document.createElement("div");
-  wrapper.className = `detail-diff${displayPreferences.wrapFiles ? " wrap" : ""}`;
+  // File changes are always wrapped.
+  wrapper.className = "detail-diff wrap";
   for (const text of String(value || "").split("\n")) {
     const line = document.createElement("span");
     line.className = `diff-line ${text.startsWith("+") && !text.startsWith("+++") ? "add" : text.startsWith("-") && !text.startsWith("---") ? "remove" : "context"}`;
@@ -2452,7 +2446,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   const signature = entry => JSON.stringify([
     entry.value,
     entry.displayCreatedAt,
-    entry.type === "activity" ? [activityDetails.get(entry.value.id), activityExpandsByDefault(entry.value), entry.value.kind === "files" ? displayPreferences.wrapFiles : null] : null,
+    entry.type === "activity" ? [activityDetails.get(entry.value.id)] : null,
     entry.type === "message" && entry.value.questions?.length ? [
       state?.message?.allowed,
       entry.value.questions.map((_, index) => [
@@ -3540,11 +3534,9 @@ function connectEvents() {
     const activity = parseEvent(event);
     const activities = [...(state.activities || [])];
     const index = activities.findIndex((candidate) => candidate.id === activity.id);
-    const expandByDefault = index < 0 && activity.expandable && activityVisible(activity) && activityExpandsByDefault(activity);
     if (index >= 0) activities[index] = activity;
     else activities.push(activity);
     mergeState({ activities: activities.slice(-50) });
-    if (expandByDefault && !activityDetails.has(activity.id)) loadActivityDetail(activity);
   });
   on("message", (event) => {
     const message = parseEvent(event);
@@ -3635,6 +3627,7 @@ function localSettingsValue() {
     context: elements.showContext.checked,
     quota: elements.showQuota.checked,
     projects: showProjects.checked,
+    machineControls: showMachineControls.checked,
     display: { ...(settingsDisplayDraft || displayPreferences) },
   };
 }
@@ -3646,6 +3639,7 @@ function restoreLocalSettingsControls() {
   elements.showContext.checked = !elements.context.hidden;
   elements.showQuota.checked = !elements.quota.hidden;
   showProjects.checked = projectsVisible;
+  showMachineControls.checked = machineControlsVisible;
   renderDisplayControls();
 }
 
@@ -3653,6 +3647,7 @@ function commitLocalSettings(value) {
   selectedTheme = value.theme;
   enterSends = value.enterSends;
   projectsVisible = value.projects;
+  machineControlsVisible = value.machineControls;
   document.documentElement.dataset.translucent = String(value.translucent);
   elements.context.hidden = !value.context;
   elements.quota.hidden = !value.quota;
@@ -3660,7 +3655,8 @@ function commitLocalSettings(value) {
   try {
     localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
     for (const [key, setting] of [["translucent-ui", value.translucent], ["enter-sends", enterSends],
-      ["show-context", value.context], ["show-quota", value.quota], ["show-projects", projectsVisible]]) {
+      ["show-context", value.context], ["show-quota", value.quota], ["show-projects", projectsVisible],
+      ["show-machine-controls", machineControlsVisible]]) {
       localStorage.setItem("codex-pocket-" + key, String(setting));
     }
   } catch {}
@@ -3973,11 +3969,18 @@ function reorderDraftChanged() {
 function syncMachineReorderUi() {
   elements.destinationSwitcher.classList.toggle("reordering", machineReorderMode);
   elements.machinesFooter.classList.toggle("reordering", machineReorderMode);
-  elements.machinesFooterActions.hidden = machineReorderMode;
-  elements.machineReorderActions.hidden = !machineReorderMode;
+  syncMachineFooterVisibility();
   elements.machineReorderSave.disabled = machineReorderBusy || !reorderDraftChanged();
   elements.machineReorderCancel.disabled = machineReorderBusy;
   elements.machineReorder.disabled = machineReorderBusy;
+}
+
+// Hide the whole footer only when it has nothing left: no controls, no restart hint, no error.
+function syncMachineFooterVisibility() {
+  elements.machinesFooterActions.hidden = machineReorderMode || !machineControlsVisible;
+  elements.machineReorderActions.hidden = !machineReorderMode;
+  elements.machinesFooter.hidden = !machineReorderMode && !machineControlsVisible
+    && elements.machinesRestart.hidden && elements.machinesError.hidden;
 }
 
 // Reorder mode lists the host, then the local draft order, then unsaved running machines.
@@ -4330,9 +4333,6 @@ for (const [element, key] of [
   [elements.displayCollaboration, "collaboration"],
   [elements.displayImages, "images"],
   [elements.displayCompaction, "compaction"],
-  [elements.expandCommands, "expandCommands"],
-  [elements.expandFiles, "expandFiles"],
-  [elements.wrapFiles, "wrapFiles"],
 ]) {
   element.addEventListener("change", () => {
     if (settingsDisplayDraft) { settingsDisplayDraft[key] = element.checked; renderDisplayControls(); updateSettingsSave(); return; }
