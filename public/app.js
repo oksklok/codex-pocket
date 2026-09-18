@@ -848,8 +848,13 @@ try {
   if (Array.isArray(saved) && saved.every(id => typeof id === "string")) for (const id of saved) collapsedMachines.add(id);
 } catch {}
 let destinationRenderKey = null;
-// Row status keeps the accent treatment except for the states that carry their own meaning.
-const TASK_STATUS_TONES = { Waiting: "warning", Stopped: "warning", Failed: "danger" };
+// Row status keeps the accent treatment except for the states that carry their own meaning. Full
+// rendering and the status-only fast update share this rule so the two can never drift.
+function taskStatusClassName(value) {
+  if (value === "Failed") return "destination-task-status danger";
+  if (value === "Waiting" || value === "Stopped") return "destination-task-status warning";
+  return "destination-task-status";
+}
 function renderDestinationSwitcher(force = false) {
   if (elements.destinationSwitcher.hidden && !force) return;
   const archived = archivedTasks;
@@ -867,8 +872,12 @@ function renderDestinationSwitcher(force = false) {
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
-    if (status && !destinationSelection) status.textContent = destinationTaskStatus(
-      { id: state?.machineId }, { id: state?.thread?.id }, state, taskTerminalResults.get(draftKey(state?.machineId, state?.thread?.id)));
+    if (status && !destinationSelection) {
+      const statusText = destinationTaskStatus(
+        { id: state?.machineId }, { id: state?.thread?.id }, state, taskTerminalResults.get(draftKey(state?.machineId, state?.thread?.id)));
+      status.className = taskStatusClassName(statusText);
+      status.textContent = statusText;
+    }
     return;
   }
   destinationRenderKey = renderKey;
@@ -1107,8 +1116,7 @@ function renderDestinationSwitcher(force = false) {
         ? "Opening…"
         : taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "rename" ? "Renaming" : taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
         : destinationTaskStatus(member, task, state, taskTerminalResults.get(draftKey(member.id, task.id)));
-      const tone = TASK_STATUS_TONES[statusText];
-      status.className = tone ? `destination-task-status ${tone}` : "destination-task-status";
+      status.className = taskStatusClassName(statusText);
       status.textContent = statusText;
       row.append(check, label, status);
       row.addEventListener("click", () => selectDestination(member.id, task.id));

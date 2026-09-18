@@ -780,9 +780,9 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   :is(input, select, textarea, button, summary, [role="button"], [tabindex]):focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 }
 @media (hover: hover) {
-  :is(.secondary-button, .icon-button, .text-button):hover:not(:disabled):not(.active) { border-color: var(--muted); }
+  :is(.secondary-button, .icon-button, .text-button, .approval-deny):hover:not(:disabled):not(.active) { border-color: var(--muted); }
   /* Accent and danger actions brighten one step; disabled controls never react. */
-  :is(.primary-button, .login-card > button[type="submit"], #send-message:not(.stop-action)):hover:not(:disabled) {
+  :is(.primary-button, .login-card > button[type="submit"], #send-message:not(.stop-action), .approval-approve):hover:not(:disabled) {
     border-color: rgba(69,200,138,.62); background-color: rgba(69,200,138,.26);
   }
   :is(.danger-button, #send-message.stop-action):hover:not(:disabled) {

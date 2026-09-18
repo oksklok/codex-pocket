@@ -1,6 +1,8 @@
 # Codex Pocket UI audit
 
-Audit of the current interface against `docs/ui-style-guide.md`. No production code was changed.
+Audit of the interface as it stood before c97d29b, against `docs/ui-style-guide.md`. The audit pass
+itself changed no production code; the four copy and state findings it raised were fixed in
+c97d29b and now live under "Resolved in c97d29b". One layout issue found afterwards is still open.
 
 Method: read `public/index.html`, `public/styles.css` and `public/app.js`, then a throwaway
 Playwright pass (kept in `/tmp`, not committed) that rendered the real stylesheet at
@@ -12,62 +14,41 @@ columns with unboxed destination text.
 Surfaces inspected: login, top bar, Tasks sidebar, task rows and task action menus, Archived view,
 composer, transcript/activity UI, Task Details, Settings, New Task, Rename/Delete, Machine Details,
 Project Folder, the shared confirmation dialog and the goal/queue dialogs, queue and async-input
-surfaces, and the empty/no-task states. Everything below is the only divergence found; the rest
-(control heights, dialog geometry, drawer/backdrop behaviour, busy copy, `aria-expanded` usage,
-safe areas, reduced-motion and forced-colors handling) matched the guide.
+surfaces, and the empty/no-task states. Beyond the findings below, the rest (control heights, dialog
+geometry, drawer/backdrop behaviour, busy copy, `aria-expanded` usage, safe areas, reduced-motion
+and forced-colors handling) matched the guide.
 
-## Actual inconsistencies (4)
+## Actual inconsistencies (1)
 
-### 1. Machine Details inline validation keeps a trailing period
+### 1. Docked desktop sidebars overlay the transcript and composer
 
-- **Surface:** Machine Details dialog (`#machine-dialog`), name / SSH alias / MAC fields.
-- **Current behaviour:** `machineFieldError()` returns "Enter a display name for this machine.",
-  "Enter a simple SSH alias (letters, digits, dot, dash or underscore)." and "Enter a valid
-  Wake-on-LAN MAC address." — all with a period. New Task, Rename Task, Project Folder and the
-  queued-message editor use the period-free form ("Enter a task name").
-- **Style-guide expectation:** short inline validation is concise imperative wording with no
-  trailing period.
-- **Smallest practical fix:** drop the three trailing periods in `machineFieldError()`
-  (`public/app.js`). Gateway-side messages stay as they are.
+- **Surface:** desktop (≥1100px) with Tasks and/or Task Details docked open.
+- **Current behaviour:** above the breakpoint both sidebars are `position: absolute` boxes
+  (`#destination-switcher` 310px, `#inspector` 340px) that reserve no width in `.workspace`, so the
+  chat panel stays full width and the transcript/composer are centred on `100vw`. Measured: at
+  1280px the composer spans 250–1030 while Task Details spans 940–1280, so the composer's right 90px
+  — including the whole Send button — sits under the panel and hit-tests to `.inspector-scroll`.
+  Overlap is 180px at 1100px, 90px at 1280px, 47px at 1366px, 10px at 1440px, and clears at ~1460px.
+- **Style-guide expectation:** the guide describes the wide-layout panes as docked columns; a docked
+  panel must not cover transcript or composer content and controls.
+- **Smallest practical fix:** size the chat column from the workspace rather than `100vw` (or reserve
+  the docked width in `.workspace`). This is a layout change and needs its own focused commit — it is
+  deliberately not part of this cleanup.
 
-### 2. Primary and danger buttons have no hover feedback
+## Resolved in c97d29b (4)
 
-- **Surface:** every primary/danger button — Create, Save, Discard, Remove, Restart, Quit, the login
-  Unlock action, the composer Send/Stop, and the transcript Approve/Deny pair.
-- **Current behaviour:** the only hover rule targets `.secondary-button`, `.icon-button` and
-  `.text-button`. Measured: `#new-task-create` computed style is byte-identical before and after
-  hover, while `#new-task-cancel` shifts its border from `--line` to `--muted`. So a Cancel reacts
-  and the adjacent Save does not, and the accent-tinted login Unlock is likewise inert on hover.
-- **Style-guide expectation:** every actionable button acknowledges hover (hover-capable devices
-  only), using a restrained border/background change rather than a new treatment.
-- **Smallest practical fix:** extend the existing `@media (hover: hover)` rule to `.primary-button`,
-  `.danger-button`, the login Unlock action and the composer action buttons with one restrained step
-  (e.g. a stronger tint or a border at the accent/danger colour).
-
-### 3. Creating a task has no busy indication
-
-- **Surface:** New Task dialog submit.
-- **Current behaviour:** on submit every control in `#new-task-form` is disabled (so the dialog just
-  dims to 52%) and the dialog stays silent until the request returns. Every other async action in
-  the product reports progress — "Saving…", "Checking…", "Renaming…", "Opening…", "Restarting…" —
-  either by relabelling the button or by writing a status line.
-- **Style-guide expectation:** a busy state disables the control and shows a gerund-plus-ellipsis
-  indicator.
-- **Smallest practical fix:** set the Create button's label to "Creating…" while the request is in
-  flight and restore "Create" in the `finally` block (`public/app.js`).
-
-### 4. Task-row status is always success green
-
-- **Surface:** Tasks sidebar task rows (`.destination-task-status`).
-- **Current behaviour:** the class hard-codes `color: var(--accent)`, but the text comes from
-  `destinationTaskStatus()`, which can return "Waiting", "Working", "Done", "Failed" or "Stopped"
-  (the gateway maps `failed` → "Failed" and `interrupted` → "Stopped"). So a failed or stopped task,
-  and a task waiting on approval/input, all render in the same green as "Done". The machine header
-  status and the phase pill already use danger/warning for the same states.
-- **Style-guide expectation:** colour is semantic — success/neutral for normal progress, warning for
-  waiting, danger for failure.
-- **Smallest practical fix:** add a state class on the status span from the same value already
-  computed, and map accent/warning/danger off it (reusing existing tokens).
+- **Machine Details inline validation kept a trailing period.** Fixed: `machineFieldError()` returns
+  period-free messages for the display name, SSH alias and Wake-on-LAN MAC address. Gateway copy was
+  left alone.
+- **Primary and danger buttons had no hover feedback.** Fixed: `.primary-button`, `.danger-button`,
+  the login Unlock action and the composer Send/Stop actions brighten one step inside the existing
+  `@media (hover: hover)` treatment, and disabled controls stay inert. Hover is now the guide's rule
+  for every actionable button. (The transcript Approve/Deny pair was finished in the follow-up.)
+- **Creating a task had no busy indication.** Fixed: the New Task button reads "Creating…" while the
+  request is in flight and is restored to "Create" in the `finally` block.
+- **Task-row status was always success green.** Fixed: the status span carries a semantic tone —
+  Waiting/Stopped → warning, Failed → danger, everything else keeps the accent. The same rule is
+  shared by the full render and the status-only fast update.
 
 ## Intentional exceptions (7)
 
