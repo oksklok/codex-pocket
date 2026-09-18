@@ -20,6 +20,34 @@ private struct QuotaStatus: Decodable {
     let stale: Bool
     let windows: [QuotaWindow]
     let updatedAt: Double?
+    // Present only while the selected runtime reports an account balance (DeepSeek); nil is OpenAI.
+    let balance: BalanceStatus?
+}
+
+private struct BalanceEntry: Decodable {
+    let currency: String
+    let total: String
+}
+
+private struct BalanceStatus: Decodable {
+    let available: Bool
+    let stale: Bool
+    let isAvailable: Bool?
+    let entries: [BalanceEntry]
+    let updatedAt: Double?
+}
+
+// Mirrors the browser's BALANCE_SYMBOLS so both surfaces format an account balance the same way.
+private let balanceSymbols = ["CNY": "¥", "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"]
+
+private func balanceText(_ balance: BalanceStatus, stale: Bool) -> String {
+    guard balance.available, !balance.entries.isEmpty else { return "Balance unavailable" }
+    var text = balance.entries
+        .map { "\(balanceSymbols[$0.currency] ?? "\($0.currency) ")\($0.total)" }
+        .joined(separator: " · ")
+    if balance.isAvailable == false { text += " · insufficient funds" }
+    if stale { text += " · Last known" }
+    return text
 }
 
 private struct HostStatus: Decodable {
@@ -100,10 +128,12 @@ private final class StatusMenuView: NSView {
 }
 
 private final class SectionMenuView: NSView {
+    private let label: NSTextField
+
     init(title: String) {
+        label = NSTextField(labelWithString: title)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 11, weight: .semibold)
         label.textColor = .secondaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -117,6 +147,11 @@ private final class SectionMenuView: NSView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    // The quota section becomes Balance while a DeepSeek runtime is selected.
+    func update(title: String) {
+        label.stringValue = title
+    }
 }
 
 private final class QuotaMenuView: NSView {
@@ -184,17 +219,25 @@ private final class MessageMenuView: NSView {
         label.stringValue = message
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
+        // An account balance can be longer than a percentage row, so let the row grow instead of
+        // truncating a monetary value; short messages keep the shared 260pt width.
+        label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 260),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
             heightAnchor.constraint(equalToConstant: 28),
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { nil }
+
+    func update(message: String) {
+        label.stringValue = message
+    }
 }
 
 final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -212,7 +255,11 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchAtLoginItem: NSMenuItem!
     private let quotaViews = [QuotaMenuView(), QuotaMenuView()]
     private let quotaItems = [NSMenuItem(), NSMenuItem()]
+    private let quotaHeadingView = SectionMenuView(title: "Quota")
+    private let quotaHeadingItem = NSMenuItem()
     private let quotaUnavailableItem = NSMenuItem()
+    private let balanceView = MessageMenuView(message: "")
+    private let balanceItem = NSMenuItem()
     private var openItem: NSMenuItem!
     private var copyItem: NSMenuItem!
     private var restartItem: NSMenuItem!
@@ -266,8 +313,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let headerItem = NSMenuItem()
         headerItem.view = headerView
         menu.addItem(headerItem)
-        let quotaHeadingItem = NSMenuItem()
-        quotaHeadingItem.view = SectionMenuView(title: "Quota")
+        quotaHeadingItem.view = quotaHeadingView
         menu.addItem(quotaHeadingItem)
         for (item, view) in zip(quotaItems, quotaViews) {
             item.view = view
@@ -275,6 +321,8 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         quotaUnavailableItem.view = MessageMenuView(message: "Quota unavailable")
         menu.addItem(quotaUnavailableItem)
+        balanceItem.view = balanceView
+        menu.addItem(balanceItem)
         menu.addItem(.separator())
         openItem = actionItem("Open Pocket", #selector(openPocket), enabled: false)
         copyItem = actionItem("Copy Pocket URL", #selector(copyPhoneURL), enabled: false)
@@ -296,25 +344,36 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateMenu() {
         headerView.update(isOn: pocketEnabled, enabled: !quitting && !powerTransition)
-        if let quota = status?.quota, quota.available, !quota.windows.isEmpty {
-            for (index, view) in quotaViews.enumerated() {
-                guard index < quota.windows.count else {
-                    quotaItems[index].isHidden = true
-                    continue
-                }
-                let window = quota.windows[index]
-                view.update(
-                    window: window,
-                    stale: quota.stale || !pocketEnabled,
-                    reset: window.resetsAt.map(formatReset),
-                    updated: quota.updatedAt.map(formatReset)
-                )
-                quotaItems[index].isHidden = false
-            }
-            quotaUnavailableItem.isHidden = true
-        } else {
+        if let balance = status?.quota.balance {
+            // DeepSeek: one account-wide balance replaces the subscription windows and their percentages.
+            quotaHeadingView.update(title: "Balance")
             for item in quotaItems { item.isHidden = true }
-            quotaUnavailableItem.isHidden = false
+            quotaUnavailableItem.isHidden = true
+            balanceView.update(message: balanceText(balance, stale: balance.stale || !pocketEnabled))
+            balanceItem.isHidden = false
+        } else {
+            quotaHeadingView.update(title: "Quota")
+            balanceItem.isHidden = true
+            if let quota = status?.quota, quota.available, !quota.windows.isEmpty {
+                for (index, view) in quotaViews.enumerated() {
+                    guard index < quota.windows.count else {
+                        quotaItems[index].isHidden = true
+                        continue
+                    }
+                    let window = quota.windows[index]
+                    view.update(
+                        window: window,
+                        stale: quota.stale || !pocketEnabled,
+                        reset: window.resetsAt.map(formatReset),
+                        updated: quota.updatedAt.map(formatReset)
+                    )
+                    quotaItems[index].isHidden = false
+                }
+                quotaUnavailableItem.isHidden = true
+            } else {
+                for item in quotaItems { item.isHidden = true }
+                quotaUnavailableItem.isHidden = false
+            }
         }
         openItem.isEnabled = pocketEnabled && !powerTransition && status != nil
         copyItem.isEnabled = pocketEnabled && !powerTransition && !(status?.phoneUrls.isEmpty ?? true)
@@ -337,7 +396,8 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func formatReset(_ milliseconds: Double) -> String {
         let date = Date(timeIntervalSince1970: milliseconds / 1000)
         let formatter = DateFormatter()
-        formatter.locale = .current
+        // English weekday names in the user's own timezone; the format stays HH:mm / EEE HH:mm.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE HH:mm"
         return formatter.string(from: date)

@@ -646,7 +646,9 @@ function formatQuotaReset(value) {
   const sameDay = reset.getFullYear() === now.getFullYear()
     && reset.getMonth() === now.getMonth()
     && reset.getDate() === now.getDate();
-  return reset.toLocaleString([], sameDay
+  // Explicit English, 24-hour formatting in the browser's own timezone: same-day shows the time
+  // alone, otherwise the English weekday precedes it (matching the Mac menu's EEE HH:mm).
+  return reset.toLocaleString("en-GB", sameDay
     ? { hour: "2-digit", minute: "2-digit" }
     : { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
