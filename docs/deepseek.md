@@ -1,6 +1,6 @@
 # Optional local DeepSeek runtime
 
-DeepSeek runs **through Codex app-server**, alongside the existing OpenAI runtimes. It is macOS-only and appears only when a valid credential exists. The task list shows one `<local machine name> [Host]` group for the Mac; when it has more than one runtime, each task row carries a small `[OpenAI]` or `[DeepSeek]` badge, and **New Task** offers a Provider choice. The machine name is never rewritten; the provider is separate metadata, and the runtimes keep their own ids, tasks, drafts, queues, receipts and sessions. There is no browser-to-DeepSeek connection, automatic failover, or conversation migration.
+DeepSeek runs **through Codex app-server**, alongside the existing OpenAI runtimes. It is macOS-only and appears only when a valid credential exists. The task list shows one group per local physical machine; when that Mac exposes more than one provider, each task row shows OpenAI/DeepSeek as plain secondary provider metadata rather than a badge. **New Task** exposes a Provider choice in the same case. The machine name is never rewritten; the provider is separate metadata, and the runtimes keep their own ids, tasks, drafts, queues, receipts and sessions. There is no browser-to-DeepSeek connection, automatic failover, or conversation migration.
 
 ## When DeepSeek appears
 

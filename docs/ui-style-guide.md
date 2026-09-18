@@ -207,7 +207,8 @@ status paragraph is hidden. Copy rules already settled on:
 - `--control-height` (40px) governs action rows; standalone secondary/primary buttons keep smaller
   defaults until a container normalizes them.
 - The login PIN field (`.login-card input`) is 56px tall, not `--control-height`, because it renders
-  1.55rem centred digits with a reserved reveal control. Every other text field uses 40px.
+  1.55rem centred digits with a reserved reveal control. Every other ordinary single-line text input
+  uses 40px.
 - The image viewer and its close button stay dark in both themes, with their own focus/hover colours.
 - `full access` in the Access select and the `working`/`waiting`/`failed` phase pills reuse semantic
   colours as persistent state, not as decoration.

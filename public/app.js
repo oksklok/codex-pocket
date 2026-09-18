@@ -741,7 +741,7 @@ function threadLabel(thread) {
   return thread.name || "Untitled Task";
 }
 
-// Providers are explicit metadata; an unknown provider shows no badge instead of a guess.
+// Providers are explicit metadata; an unknown provider shows no label instead of a guess.
 function providerName(provider) {
   if (provider === "deepseek") return "DeepSeek";
   if (provider === "openai") return "OpenAI";

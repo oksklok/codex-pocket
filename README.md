@@ -42,7 +42,7 @@ While a turn is active, normal **Send** queues input; answering an async questio
 
 Text, image, and file drafts are task-scoped and kept only in browser memory: up to eight recent non-empty drafts. They do not survive a page reload.
 
-**New Task** offers explicit model, reasoning-effort, and access choices. A successful creation without a settings warning remembers those choices per machine in this browser. The Project Folder prefills from that machine's selected task when available. Leaving it blank uses the runtime user's home directory on the selected machine; failure to resolve that home directory asks for an explicit folder.
+**New Task** offers explicit model, reasoning-effort, and access choices. A successful creation without a settings warning remembers those choices per runtime in this browser. The Project Folder prefills from that runtime's selected task when available. Leaving it blank uses the runtime user's home directory on the selected runtime; failure to resolve that home directory asks for an explicit folder.
 
 At widths of **1100px and above**, successful task switching and New Task creation focus the message composer. Narrow layouts leave it unfocused to avoid opening the software keyboard. **Escape** dismisses narrow Tasks/Info overlays; wide pinned sidebars remain open. Dialogs, Settings, and the fullscreen composer handle Escape before sidebars.
 

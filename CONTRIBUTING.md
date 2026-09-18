@@ -14,7 +14,7 @@ Only rebuild the native app with `zsh macos/build-app.sh` when its source change
 
 ### Behaviors to preserve
 
-- New Task sends explicit starting settings and remembers successful choices per machine/browser. Folder prefill uses the selected task on that machine; a blank folder resolves to that runtime user's home.
+- New Task sends explicit starting settings and remembers successful choices per runtime/browser. Folder prefill uses the selected task on that runtime; a blank folder resolves to that runtime user's home.
 - Wide task navigation/creation focuses the composer; narrow layouts do not. Escape closes narrow sidebar overlays, while wide pinned sidebars remain open.
 - Text, image, and file drafts are task-scoped, in memory, limited to eight non-empty drafts, and lost on reload. Staged files live in the target machine's temp directory; Pocket has no automatic deletion or expiry policy.
 - Tasks Unavailable is a catalog failure on a connected transport. Offline is a transport failure. Keep the 15-second SSH probes/three-miss limit separate from the five-second catalog budget.
