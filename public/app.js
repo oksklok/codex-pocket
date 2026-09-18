@@ -1124,11 +1124,14 @@ function renderDestinationSwitcher(force = false) {
         if (!actions.open) return;
         // Measure and position synchronously, before the open menu can paint.
         const anchor = summary.getBoundingClientRect();
+        // Anchor vertically to the task row boundary with a 4px gap so the menu never overlaps it.
+        const row = summary.closest(".destination-entry")?.querySelector(".destination-task") || summary;
+        const rowBox = row.getBoundingClientRect();
         const drawer = elements.destinationSwitcher.getBoundingClientRect();
         const bounds = elements.destinationList.getBoundingClientRect();
         const bottom = Math.min(bounds.bottom, window.innerHeight);
-        const top = anchor.bottom + menu.offsetHeight <= bottom
-          ? anchor.bottom : anchor.top - menu.offsetHeight;
+        const top = rowBox.bottom + 4 + menu.offsetHeight <= bottom
+          ? rowBox.bottom + 4 : rowBox.top - menu.offsetHeight - 4;
         // The transformed drawer is the fixed menu's containing block, not the viewport.
         const originX = drawer.left + elements.destinationSwitcher.clientLeft;
         const originY = drawer.top + elements.destinationSwitcher.clientTop;

@@ -91,7 +91,7 @@ button, select { touch-action: manipulation; }
 button, summary, [role="button"], select, input[type="checkbox"] { -webkit-tap-highlight-color: transparent; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 1.55rem; }
-h2 { margin-bottom: 0; font-size: var(--text-heading); }
+h2 { margin-bottom: 0; font-size: 1rem; }
 h3 { margin: 0; font-size: var(--text-ui); }
 
 .sr-only {
@@ -507,7 +507,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .shell.inspector-closed .inspector { transform: translateX(100%); pointer-events: none; }
 .inspector-heading { justify-content: space-between; }
 .destination-switcher-head, .inspector-heading { height: var(--sidebar-header-height); min-height: var(--sidebar-header-height); padding: 8px 12px; border-bottom: 1px solid var(--line-soft); background: var(--surface); }
-.destination-switcher-head > strong, .inspector-heading h2 { margin: 0; font-size: var(--text-heading); font-weight: 700; line-height: 1.25; }
+.destination-switcher-head > strong, .inspector-heading h2 { margin: 0; font-size: 1rem; font-weight: 700; line-height: 1.25; }
 .inspector-heading .icon-button { display: none; }
 .inspector-scroll { min-height: 0; overflow-y: auto; padding: 12px; }
 .inspector-empty { margin: 0; color: var(--muted); font-size: var(--text-label); line-height: 1.45; }
@@ -771,7 +771,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 
 .new-task-dialog { width: min(420px, calc(100% - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .new-task-dialog::backdrop { background: rgba(0,0,0,.55); }
-.new-task-dialog h2 { margin: 0 0 16px; font-size: var(--text-heading); }
+.new-task-dialog h2 { margin: 0 0 16px; font-size: 1rem; }
 .new-task-dialog .confirm-message { margin: 0; color: var(--muted); font-size: var(--text-ui); line-height: 1.45; overflow-wrap: anywhere; }
 .new-task-dialog input, .queue-dialog textarea { width: 100%; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
 .new-task-dialog input { height: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-inset); }
@@ -789,7 +789,11 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 /* Machine Details: host and SSH fields toggle by mode; helper text sits outside the labels. */
 .machine-dialog .machine-dialog-heading { display: flex; align-items: baseline; gap: 8px; margin: 0 0 16px; }
 .machine-dialog .machine-dialog-heading h2 { margin: 0; }
-.machine-dialog .machine-dialog-host { color: var(--muted); font-size: var(--text-label); font-weight: 500; }
+/* The Host role marker reads as a small neutral outlined pill beside the dialog title. */
+.machine-dialog .machine-dialog-host {
+  flex: none; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted); font-size: var(--text-meta); font-weight: 600; letter-spacing: .02em;
+}
 .machine-dialog .machine-dialog-help { margin: 6px 0 0; color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
 .machine-dialog .machine-dialog-help + .form-field { margin-top: 12px; }
 .machine-dialog .machine-dialog-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; }
