@@ -247,6 +247,9 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-task-label > span { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-label > small { grid-column: 2 / -1; grid-row: 2; min-width: 0; line-height: 16px; }
 .destination-task-status { grid-column: 3; color: var(--accent); font-size: var(--text-label); font-weight: 600; }
+/* One semantic tone per state; Working/Done and the temporary busy labels keep the accent above. */
+.destination-task-status.warning { color: var(--warning); }
+.destination-task-status.danger { color: var(--danger); }
 .destination-group-empty, .destination-empty, .destination-error { margin: 0; padding: 8px 7px; color: var(--subtle); font-size: var(--text-secondary); }
 .destination-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 5px; border-radius: 7px; background: rgba(255,139,139,.09); color: var(--danger); }
 .runtime-controls select { min-height: 36px; padding: 6px 22px 6px 9px; font-size: var(--text-ui); text-overflow: ellipsis; }
@@ -778,6 +781,13 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 }
 @media (hover: hover) {
   :is(.secondary-button, .icon-button, .text-button):hover:not(:disabled):not(.active) { border-color: var(--muted); }
+  /* Accent and danger actions brighten one step; disabled controls never react. */
+  :is(.primary-button, .login-card > button[type="submit"], #send-message:not(.stop-action)):hover:not(:disabled) {
+    border-color: rgba(69,200,138,.62); background-color: rgba(69,200,138,.26);
+  }
+  :is(.danger-button, #send-message.stop-action):hover:not(:disabled) {
+    border-color: rgba(255,139,139,.55); background-color: rgba(255,139,139,.18);
+  }
 }
 .task-actions { top: 2px; }
 .task-actions summary { width: var(--icon-size); height: var(--icon-size); }

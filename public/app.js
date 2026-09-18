@@ -848,6 +848,8 @@ try {
   if (Array.isArray(saved) && saved.every(id => typeof id === "string")) for (const id of saved) collapsedMachines.add(id);
 } catch {}
 let destinationRenderKey = null;
+// Row status keeps the accent treatment except for the states that carry their own meaning.
+const TASK_STATUS_TONES = { Waiting: "warning", Stopped: "warning", Failed: "danger" };
 function renderDestinationSwitcher(force = false) {
   if (elements.destinationSwitcher.hidden && !force) return;
   const archived = archivedTasks;
@@ -1101,11 +1103,13 @@ function renderDestinationSwitcher(force = false) {
         if (project && project !== "—") label.append(Object.assign(document.createElement("small"), { className: "task-project", textContent: project }));
       }
       const status = document.createElement("span");
-      status.className = "destination-task-status";
-      status.textContent = destinationSelection?.machineId === member.id && destinationSelection?.threadId === task.id
+      const statusText = destinationSelection?.machineId === member.id && destinationSelection?.threadId === task.id
         ? "Opening…"
         : taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "rename" ? "Renaming" : taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
         : destinationTaskStatus(member, task, state, taskTerminalResults.get(draftKey(member.id, task.id)));
+      const tone = TASK_STATUS_TONES[statusText];
+      status.className = tone ? `destination-task-status ${tone}` : "destination-task-status";
+      status.textContent = statusText;
       row.append(check, label, status);
       row.addEventListener("click", () => selectDestination(member.id, task.id));
       const entry = document.createElement("div");
@@ -2927,6 +2931,7 @@ newTaskForm.addEventListener("submit", async event => {
   const startingSettings = { model: newTaskModelValue, effort: newTaskEffort.value, access: newTaskAccess.value };
   ++newTaskOptionsRequest;
   for (const control of newTaskForm.elements) control.disabled = true;
+  newTaskCreate.textContent = "Creating…";
   try {
     const result = await performTaskAction({ machineId: newTaskMachine.id, action: "create", name, cwd, ...startingSettings });
     if (result?.succeeded) {
@@ -2935,7 +2940,10 @@ newTaskForm.addEventListener("submit", async event => {
       if (matchMedia("(min-width: 1100px)").matches) elements.messageText.focus({ preventScroll: true });
     }
     else newTaskError.textContent = result?.failure || "Task creation is unavailable right now";
-  } finally { for (const control of newTaskForm.elements) control.disabled = false; }
+  } finally {
+    newTaskCreate.textContent = "Create";
+    for (const control of newTaskForm.elements) control.disabled = false;
+  }
 });
 
 const taskDialog = document.querySelector("#task-dialog");
@@ -3735,15 +3743,15 @@ let machineReorderDraft = null;
 const WAKE_MAC_PATTERN = /^(?:[\da-f]{12}|[\da-f]{2}([:-])(?:[\da-f]{2}\1){4}[\da-f]{2})$/i;
 // Mirrors the gateway's machine rules so the dialog can reveal the first failure before submitting.
 function machineFieldError(machine, index = 0, machines = []) {
-  if (!machine.name.trim()) return { field: "name", message: "Enter a display name for this machine." };
+  if (!machine.name.trim()) return { field: "name", message: "Enter a display name for this machine" };
   const ssh = machine.ssh.trim();
-  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(ssh) || ssh.length > 128) return { field: "ssh", message: "Enter a simple SSH alias (letters, digits, dot, dash or underscore)." };
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(ssh) || ssh.length > 128) return { field: "ssh", message: "Enter a simple SSH alias (letters, digits, dot, dash or underscore)" };
   // Duplicates are detected against every other entry, whether it sits before or after this one.
   if (machines.some((other, otherIndex) => otherIndex !== index && other.ssh.trim().toLowerCase() === ssh.toLowerCase())) {
     return { field: "ssh", message: `Duplicate SSH alias: ${ssh}` };
   }
   const wakeMac = (machine.wakeMac || "").trim();
-  if (wakeMac && !WAKE_MAC_PATTERN.test(wakeMac)) return { field: "wakeMac", message: "Enter a valid Wake-on-LAN MAC address." };
+  if (wakeMac && !WAKE_MAC_PATTERN.test(wakeMac)) return { field: "wakeMac", message: "Enter a valid Wake-on-LAN MAC address" };
   return null;
 }
 

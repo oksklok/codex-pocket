@@ -1,8 +1,10 @@
 # Codex Pocket UI style guide
 
-This describes the visual language the product has already converged on. It is a reference for
-judging new work, not a new design system. Source of truth: `public/index.html`,
-`public/styles.css`, `public/app.js`. Where CSS tokens are named, the token is the preferred value.
+The current production interface was the basis for this guide. From here on it is the convention to
+follow: new work matches it, and anything that deliberately diverges has to be documented under
+Intentional exceptions below. It describes the existing visual language, not a new design system.
+Source of truth: `public/index.html`, `public/styles.css`, `public/app.js`. Where CSS tokens are
+named, the token is the preferred value.
 
 ## Typography
 
@@ -94,8 +96,10 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
 ## States
 
 - Disabled: `opacity: .52`, `cursor: default` — except archived task rows, which stay fully opaque.
-- Hover (hover-capable devices only): `.secondary-button`, `.icon-button` and `.text-button` shift
-  their border to `--muted`. Primary, danger and composer buttons have no hover treatment today.
+- Hover (hover-capable devices only) is expected of every actionable button, and disabled controls
+  never react. Secondary, icon and text actions shift their border to `--muted`; primary, danger,
+  the composer Send/Stop action and the login Unlock action brighten one step within the existing
+  accent/danger tints. No transforms, shadows or animations.
 - Focus: there are no focus rings. Caret-less controls signal keyboard focus by switching to
   `--selected-bg`; checkbox/radio rows do the same as a group. Text fields deliberately have no
   focus cue — the caret and selection are the cue. `forced-colors` restores the system outline.
@@ -198,3 +202,6 @@ status paragraph is hidden. Copy rules already settled on:
 - `full access` in the Access select and the `working`/`waiting`/`failed` phase pills reuse semantic
   colours as persistent state, not as decoration.
 - The translucent-UI preference is hidden at ≥861px because desktop always renders translucent.
+- Quit lifecycle copy may be macOS-specific. Quit is only exposed on the native macOS host, so its
+  confirmation and status wording (for example "Codex Pocket.app" and "that Mac") may name the Mac;
+  headless and container hosts hide Quit and use their managed lifecycle instead.

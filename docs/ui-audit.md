@@ -16,7 +16,7 @@ surfaces, and the empty/no-task states. Everything below is the only divergence 
 (control heights, dialog geometry, drawer/backdrop behaviour, busy copy, `aria-expanded` usage,
 safe areas, reduced-motion and forced-colors handling) matched the guide.
 
-## Actual inconsistencies
+## Actual inconsistencies (4)
 
 ### 1. Machine Details inline validation keeps a trailing period
 
@@ -32,17 +32,17 @@ safe areas, reduced-motion and forced-colors handling) matched the guide.
 
 ### 2. Primary and danger buttons have no hover feedback
 
-- **Surface:** every primary/danger button — Create, Save, Discard, Remove, Restart, Quit, the
-  composer Send/Stop, and the transcript Approve/Deny pair.
+- **Surface:** every primary/danger button — Create, Save, Discard, Remove, Restart, Quit, the login
+  Unlock action, the composer Send/Stop, and the transcript Approve/Deny pair.
 - **Current behaviour:** the only hover rule targets `.secondary-button`, `.icon-button` and
   `.text-button`. Measured: `#new-task-create` computed style is byte-identical before and after
   hover, while `#new-task-cancel` shifts its border from `--line` to `--muted`. So a Cancel reacts
-  and the adjacent Save does not.
+  and the adjacent Save does not, and the accent-tinted login Unlock is likewise inert on hover.
 - **Style-guide expectation:** every actionable button acknowledges hover (hover-capable devices
   only), using a restrained border/background change rather than a new treatment.
 - **Smallest practical fix:** extend the existing `@media (hover: hover)` rule to `.primary-button`,
-  `.danger-button` and the composer action buttons with one restrained step (e.g. a stronger tint
-  or a border at the accent/danger colour).
+  `.danger-button`, the login Unlock action and the composer action buttons with one restrained step
+  (e.g. a stronger tint or a border at the accent/danger colour).
 
 ### 3. Creating a task has no busy indication
 
@@ -56,19 +56,7 @@ safe areas, reduced-motion and forced-colors handling) matched the guide.
 - **Smallest practical fix:** set the Create button's label to "Creating…" while the request is in
   flight and restore "Create" in the `finally` block (`public/app.js`).
 
-### 4. Error announcement role differs between inline error fields
-
-- **Surface:** Settings → Runtimes error (`#settings-deepseek-error`), and the login PIN error.
-- **Current behaviour:** dialog errors (`#new-task-error`, `#task-dialog-error`, `#cwd-error`,
-  `#queue-dialog-error`, `#machine-dialog-error`) and `#machines-error` use `role="alert"`;
-  `#settings-deepseek-error` uses `role="status"`, and `#login-error` relies on
-  `aria-live="polite"`. Same visual `.error-text` treatment, three different announcement levels.
-- **Style-guide expectation:** page status is polite; error text that must interrupt is `role="alert"`.
-- **Smallest practical fix:** give `#settings-deepseek-error` `role="alert"` in `public/index.html`
-  so configuration errors announce like the other error fields. The login screen is a separate
-  pre-auth surface and can stay polite, but the guide should say so explicitly.
-
-### 5. Task-row status is always success green
+### 4. Task-row status is always success green
 
 - **Surface:** Tasks sidebar task rows (`.destination-task-status`).
 - **Current behaviour:** the class hard-codes `color: var(--accent)`, but the text comes from
@@ -81,7 +69,7 @@ safe areas, reduced-motion and forced-colors handling) matched the guide.
 - **Smallest practical fix:** add a state class on the status span from the same value already
   computed, and map accent/warning/danger off it (reusing existing tokens).
 
-## Intentional exceptions
+## Intentional exceptions (7)
 
 - **Wide-layout sidebars are navigation, not dialogs.** At ≥1100px Tasks (310px) and Task Details
   (340px) dock as columns: no backdrop, no close button and no `aria-haspopup`; below 1100px the
@@ -98,8 +86,14 @@ safe areas, reduced-motion and forced-colors handling) matched the guide.
   36px and transcript Approve/Deny are 32px. Measured: every dialog action button (primary,
   secondary, danger) resolves to 40px, so no Cancel/Save pair is mismatched; the smaller sizes only
   appear where a control stands alone.
+- **Error announcement level is chosen per surface.** Dialog errors (`#new-task-error`,
+  `#task-dialog-error`, `#cwd-error`, `#queue-dialog-error`, `#machine-dialog-error`) and
+  `#machines-error` are `role="alert"`; the Settings → Runtimes error
+  (`#settings-deepseek-error`) deliberately stays `role="status"` because it reports runtime
+  configuration state alongside the settings load, and the pre-auth `#login-error` stays
+  `aria-live="polite"`. Same `.error-text` treatment, deliberately different urgency.
 
-## Needs visual judgment
+## Needs visual judgment (5)
 
 - **Control corner radius drifts between 8px and 9px.** `--control-radius` is 8px and is used by
   Settings fields and the Task Details selects, but login fields, the composer textarea and every
