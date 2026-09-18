@@ -1,8 +1,8 @@
 # Codex Pocket UI audit
 
 Audit of the interface as it stood before c97d29b, against `docs/ui-style-guide.md`. The audit pass
-itself changed no production code; the four copy and state findings it raised were fixed in
-c97d29b and now live under "Resolved in c97d29b". One layout issue found afterwards is still open.
+itself changed no production code; every finding it raised has since been fixed and now lives under
+"Resolved". No inconsistencies are open.
 
 Method: read `public/index.html`, `public/styles.css` and `public/app.js`, then a throwaway
 Playwright pass (kept in `/tmp`, not committed) that rendered the real stylesheet at
@@ -18,24 +18,7 @@ surfaces, and the empty/no-task states. Beyond the findings below, the rest (con
 geometry, drawer/backdrop behaviour, busy copy, `aria-expanded` usage, safe areas, reduced-motion
 and forced-colors handling) matched the guide.
 
-## Actual inconsistencies (1)
-
-### 1. Docked desktop sidebars overlay the transcript and composer
-
-- **Surface:** desktop (≥1100px) with Tasks and/or Task Details docked open.
-- **Current behaviour:** above the breakpoint both sidebars are `position: absolute` boxes
-  (`#destination-switcher` 310px, `#inspector` 340px) that reserve no width in `.workspace`, so the
-  chat panel stays full width and the transcript/composer are centred on `100vw`. Measured: at
-  1280px the composer spans 250–1030 while Task Details spans 940–1280, so the composer's right 90px
-  — including the whole Send button — sits under the panel and hit-tests to `.inspector-scroll`.
-  Overlap is 180px at 1100px, 90px at 1280px, 47px at 1366px, 10px at 1440px, and clears at ~1460px.
-- **Style-guide expectation:** the guide describes the wide-layout panes as docked columns; a docked
-  panel must not cover transcript or composer content and controls.
-- **Smallest practical fix:** size the chat column from the workspace rather than `100vw` (or reserve
-  the docked width in `.workspace`). This is a layout change and needs its own focused commit — it is
-  deliberately not part of this cleanup.
-
-## Resolved in c97d29b (4)
+## Resolved (5)
 
 - **Machine Details inline validation kept a trailing period.** Fixed: `machineFieldError()` returns
   period-free messages for the display name, SSH alias and Wake-on-LAN MAC address. Gateway copy was
@@ -49,6 +32,13 @@ and forced-colors handling) matched the guide.
 - **Task-row status was always success green.** Fixed: the status span carries a semantic tone —
   Waiting/Stopped → warning, Failed → danger, everything else keeps the accent. The same rule is
   shared by the full render and the status-only fast update.
+- **Docked desktop sidebars overlaid the transcript and composer.** Fixed: at ≥1100px the
+  `.chat-panel` reserves the 310px Tasks pane on its left and the 340px Task Details pane on its
+  right (margins matching the panes' own 160ms slide, so the transition stays coherent), and the
+  transcript/composer track is centred on the real remaining chat width instead of `100vw`. Measured
+  after the fix: zero overlap between the composer, the Send button and the 1050px conversation
+  track and either open pane, and the Send button hit-tests as itself, in all four open/closed
+  combinations at 1100, 1280, 1366, 1440 and 2048px.
 
 ## Intentional exceptions (7)
 

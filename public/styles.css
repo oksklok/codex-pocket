@@ -326,7 +326,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 }
 .conversation {
   min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
-  padding: 10px max(16px, calc((100vw - 1050px) / 2)) 0; scroll-behavior: auto;
+  padding: 10px max(16px, calc((100% - 1050px) / 2)) 0; scroll-behavior: auto;
   scrollbar-width: none;
 }
 .conversation::-webkit-scrollbar { display: none; }
@@ -432,9 +432,9 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 @keyframes blink { 50% { opacity: .25; } }
 @keyframes working-pulse { 50% { opacity: .35; transform: scale(.78); } }
 
-.composer-zone { min-width: 0; position: relative; border-top: var(--action-row-border); background: var(--composer-bg); padding: var(--action-row-inset) max(12px, calc((100vw - 1050px) / 2)); }
+.composer-zone { min-width: 0; position: relative; border-top: var(--action-row-border); background: var(--composer-bg); padding: var(--action-row-inset) max(12px, calc((100% - 1050px) / 2)); }
 .jump-latest {
-  position: absolute; z-index: 3; top: -43px; right: max(16px, calc((100vw - 1050px) / 2));
+  position: absolute; z-index: 3; top: -43px; right: max(16px, calc((100% - 1050px) / 2));
   display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
   border: 1px solid var(--line); border-radius: 50%; background: var(--surface-strong); color: var(--text);
   box-shadow: 0 5px 18px rgba(0,0,0,.28); cursor: pointer;
@@ -666,7 +666,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .inspector, .activity-chevron, .destination-switcher, .destination-backdrop, .destination-button svg { transition: none; }
+  .inspector, .chat-panel, .activity-chevron, .destination-switcher, .destination-backdrop, .destination-button svg { transition: none; }
   .timeline-activity.running .activity-status::before, #destination-refresh:disabled svg { animation: none; }
 }
 
@@ -725,6 +725,12 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
     overflow: hidden; border: 0; border-radius: 0; background: none; cursor: pointer; font-weight: 600;
   }
   .destination-button svg { display: none; }
+  /* Docked panes are absolute overlays, so the chat column reserves their width itself: the
+     transcript and composer keep their readable track centred on the real remaining space instead
+     of running under a sidebar. The margin transition matches the panes' own 160ms slide. */
+  .chat-panel { transition: margin 160ms ease; }
+  body.destination-open .chat-panel { margin-left: 310px; }
+  .shell:not(.inspector-closed) .chat-panel { margin-right: 340px; }
 }
 .detail-diff.wrap { overflow-x: hidden; }
 .detail-diff.wrap .diff-line { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
