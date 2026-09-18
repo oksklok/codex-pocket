@@ -151,7 +151,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-switcher {
   transform: translateX(-100%); transition: transform 160ms ease;
   position: fixed; z-index: 9; inset: 0 auto 0 0; width: min(400px, 88vw); height: 100dvh;
-  overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0,1fr); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  overflow: hidden; display: grid; grid-template-rows: auto auto minmax(0,1fr) auto; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
   border: 1px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 0 18px 55px rgba(0,0,0,.42);
 }
 .destination-switcher-head { display: flex; align-items: center; gap: 8px; }
@@ -166,6 +166,13 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 #destination-refresh:disabled svg { animation: refresh-spin 1.2s linear infinite; }
 @keyframes refresh-spin { to { transform: rotate(360deg); } }
 .destination-list { min-height: 80px; overflow-y: auto; padding: 0 12px 12px; }
+/* Add Machine is a fixed footer inside the Tasks sidebar, outside the scrolling task list. */
+.machines-footer { display: grid; gap: 6px; padding: 10px 12px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line-soft); background: var(--surface); }
+.machines-restart { margin: 0; color: var(--warning); font-size: var(--text-label); font-weight: 600; }
+.machines-restart[hidden] { display: none; }
+.machines-add { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 40px; }
+.machines-add-icon { display: grid; place-items: center; }
+.machines-add-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .destination-group { display: grid; gap: 2px; padding: 4px 0 8px; }
 /* 8px between the search field and the first machine header, without stacking extra margins. */
 .destination-group:first-child { padding-top: 8px; }
@@ -177,8 +184,13 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .provider-label::before { content: "·"; margin-right: 5px; color: var(--subtle); }
 .machine-header-controls > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
 .machine-header-controls { display: flex; align-items: center; flex: none; gap: 8px; }
+.machine-info, .machine-drag { color: var(--muted); }
+.machine-drag { cursor: grab; touch-action: none; }
+.machine-drag:active { cursor: grabbing; }
+.machine-drag svg circle { fill: currentColor; stroke: none; }
+.destination-group.dragging { opacity: .55; }
+.destination-group.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
 .wake-action { position: relative; display: flex; flex: none; }
-.machine-header-controls .wake-action + .icon-button { margin-left: -8px; }
 .wake-feedback { position: absolute; z-index: 1; top: 100%; right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--text-meta); overflow-wrap: anywhere; }
 .destination-group.unavailable { opacity: .78; }
 .destination-group.unavailable .machine-header-controls > span { color: var(--warning); }
@@ -517,31 +529,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .settings-section h3 { margin-bottom: 0; }
 .settings-section h4 { margin: 0; color: var(--muted); font-size: .68rem; }
 .network-fields { display: grid; grid-template-columns: minmax(0,1fr) 110px; gap: 8px; }
-/* SSH machines: one collapsible list of summary rows with a single inline editor. */
-.machines-heading { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; }
-.machines-toggle { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; min-height: var(--icon-size); padding: 0; border: 0; background: transparent; color: var(--text); font-size: var(--text-ui); font-weight: 600; text-align: left; cursor: pointer; }
-.machines-toggle strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.machines-chevron { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transform: rotate(90deg); }
-.machines-toggle[aria-expanded="false"] .machines-chevron { transform: none; }
-.machines-count { flex: none; color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
-.machines-body { display: grid; gap: 8px; }
-.machines-body[hidden] { display: none; }
-.settings-machines { display: grid; }
-.machine-entry + .machine-entry { border-top: 1px solid var(--line-soft); }
-.machine-summary { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: var(--text-ui); }
-.machine-summary-text { display: grid; gap: 1px; min-width: 0; }
-.machine-summary-name { overflow: hidden; color: var(--text); font-size: var(--text-ui); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.machine-summary-ssh { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-label); font-weight: 400; }
-.machine-summary-chevron { flex: none; width: 16px; height: 16px; fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transform: rotate(90deg); }
-.machine-summary[aria-expanded="false"] .machine-summary-chevron { transform: none; }
-.machine-editor { display: grid; gap: 10px; margin: 0 0 6px; padding: 8px; border-radius: 8px; background: var(--soft-surface); }
-.machine-editor-fields { display: grid; align-items: start; gap: 8px; }
-.machine-settings-field { min-width: 0; }
-.machine-settings-label, .machine-field-help { color: var(--muted); font-size: var(--text-label); font-weight: 400; line-height: 1.35; }
-/* Values keep 13px/400 at desktop even though the wrapping label is a different weight. */
-.machine-editor input { min-width: 0; color: var(--text); font-size: var(--text-ui); font-weight: 400; }
-.form-field, .settings-card .machine-settings-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; min-width: 0; }
-.machine-settings-empty { margin: 2px 0; color: var(--subtle); font-size: var(--text-label); }
+.form-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; min-width: 0; }
 .checkbox-row { display: flex !important; align-items: center; gap: 8px; }
 .checkbox-row input { width: 17px; min-height: 17px; }
 .field-help { margin: 0; color: var(--subtle); font-size: var(--text-secondary); line-height: 1.4; }
@@ -614,10 +602,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .network-fields { grid-template-columns: 1fr; }
 }
 
-@media (max-width: 420px) {
-  .machine-editor-fields { grid-template-columns: minmax(0, 1fr); }
-}
-
 @media (max-width: 1099px) {
   .inspector {
     position: fixed; z-index: 12; top: 0; right: 0; bottom: 0; width: min(88vw, 340px);
@@ -669,9 +653,6 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .composer #send-message { font-weight: 650; }
 /* One shared placeholder treatment: same colour and opacity everywhere, inheriting each field's typography. */
 input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 1; }
-.machine-row-actions { display: flex; justify-content: flex-end; gap: 6px; }
-.machine-row-actions button { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); padding: 0; font-size: 1rem; }
-.machine-remove { color: var(--danger); }
 .settings-card { font-size: var(--text-ui); }
 .settings-card label, .runtime-panel label { color: var(--muted); font-size: var(--text-label); font-weight: 500; margin: 0; }
 .settings-card h3 { font-size: var(--text-heading); }
@@ -679,7 +660,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .settings-section { gap: 8px; padding: 12px 0; }
 .settings-card .enter-preference { margin-top: 0; }
 .settings-card .field-help { font-size: var(--text-secondary); line-height: 1.4; margin: 0; }
-#settings-local-machine { display: grid; gap: 8px; }
 #settings-pin { max-width: 280px; }
 .settings-card .checkbox-row, .settings-card .enter-preference { min-height: 28px; }
 .settings-actions button, .settings-restart button { min-height: 40px; padding: 7px 11px; font-size: var(--text-ui); }
@@ -688,9 +668,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 
 .detail-image { cursor: zoom-in; }
 
-@media (min-width: 600px) {
-  .machine-editor-fields { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }
-}
 @media (min-width: 1100px) {
   .destination-switcher { position: absolute; inset: 0 auto 0 0; width: 310px; height: 100%; min-height: 0; padding: 0; box-shadow: none; border-width: 0 1px 0 0; }
   .destination-backdrop, .destination-switcher .destination-close { display: none; }
@@ -717,7 +694,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button { border-radius: var(--control-radius); }
 .settings-actions button, .settings-restart button { min-height: var(--control-height); }
 .secondary-panel h3 { font-size: var(--text-heading); }
-.settings-card .field-help, .machine-settings-empty { color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
+.settings-card .field-help { color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
 /* No perimeter focus effects. Text fields keep their ordinary border/background and rely on the
    caret and selection; caret-less controls get a restrained state treatment further down. */
 :is(input, select, textarea, button, summary, [role="button"], [tabindex]):focus { outline: none; }
@@ -751,6 +728,20 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-dialog .form-status { margin-top: 8px; }
 .new-task-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .new-task-actions button { min-height: 40px; padding: 7px 11px; font-size: var(--text-ui); }
+
+/* Machine Details: host and SSH fields toggle by mode; helper text sits outside the labels. */
+.machine-dialog .machine-dialog-host { margin: -8px 0 12px; color: var(--muted); font-size: var(--text-label); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.machine-dialog .machine-dialog-help { margin: -8px 0 0; color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
+.machine-dialog .machine-dialog-help + .form-field { margin-top: 12px; }
+.machine-dialog .machine-dialog-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.machine-dialog .machine-dialog-actions .new-task-actions { margin: 0; }
+.machine-dialog .machine-dialog-move { display: flex; gap: 6px; }
+#machine-dialog-remove { margin-right: auto; }
+/* Phones: Remove gets its own row, then Move and Cancel/Save share a compact second row. */
+@media (max-width: 420px) {
+  #machine-dialog-remove { flex: 1 1 100%; margin-right: 0; }
+  .machine-dialog .machine-dialog-move { margin-right: auto; }
+}
 
 .machine-toggle { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; min-height: 32px; padding: 0; border: 0; background: transparent; text-align: left; color: var(--muted); }
 .machine-toggle strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -807,7 +798,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .working-path-card .icon-button { grid-column: 2; grid-row: 1 / 3; align-self: center; display: grid; place-items: center; }
 .working-path-card svg { width: 18px; height: 18px; stroke-linecap: round; stroke-linejoin: round; }
 
-.activity-chevron svg, .machine-row-actions .text-button svg { width: 16px; height: 16px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.activity-chevron svg { width: 16px; height: 16px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 /* Caret-less controls show keyboard focus through a restrained existing background shade (never a
    perimeter effect). Text fields are intentionally absent: their caret and selection are the cue.

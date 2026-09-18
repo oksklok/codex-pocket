@@ -37,6 +37,8 @@ let selected = normal;
 let deepseekError = null;
 let taskGate = null;
 let taskFail = false;
+let settingsMachines = [];
+let settingsRestartRequired = false;
 let historySearch = false;
 const clients = new Set();
 const selections = [];
@@ -81,7 +83,16 @@ const server = createServer(async (request, response) => {
     push();
     return json({ ...snapshot(), machineId: body.machineId, thread: TASKS[body.machineId].find(entry => entry.id === body.threadId) || selectedTask });
   }
-  if (url.pathname === '/api/settings') return json({ settings: { headless: false, lanEnabled: false, host: '127.0.0.1', port: 4173, pinConfigured: true, localName: 'Mac mini', machines: [], phoneUrls: [], deepseekError }, effective: { host: '127.0.0.1', port: 4173, pinRequired: false }, restartRequired: false });
+  if (url.pathname === '/api/settings') {
+    const settings = { headless: false, lanEnabled: false, host: '127.0.0.1', port: 4173, pinConfigured: true, localName: 'Mac mini', machines: settingsMachines, phoneUrls: [], deepseekError };
+    if (request.method === 'POST') {
+      const body = JSON.parse(await readBody(request) || '{}');
+      if (Array.isArray(body.machines)) settingsMachines = body.machines;
+      settingsRestartRequired = true;
+      return json({ saved: true, settings: { ...settings, machines: settingsMachines }, restartRequired: true });
+    }
+    return json({ settings, effective: { host: '127.0.0.1', port: 4173, pinRequired: false }, restartRequired: settingsRestartRequired });
+  }
   if (url.pathname.startsWith('/api/')) return json({});
   try {
     const path = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
@@ -320,6 +331,8 @@ try {
   const openSwitcher = async () => {
     if (await page.locator('#destination-button').getAttribute('aria-expanded') !== 'true') await page.locator('#destination-button').click();
     await page.locator('.destination-group').first().waitFor();
+    // Machine config loads asynchronously and re-renders once; wait so callers measure attached nodes.
+    await page.waitForTimeout(220);
   };
   const closeSwitcher = async () => {
     if (await page.locator('#destination-button').getAttribute('aria-expanded') === 'true') await page.locator('#destination-button').click();
@@ -589,29 +602,20 @@ try {
   taskFail = false;
   await closeSwitcher();
 
-  // The Settings close glyph is drawn, the SSH machine list is compact, and a broken DeepSeek
-  // credential is the only DeepSeek-related thing Settings shows (no toggle).
+  // The Settings close glyph is drawn; machine management lives in the Tasks sidebar and a broken
+  // DeepSeek credential is the only DeepSeek-related thing Settings shows (no toggle).
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await page.locator('#settings-button').click();
-    await page.locator('#settings-machines-title').waitFor({ state: 'visible' });
     await page.waitForFunction(() => document.querySelector('#settings-status').textContent === '');
-    await page.locator('.machines-heading').waitFor({ state: 'attached' });
-    // Scroll the settings card so the machines area is visible in the capture.
-    await page.waitForTimeout(150);
-    await page.evaluate(() => {
-      const card = document.querySelector('.settings-card');
-      const heading = document.querySelector('.machines-heading');
-      if (card && heading) card.scrollTop += heading.getBoundingClientRect().top - 60;
-    });
-    await page.waitForTimeout(120);
-    await shot(`settings-machines-${width}`);
+    await shot(`settings-${width}`);
     if (width === 1280) {
       await page.emulateMedia({ colorScheme: 'light' });
-      await shot('settings-machines-1280-light');
+      await shot('settings-1280-light');
       await page.emulateMedia({ colorScheme: 'dark' });
     }
     assert.equal(await page.locator('#settings-deepseek').isVisible(), false, 'no DeepSeek toggle without an error');
+    assert.equal(await page.locator('#settings-machines-title, #settings-local-name, #machines-toggle, .machine-editor').count(), 0, 'machine management is not in Settings');
     const glyph = await page.locator('#settings-close svg').evaluate(svg => ({
       fill: getComputedStyle(svg).fill, stroke: getComputedStyle(svg).stroke,
       width: svg.getBoundingClientRect().width, height: svg.getBoundingClientRect().height,
@@ -619,56 +623,45 @@ try {
     assert.equal(glyph.fill, 'none');
     assert.notEqual(glyph.stroke, 'none');
     assert.ok(glyph.width > 10 && glyph.height > 10, 'settings X has a drawn box');
-    assert.equal(await page.locator('#machine-add').getAttribute('aria-label'), 'Add SSH machine');
-    // Empty list: the section is expanded with a zero count, one accessible Add control, the helper
-    // and the empty note; nothing here is a large input.
-    assert.equal(await page.locator('#machines-count').textContent(), '0');
-    assert.equal(await page.locator('#machines-toggle').getAttribute('aria-expanded'), 'true');
-    assert.equal(await page.locator('.machine-settings-empty').textContent(), 'No remote machines configured.');
-    assert.equal(await page.locator('.machine-entry').count(), 0);
-    assert.equal(await page.locator('.machine-editor').count(), 0);
-    const placement = await page.evaluate(() => {
-      const button = document.querySelector('#machine-add');
-      const heading = document.querySelector('.machines-heading');
-      const toggle = document.querySelector('#machines-toggle');
-      const body = document.querySelector('#machines-body');
-      const rect = button.getBoundingClientRect();
-      return {
-        inHeading: heading.contains(button),
-        ariaHiddenAncestor: Boolean(button.closest('[aria-hidden="true"]')),
-        visible: rect.width > 0 && rect.height > 0,
-        rightOfToggle: rect.left >= toggle.getBoundingClientRect().right - 0.5,
-        bodyVisible: body.offsetParent !== null,
-      };
-    });
-    assert.equal(placement.inHeading, true);
-    assert.equal(placement.ariaHiddenAncestor, false, 'the add control is never under aria-hidden');
-    assert.equal(placement.visible, true, 'add control stays available with an empty list');
-    assert.equal(placement.rightOfToggle, true, `the add control sits at the right at ${width}`);
-    assert.equal(placement.bodyVisible, true);
-    assert.equal(await page.locator('#machines-body .field-help, .settings-machines > .field-help').count(), 0, 'no hint sits above the machine list');
-    assert.equal(await page.locator('.machine-field-help').count(), 0, 'the SSH and MAC hints only appear inside an editor');
-    // Collapsing hides the helper and list but keeps the count and Add action.
-    await page.locator('#machines-toggle').click();
-    assert.equal(await page.locator('#machines-toggle').getAttribute('aria-expanded'), 'false');
-    assert.equal(await page.locator('#machines-body').isVisible(), false);
-    assert.equal(await page.locator('#machine-add').isVisible(), true);
-    await page.locator('#machines-toggle').click();
-    assert.equal(await page.locator('#machines-body').isVisible(), true);
-    // Add expands the section, opens a new editor and focuses its first field.
-    await page.locator('#machine-add').click();
-    assert.equal(await page.locator('#machines-count').textContent(), '1');
-    assert.equal(await page.locator('.machine-entry').count(), 1);
-    assert.equal(await page.locator('.machine-editor').count(), 1);
-    assert.equal(await page.locator('.machine-editor [data-machine-name]').evaluate(node => node === document.activeElement), true, 'focus lands on the new editor');
-    assert.deepEqual(await page.locator('.machine-editor .machine-settings-label').allTextContents(), ['Display Name', 'SSH Alias', 'MAC Address (optional)']);
-    assert.deepEqual(await page.locator('.machine-editor .machine-field-help').allTextContents(), ['From this Pocket host’s SSH config.', 'For Wake-on-LAN.']);
-    assert.equal(await page.locator('.machine-editor [data-machine-ssh]').getAttribute('aria-describedby'), 'machine-0-ssh-help');
-    assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').getAttribute('aria-describedby'), 'machine-0-wake-help');
-    assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').getAttribute('aria-label'), 'Machine 1 MAC Address (optional)');
     await page.locator('#settings-close').click();
     await page.locator('#settings-screen').waitFor({ state: 'hidden' });
+
+    // Add Machine is a fixed footer in the Tasks sidebar; adding focuses Display Name with helper
+    // text outside the labels, and the new machine survives until a restart is requested.
+    settingsMachines = [];
+    settingsRestartRequired = false;
+    await page.reload();
+    await openSwitcher();
+    assert.equal(await page.locator('#machine-add').isVisible(), true, 'Add Machine stays available with an empty list');
+    const footer = await page.locator('#destination-switcher').evaluate(el => {
+      const list = el.querySelector('#destination-list'), foot = el.querySelector('.machines-footer');
+      return { lastChild: el.lastElementChild === foot, insideList: Boolean(list?.querySelector('.machines-footer')) };
+    });
+    assert.equal(footer.lastChild, true, 'Add Machine is the fixed sidebar footer');
+    assert.equal(footer.insideList, false, 'Add Machine sits outside the scrolling task list');
+    await page.locator('#machine-add').click();
+    await page.waitForFunction(() => document.querySelector('#machine-dialog').open);
+    assert.equal(await page.locator('#machine-dialog-title').textContent(), 'Add Machine');
+    assert.equal(await page.locator('#machine-dialog-name').evaluate(node => node === document.activeElement), true, 'focus lands on Display Name');
+    assert.deepEqual(await page.locator('#machine-dialog .form-field > label').allTextContents(), ['Display Name', 'SSH Alias', 'MAC Address (optional)']);
+    assert.deepEqual(await page.locator('#machine-dialog .machine-dialog-help').allTextContents(), ['From the host’s SSH config.', 'For Wake-on-LAN.']);
+    assert.equal(await page.locator('label:has(#machine-dialog-ssh-help), label:has(#machine-dialog-mac-help)').count(), 0, 'helper text is not nested inside a label');
+    await page.locator('#machine-dialog-name').fill('Studio');
+    await page.locator('#machine-dialog-ssh').fill('studio');
+    if (width === 390) await shot('machine-details-390');
+    await page.locator('#machine-dialog-submit').click();
+    await page.waitForFunction(() => !document.querySelector('#machine-dialog').open);
+    assert.deepEqual(settingsMachines, [{ name: 'Studio', ssh: 'studio' }]);
+    assert.equal(await page.locator('#machines-restart').isVisible(), true, 'saved machine config shows the restart hint');
+    // The mobile drawer covers the topbar button, so close it with the drawer's own control.
+    if (width < 1100) await page.locator('#destination-close').click();
+    else await closeSwitcher();
+    await page.waitForFunction(() => document.querySelector('#destination-button').getAttribute('aria-expanded') === 'false');
   }
+  settingsMachines = [];
+  settingsRestartRequired = false;
+  await page.reload();
+  await page.locator('#destination-button').waitFor();
 
   // A credential problem is surfaced concisely instead of silently ignoring DeepSeek.
   deepseekError = 'DeepSeek API key file must not be accessible by other users; run chmod 600 /tmp/key';

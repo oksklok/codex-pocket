@@ -75,6 +75,10 @@
             </div>
             <label class="destination-search"><span class="sr-only">Search tasks</span><input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…"></label>
             <div class="destination-list" id="destination-list" aria-live="polite"></div>
+            <div class="machines-footer">
+              <p class="machines-restart" id="machines-restart" hidden>Saved. Restart required.</p>
+              <button class="secondary-button machines-add" id="machine-add" type="button"><span class="machines-add-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>Add Machine</button>
+            </div>
           </section>
         <section class="chat-panel" aria-label="Codex conversation">
           <div class="history-status" id="history-status" aria-live="polite" hidden></div>
@@ -201,24 +205,6 @@
           <h3 id="settings-deepseek-title">Runtimes</h3>
           <p class="field-help error-text" id="settings-deepseek-error" role="status"></p>
         </section>
-        <section class="settings-section" aria-labelledby="settings-machines-title">
-          <h3 id="settings-machines-title">Machines</h3>
-          <div id="settings-local-machine">
-            <div class="form-field"><label for="settings-local-name">Host Machine Display Name</label>
-            <input id="settings-local-name" type="text" maxlength="80" autocomplete="off" placeholder="Use hostname"></div>
-          </div>
-          <div class="machines-heading">
-            <button class="machines-toggle" id="machines-toggle" type="button" aria-expanded="true" aria-controls="machines-body">
-              <svg class="machines-chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg>
-              <strong>SSH Machines</strong>
-              <span class="machines-count" id="machines-count">0</span>
-            </button>
-            <button class="icon-button" id="machine-add" type="button" aria-label="Add SSH machine" title="Add SSH machine"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-          </div>
-          <div class="machines-body" id="machines-body">
-            <div class="settings-machines" id="settings-machines"></div>
-          </div>
-        </section>
         <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
         <p class="field-help" id="container-lifecycle" hidden>Container lifecycle is managed by Docker Compose.</p>
         <div class="settings-quit"><p>Stops Pocket on the host machine.</p><button class="danger-button" id="quit-pocket" type="button">Quit Pocket</button></div>
@@ -233,6 +219,38 @@
         <div id="task-dialog-delete-copy" hidden><strong id="task-dialog-task-name"></strong><p>This permanently deletes its Codex conversation. Project files will not be deleted.</p></div>
         <p id="task-dialog-error" class="form-status error-text" role="alert"></p>
         <div class="new-task-actions"><button id="task-dialog-cancel" class="secondary-button" type="button">Cancel</button><button id="task-dialog-submit" class="primary-button" type="submit">Rename</button></div>
+      </form>
+    </dialog>
+    <dialog class="new-task-dialog machine-dialog" id="machine-dialog" aria-labelledby="machine-dialog-title" tabindex="-1">
+      <form id="machine-dialog-form" novalidate>
+        <h2 id="machine-dialog-title">Machine Details</h2>
+        <p class="machine-dialog-host" id="machine-dialog-host" hidden>Host machine</p>
+        <div class="form-field" id="machine-dialog-name-field">
+          <label for="machine-dialog-name">Display Name</label>
+          <input id="machine-dialog-name" maxlength="80" autocomplete="off" placeholder="Name">
+        </div>
+        <div class="form-field" id="machine-dialog-ssh-field">
+          <label for="machine-dialog-ssh">SSH Alias</label>
+          <input id="machine-dialog-ssh" maxlength="128" autocomplete="off" spellcheck="false" placeholder="SSH alias" aria-describedby="machine-dialog-ssh-help">
+        </div>
+        <p class="machine-dialog-help" id="machine-dialog-ssh-help">From the host’s SSH config.</p>
+        <div class="form-field" id="machine-dialog-mac-field">
+          <label for="machine-dialog-mac">MAC Address (optional)</label>
+          <input id="machine-dialog-mac" maxlength="17" autocomplete="off" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF" aria-describedby="machine-dialog-mac-help">
+        </div>
+        <p class="machine-dialog-help" id="machine-dialog-mac-help">For Wake-on-LAN.</p>
+        <p id="machine-dialog-error" class="form-status error-text" role="alert"></p>
+        <div class="machine-dialog-actions">
+          <button id="machine-dialog-remove" class="danger-button" type="button" hidden>Remove Machine</button>
+          <div class="machine-dialog-move" id="machine-dialog-move" hidden>
+            <button id="machine-dialog-up" class="icon-button" type="button" aria-label="Move machine up" title="Move machine up"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
+            <button id="machine-dialog-down" class="icon-button" type="button" aria-label="Move machine down" title="Move machine down"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14m-6-6 6 6 6-6"/></svg></button>
+          </div>
+          <div class="new-task-actions">
+            <button id="machine-dialog-cancel" class="secondary-button" type="button">Cancel</button>
+            <button id="machine-dialog-submit" class="primary-button" type="submit">Save</button>
+          </div>
+        </div>
       </form>
     </dialog>
     <dialog class="new-task-dialog" id="cwd-dialog" aria-labelledby="cwd-title">

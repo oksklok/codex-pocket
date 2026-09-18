@@ -105,14 +105,29 @@ const elements = {
   settingsPin: document.querySelector("#settings-pin"),
   settingsPinState: document.querySelector("#settings-pin-state"),
   settingsTheme: document.querySelector("#settings-theme"),
-  settingsLocalName: document.querySelector("#settings-local-name"),
   settingsDeepseekSection: document.querySelector("#settings-deepseek"),
   settingsDeepseekError: document.querySelector("#settings-deepseek-error"),
-  settingsMachines: document.querySelector("#settings-machines"),
   machineAdd: document.querySelector("#machine-add"),
-  machinesToggle: document.querySelector("#machines-toggle"),
-  machinesCount: document.querySelector("#machines-count"),
-  machinesBody: document.querySelector("#machines-body"),
+  machinesRestart: document.querySelector("#machines-restart"),
+  machineDialog: document.querySelector("#machine-dialog"),
+  machineDialogForm: document.querySelector("#machine-dialog-form"),
+  machineDialogTitle: document.querySelector("#machine-dialog-title"),
+  machineDialogHost: document.querySelector("#machine-dialog-host"),
+  machineDialogNameField: document.querySelector("#machine-dialog-name-field"),
+  machineDialogName: document.querySelector("#machine-dialog-name"),
+  machineDialogSshField: document.querySelector("#machine-dialog-ssh-field"),
+  machineDialogSsh: document.querySelector("#machine-dialog-ssh"),
+  machineDialogMacField: document.querySelector("#machine-dialog-mac-field"),
+  machineDialogMac: document.querySelector("#machine-dialog-mac"),
+  machineDialogSshHelp: document.querySelector("#machine-dialog-ssh-help"),
+  machineDialogMacHelp: document.querySelector("#machine-dialog-mac-help"),
+  machineDialogError: document.querySelector("#machine-dialog-error"),
+  machineDialogRemove: document.querySelector("#machine-dialog-remove"),
+  machineDialogMove: document.querySelector("#machine-dialog-move"),
+  machineDialogUp: document.querySelector("#machine-dialog-up"),
+  machineDialogDown: document.querySelector("#machine-dialog-down"),
+  machineDialogCancel: document.querySelector("#machine-dialog-cancel"),
+  machineDialogSubmit: document.querySelector("#machine-dialog-submit"),
   settingsRestart: document.querySelector("#settings-restart"),
   restartPocket: document.querySelector("#restart-pocket"),
   quitPocket: document.querySelector("#quit-pocket"),
@@ -295,11 +310,6 @@ function fitExpandedComposer() {
 let settingsValue = null;
 let settingsBaseline = null;
 let settingsDisplayDraft = null;
-// SSH machine list state: the draft keeps every machine's unsaved values, and only one inline
-// editor is open at a time so collapsing or switching editors never loses edits.
-let machineDraft = [];
-let machineEditorIndex = null;
-let machinesExpanded = true;
 let savingSettings = false;
 let restartingPocket = false;
 let quittingPocket = false;
@@ -806,6 +816,7 @@ function renderDestinationSwitcher(force = false) {
     [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake]), elements.destinationSearch.value, Boolean(navigationRequest),
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, projectsVisible, navigationErrors[slot],
+    machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -815,6 +826,9 @@ function renderDestinationSwitcher(force = false) {
   }
   destinationRenderKey = renderKey;
   elements.destinationList.replaceChildren();
+  // The saved configuration and the running connections are distinct: surface a restart hint here
+  // rather than restarting on the user's behalf.
+  elements.machinesRestart.hidden = !machineConfig.restartRequired;
   const query = elements.destinationSearch.value.trim().toLowerCase();
   const catalogMachines = Array.isArray(navigationCatalog?.machines) ? navigationCatalog.machines : [];
   if (navigationRequest && !catalogMachines.length) {
@@ -824,10 +838,11 @@ function renderDestinationSwitcher(force = false) {
     elements.destinationList.append(loading);
     return;
   }
+  const displayMachines = sidebarMachineCatalog(catalogMachines);
   // Collect one visual group per physical machine; each provider stays its own runtime underneath.
   const visualGroups = [];
   const groupsByKey = new Map();
-  for (const catalogMachine of catalogMachines) {
+  for (const catalogMachine of displayMachines) {
     const latest = machines.find(machine => machine.id === catalogMachine.id);
     const entry = { ...catalogMachine, ...(latest ? { connected: latest.connected, canWake: latest.canWake ?? catalogMachine.canWake } : {}) };
     const key = entry.group || entry.id;
@@ -902,6 +917,12 @@ function renderDestinationSwitcher(force = false) {
     };
     const group = document.createElement("section");
     group.className = `destination-group ${!machine.connected ? "offline" : !catalogAvailable ? "unavailable" : ""}`;
+    const savedIndex = Number.isInteger(machine.savedIndex) ? machine.savedIndex : -1;
+    // Only saved SSH machines are reorderable; the host (and machines awaiting restart) stay pinned.
+    if (!machine.local && savedIndex >= 0) group.dataset.savedIndex = String(savedIndex);
+    if (machine.pending || machine.pendingRemoval || machine.pendingConfig || machine.hostPending) {
+      group.classList.add("pending-config");
+    }
     const heading = document.createElement("div");
     heading.className = "destination-group-heading";
     const name = document.createElement("strong");
@@ -957,9 +978,29 @@ function renderDestinationSwitcher(force = false) {
       wakeAction.append(wake);
       controls.append(wakeAction);
     }
+    // A dedicated handle (never the heading or a row) starts reordering; Move Up/Down in Machine
+    // Details remain the non-drag alternative.
+    if (!machine.local && savedIndex >= 0 && !archived) {
+      const drag = document.createElement("button");
+      drag.type = "button";
+      drag.className = "icon-button machine-drag";
+      drag.setAttribute("aria-label", `Reorder ${machine.name}`);
+      drag.title = "Drag to reorder";
+      drag.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
+      drag.addEventListener("pointerdown", beginMachineDrag);
+      controls.append(drag);
+    }
+    const info = document.createElement("button");
+    info.type = "button";
+    info.className = "icon-button machine-info";
+    info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
+    info.title = "Machine details";
+    info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
+    info.addEventListener("click", () => openMachineDetails(machine, info));
+    controls.append(info);
     const create = document.createElement("button");
     create.type = "button";
-    create.className = "icon-button";
+    create.className = "icon-button machine-create";
     create.setAttribute("aria-label", "New task");
     create.title = "New task";
     create.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
@@ -1074,7 +1115,7 @@ function renderDestinationSwitcher(force = false) {
     }
     elements.destinationList.append(group);
   }
-  if (!catalogMachines.length || !elements.destinationList.childElementCount) {
+  if (!displayMachines.length || !elements.destinationList.childElementCount) {
     const empty = document.createElement("p");
     empty.className = "destination-empty";
     empty.textContent = navigationErrors[slot] || (query ? "No matching tasks" : archived ? "No archived tasks" : "Task catalog unavailable");
@@ -3462,33 +3503,14 @@ function toggleInspector() {
   if (open) closeInspector(); else openInspector();
 }
 
-function closeSettings() {
-  elements.settingsScreen.hidden = true;
-  document.body.classList.remove("settings-open");
-  settingsDisplayDraft = null;
-  restoreLocalSettingsControls();
-  if (settingsValue) renderSettings(settingsValue);
-  settingsBaseline = null;
-  updateSettingsSave();
-}
-
-function machineSettingsValue() {
-  // Values live in the draft so collapsed editors and unsaved edits survive switches and reorders.
-  return machineDraft.map((machine) => ({
-    name: machine.name.trim(),
-    ssh: machine.ssh.trim(),
-    ...(machine.wakeMac.trim() ? { wakeMac: machine.wakeMac.trim() } : {}),
-  }));
-}
-
+// Settings owns network/security plus browser-local appearance. Machine management lives in the
+// Tasks sidebar (see the machine dialog below), so these payloads never carry machines or localName.
 function serverSettingsValue() {
   return {
     lanEnabled: elements.settingsLanEnabled.checked,
     host: elements.settingsHost.value.trim(),
     port: Number(elements.settingsPort.value),
     pin: elements.settingsPin.value,
-    localName: elements.settingsLocalName.value.trim(),
-    machines: machineSettingsValue(),
   };
 }
 
@@ -3541,170 +3563,341 @@ function updateSettingsSave() {
       && JSON.stringify(localSettingsValue()) === settingsBaseline.local);
 }
 
-function machineNameText(machine, index) {
-  return machine.name.trim() || `Machine ${index + 1}`;
+function closeSettings() {
+  elements.settingsScreen.hidden = true;
+  document.body.classList.remove("settings-open");
+  settingsDisplayDraft = null;
+  restoreLocalSettingsControls();
+  if (settingsValue) renderSettings(settingsValue);
+  settingsBaseline = null;
+  updateSettingsSave();
 }
 
-function machineSshText(machine) {
-  return machine.ssh.trim() || "No SSH alias";
-}
+// ---- Machine configuration (owned by the Tasks sidebar) ----
+// The saved machine configuration plus whether it differs from the running connections; the sidebar
+// merges this with the live runtime summaries so newly saved machines stay visible before they start.
+let machineConfig = { saved: [], restartRequired: false, headless: false, hostName: "", localName: "" };
+let machineDialogTarget = null;
+let machineDialogBusy = false;
+let machineDrag = null;
 
-// Mirrors the gateway's machine rules so a collapsed editor can be revealed before any request is
-// sent: required name/SSH alias, case-insensitive unique aliases, and an optional Wake MAC in plain,
-// colon-separated or hyphen-separated hexadecimal.
 const WAKE_MAC_PATTERN = /^(?:[\da-f]{12}|[\da-f]{2}([:-])(?:[\da-f]{2}\1){4}[\da-f]{2})$/i;
+// Mirrors the gateway's machine rules so the dialog can reveal the first failure before submitting.
 function machineFieldError(machine, index = 0, machines = []) {
   if (!machine.name.trim()) return { field: "name", message: "Enter a display name for this machine." };
   const ssh = machine.ssh.trim();
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(ssh) || ssh.length > 128) return { field: "ssh", message: "Enter a simple SSH alias (letters, digits, dot, dash or underscore)." };
-  if (index > 0 && machines.slice(0, index).some((previous) => previous.ssh.trim().toLowerCase() === ssh.toLowerCase())) {
+  // Duplicates are detected against every other entry, whether it sits before or after this one.
+  if (machines.some((other, otherIndex) => otherIndex !== index && other.ssh.trim().toLowerCase() === ssh.toLowerCase())) {
     return { field: "ssh", message: `Duplicate SSH alias: ${ssh}` };
   }
-  const wakeMac = machine.wakeMac.trim();
+  const wakeMac = (machine.wakeMac || "").trim();
   if (wakeMac && !WAKE_MAC_PATTERN.test(wakeMac)) return { field: "wakeMac", message: "Enter a valid Wake-on-LAN MAC address." };
   return null;
 }
 
-function machineEditorInput(dataset, value, { maxLength, placeholder, pattern, required, label, describedBy }) {
-  const input = document.createElement("input");
-  input.dataset[dataset] = "";
-  input.type = "text";
-  input.maxLength = maxLength;
-  if (placeholder) input.placeholder = placeholder;
-  if (pattern) input.pattern = pattern;
-  if (required) input.required = true;
-  input.autocomplete = "off";
-  input.spellcheck = false;
-  input.setAttribute("aria-label", label);
-  if (describedBy) input.setAttribute("aria-describedby", describedBy);
-  input.value = value || "";
-  return input;
+function savedMachines() {
+  return Array.isArray(machineConfig.saved) ? machineConfig.saved : [];
 }
 
-function renderMachineEditor(machine, index) {
-  const editor = document.createElement("div");
-  editor.className = "machine-editor";
-  editor.dataset.machineEditor = String(index);
-  const fields = document.createElement("div");
-  fields.className = "machine-editor-fields";
-  const sshHelpId = `machine-${index}-ssh-help`;
-  const wakeHelpId = `machine-${index}-wake-help`;
-  const name = machineEditorInput("machineName", machine.name, { maxLength: 80, placeholder: "Name", required: true, label: `Machine ${index + 1} name` });
-  const ssh = machineEditorInput("machineSsh", machine.ssh, { maxLength: 128, placeholder: "SSH alias", pattern: "[A-Za-z0-9][A-Za-z0-9._-]*", required: true, label: `Machine ${index + 1} SSH alias`, describedBy: sshHelpId });
-  const wakeMac = machineEditorInput("machineWakeMac", machine.wakeMac, { maxLength: 17, placeholder: "AA:BB:CC:DD:EE:FF", label: `Machine ${index + 1} MAC Address (optional)`, describedBy: wakeHelpId });
-  for (const [input, title, key, help] of [
-    [name, "Display Name", "name", null],
-    [ssh, "SSH Alias", "ssh", { id: sshHelpId, text: "From this Pocket host’s SSH config." }],
-    [wakeMac, "MAC Address (optional)", "wakeMac", { id: wakeHelpId, text: "For Wake-on-LAN." }],
-  ]) {
-    input.addEventListener("input", () => {
-      machineDraft[index][key] = input.value;
-      // Correcting a revealed value clears its custom error and the shared status message.
-      input.setCustomValidity("");
-      elements.settingsStatus.textContent = "";
-      elements.settingsStatus.classList.remove("error-text");
-    });
-    const label = document.createElement("label");
-    label.className = "machine-settings-field";
-    label.append(Object.assign(document.createElement("span"), { className: "machine-settings-label", textContent: title }), input);
-    if (help) label.append(Object.assign(document.createElement("span"), { className: "machine-field-help", id: help.id, textContent: help.text }));
-    fields.append(label);
+// Navigation entries identify SSH runtimes by their `ssh:<alias>` id (the catalog omits the raw
+// alias), so derive the alias from the id/group when the field is absent.
+function machineCatalogAlias(machine) {
+  if (machine.ssh) return String(machine.ssh);
+  const key = String(machine.group || machine.id || "");
+  return key.startsWith("ssh:") ? key.slice(4) : "";
+}
+
+// One list for the sidebar: the host first, then the saved SSH machines in saved order, then any
+// still-running machine the saved config no longer contains (reachable until the next restart).
+function sidebarMachineCatalog(catalogMachines) {
+  const saved = savedMachines();
+  const byAlias = new Map();
+  for (const machine of catalogMachines) {
+    const alias = machineCatalogAlias(machine);
+    if (alias) byAlias.set(alias.toLowerCase(), machine);
   }
-  editor.append(fields);
-  const controls = document.createElement("div");
-  controls.className = "machine-row-actions";
-  for (const direction of [-1, 1]) {
-    const target = index + direction;
-    const move = document.createElement("button");
-    move.type = "button";
-    move.className = "text-button";
-    move.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${direction < 0 ? "M12 19V5m-6 6 6-6 6 6" : "M12 5v14m-6-6 6 6 6-6"}"/></svg>`;
-    move.title = `Move ${machineNameText(machine, index)} ${direction < 0 ? "up" : "down"}`;
-    move.setAttribute("aria-label", move.title);
-    move.disabled = target < 0 || target >= machineDraft.length;
-    move.addEventListener("click", () => {
-      [machineDraft[index], machineDraft[target]] = [machineDraft[target], machineDraft[index]];
-      if (machineEditorIndex === index) machineEditorIndex = target;
-      else if (machineEditorIndex === target) machineEditorIndex = index;
-      renderMachineSettings();
-      const moved = elements.settingsMachines.querySelector(`[data-machine-editor="${machineEditorIndex}"]`);
-      (moved?.querySelectorAll(".machine-row-actions button")[direction < 0 ? 0 : 1] || moved?.querySelector("[data-machine-name]"))?.focus();
-    });
-    controls.append(move);
-  }
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "text-button machine-remove";
-  remove.setAttribute("aria-label", `Remove ${machineNameText(machine, index)}`);
-  remove.title = remove.getAttribute("aria-label");
-  remove.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg>';
-  remove.addEventListener("click", () => {
-    machineDraft.splice(index, 1);
-    if (machineEditorIndex === index) machineEditorIndex = null;
-    else if (machineEditorIndex !== null && machineEditorIndex > index) machineEditorIndex -= 1;
-    renderMachineSettings();
-    const summaries = elements.settingsMachines.querySelectorAll(".machine-summary");
-    (summaries[Math.min(index, summaries.length - 1)] || elements.machineAdd)?.focus();
+  // The desired saved host name is the custom localName when set, otherwise the real hostname.
+  const savedHostName = machineConfig.localName || machineConfig.hostName || "";
+  // local and local:deepseek stay separate runtimes but share one physical host heading.
+  const ordered = catalogMachines.filter((machine) => machine.local === true || !machineCatalogAlias(machine)).map((machine) => ({
+    ...machine,
+    name: savedHostName || machine.name,
+    hostPending: Boolean(savedHostName) && savedHostName !== machine.name,
+  }));
+  const consumed = new Set();
+  const savedAliases = new Set(saved.map((machine) => machine.ssh.trim().toLowerCase()));
+  saved.forEach((savedMachine, index) => {
+    const running = byAlias.get(savedMachine.ssh.trim().toLowerCase());
+    if (running) {
+      consumed.add(running.id);
+      ordered.push({
+        ...running,
+        name: savedMachine.name || running.name,
+        savedIndex: index,
+        pendingConfig: (running.name || "") !== (savedMachine.name || ""),
+      });
+    } else {
+      ordered.push({
+        id: `ssh:${savedMachine.ssh}`, name: savedMachine.name || savedMachine.ssh, provider: "openai",
+        group: `ssh:${savedMachine.ssh}`, platform: "", local: false, connected: false, catalogAvailable: false,
+        connectionError: null, canWake: false, tasks: [], ssh: savedMachine.ssh, wakeMac: savedMachine.wakeMac || null,
+        pending: true, pendingConfig: false, savedIndex: index,
+      });
+    }
   });
-  controls.append(remove);
-  editor.append(controls);
-  return editor;
+  for (const machine of catalogMachines) {
+    const alias = machineCatalogAlias(machine);
+    if (!alias || consumed.has(machine.id) || savedAliases.has(alias.toLowerCase())) continue;
+    ordered.push({ ...machine, savedIndex: -1, pendingRemoval: true });
+  }
+  return ordered;
 }
 
-function renderMachineEntry(machine, index) {
-  const entry = document.createElement("div");
-  entry.className = "machine-entry";
-  const open = machineEditorIndex === index;
-  const summary = document.createElement("button");
-  summary.type = "button";
-  summary.className = "machine-summary";
-  summary.setAttribute("aria-expanded", String(open));
-  summary.setAttribute("aria-label", `${machineNameText(machine, index)}, ${machineSshText(machine)}`);
-  const text = document.createElement("span");
-  text.className = "machine-summary-text";
-  const name = Object.assign(document.createElement("strong"), { className: "machine-summary-name", textContent: machineNameText(machine, index) });
-  const ssh = Object.assign(document.createElement("small"), { className: "machine-summary-ssh", textContent: machineSshText(machine) });
-  text.append(name, ssh);
-  // A real SVG element and path; an HTML "svg" element renders nothing.
-  const chevron = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  chevron.setAttribute("aria-hidden", "true");
-  chevron.setAttribute("viewBox", "0 0 24 24");
-  chevron.classList.add("machine-summary-chevron");
-  const chevronPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  chevronPath.setAttribute("d", "m9 5 7 7-7 7");
-  chevron.append(chevronPath);
-  summary.append(text, chevron);
-  summary.addEventListener("click", () => {
-    machineEditorIndex = open ? null : index;
-    renderMachineSettings();
-    const target = open ? elements.settingsMachines.querySelectorAll(".machine-summary")[index]
-      : elements.settingsMachines.querySelector(`[data-machine-editor="${index}"] [data-machine-name]`);
-    target?.focus();
+function applyMachineSettings(settings, restartRequired) {
+  const value = settings || {};
+  machineConfig = {
+    saved: (Array.isArray(value.machines) ? value.machines : []).map((machine) => ({ name: machine.name || "", ssh: machine.ssh || "", wakeMac: machine.wakeMac || "" })),
+    restartRequired: Boolean(restartRequired),
+    headless: Boolean(value.headless),
+    hostName: value.hostName || "",
+    localName: value.localName || "",
+  };
+  renderDestinationSwitcher();
+}
+
+async function refreshMachineConfig() {
+  try {
+    const response = await apiFetch("/api/settings");
+    const value = await response.json();
+    if (!response.ok) return;
+    applyMachineSettings(value.settings, value.restartRequired);
+  } catch { /* keep the last known configuration */ }
+}
+
+// Focused machine/name saves; the server keeps every unrelated settings field from its latest config.
+async function saveMachineConfig(payload) {
+  const response = await apiFetch("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   });
-  entry.append(summary);
-  if (open) entry.append(renderMachineEditor(machine, index));
-  return entry;
+  const result = await response.json();
+  if (!response.ok || !result.saved) throw new Error(result.error || "Could not save machine settings");
+  // Apply the authoritative save response so newly saved machines appear even if a refresh fails.
+  if (result.settings) applyMachineSettings(result.settings, result.restartRequired);
+  else await refreshMachineConfig();
+  await Promise.allSettled([refreshMachines(), refreshNavigationCatalog(archivedTasks, true)]);
+  return result;
 }
 
-function renderMachineSettings(values) {
-  if (Array.isArray(values)) {
-    machineDraft = values.map((machine) => ({ name: machine.name || "", ssh: machine.ssh || "", wakeMac: machine.wakeMac || "" }));
-    machineEditorIndex = null;
-    machinesExpanded = true;
-  }
-  elements.machinesCount.textContent = String(machineDraft.length);
-  elements.machinesToggle.setAttribute("aria-expanded", String(machinesExpanded));
-  elements.machinesBody.hidden = !machinesExpanded;
-  elements.settingsMachines.replaceChildren();
-  if (!machinesExpanded) { updateSettingsSave(); return; }
-  if (!machineDraft.length) {
-    elements.settingsMachines.append(Object.assign(document.createElement("p"), { className: "machine-settings-empty", textContent: "No remote machines configured." }));
-  } else {
-    machineDraft.forEach((machine, index) => elements.settingsMachines.append(renderMachineEntry(machine, index)));
-  }
-  updateSettingsSave();
+function machineDialogDraft() {
+  const name = elements.machineDialogName.value.trim();
+  const ssh = elements.machineDialogSsh.value.trim();
+  const wakeMac = elements.machineDialogMac.value.trim();
+  return { name, ssh, ...(wakeMac ? { wakeMac } : {}) };
 }
 
+function machineDialogValidation() {
+  // An empty host name is valid: it falls back to the real hostname ("Use hostname").
+  if (machineDialogTarget?.mode === "host") return null;
+  const index = machineDialogTarget?.mode === "edit" && machineDialogTarget.index >= 0 ? machineDialogTarget.index : savedMachines().length;
+  return machineFieldError(machineDialogDraft(), index, savedMachines());
+}
+
+function updateMachineDialogMoveButtons() {
+  const editing = machineDialogTarget?.mode === "edit" && machineDialogTarget.index >= 0;
+  elements.machineDialogMove.hidden = !editing;
+  elements.machineDialogUp.disabled = !editing || machineDialogBusy || machineDialogTarget.index <= 0;
+  elements.machineDialogDown.disabled = !editing || machineDialogBusy || machineDialogTarget.index >= savedMachines().length - 1;
+}
+
+function openMachineDialog(target) {
+  machineDialogTarget = target;
+  const host = target.mode === "host";
+  const draft = host
+    ? { name: machineConfig.localName, ssh: "", wakeMac: "" }
+    : target.mode === "edit" && target.index >= 0 ? savedMachines()[target.index]
+      : target.draft || { name: "", ssh: "", wakeMac: "" };
+  elements.machineDialogTitle.textContent = target.mode === "add" ? "Add Machine" : "Machine Details";
+  elements.machineDialogHost.hidden = !host;
+  elements.machineDialogName.value = draft.name || "";
+  elements.machineDialogName.placeholder = host ? "Use hostname" : "Name";
+  elements.machineDialogSsh.value = host ? "" : draft.ssh || "";
+  elements.machineDialogMac.value = host ? "" : draft.wakeMac || "";
+  elements.machineDialogSshField.hidden = host;
+  elements.machineDialogSshHelp.hidden = host;
+  elements.machineDialogMacField.hidden = host;
+  elements.machineDialogMacHelp.hidden = host;
+  elements.machineDialogRemove.hidden = host || target.mode !== "edit";
+  elements.machineDialogSubmit.textContent = target.mode === "add" ? "Add" : "Save";
+  elements.machineDialogError.textContent = "";
+  for (const field of [elements.machineDialogName, elements.machineDialogSsh, elements.machineDialogMac]) field.setCustomValidity("");
+  updateMachineDialogMoveButtons();
+  // Only Add Machine declares a text-input autofocus target; existing details focus the dialog so
+  // the modal can open without touching a text field (and without summoning the mobile keyboard).
+  elements.machineDialogName.toggleAttribute("autofocus", target.mode === "add");
+  elements.machineDialog.toggleAttribute("autofocus", target.mode !== "add");
+  elements.machineDialog.showModal();
+  if (target.mode === "add") elements.machineDialogName.focus();
+  else elements.machineDialog.focus({ preventScroll: true });
+}
+
+function openMachineDetails(machine, opener) {
+  if (machine.local) return openMachineDialog({ mode: "host", opener });
+  const alias = machineCatalogAlias(machine);
+  const index = alias ? savedMachines().findIndex((saved) => saved.ssh.trim().toLowerCase() === alias.toLowerCase()) : -1;
+  if (index >= 0) return openMachineDialog({ mode: "edit", index, opener });
+  return openMachineDialog({ mode: "add", draft: { name: machine.name || "", ssh: alias, wakeMac: machine.wakeMac || "" }, opener });
+}
+
+async function runMachineDialogAction(action, { close = true } = {}) {
+  if (machineDialogBusy) return;
+  machineDialogBusy = true;
+  elements.machineDialogSubmit.disabled = true;
+  elements.machineDialogRemove.disabled = true;
+  elements.machineDialogError.classList.remove("error-text");
+  elements.machineDialogError.textContent = "Saving…";
+  updateMachineDialogMoveButtons();
+  try {
+    await action();
+    if (close) elements.machineDialog.close();
+    else {
+      elements.machineDialogError.textContent = "";
+      elements.machineDialogError.classList.remove("error-text");
+    }
+  } catch (error) {
+    // Keep the draft so the user can correct it and retry.
+    elements.machineDialogError.textContent = error instanceof Error ? error.message : String(error);
+    elements.machineDialogError.classList.add("error-text");
+  } finally {
+    machineDialogBusy = false;
+    elements.machineDialogSubmit.disabled = false;
+    elements.machineDialogRemove.disabled = false;
+    updateMachineDialogMoveButtons();
+  }
+}
+
+elements.machineDialogForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (machineDialogBusy || !machineDialogTarget) return;
+  const error = machineDialogValidation();
+  if (error) {
+    const field = error.field === "name" ? elements.machineDialogName : error.field === "ssh" ? elements.machineDialogSsh : elements.machineDialogMac;
+    field.setCustomValidity(error.message);
+    field.focus();
+    field.reportValidity();
+    elements.machineDialogError.textContent = error.message;
+    elements.machineDialogError.classList.add("error-text");
+    return;
+  }
+  for (const field of [elements.machineDialogName, elements.machineDialogSsh, elements.machineDialogMac]) field.setCustomValidity("");
+  const target = machineDialogTarget;
+  void runMachineDialogAction(() => {
+    if (target.mode === "host") return saveMachineConfig({ localName: elements.machineDialogName.value.trim() });
+    if (target.mode === "add") return saveMachineConfig({ machines: [...savedMachines(), machineDialogDraft()] });
+    return saveMachineConfig({ machines: savedMachines().map((machine, index) => index === target.index ? machineDialogDraft() : machine) });
+  });
+});
+elements.machineDialogRemove.addEventListener("click", () => {
+  const target = machineDialogTarget;
+  if (machineDialogBusy || !target || target.mode !== "edit") return;
+  const machine = savedMachines()[target.index];
+  const label = machine?.name || machine?.ssh || "this machine";
+  if (!window.confirm(`Remove ${label} from Pocket?\n\nThis removes its Pocket connection configuration. Conversations and project files are not deleted.`)) return;
+  void runMachineDialogAction(() => saveMachineConfig({ machines: savedMachines().filter((_, index) => index !== target.index) }));
+});
+elements.machineDialogCancel.addEventListener("click", () => elements.machineDialog.close());
+for (const [button, direction] of [[elements.machineDialogUp, -1], [elements.machineDialogDown, 1]]) {
+  button.addEventListener("click", () => {
+    const target = machineDialogTarget;
+    if (machineDialogBusy || !target || target.mode !== "edit") return;
+    const from = target.index;
+    const to = from + direction;
+    const saved = savedMachines();
+    if (to < 0 || to >= saved.length) return;
+    const next = saved.map((machine) => ({ ...machine }));
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    void runMachineDialogAction(async () => { await saveMachineConfig({ machines: next }); target.index = to; }, { close: false });
+  });
+}
+for (const field of [elements.machineDialogName, elements.machineDialogSsh, elements.machineDialogMac]) {
+  field.addEventListener("input", () => {
+    field.setCustomValidity("");
+    elements.machineDialogError.textContent = "";
+    elements.machineDialogError.classList.remove("error-text");
+  });
+}
+elements.machineDialog.addEventListener("close", () => {
+  const opener = machineDialogTarget?.opener;
+  machineDialogTarget = null;
+  machineDialogBusy = false;
+  elements.machineDialogSubmit.disabled = false;
+  elements.machineDialogRemove.disabled = false;
+  if (opener?.isConnected) opener.focus({ preventScroll: true });
+});
+elements.machineDialog.addEventListener("keydown", (event) => { if (event.key === "Escape") event.stopPropagation(); });
+elements.machineAdd.addEventListener("click", (event) => openMachineDialog({ mode: "add", opener: event.currentTarget }));
+
+// Drag a machine group by its handle to reorder the saved SSH machines; the host never moves.
+function beginMachineDrag(event) {
+  if (event.button !== 0 || machineDialogBusy) return;
+  const group = event.currentTarget.closest(".destination-group");
+  const groups = [...elements.destinationList.querySelectorAll(".destination-group[data-saved-index]")];
+  const from = groups.indexOf(group);
+  if (!group || from < 0 || groups.length < 2) return;
+  event.preventDefault();
+  // Search may hide saved machines, so work with the real saved index of every visible group: the
+  // drag only permutes the visible machines among the slots those machines already occupy.
+  machineDrag = {
+    pointerId: event.pointerId, handle: event.currentTarget, group, groups,
+    fromVisible: from, savedIndices: groups.map((candidate) => Number(candidate.dataset.savedIndex)), index: from,
+  };
+  group.classList.add("dragging");
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+}
+function machineDragIndexFor(clientY) {
+  let index = 0;
+  for (const group of machineDrag.groups) {
+    if (group === machineDrag.group) continue;
+    const box = group.getBoundingClientRect();
+    if (clientY > box.top + box.height / 2) index += 1;
+  }
+  return index;
+}
+window.addEventListener("pointermove", (event) => {
+  if (!machineDrag || event.pointerId !== machineDrag.pointerId) return;
+  const list = elements.destinationList;
+  const bounds = list.getBoundingClientRect();
+  if (event.clientY < bounds.top + 24) list.scrollTop -= 12;
+  else if (event.clientY > bounds.bottom - 24) list.scrollTop += 12;
+  machineDrag.index = machineDragIndexFor(event.clientY);
+  const target = machineDrag.groups[Math.min(machineDrag.index, machineDrag.groups.length - 1)];
+  for (const group of machineDrag.groups) group.classList.toggle("drag-over", group === target && group !== machineDrag.group);
+});
+function finishMachineDrag(event, cancelled) {
+  if (!machineDrag || event.pointerId !== machineDrag.pointerId) return;
+  const { handle, group, groups, fromVisible, savedIndices, index } = machineDrag;
+  group.classList.remove("dragging");
+  for (const candidate of groups) candidate.classList.remove("drag-over");
+  handle?.releasePointerCapture?.(event.pointerId);
+  machineDrag = null;
+  if (cancelled) return;
+  const saved = savedMachines().map((machine) => ({ ...machine }));
+  if (savedIndices.length < 2 || savedIndices.some((savedIndex) => !Number.isInteger(savedIndex) || savedIndex < 0 || savedIndex >= saved.length)) return;
+  // Reorder just the visible machines, then write that sequence back into its own saved slots; any
+  // machine hidden by the search keeps the exact saved index it had.
+  const others = savedIndices.filter((_, position) => position !== fromVisible).map((savedIndex) => saved[savedIndex]);
+  const dragged = saved[savedIndices[fromVisible]];
+  if (!others.length) return;
+  const nextVisible = others.slice();
+  nextVisible.splice(Math.max(0, Math.min(others.length, index)), 0, dragged);
+  if (nextVisible.every((machine, position) => machine === saved[savedIndices[position]])) return;
+  const next = saved.slice();
+  savedIndices.forEach((savedIndex, position) => { next[savedIndex] = nextVisible[position]; });
+  void saveMachineConfig({ machines: next }).catch(() => renderDestinationSwitcher());
+}
+window.addEventListener("pointerup", (event) => finishMachineDrag(event, false));
+window.addEventListener("pointercancel", (event) => finishMachineDrag(event, true));
 function renderSettings(value) {
   settingsValue = value;
   for (const field of [elements.settingsLanEnabled, elements.settingsHost, elements.settingsPort]) field.disabled = Boolean(value.headless);
@@ -3714,18 +3907,15 @@ function renderSettings(value) {
   elements.quitPocket.disabled = Boolean(value.headless);
   elements.quitPocket.closest(".settings-quit").hidden = Boolean(value.headless);
   document.querySelector("#container-lifecycle").hidden = !value.headless;
-  document.querySelector("#settings-local-machine").hidden = Boolean(value.headless);
   // DeepSeek needs no toggle; only a broken host credential is worth surfacing here.
   elements.settingsDeepseekSection.hidden = !value.deepseekError;
   elements.settingsDeepseekError.textContent = value.deepseekError || "";
   elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
   elements.settingsHost.value = value.host || "127.0.0.1";
   elements.settingsPort.value = String(value.port || 4173);
-  elements.settingsLocalName.value = value.localName || "";
   elements.settingsPin.value = "";
   elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
   elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured." : "No PIN configured.";
-  renderMachineSettings(value.machines);
   elements.phoneUrlList.replaceChildren();
   const urls = value.headless ? [location.origin] : Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
   for (const url of urls) {
@@ -4030,17 +4220,6 @@ elements.settingsPin.addEventListener("input", () => {
   elements.settingsStatus.textContent = "";
   elements.settingsStatus.classList.remove("error-text");
 });
-elements.machineAdd.addEventListener("click", () => {
-  machineDraft.push({ name: "", ssh: "", wakeMac: "" });
-  machinesExpanded = true;
-  machineEditorIndex = machineDraft.length - 1;
-  renderMachineSettings();
-  elements.settingsMachines.querySelector(`[data-machine-editor="${machineEditorIndex}"] [data-machine-name]`)?.focus();
-});
-elements.machinesToggle.addEventListener("click", () => {
-  machinesExpanded = !machinesExpanded;
-  renderMachineSettings();
-});
 elements.settingsForm.addEventListener("input", updateSettingsSave);
 elements.settingsForm.addEventListener("change", updateSettingsSave);
 elements.settingsForm.addEventListener("submit", async (event) => {
@@ -4053,26 +4232,6 @@ elements.settingsForm.addEventListener("submit", async (event) => {
     elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access.";
     elements.settingsStatus.classList.add("error-text");
     elements.settingsPin.focus();
-    return;
-  }
-  // Native constraint validation only sees the open editor, so reveal the first machine that would
-  // fail (missing name/SSH alias, duplicate alias, or invalid Wake MAC) and make its field reachable.
-  const invalidMachine = machineDraft.findIndex((machine, index) => machineFieldError(machine, index, machineDraft));
-  if (invalidMachine >= 0) {
-    const error = machineFieldError(machineDraft[invalidMachine], invalidMachine, machineDraft);
-    machinesExpanded = true;
-    machineEditorIndex = invalidMachine;
-    renderMachineSettings();
-    const editor = elements.settingsMachines.querySelector(`[data-machine-editor="${invalidMachine}"]`);
-    const selector = error.field === "name" ? "[data-machine-name]" : error.field === "ssh" ? "[data-machine-ssh]" : "[data-machine-wake-mac]";
-    const field = editor?.querySelector(selector);
-    if (field) {
-      field.setCustomValidity(error.message);
-      field.focus();
-      field.reportValidity();
-    }
-    elements.settingsStatus.textContent = error.message;
-    elements.settingsStatus.classList.add("error-text");
     return;
   }
   savingSettings = true;
@@ -4095,6 +4254,8 @@ elements.settingsForm.addEventListener("submit", async (event) => {
     restoreLocalSettingsControls();
     renderSettings(result.settings);
     elements.settingsRestart.hidden = !result.restartRequired;
+    // Keep the Tasks-sidebar restart hint aligned with the latest saved config.
+    void refreshMachineConfig();
     elements.settingsStatus.textContent = "";
     if (result.restartRequired) {
       elements.settingsRestart.scrollIntoView({ block: "center" });
@@ -4165,7 +4326,7 @@ async function startApp() {
     const response = await apiFetch("/api/state");
     applySnapshot(await response.json(), false);
     refreshNavigationCatalog();
-    await Promise.all([refreshMachines(), refreshLoadedThreads()]);
+    await Promise.all([refreshMachineConfig(), refreshMachines(), refreshLoadedThreads()]);
   } catch (error) {
     setHistoryStatus(error.message);
     setConnection(false, true);

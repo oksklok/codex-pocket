@@ -438,9 +438,10 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, overr
     ? submittedPin
     : settings.config.pin;
   const config = validateLocalConfig({
-    lanEnabled: headless ? settings.config.lanEnabled : candidate.lanEnabled,
-    host: headless ? settings.config.host : candidate.host,
-    port: headless ? settings.config.port : candidate.port,
+    // A focused payload may omit unrelated fields; keep the latest saved values for those.
+    lanEnabled: headless ? settings.config.lanEnabled : candidate.lanEnabled ?? settings.config.lanEnabled,
+    host: headless ? settings.config.host : candidate.host ?? settings.config.host,
+    port: headless ? settings.config.port : candidate.port ?? settings.config.port,
     pin,
     localName: candidate.localName ?? settings.config.localName,
     machines: candidate.machines ?? settings.config.machines,
@@ -2173,6 +2174,7 @@ export class MachineRuntime {
       // Grouping is explicit metadata, not a display-name match.
       group: this.definition.group ?? this.definition.id,
       ssh: this.definition.ssh,
+      wakeMac: this.definition.wakeMac ?? null,
       transport: this.state.transport,
       platform: this.state.platform,
       connected: this.state.connected,

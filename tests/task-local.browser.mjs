@@ -30,7 +30,11 @@ let actionFailure='Fixture action failed', cwdFailure=false, cwdGate=null;const 
 let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let goalGate=null;const goalCalls=[];let uiGate=null;let queueEditGate=null,queueEditFailure=false;const queueEdits=[];
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true, remoteCatalogTimeout=false;
-let settings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}],phoneUrls:[]};
+let navigationDeepseek=false, machineSaveGate=null, machineSaveFailure=null;
+let settingsRestartRequired=false;
+// Saved machines match the running fixtures (ssh:test) so the sidebar can pair saved config with
+// live connections; tests that need pending/removal states override machines explicitly.
+let settings={host:'127.0.0.1',port:4173,lanEnabled:false,headless:false,hostName:'Local',localName:'',machines:[{name:'Second machine',ssh:'test'}],phoneUrls:[]};
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGklEQVR4nGMwnplGNmIY1TyqeVTzqOaB1QwAQBHeMIlPtLYAAAAASUVORK5CYII=','base64');
 const server=createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');calls.push(u.pathname);
@@ -61,11 +65,13 @@ const server=createServer(async(req,res)=>{
  if(req.method==='POST'){
  if(failSettings)return json({error:'Settings save failed'},500);
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
+ if(machineSaveGate)await machineSaveGate;
+ if(machineSaveFailure)return json({error:machineSaveFailure},500);
  const restartRequired=body.port!==settings.port;
- settings={...settings,...body};return json({saved:true,settings,restartRequired});
+ settings={...settings,...body};settingsRestartRequired=restartRequired;return json({saved:true,settings,restartRequired});
  }
- return json({settings});
- }
+ return json({settings,restartRequired:settingsRestartRequired});
+}
  if(['/api/approval','/api/input','/api/thread/settings','/api/thread/access'].includes(u.pathname)){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);if(uiGate)await uiGate;
  if(u.pathname==='/api/thread/settings'){runtime.state.model=body.model;runtime.state.reasoningEffort=body.effort;return json({updated:true,model:body.model,reasoningEffort:body.effort});}
@@ -95,7 +101,13 @@ const server=createServer(async(req,res)=>{
  const rpc=new RpcClient();rpc.wire={send(){},close(){}};
  try{await rpc.request('thread/list',{},5000);}catch{remoteAvailable=false;calls.push('remote-catalog-timeout');}finally{rpc.close();}
  }
- return json({machines:[{id:'local',name:'Local',local:true,connected:true,catalogAvailable,connectionError:machineError,tasks:u.searchParams.get('archived')==='true'?archived:active},{id:'ssh:test',name:'Second machine',connected:remoteConnected,catalogAvailable:remoteAvailable,canWake:wakeConfigured&&!remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]}].filter(machine=>!settings.headless||!machine.local)});}
+ const archivedView=u.searchParams.get('archived')==='true';
+ const hostTasks=archivedView?archived:active;
+ const machines=[{id:'local',name:'Local',local:true,group:'local',connected:true,catalogAvailable,connectionError:machineError,tasks:hostTasks}];
+ // local and local:deepseek are separate runtimes that share one physical host heading.
+ if(navigationDeepseek)machines.push({id:'local:deepseek',name:'Local',local:true,group:'local',provider:'deepseek',connected:true,catalogAvailable:true,tasks:[{...owned,id:'deepseek-owned',name:'DeepSeek owned task',cwd:'/deepseek/project'}]});
+ machines.push({id:'ssh:test',name:'Second machine',group:'ssh:test',connected:remoteConnected,catalogAvailable:remoteAvailable,canWake:wakeConfigured&&!remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]});
+ return json({machines:machines.filter(machine=>!settings.headless||!machine.local)});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(gate)await gate;
@@ -174,7 +186,21 @@ const open=async()=>{if(await page.locator('#destination-button').getAttribute('
 const dismissTasks=()=>page.locator(page.viewportSize().width>=1100?'#destination-button':'#destination-close').click();
 const closed=()=>page.waitForFunction(()=>document.querySelector('#destination-switcher').hidden);
 const settingsOpen=async()=>{await page.locator('#settings-button').evaluate(e=>e.click());await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');};
-const settingsSave=async()=>{if(await page.locator('#settings-save').isEnabled())await page.locator('#settings-save').click();else await page.locator('#settings-close').click();await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);};
+// A save can legitimately leave the dialog open on "Restart required"; the edit is still committed,
+// so close explicitly rather than waiting for an automatic close that a pending restart forbids.
+const settingsSave=async()=>{
+ if(await page.locator('#settings-save').isEnabled()){
+  await page.locator('#settings-save').click();
+  await page.waitForFunction(()=>{
+   // "Saving…" clears only when the request settled; a pending restart then leaves the dialog open.
+   return document.querySelector('#settings-screen').hidden||document.querySelector('#settings-status').textContent!=='Saving…';
+  });
+ }
+ // Click through the DOM so a dialog that closes on its own during the request cannot race a
+ // Playwright visibility check.
+ await page.locator('#settings-screen').evaluate(screen=>{if(!screen.hidden)document.querySelector('#settings-close').click();});
+ await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
+};
 try {
  // A semantically last final answer displays monotonic time without changing source timestamps.
  for(const width of [1280,390]){
@@ -525,7 +551,10 @@ try {
  await page.evaluate(()=>localStorage.removeItem('codex-pocket-enter-sends'));await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  const chromeColors=()=>page.locator('.topbar, .composer-zone').evaluateAll(es=>es.map(e=>getComputedStyle(e).backgroundColor));
  await settingsOpen();
- assert.equal(await page.locator('label[for="settings-local-name"]').textContent(),'Host Machine Display Name');
+ // Machine management moved to the Tasks sidebar; Settings keeps only network/security/appearance.
+ assert.equal(await page.locator('#settings-local-name').count(),0,'Settings no longer owns the host display name');
+ assert.equal(await page.locator('#machines-toggle').count(),0,'the old Settings machine list is gone');
+ assert.equal(await page.locator('#settings-machines').count(),0);
  const save=page.locator('#settings-save');
  assert.equal(await save.isDisabled(),true);
  assert.equal(await page.locator('#translucent-ui').isVisible(),width<=860);
@@ -545,24 +574,20 @@ try {
  await page.locator('#settings-theme').selectOption(theme==='dark'?'light':'dark');
  assert.equal(await page.locator('html').getAttribute('data-theme'),originalTheme);assert.equal(await save.isEnabled(),true);
  await page.locator('#settings-theme').selectOption(theme);assert.equal(await save.isDisabled(),true);
- await page.locator('#settings-local-name').fill('Changed');assert.equal(await save.isEnabled(),true);
- await page.locator('#settings-local-name').fill(settings.localName);assert.equal(await save.isDisabled(),true);
- await page.locator('#machine-add').click();assert.equal(await save.isEnabled(),true);
- await page.locator('.machine-editor .machine-remove').click();assert.equal(await save.isDisabled(),true);
  for(const exit of ['settings-cancel','settings-close','Escape']){
- await page.locator('#settings-local-name').fill('Discard me');
+ await page.locator('#settings-host').fill('Discard me');
  await page.locator('#enter-sends').evaluate(e=>{e.checked=!e.checked;e.dispatchEvent(new Event('change',{bubbles:true}));});
  await page.locator('#display-command').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
  assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),originalStorage);
  if(exit==='Escape')await page.keyboard.press('Escape');else await page.locator('#'+exit).click();
  await settingsOpen();
  assert.equal(await save.isDisabled(),true);
- assert.equal(await page.locator('#settings-local-name').inputValue(),settings.localName);
+ assert.equal(await page.locator('#settings-host').inputValue(),settings.host);
  assert.equal(await page.locator('#display-command').isChecked(),true);
  assert.equal(await page.locator('#enter-sends').isChecked(),width>860);
  }
  // Commit local and server changes together.
- await page.locator('#settings-local-name').fill('Saved host '+width);
+ await page.locator('#settings-host').fill(width>860?'127.0.0.2':'127.0.0.3');
  await page.locator('#translucent-ui').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change',{bubbles:true}));});
  await page.locator('#enter-sends').evaluate(e=>{e.checked=!e.checked;e.dispatchEvent(new Event('change',{bubbles:true}));});
  await page.locator('#display-command').evaluate(e=>{e.checked=false;e.dispatchEvent(new Event('change'));});
@@ -571,7 +596,7 @@ try {
  assert.deepEqual(await chromeColors(),originalChrome);
  failSettings=false;
  await settingsSave();
- assert.equal(settings.localName,'Saved host '+width);
+ assert.equal(settings.host,width>860?'127.0.0.2':'127.0.0.3');
  assert((await chromeColors()).every(c=>c.startsWith('rgb(')));
  assert.equal(await page.evaluate(()=>localStorage.getItem('codex-pocket-enter-sends')),String(width<=860));
  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('codex-pocket-info-display')).command),false);
@@ -623,109 +648,10 @@ try {
  await page.emulateMedia({colorScheme:'light'});
  await page.waitForFunction(()=>document.querySelector('meta[name="theme-color"]').content==='#f7f7f7');
 
- // SSH machines: a compact collapsible list with one inline editor at a time.
- assert.equal(await page.locator('#machines-count').textContent(),'2');
- assert.equal(await page.locator('#machines-toggle').getAttribute('aria-expanded'),'true');
- assert.equal(await page.locator('.machine-entry').count(),2);
- assert.equal(await page.locator('.machine-editor').count(),0,'no editor is open initially');
- const summaries=page.locator('.machine-summary');
- assert.deepEqual(await summaries.locator('.machine-summary-name').allTextContents(),['Laptop','Workstation']);
- assert.deepEqual(await summaries.locator('.machine-summary-ssh').allTextContents(),['laptop','workstation']);
- const summaryStyle=await summaries.first().evaluate(node=>{const s=getComputedStyle(node);return {border:s.borderTopWidth,bg:s.backgroundColor,fontSize:s.fontSize,height:node.getBoundingClientRect().height};});
- assert.equal(summaryStyle.border,'0px','summaries are not outlined cards');
- assert.equal(summaryStyle.bg,'rgba(0, 0, 0, 0)');
- assert.equal(summaryStyle.fontSize,'13px','summaries read as ordinary list text, never as large inputs');
- assert(summaryStyle.height>=40,'summaries keep a comfortable tap target');
- assert.equal(await page.locator('.machine-entry + .machine-entry').evaluate(node=>getComputedStyle(node).borderTopWidth),'1px','entries are separated by a subtle rule');
- // One intentional scheme: sans-serif, 13px/500 primary name, 12px/400 secondary alias.
- const tokenColor=async name=>page.evaluate(name=>{const probe=Object.assign(document.createElement("span"),{style:`color:var(${name})`});document.body.append(probe);const value=getComputedStyle(probe).color;probe.remove();return value;},name);
- const textColor=await tokenColor('--text'),mutedColor=await tokenColor('--muted');
- const summaryType=await summaries.first().evaluate(node=>{const name=getComputedStyle(node.querySelector('.machine-summary-name')),alias=getComputedStyle(node.querySelector('.machine-summary-ssh'));return {nameSize:name.fontSize,nameWeight:name.fontWeight,nameColor:name.color,aliasSize:alias.fontSize,aliasWeight:alias.fontWeight,aliasColor:alias.color,aliasFamily:alias.fontFamily};});
- assert.equal(summaryType.nameSize,'13px');assert.equal(summaryType.nameWeight,'500');assert.equal(summaryType.nameColor,textColor,'the summary name uses the primary color');
- assert.equal(summaryType.aliasSize,'12px');assert.equal(summaryType.aliasWeight,'400');assert.equal(summaryType.aliasColor,mutedColor,'the summary alias uses the secondary color');
- assert.doesNotMatch(summaryType.aliasFamily,/mono/i,'the SSH alias uses the sans-serif UI font');
- assert.equal(await page.locator('.machine-field-help').count(),0,'the SSH hint is not shown outside an editor');
- assert.equal(await page.locator('#machines-body > .field-help, .settings-machines > .field-help').count(),0,'no hint sits above the machine list');
- // One editor at a time; switching editors preserves unsaved values.
- await summaries.first().click();
- assert.equal(await page.locator('.machine-editor').count(),1);
- assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'0');
- const editorType=await page.locator('.machine-editor').evaluate(node=>({
- labels:[...node.querySelectorAll('.machine-settings-label')].map(n=>({text:n.textContent,size:getComputedStyle(n).fontSize,weight:getComputedStyle(n).fontWeight,color:getComputedStyle(n).color})),
- help:[...node.querySelectorAll('.machine-field-help')].map(n=>({text:n.textContent,size:getComputedStyle(n).fontSize,weight:getComputedStyle(n).fontWeight,color:getComputedStyle(n).color})),
- inputs:[...node.querySelectorAll('input')].map(n=>({size:getComputedStyle(n).fontSize,weight:getComputedStyle(n).fontWeight,color:getComputedStyle(n).color,family:getComputedStyle(n).fontFamily})),
- sshDescribedBy:node.querySelector('[data-machine-ssh]').getAttribute('aria-describedby'),
- wakeDescribedBy:node.querySelector('[data-machine-wake-mac]').getAttribute('aria-describedby'),
- wakeAria:node.querySelector('[data-machine-wake-mac]').getAttribute('aria-label'),
-}));
- assert.deepEqual(editorType.labels.map(label=>label.text),['Display Name','SSH Alias','MAC Address (optional)']);
- assert(editorType.labels.every(label=>label.size==='12px'&&label.weight==='400'&&label.color===mutedColor),'editor labels are 12px/400 secondary');
- assert.deepEqual(editorType.help.map(help=>help.text),['From this Pocket host’s SSH config.','For Wake-on-LAN.']);
- assert(editorType.help.every(help=>help.size==='12px'&&help.weight==='400'&&help.color===mutedColor),'editor help is 12px/400 secondary');
- assert(editorType.inputs.every(input=>input.weight==='400'&&input.color===textColor&&!/mono/i.test(input.family)),'editor values are regular-weight primary sans-serif');
- // Editable fields keep the 16px mobile exception; collapsed summaries stay compact at every width.
- assert(editorType.inputs.every(input=>input.size===(width>=861?'13px':'16px')),`editor values follow the editable-field size at ${width}`);
- assert.equal(editorType.sshDescribedBy,'machine-0-ssh-help');assert.equal(editorType.wakeDescribedBy,'machine-0-wake-help');
- assert.equal(editorType.wakeAria,'Machine 1 MAC Address (optional)');
- await page.locator('.machine-editor [data-machine-name]').fill('Laptop renamed');
- await summaries.nth(1).click();
- assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'1','only one editor is open');
- assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Workstation');
- await summaries.first().click();
- assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed','unsaved values survive switching editors');
- // Reordering keeps the editor associated with the same machine.
- await page.locator('.machine-editor .machine-row-actions button').nth(1).click();
- assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'1','the editor follows the reordered machine');
- assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed');
- assert.deepEqual(await summaries.locator('.machine-summary-name').allTextContents(),['Workstation','Laptop renamed']);
- // Collapsing the section keeps the unsaved draft too.
- await page.locator('#machines-toggle').click();
- assert.equal(await page.locator('#machines-body').isVisible(),false);
- await page.locator('#machines-toggle').click();
- assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed','unsaved values survive collapsing');
- // A closed machine with an invalid field is revealed on Save, with that field reachable.
- await summaries.nth(1).click();
- assert.equal(await page.locator('.machine-editor').count(),0);
- await summaries.first().click();
- await page.locator('.machine-editor [data-machine-ssh]').fill('');
- await summaries.first().click();
- assert.equal(await page.locator('.machine-editor').count(),0);
- await save.click();
- assert.equal(await page.locator('.machine-editor').count(),1,'Save reopens the invalid machine');
- assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'0');
- assert.equal(await page.locator('.machine-editor [data-machine-ssh]').evaluate(node=>node===document.activeElement),true,'the invalid SSH alias is reachable');
- // Restore a valid alias, then remove both machines through the editor and check the count/empty state.
- await page.locator('.machine-editor [data-machine-ssh]').fill('workstation');
- await page.locator('.machine-editor .machine-remove').click();
- assert.equal(await page.locator('.machine-entry').count(),1);
- assert.equal(await page.locator('#machines-count').textContent(),'1');
- await page.locator('.machine-summary').first().click();
- await page.locator('.machine-editor .machine-remove').click();
- assert.equal(await page.locator('.machine-entry').count(),0);
- assert.equal(await page.locator('#machines-count').textContent(),'0');
- assert.equal(await page.locator('.machine-settings-empty').isVisible(),true);
- // Discard these machine edits and reopen Settings for the remaining checks.
- await page.locator('#settings-close').click();
- await page.locator('#settings-screen').waitFor({state:'hidden'});
- // Ten machines render as ten compact summaries with a single editor on demand.
- settings.machines=Array.from({length:10},(_,i)=>({name:`Machine ${i+1}`,ssh:`machine-${i+1}`}));
  await settingsOpen();
- assert.equal(await page.locator('#machines-count').textContent(),'10');
- assert.equal(await page.locator('.machine-entry').count(),10);
- assert.equal(await page.locator('.machine-editor').count(),0);
- await page.locator('#machines-toggle').click();
- assert.equal(await page.locator('#machines-count').textContent(),'10','the count stays visible while collapsed');
- assert.equal(await page.locator('#machines-body').isVisible(),false);
- await page.locator('#machines-toggle').click();
- settings.machines=[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}];
- await page.locator('#settings-close').click();
- await page.locator('#settings-screen').waitFor({state:'hidden'});
- await settingsOpen();
- assert.equal(await page.locator('#machines-count').textContent(),'2');
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).display),'flex');
  assert.equal(await page.locator('.settings-card .checkbox-row').first().evaluate(e=>getComputedStyle(e).fontSize),'12px');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-top-${width}.png`});
- await page.locator('.machines-heading').scrollIntoViewIfNeeded();
  if(process.env.POCKET_SCREENSHOT_DIR){
  await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/settings-${width}.png`});
  await page.emulateMedia({colorScheme:'dark'});await page.waitForTimeout(80);
@@ -1044,7 +970,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.getByText('Enter an absolute project folder on this machine',{exact:true}).waitFor();
  await page.locator('#new-task-cwd').fill('/project');
  if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/new-task-${width}.png`});
- await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .icon-button').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
+ await page.locator('#new-task-create').click();await page.waitForFunction(()=>document.querySelector('.destination-group-heading .machine-create').disabled);assert.equal(await page.getByRole('button',{name:'New task',exact:true}).first().locator('svg').count(),1);assert(!(await page.locator('#composer').innerText()).includes('Switching'));release();gate=null;
  await page.locator('#new-task-error').getByText('Fixture action failed',{exact:true}).waitFor();
  assert(await page.locator('#new-task-error').evaluate(e=>e.getBoundingClientRect().bottom <= document.querySelector('#new-task-dialog .new-task-actions').getBoundingClientRect().top));assert(await page.locator('#new-task-dialog').evaluate(e=>e.open));assert.equal(await page.locator('.destination-error').count(),0);
  failAction=false;await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.locator('#new-task-model-static').filter({hasText:'Demo Model'}).waitFor();await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('ask');await page.locator('#new-task-create').click();await page.waitForFunction(()=>!document.querySelector('#new-task-dialog').open);assert.equal(await input.evaluate(e=>document.activeElement===e),width>=1100);if(width>=1100){assert.equal(await page.locator('#destination-switcher').evaluate(e=>e.hidden),false);await dismissTasks();}await closed();assert.equal(await input.inputValue(),'');
@@ -1393,82 +1319,292 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await typePrompt('');
  }
  }
- // SSH machine chevrons are real SVGs and validation reveals collapsed/other editors without data loss.
+ // Machine management lives in the Tasks sidebar: info details, add/edit/remove/reorder, hints.
  for(const width of [1280,390]){
  await page.setViewportSize({width,height:844});
- settings.machines=[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}];
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Laptop',ssh:'test'},{name:'Workstation',ssh:'workstation'}];
+ Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false});
+ remoteConnected=true;wakeConfigured=false;navigationDeepseek=false;machineSaveFailure=null;machineSaveGate=null;
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ const groupFor=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
+ const infoFor=name=>groupFor(name).locator('.machine-info');
+ const dialogOpen=()=>page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
+ const dialogClosed=()=>page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
+ const waitFor=async(predicate)=>{const start=Date.now();while(!predicate()){if(Date.now()-start>5000)throw new Error('timed out waiting for machine state');await page.waitForTimeout(40);}};
+
+ // Machine management is in the sidebar (fixed footer), not Settings.
+ await open();
+ const footer=await page.locator('#destination-switcher').evaluate(el=>{
+ const list=el.querySelector('#destination-list'),foot=el.querySelector('.machines-footer');
+ return {lastChild:el.lastElementChild===foot,insideList:Boolean(list?.querySelector('.machines-footer')),overflow:getComputedStyle(list).overflowY};
+ });
+ assert.equal(footer.lastChild,true,'Add Machine is the fixed footer at the bottom of Tasks');
+ assert.equal(footer.insideList,false,'Add Machine sits outside the scrolling task list');
+ assert.equal(footer.overflow,'auto');
+ assert.equal(await page.locator('#machine-add').isVisible(),true);
+ await dismissTasks();await closed();
  await settingsOpen();
- await page.locator('.machine-summary').first().waitFor();
- const chevron=()=>page.locator('.machine-summary .machine-summary-chevron').first();
- for(const scheme of ['dark','light']){
- await page.emulateMedia({colorScheme:scheme});
- const collapsed=await chevron().evaluate(node=>({namespace:node.namespaceURI,pathNamespace:node.querySelector('path')?.namespaceURI||null,d:node.querySelector('path')?.getAttribute('d')||null,width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height,transform:getComputedStyle(node).transform}));
- assert.equal(collapsed.namespace,'http://www.w3.org/2000/svg',`the collapsed chevron is a real SVG in ${scheme}`);
- assert.equal(collapsed.pathNamespace,'http://www.w3.org/2000/svg',`the collapsed chevron path is SVG in ${scheme}`);
- assert.equal(collapsed.d,'m9 5 7 7-7 7');
- assert(collapsed.width>=10&&collapsed.height>=10,`the collapsed chevron has a drawable box in ${scheme}`);
- if(process.env.POCKET_SCREENSHOT_DIR)await page.locator('.settings-machines').screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/machine-chevron-${width}-collapsed-${scheme}.png`});
- await page.locator('.machine-summary').first().click();
- const expanded=await chevron().evaluate(node=>({namespace:node.namespaceURI,pathNamespace:node.querySelector('path')?.namespaceURI||null,transform:getComputedStyle(node).transform}));
- assert.equal(expanded.namespace,'http://www.w3.org/2000/svg',`the expanded chevron is a real SVG in ${scheme}`);
- assert.equal(expanded.pathNamespace,'http://www.w3.org/2000/svg');
- assert.notEqual(expanded.transform,collapsed.transform,`the chevron rotates when expanded in ${scheme}`);
- if(process.env.POCKET_SCREENSHOT_DIR)await page.locator('.settings-machines').screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/machine-chevron-${width}-expanded-${scheme}.png`});
- await page.locator('.machine-summary').first().click();
+ assert.equal(await page.locator('#settings-local-name, #machines-toggle, #settings-machines, #settings-local-machine, .machine-editor').count(),0,'machine management is not in Settings');
+ await page.locator('#settings-close').click();await page.locator('#settings-screen').waitFor({state:'hidden'});
+
+ // local and local:deepseek stay separate runtimes but share one physical host heading.
+ navigationDeepseek=true;
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await open();
+ assert.equal(await page.locator('.machine-toggle strong').filter({hasText:'Local'}).count(),1,'DeepSeek does not add a second host heading');
+ const hostGroup=page.locator('.destination-group').filter({has:page.getByText('DeepSeek owned task',{exact:true})});
+ assert.equal(await hostGroup.getByText('Current task',{exact:true}).count()>=1,true,'host and DeepSeek tasks share the heading');
+ await dismissTasks();await closed();
+ navigationDeepseek=false;
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await open();
+
+ // Host details: editable Display Name, identified as host, no SSH/MAC/remove.
+ await infoFor('Local').click();await dialogOpen();
+ assert.equal(await page.locator('#machine-dialog-title').textContent(),'Machine Details');
+ assert.equal(await page.locator('#machine-dialog-host').isVisible(),true);
+ assert.equal(await page.locator('#machine-dialog-name').inputValue(),'');
+ assert.equal(await page.locator('#machine-dialog-ssh-field').isVisible(),false);
+ assert.equal(await page.locator('#machine-dialog-mac-field').isVisible(),false);
+ assert.equal(await page.locator('#machine-dialog-remove').isVisible(),false);
+ await page.locator('#machine-dialog-cancel').click();await dialogClosed();
+
+ // SSH details open for the correct machine; the info button sits before New Task.
+ const controlOrder=await groupFor('Laptop').locator('.machine-header-controls > *').evaluateAll(nodes=>nodes.map(n=>[...n.classList].find(c=>c.startsWith('machine-'))||n.className));
+ assert.deepEqual(controlOrder.slice(-2),['machine-info','machine-create'],'info is immediately before the New Task + button');
+ await infoFor('Laptop').click();await dialogOpen();
+ assert.equal(await page.locator('#machine-dialog-name').inputValue(),'Laptop');
+ assert.equal(await page.locator('#machine-dialog-ssh').inputValue(),'test');
+ assert.equal(await page.locator('#machine-dialog-mac').inputValue(),'');
+ assert.equal(await page.locator('#machine-dialog-remove').isVisible(),true);
+ assert.equal(await page.locator('#machine-dialog-move').isVisible(),true);
+ // Helpers live outside the labels and describe the fields.
+ assert.equal(await page.locator('#machine-dialog-ssh-help').textContent(),'From the host’s SSH config.');
+ assert.equal(await page.locator('#machine-dialog-mac-help').textContent(),'For Wake-on-LAN.');
+ assert.equal(await page.locator('label:has(#machine-dialog-ssh-help), label:has(#machine-dialog-mac-help)').count(),0,'helper text is not nested inside a label');
+ // Opening existing details must not autofocus a text input (mobile keyboard stays closed).
+ assert.equal(await page.evaluate(()=>document.activeElement?.id),'machine-dialog');
+ assert.equal(await page.locator('#machine-dialog-name').evaluate(n=>n===document.activeElement),false);
+ await page.locator('#machine-dialog-cancel').click();await dialogClosed();
+
+ // Add Machine may focus Display Name, and the new machine stays visible before restart.
+ await page.locator('#machine-add').click();await dialogOpen();
+ assert.equal(await page.locator('#machine-dialog-title').textContent(),'Add Machine');
+ assert.equal(await page.locator('#machine-dialog-name').evaluate(n=>n===document.activeElement),true,'Add Machine focuses Display Name');
+ await page.locator('#machine-dialog-name').fill('New box');
+ await page.locator('#machine-dialog-ssh').fill('newbox');
+ await page.locator('#machine-dialog-mac').fill('AA:BB:CC:DD:EE:FF');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+ await waitFor(()=>settings.machines.length===3);
+ assert.deepEqual(settings.machines[2],{name:'New box',ssh:'newbox',wakeMac:'AA:BB:CC:DD:EE:FF'});
+ // Unrelated Settings values survive the targeted machine save.
+ assert.equal(settings.host,'127.0.0.1');assert.equal(settings.port,4173);assert.equal(settings.lanEnabled,false);
+ assert.equal(await groupFor('New box').count(),1,'a newly saved machine renders before restart');
+ assert.equal(await page.locator('#machines-restart').isVisible(),true);
+ assert.equal((await page.locator('#machines-restart').textContent()).trim(),'Saved. Restart required.');
+ assert.equal(await infoFor('New box').isVisible(),true,'the new machine is editable before restart');
+
+ // Edit an existing machine, including clearing the optional MAC.
+ await infoFor('New box').click();await dialogOpen();
+ await page.locator('#machine-dialog-name').fill('New box renamed');
+ await page.locator('#machine-dialog-mac').fill('');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+ await waitFor(()=>settings.machines.some(m=>m.name==='New box renamed'&&m.wakeMac===undefined));
+ assert.equal(await groupFor('New box renamed').count(),1);
+
+ // Duplicate aliases fail whether the duplicate appears before or after the edited machine.
+ await infoFor('Workstation').click();await dialogOpen();
+ await page.locator('#machine-dialog-ssh').fill('test');
+ await page.locator('#machine-dialog-submit').click();
+ await page.locator('#machine-dialog-error').getByText('Duplicate SSH alias: test').waitFor();
+ assert.equal(await page.locator('#machine-dialog').evaluate(n=>n.open),true);
+ assert.equal(await page.locator('#machine-dialog-ssh').evaluate(n=>n===document.activeElement),true,'the duplicate alias is reachable');
+ assert.equal(settings.machines[1].ssh,'workstation','the duplicate draft never reached the host');
+ await page.locator('#machine-dialog-ssh').fill('workstation');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+ await infoFor('Laptop').click();await dialogOpen();
+ await page.locator('#machine-dialog-ssh').fill('workstation');
+ await page.locator('#machine-dialog-submit').click();
+ await page.locator('#machine-dialog-error').getByText('Duplicate SSH alias: workstation').waitFor();
+ assert.equal(settings.machines[0].ssh,'test');
+ await page.locator('#machine-dialog-ssh').fill('test');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+
+ // A failed save keeps the draft and leaves the saved config untouched.
+ machineSaveFailure='Machine save failed';
+ await infoFor('Workstation').click();await dialogOpen();
+ await page.locator('#machine-dialog-name').fill('Workstation draft');
+ await page.locator('#machine-dialog-submit').click();
+ await page.locator('#machine-dialog-error').getByText('Machine save failed').waitFor();
+ assert.equal(await page.locator('#machine-dialog').evaluate(n=>n.open),true,'a failed save keeps the dialog open');
+ assert.equal(await page.locator('#machine-dialog-name').inputValue(),'Workstation draft','the draft survives a failed save');
+ assert.equal(settings.machines[1].name,'Workstation','the failed draft never reached the host');
+ machineSaveFailure=null;
+ await page.locator('#machine-dialog-name').fill('Workstation');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+ await waitFor(()=>settings.machines[1].name==='Workstation');
+
+ // Cancel writes nothing.
+ await infoFor('Workstation').click();await dialogOpen();
+ await page.locator('#machine-dialog-name').fill('Discard me');
+ await page.locator('#machine-dialog-cancel').click();await dialogClosed();
+ assert.equal(settings.machines[1].name,'Workstation');
+
+ const removeMachine=async name=>{
+ await infoFor(name).click();await dialogOpen();
+ page.removeAllListeners('dialog');page.once('dialog',d=>d.accept());
+ await page.locator('#machine-dialog-remove').click();
+ await dialogClosed();
+ page.on('dialog',defaultDialog);
+ };
+ // Removing a not-yet-started machine drops only its Pocket configuration.
+ await removeMachine('New box renamed');
+ await waitFor(()=>!settings.machines.some(m=>m.ssh==='newbox'));
+ assert.equal(await groupFor('New box renamed').count(),0);
+ // Removing a running machine keeps its live connection and tasks until restart.
+ await removeMachine('Laptop');
+ await waitFor(()=>!settings.machines.some(m=>m.ssh==='test'));
+ assert.equal(await groupFor('Second machine').count(),1,'the running connection stays visible until restart');
+ assert.equal(await groupFor('Second machine').getByText('Remote owned task',{exact:true}).count(),1,'active tasks are not retargeted');
+ assert.equal(await page.locator('#machines-restart').isVisible(),true);
+
+ // Non-drag Move Up/Move Down stays available in Machine Details.
+ await page.locator('#machine-add').click();await dialogOpen();
+ await page.locator('#machine-dialog-name').fill('Second box');
+ await page.locator('#machine-dialog-ssh').fill('secondbox');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+ await waitFor(()=>settings.machines.length===2&&settings.machines[0].ssh==='workstation');
+ await infoFor('Second box').click();await dialogOpen();
+ await page.locator('#machine-dialog-up').click();
+ await waitFor(()=>settings.machines[0].ssh==='secondbox');
+ assert.equal(await page.locator('#machine-dialog').evaluate(n=>n.open),true,'Move Up keeps Machine Details open');
+ assert.equal(await page.locator('#machine-dialog-up').isDisabled(),true,'the first machine cannot move up');
+ await page.locator('#machine-dialog-down').click();
+ await waitFor(()=>settings.machines[0].ssh==='workstation');
+ assert.equal(await page.locator('#machine-dialog').evaluate(n=>n.open),true);
+ await page.locator('#machine-dialog-cancel').click();await dialogClosed();
+
+ // A dedicated drag handle reorders saved SSH machines; the host stays pinned.
+ const dragHandleFor=name=>groupFor(name).locator('.machine-drag');
+ const handle=dragHandleFor('Workstation'),target=dragHandleFor('Second box');
+ const handleBox=await handle.boundingBox(),targetBox=await target.boundingBox();
+ await page.mouse.move(handleBox.x+handleBox.width/2,handleBox.y+handleBox.height/2);
+ await page.mouse.down();
+ await page.mouse.move(handleBox.x+handleBox.width/2,targetBox.y+targetBox.height,{steps:6});
+ await page.mouse.up();
+ await waitFor(()=>settings.machines[0].ssh==='secondbox');
+ assert.deepEqual(settings.machines.map(m=>m.ssh),['secondbox','workstation']);
+ assert.equal(await page.locator('.destination-group .machine-toggle strong').first().textContent(),'Local','the host stays pinned first');
+
+ // Host rename is saved against the host identity and needs a restart.
+ await infoFor('Local').click();await dialogOpen();
+ await page.locator('#machine-dialog-name').fill('Home Mac');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+ await waitFor(()=>settings.localName==='Home Mac');
+ assert.equal(await groupFor('Home Mac').count(),1);
+ assert.equal(await page.locator('#machines-restart').isVisible(),true);
+ // Clearing the name is valid and falls back to the real hostname until a restart.
+ await infoFor('Home Mac').click();await dialogOpen();
+ assert.equal(await page.locator('#machine-dialog-name').inputValue(),'Home Mac');
+ await page.locator('#machine-dialog-name').fill('');
+ await page.locator('#machine-dialog-submit').click();await dialogClosed();
+ await waitFor(()=>settings.localName==='');
+ assert.equal(await groupFor('Local').count(),1,'an empty Display Name falls back to the real hostname');
+ assert.equal(await page.locator('#machines-restart').isVisible(),true);
+ assert.equal(calls.filter(c=>c==='/api/restart').length,0,'machine saves never restart Pocket automatically');
+
+ await dismissTasks();await closed();
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
  }
- await page.emulateMedia({colorScheme:'dark'});
- // An invalid Wake MAC on a collapsed machine is revealed on Save with other edits preserved.
- await page.locator('.machine-summary').first().click();
- await page.locator('.machine-editor [data-machine-name]').fill('Laptop renamed');
- await page.locator('.machine-editor [data-machine-wake-mac]').fill('not-a-mac');
- await page.locator('.machine-summary').first().click();
- assert.equal(await page.locator('.machine-editor').count(),0);
- await page.locator('#settings-save').click();
- assert.equal(await page.locator('.machine-editor').count(),1,'Save reveals the invalid Wake MAC machine');
- assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'0');
- assert.equal(await page.locator('.machine-editor [data-machine-name]').inputValue(),'Laptop renamed','other unsaved edits survive the reveal');
- assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').evaluate(node=>node===document.activeElement),true,'the Wake MAC field is focused');
- assert.match(await page.locator('#settings-status').textContent(),/valid Wake-on-LAN MAC/i);
- assert.equal(await page.locator('#settings-screen').evaluate(node=>node.hidden),false,'an invalid draft is not submitted');
- assert.equal(settings.machines[0].wakeMac,undefined,'the invalid draft never reached the host');
- // Correcting the MAC clears the custom error and saves.
- await page.locator('.machine-editor [data-machine-wake-mac]').fill('aabbccddeeff');
- assert.equal(await page.locator('#settings-status').textContent(),'');
- assert.equal(await page.locator('.machine-editor [data-machine-wake-mac]').evaluate(node=>node.validationMessage),'','correcting clears the custom validity');
- await page.locator('#settings-save').click();
- await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
- assert.equal(settings.machines[0].wakeMac,'aabbccddeeff','the corrected MAC is submitted');
- assert.equal(settings.machines[0].name,'Laptop renamed','the preserved name saves too');
- // A case-insensitive duplicate SSH alias on a collapsed machine is revealed on Save.
- await settingsOpen();
- await page.locator('.machine-summary').nth(1).click();
- await page.locator('.machine-editor [data-machine-ssh]').fill('LAPTOP');
- await page.locator('.machine-summary').nth(1).click();
- await page.locator('#settings-save').click();
- assert.equal(await page.locator('.machine-editor').getAttribute('data-machine-editor'),'1','Save reveals the duplicate-alias machine');
- assert.equal(await page.locator('.machine-editor [data-machine-ssh]').evaluate(node=>node===document.activeElement),true);
- assert.match(await page.locator('#settings-status').textContent(),/duplicate SSH alias: laptop/i);
- assert.equal(await page.locator('.machine-summary-name').first().textContent(),'Laptop renamed','other machines keep their unsaved edits');
- assert.equal(await page.locator('#settings-screen').evaluate(node=>node.hidden),false,'the duplicate draft is not submitted');
- await page.locator('.machine-editor [data-machine-ssh]').fill('workstation-2');
- assert.equal(await page.locator('#settings-status').textContent(),'');
- await page.locator('#settings-save').click();
- await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
- assert.equal(settings.machines[1].ssh,'workstation-2');
- // Blank and every accepted Wake MAC format still save.
- for(const value of ['','AA:BB:CC:DD:EE:FF','AA-BB-CC-DD-EE-FF','aabbccddeeff']){
- await settingsOpen();
- await page.locator('.machine-summary').first().click();
- await page.locator('.machine-editor [data-machine-wake-mac]').fill(value);
- await page.locator('.machine-summary').first().click();
- await page.locator('#settings-save').click();
- await page.waitForFunction(()=>document.querySelector('#settings-screen').hidden);
- assert.equal(settings.machines[0].wakeMac,value===''?undefined:value,`Wake MAC "${value}" is accepted and submitted`);
+
+ // Dragging reorders by each group's real saved index, so a filtered-out machine keeps its slot.
+ for(const width of [1280,390]){
+ await page.setViewportSize({width,height:844});
+ settingsRestartRequired=false;
+ settings.machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two'},{name:'Three',ssh:'three'}];
+ Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await open();
+ const filteredGroup=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
+ await page.locator('#destination-search').fill('t'); // Two and Three match; One is hidden.
+ await filteredGroup('Two').waitFor();await filteredGroup('Three').waitFor();
+ assert.equal(await filteredGroup('One').count(),0,'One is filtered out');
+ const waitSavedOrder=async expected=>{const start=Date.now();while(JSON.stringify(settings.machines.map(m=>m.ssh))!==JSON.stringify(expected)){if(Date.now()-start>5000)throw new Error('timed out waiting for the saved order');await page.waitForTimeout(40);}};
+ const handle=filteredGroup('Two').locator('.machine-drag'),target=filteredGroup('Three');
+ const handleBox=await handle.boundingBox(),targetBox=await target.boundingBox();
+ await page.mouse.move(handleBox.x+handleBox.width/2,handleBox.y+handleBox.height/2);
+ await page.mouse.down();
+ await page.mouse.move(handleBox.x+handleBox.width/2,targetBox.y+targetBox.height,{steps:6});
+ await page.mouse.up();
+ await waitSavedOrder(['one','three','two']);
+ assert.deepEqual(settings.machines.map(m=>m.ssh),['one','three','two'],'the hidden machine keeps the same slot');
+ await page.locator('#destination-search').fill('');
+ await filteredGroup('One').waitFor();
+ assert.deepEqual(await page.locator('.destination-group[data-saved-index] .machine-toggle strong').allTextContents(),['One','Three','Two'],'the full saved order matches the filtered drag');
+ await dismissTasks();await closed();
  }
- // Restore the fixture machines for the remaining suites.
- settings.machines=[{name:'Laptop',ssh:'laptop'},{name:'Workstation',ssh:'workstation'}];
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
+
+ // Interleaved filter: A visible / B hidden / C visible keeps B at its exact saved index.
+ for(const direction of ['C-before-A','A-after-C']){
+ await page.setViewportSize({width:1280,height:844});
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Node A',ssh:'node-a'},{name:'Hub',ssh:'hub'},{name:'Node C',ssh:'node-c'}];
+ Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await open();
+ const interleavedGroup=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
+ await page.locator('#destination-search').fill('node'); // Node A and Node C match; Hub is hidden.
+ await interleavedGroup('Node A').waitFor();await interleavedGroup('Node C').waitFor();
+ assert.equal(await interleavedGroup('Hub').count(),0,'Hub is filtered out');
+ const [draggedName,targetName]=direction==='C-before-A'?['Node C','Node A']:['Node A','Node C'];
+ const handle=interleavedGroup(draggedName).locator('.machine-drag'),target=interleavedGroup(targetName);
+ const handleBox=await handle.boundingBox(),targetBox=await target.boundingBox();
+ await page.mouse.move(handleBox.x+handleBox.width/2,handleBox.y+handleBox.height/2);
+ await page.mouse.down();
+ const dropY=direction==='C-before-A'?targetBox.y-4:targetBox.y+targetBox.height+4;
+ await page.mouse.move(handleBox.x+handleBox.width/2,dropY,{steps:6});
+ await page.mouse.up();
+ const start=Date.now();
+ while(JSON.stringify(settings.machines.map(m=>m.ssh))!==JSON.stringify(['node-c','hub','node-a'])){if(Date.now()-start>5000)throw new Error('timed out waiting for the interleaved order');await page.waitForTimeout(40);}
+ assert.deepEqual(settings.machines.map(m=>m.ssh),['node-c','hub','node-a'],`${direction} leaves the hidden Hub at saved index 1`);
+ await dismissTasks();await closed();
  }
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
+
+ // Machine Details actions fit inside the dialog at phone widths.
+ await page.setViewportSize({width:320,height:844});
+ settings.machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two'}];
+ Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await open();
+ await page.locator('.destination-group').filter({has:page.getByText('Two',{exact:true})}).locator('.machine-info').click();
+ await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
+ const actionGeometry=await page.locator('#machine-dialog').evaluate(dialog=>{
+ const form=dialog.querySelector('#machine-dialog-form').getBoundingClientRect();
+ const buttons=[...dialog.querySelectorAll('.machine-dialog-actions button')].filter(button=>!button.hidden&&button.getBoundingClientRect().width>0);
+ const box=button=>{const rect=button.getBoundingClientRect();return {id:button.id,label:button.textContent.trim(),left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};};
+ return {overflow:document.documentElement.scrollWidth>innerWidth,formLeft:form.left,formRight:form.right,buttons:buttons.map(box)};
+ });
+ assert.equal(actionGeometry.overflow,false,'320px Machine Details has no horizontal overflow');
+ assert(actionGeometry.buttons.length>=5,`edit mode shows Remove, Move and Cancel/Save: ${JSON.stringify(actionGeometry.buttons)}`);
+ for(const button of actionGeometry.buttons)assert(button.left>=actionGeometry.formLeft-0.5&&button.right<=actionGeometry.formRight+0.5,`${button.label} stays within the dialog: ${JSON.stringify(button)}`);
+ const removeAction=actionGeometry.buttons.find(button=>button.id==='machine-dialog-remove');
+ const cancelAction=actionGeometry.buttons.find(button=>button.id==='machine-dialog-cancel');
+ assert(removeAction.bottom<=cancelAction.top+0.5,'Remove gets its own row above the confirm row');
+ await page.locator('#machine-dialog-cancel').click();
+ await page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
+ await dismissTasks();await closed();
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
+
  // Themes stay neutral in dark mode, System matches the explicit themes, and navigation uses one active surface.
  for(const width of [1280,390]){
  await page.setViewportSize({width,height:844});
@@ -1780,7 +1916,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.waitForFunction(()=>document.querySelector('#destination-refresh').disabled);
  // Refresh only disables Refresh; navigation and task actions remain available.
  assert.equal(await page.locator('.destination-task').first().isEnabled(),true);
- assert.equal(await page.locator('.destination-group-heading .icon-button').first().isEnabled(),true);
+ assert.equal(await page.locator('.destination-group-heading .machine-create').first().isEnabled(),true);
  await page.locator('.task-actions summary').first().click();
  for(const label of ['Rename','Archive','Delete'])assert.equal(await page.locator('.task-actions[open]').getByRole('button',{name:label,exact:true}).isEnabled(),true);
  await page.locator('.task-actions summary').first().click();
@@ -1837,7 +1973,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#destination-refresh').click();await page.waitForFunction(()=>!document.querySelector('#destination-refresh').disabled);
  }
  await page.mouse.move(0,0);
- assert(await page.locator('.destination-group-heading .icon-button').evaluateAll(buttons=>buttons.every(button=>{
+ assert(await page.locator('.destination-group-heading .machine-create').evaluateAll(buttons=>buttons.every(button=>{
  const rect=button.getBoundingClientRect(),icon=button.querySelector('svg').getBoundingClientRect(),style=getComputedStyle(button);
  return button.getAttribute('aria-label')==='New task'&&button.title==='New task'&&rect.width===36&&rect.height===36
    &&style.borderTopWidth==='0px'&&style.backgroundColor==='rgba(0, 0, 0, 0)'
@@ -1845,7 +1981,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  })));
  // The newer successful archived read restored connectivity even though active catalog data is cached.
  assert.equal(await page.locator('.destination-group.offline').count(),0);
- assert.equal(await page.locator('.destination-group-heading .icon-button').last().isEnabled(),true);
+ assert.equal(await page.locator('.destination-group-heading .machine-create').last().isEnabled(),true);
  await page.keyboard.press('Tab');
  const plus=page.getByRole('button',{name:'New task',exact:true}).first();
  await plus.focus();
@@ -1905,8 +2041,6 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  if(process.env.POCKET_SCREENSHOT_DIR){
  await page.locator('.settings-card').evaluate(e=>e.scrollTop=0);
  await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/appearance-${width}.png`});
- await page.locator('#machine-add').scrollIntoViewIfNeeded();
- await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/machines-${width}.png`});
  }
  await page.locator('#settings-close').click();
  // A backdrop click located over a different transcript image closes only the modal.
@@ -2181,11 +2315,12 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('.destination-group').count(),1);
  assert.equal(await page.locator('.machine-host-badge').count(),0);
  assert.equal(await page.locator('.machine-toggle').evaluate(n=>n.textContent.includes('Host')),false,'headless SSH headings never claim a host');
+ // Machine management stays in the sidebar even when the host runtime is absent.
+ assert.equal(await page.locator('.machines-footer #machine-add').isVisible(),true,'headless still offers Add Machine in Tasks');
  await settingsOpen();
- assert.equal(await page.locator('#settings-local-machine').isVisible(),false);
- assert.equal(await page.getByLabel('Host Machine Display Name',{exact:true}).isVisible(),false);
+ assert.equal(await page.locator('#settings-local-name, #settings-machines, .machine-editor').count(),0,'headless Settings has no machine fields');
  await page.locator('#settings-close').click();
- }
+}
  // Near-top pagination is independent of the near-bottom follow threshold.
  settings.headless=false;composerPost='success';recoveryMode=null;
  for(const width of [390,1280]){
@@ -2307,7 +2442,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  for(const width of [1280,390,320]){
  await page.setViewportSize({width,height:844});
  Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
- settings.headless=false;settings.machines=[{name:'PC',ssh:'pc'}];
+ settings.headless=false;settings.machines=[{name:'Second machine',ssh:'test'}];
  remoteConnected=false;wakeConfigured=true;wakeFailure=false;
  await page.reload();await open();
  const wake=page.getByRole('button',{name:'Wake Second machine',exact:true});await wake.waitFor();
@@ -2316,36 +2451,28 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await wake.locator('svg[aria-hidden="true"]').count(),1);
  const group=wake.locator('xpath=ancestor::section[contains(@class,"destination-group")]');
  const heading=group.locator('.destination-group-heading');
- const checkHeader=async(header,expectedCount)=>{
+ const checkHeader=async(header,expectedCount,expectEvenGaps)=>{
  const layout=await header.evaluate(e=>{
   const controls=e.querySelector('.machine-header-controls');
   const boxes=[...controls.children].map(node=>node.getBoundingClientRect());
   const name=e.querySelector('.machine-toggle').getBoundingClientRect();
-  let visibleGaps=null;
-  if(controls.children.length===3){
-   const text=document.createRange();text.selectNodeContents(controls.children[0]);
-   const wake=controls.querySelector('.wake-action svg').getBoundingClientRect();
-   const create=controls.querySelector('.wake-action + .icon-button svg').getBoundingClientRect();
-   visibleGaps=[wake.left-text.getBoundingClientRect().right,create.left-wake.right];
-  }
   return {count:boxes.length,gaps:boxes.slice(1).map((box,i)=>box.left-boxes[i].right),
-   visibleGaps,hitTargets:[...controls.querySelectorAll('.icon-button')].map(node=>{const box=node.getBoundingClientRect();return [box.width,box.height];}),
+   hitTargets:[...controls.querySelectorAll('.icon-button')].map(node=>{const box=node.getBoundingClientRect();return [box.width,box.height];}),
    fits:boxes.every(box=>box.left>=0&&box.right<=innerWidth)&&name.right<=controls.getBoundingClientRect().left,
    centers:boxes.map(box=>(box.top+box.bottom)/2)};
  });
  assert.equal(layout.count,expectedCount);assert.equal(layout.fits,true);
- if(expectedCount===3){
- assert(Math.abs(layout.gaps[0]-8)<1);assert(Math.abs(layout.gaps[1])<1);
- assert(Math.abs(layout.visibleGaps[0]-layout.visibleGaps[1])<=1,JSON.stringify(layout.visibleGaps));
- }
+ if(expectEvenGaps)assert(layout.gaps.every(gap=>Math.abs(gap-8)<1),JSON.stringify(layout.gaps));
  assert(layout.hitTargets.every(([width,height])=>width===36&&height===36));
  assert(layout.centers.every(center=>Math.abs(center-layout.centers[0])<1));
  };
- await checkHeader(heading,3);
+ // Offline SSH with wake, drag, info and New Task controls.
+ await checkHeader(heading,5,true);
  await heading.locator('.machine-toggle strong').evaluate(e=>e.textContent='A very long machine name that must fit without displacing controls');
- await checkHeader(heading,3);
+ await checkHeader(heading,5,true);
  assert.equal(await heading.locator('.machine-toggle strong').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
- await checkHeader(page.locator('.destination-group-heading').first(),1);
+ // The host heading has only info and New Task.
+ await checkHeader(page.locator('.destination-group-heading').first(),2,false);
  const newTask=heading.getByRole('button',{name:'New task',exact:true});
  assert.equal(await wake.isEnabled(),true);
  assert.equal(await wake.evaluate(e=>{let opacity=1;for(let node=e;node;node=node.parentElement)opacity*=Number(getComputedStyle(node).opacity);return opacity;}),1);
@@ -2374,15 +2501,23 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.reload();await open();await page.locator('.machine-toggle').filter({hasText:'Second machine'}).waitFor();
  assert.equal(await page.getByRole('button',{name:/^Wake /}).count(),0);
  }
- await dismissTasks();await settingsOpen();
- await page.locator('.machine-summary').first().click();
- const mac=page.locator('[data-machine-wake-mac]').first();await mac.fill('AA:BB:CC:DD:EE:FF');await mac.evaluate(e=>e.scrollIntoView({block:"center",behavior:"instant"}));
- if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-settings-${width}.png`});
+ // The Wake MAC is edited in sidebar Machine Details and survives save/reopen.
+ await open();
+ const macGroup=page.locator('.destination-group').filter({has:page.getByText('Second machine',{exact:true})});
+ await macGroup.locator('.machine-info').first().click();
+ await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
+ const mac=page.locator('#machine-dialog-mac');await mac.fill('AA:BB:CC:DD:EE:FF');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-machine-${width}.png`});
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
- await settingsSave();assert.equal(settings.machines[0].wakeMac,'AA:BB:CC:DD:EE:FF');
- await settingsOpen();await page.locator('.machine-summary').first().click();
- assert.equal(await page.locator('[data-machine-wake-mac]').first().inputValue(),'AA:BB:CC:DD:EE:FF');
- await page.locator('#settings-close').click();
+ await page.locator('#machine-dialog-submit').click();
+ await page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
+ assert.equal(settings.machines[0].wakeMac,'AA:BB:CC:DD:EE:FF');
+ await macGroup.locator('.machine-info').first().click();
+ await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
+ assert.equal(await page.locator('#machine-dialog-mac').inputValue(),'AA:BB:CC:DD:EE:FF');
+ await page.locator('#machine-dialog-cancel').click();
+ await page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
+ await dismissTasks();await closed();
  }
  // Selected goals use authoritative state, compact actions, and the existing Clear dialog.
  for(const width of [1280,390,320]){
