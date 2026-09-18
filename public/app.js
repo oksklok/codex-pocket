@@ -66,6 +66,8 @@ const elements = {
   displayTool: document.querySelector("#display-tool"),
   displaySearch: document.querySelector("#display-search"),
   displayReview: document.querySelector("#display-review"),
+  displayShowAll: document.querySelector("#display-show-all"),
+  displayHideAll: document.querySelector("#display-hide-all"),
   displayReasoning: document.querySelector("#display-reasoning"),
   displayCollaboration: document.querySelector("#display-collaboration"),
   displayImages: document.querySelector("#display-images"),
@@ -991,15 +993,9 @@ function renderDestinationSwitcher(force = false) {
       [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
     });
     const controls = Object.assign(document.createElement("div"), { className: "machine-header-controls" });
-    // Status stays inline with the name, then Info, then Wake/New Task at the far right.
+    // Chevron + name, then Info, then the inline status; Wake/New Task stay at the far right.
     const nameBlock = Object.assign(document.createElement("div"), { className: "machine-name-block" });
     nameBlock.append(toggle);
-    if (availability) {
-      const availabilityStatus = document.createElement("span");
-      availabilityStatus.className = "machine-status";
-      availabilityStatus.textContent = availability;
-      nameBlock.append(availabilityStatus);
-    }
     const info = document.createElement("button");
     info.type = "button";
     info.className = "icon-button machine-info";
@@ -1007,7 +1003,14 @@ function renderDestinationSwitcher(force = false) {
     info.title = "Machine details";
     info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
     info.addEventListener("click", () => openMachineDetails(machine, info));
-    heading.append(nameBlock, info, controls);
+    nameBlock.append(info);
+    if (availability) {
+      const availabilityStatus = document.createElement("span");
+      availabilityStatus.className = "machine-status";
+      availabilityStatus.textContent = availability;
+      nameBlock.append(availabilityStatus);
+    }
+    heading.append(nameBlock, controls);
     // Wake stays a machine action at the far right and always targets the live runtime id.
     if (!machine.local && !machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
       const wakeAction = Object.assign(document.createElement("div"), { className: "wake-action" });
@@ -1474,6 +1477,13 @@ function renderDisplayControls() {
   elements.expandCommands.checked = preferences.expandCommands;
   elements.expandFiles.checked = preferences.expandFiles;
   elements.wrapFiles.checked = preferences.wrapFiles;
+  // Show All / Hide All only act on the categories currently visible; disable the no-op one.
+  const visibleCategories = DISPLAY_ACTIVITY_KINDS
+    .map(([key]) => DISPLAY_CONTROLS[key])
+    .filter((control) => control && !control.closest("label").hidden);
+  const checkedCount = visibleCategories.filter((control) => control.checked).length;
+  elements.displayShowAll.disabled = visibleCategories.length === 0 || checkedCount === visibleCategories.length;
+  elements.displayHideAll.disabled = visibleCategories.length === 0 || checkedCount === 0;
 }
 
 function renderQueue() {
@@ -4325,15 +4335,17 @@ for (const [element, key] of [
   [elements.wrapFiles, "wrapFiles"],
 ]) {
   element.addEventListener("change", () => {
-    if (settingsDisplayDraft) { settingsDisplayDraft[key] = element.checked; updateSettingsSave(); return; }
+    if (settingsDisplayDraft) { settingsDisplayDraft[key] = element.checked; renderDisplayControls(); updateSettingsSave(); return; }
     displayPreferences[key] = element.checked;
     saveDisplayPreferences();
+    renderDisplayControls();
     renderConversation();
   });
 }
 
 for (const [id, visible] of [["display-show-all", true], ["display-hide-all", false]]) {
-  document.getElementById(id).addEventListener("click", () => {
+  const button = id === "display-show-all" ? elements.displayShowAll : elements.displayHideAll;
+  button.addEventListener("click", () => {
     const preferences = settingsDisplayDraft || displayPreferences;
     // Hidden categories keep whatever the user saved for them.
     for (const [key, control] of Object.entries(DISPLAY_CONTROLS)) {
