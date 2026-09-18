@@ -31,7 +31,19 @@ let wakeConfigured=false, wakeFailure=false;const wakeBodies=[];
 let goalGate=null;const goalCalls=[];let uiGate=null;let queueEditGate=null,queueEditFailure=false;const queueEdits=[];
 let failSettings=false, navigationGate=null, catalogAvailable=true, remoteConnected=true, remoteCatalogTimeout=false;
 let navigationDeepseek=false, machineSaveGate=null, machineSaveFailure=null;
+// Extra machines appended to the navigation fixture so drag tests can shape group heights.
+let extraCatalogMachines=[];
 let settingsRestartRequired=false;
+// The running process' effective configuration. Restart checks mirror the gateway: machines are
+// an unordered set, so a pure reorder of already-running machines never requires a restart.
+let runningSettings={host:'127.0.0.1',port:4173,lanEnabled:false,localName:'',machines:[{name:'Second machine',ssh:'test'}]};
+const machinesMatch=(left,right)=>left.length===right.length
+ &&left.every(machine=>right.some(candidate=>candidate.name===machine.name&&candidate.ssh===machine.ssh&&(candidate.wakeMac||'')===(machine.wakeMac||'')));
+const restartFor=value=>value.host!==runningSettings.host||value.port!==runningSettings.port
+ ||Boolean(value.lanEnabled)!==Boolean(runningSettings.lanEnabled)
+ ||(value.localName||'')!==(runningSettings.localName||'')
+ ||!machinesMatch(value.machines||[],runningSettings.machines);
+const syncRunning=()=>{runningSettings={...settings,machines:settings.machines.map(machine=>({...machine}))};};
 // Saved machines match the running fixtures (ssh:test) so the sidebar can pair saved config with
 // live connections; tests that need pending/removal states override machines explicitly.
 let settings={host:'127.0.0.1',port:4173,lanEnabled:false,headless:false,hostName:'Local',localName:'',machines:[{name:'Second machine',ssh:'test'}],phoneUrls:[]};
@@ -67,10 +79,11 @@ const server=createServer(async(req,res)=>{
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
  if(machineSaveGate)await machineSaveGate;
  if(machineSaveFailure)return json({error:machineSaveFailure},500);
- const restartRequired=body.port!==settings.port;
- settings={...settings,...body};settingsRestartRequired=restartRequired;return json({saved:true,settings,restartRequired});
+ settings={...settings,...body};
+ const restartRequired=restartFor(settings);
+ settingsRestartRequired=restartRequired;return json({saved:true,settings,restartRequired});
  }
- return json({settings,restartRequired:settingsRestartRequired});
+ return json({settings,restartRequired:restartFor(settings)});
 }
  if(['/api/approval','/api/input','/api/thread/settings','/api/thread/access'].includes(u.pathname)){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);if(uiGate)await uiGate;
@@ -107,6 +120,7 @@ const server=createServer(async(req,res)=>{
  // local and local:deepseek are separate runtimes that share one physical host heading.
  if(navigationDeepseek)machines.push({id:'local:deepseek',name:'Local',local:true,group:'local',provider:'deepseek',connected:true,catalogAvailable:true,tasks:[{...owned,id:'deepseek-owned',name:'DeepSeek owned task',cwd:'/deepseek/project'}]});
  machines.push({id:'ssh:test',name:'Second machine',group:'ssh:test',connected:remoteConnected,catalogAvailable:remoteAvailable,canWake:wakeConfigured&&!remoteConnected,tasks:[{...owned,id:'remote-owned',name:'Remote owned task',cwd:'/remote/project'}]});
+ for(const extra of extraCatalogMachines)machines.push({...extra,tasks:(extra.tasks||[]).map(task=>({...task}))});
  return json({machines:machines.filter(machine=>!settings.headless||!machine.local)});}
  if(u.pathname==='/api/navigation/select'){
  let text='';for await(const c of req)text+=c;const body=JSON.parse(text);
@@ -605,6 +619,8 @@ try {
  await settingsSave();assert((await chromeColors()).every(c=>c.startsWith('rgba(')));
  await settingsOpen();
  await page.locator('#settings-port').fill(String(settings.port+1));await save.click();
+ // Wait for the save to settle before asserting the restart affordance and its focus.
+ await page.waitForFunction(()=>document.querySelector('#settings-status').textContent==='');
  await page.locator('#settings-restart').waitFor();
  assert.equal(await page.locator('#settings-screen').isVisible(),true);assert.equal(await save.isDisabled(),true);
  assert(await page.locator('#restart-pocket').evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&document.activeElement===e;}));
@@ -671,6 +687,43 @@ try {
  assert.deepEqual(await page.locator('.runtime-panel select').evaluateAll(es=>es.map(e=>getComputedStyle(e).fontSize)),['13px','13px']);
  assert.equal(await page.locator('#model-select-static').evaluate(e=>getComputedStyle(e).fontSize),'13px');
  assert.deepEqual(await page.locator('.runtime-panel .form-field').evaluateAll(es=>es.map(e=>e.children[1].getBoundingClientRect().top-e.children[0].getBoundingClientRect().bottom)),[4,4,4]);
+ // Text inputs, native selects and the read-only single-choice value share one inset and height,
+ // and each select draws one decorative chevron whose right edge sits at the same inset.
+ const insets=await page.evaluate(()=>{
+ const panel=document.querySelector('.runtime-panel');
+ const contentLeft=element=>{const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.left+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft);};
+ const staticControl=panel.querySelector('.select-static'),staticText=panel.querySelector('.select-static-text');
+ const select=panel.querySelector('#effort-select'),access=panel.querySelector('#access-select');
+ const chevron=getComputedStyle(select.closest('.form-field'),'::after');
+ return {staticInset:staticText.getBoundingClientRect().left-staticControl.getBoundingClientRect().left,
+ selectInset:contentLeft(select)-select.getBoundingClientRect().left,accessInset:contentLeft(access)-access.getBoundingClientRect().left,
+ staticHeight:staticControl.getBoundingClientRect().height,selectHeight:select.getBoundingClientRect().height,
+ staticPadding:getComputedStyle(staticControl).paddingLeft,selectPadding:getComputedStyle(select).paddingLeft,selectPaddingRight:getComputedStyle(select).paddingRight,
+ appearance:getComputedStyle(select).appearance,accessAppearance:getComputedStyle(access).appearance,
+ chevronRight:chevron.right,chevronBottom:chevron.bottom,chevronWidth:chevron.width,chevronHeight:chevron.height,
+ chevronPointer:chevron.pointerEvents,chevronMask:String(chevron.maskImage||chevron.webkitMaskImage||'')};
+ });
+ assert.equal(insets.staticPadding,'12px');
+ assert.equal(insets.selectPadding,'12px');
+ assert.equal(insets.selectPaddingRight,'32px','the select reserves room for the chevron');
+ assert.equal(insets.staticHeight,40);
+ assert.equal(insets.selectHeight,40);
+ assert(Math.abs(insets.staticInset-insets.selectInset)<1,`the read-only value and the selectable value share one inset (${insets.staticInset} vs ${insets.selectInset})`);
+ assert(Math.abs(insets.staticInset-insets.accessInset)<1);
+ assert.equal(insets.appearance,'none');
+ assert.equal(insets.accessAppearance,'none');
+ assert.equal(insets.chevronRight,'12px','the chevron right edge sits at the 12px inset');
+ assert.equal(insets.chevronBottom,'0px');
+ assert.equal(insets.chevronWidth,'14px');
+ assert.equal(insets.chevronHeight,'40px');
+ assert.equal(insets.chevronPointer,'none','clicks pass through the chevron to the select');
+ assert(insets.chevronMask.includes('svg'),'the chevron is drawn from one decorative asset');
+ // Forced colors keeps the native picker decoration usable.
+ await page.emulateMedia({forcedColors:'active'});
+ const forced=await page.evaluate(()=>{const select=document.querySelector('#effort-select');return {appearance:getComputedStyle(select).appearance,chevron:getComputedStyle(select.closest('.form-field'),'::after').display};});
+ assert.equal(forced.appearance,'auto','forced colors restores the native select');
+ assert.equal(forced.chevron,'none','the decorative chevron is redundant under forced colors');
+ await page.emulateMedia({forcedColors:'none'});
  await page.locator('#access-select').evaluate(e=>e.classList.add('full-access'));
  assert.equal(await page.locator('#access-select').evaluate(e=>getComputedStyle(e).fontSize),'13px');
  await page.locator('#access-select').evaluate(e=>e.classList.remove('full-access'));
@@ -953,6 +1006,31 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#new-task-cwd').fill('/unavailable');await page.locator('#new-task-cwd').blur();await page.getByText('Starting settings unavailable. Check the Project Folder and try again.',{exact:true}).waitFor();
  await page.locator('#new-task-cwd').fill('');await page.locator('#new-task-cwd').blur();await page.waitForFunction(()=>document.querySelector('#new-task-error').textContent==='');
  await page.locator('#new-task-model-static').filter({hasText:'Demo Model'}).waitFor();
+ // New Task controls share one geometry and chevron inset with Runtime.
+ const newTaskInsets=await page.evaluate(()=>{
+ const contentLeft=element=>{const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.left+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft);};
+ const dialog=document.querySelector('#new-task-dialog');
+ const staticControl=dialog.querySelector('#new-task-model-static'),staticText=dialog.querySelector('#new-task-model-static .select-static-text');
+ const name=dialog.querySelector('#new-task-name'),cwd=dialog.querySelector('#new-task-cwd'),effort=dialog.querySelector('#new-task-effort'),access=dialog.querySelector('#new-task-access');
+ const chevron=getComputedStyle(effort.closest('.form-field'),'::after');
+ return {staticInset:staticText.getBoundingClientRect().left-staticControl.getBoundingClientRect().left,
+ effortInset:contentLeft(effort)-effort.getBoundingClientRect().left,accessInset:contentLeft(access)-access.getBoundingClientRect().left,
+ heights:[name,cwd,staticControl,effort,access].map(element=>element.getBoundingClientRect().height),
+ paddings:[name,cwd,staticControl].map(element=>getComputedStyle(element).paddingLeft),
+ selectPadding:getComputedStyle(effort).paddingLeft,selectPaddingRight:getComputedStyle(effort).paddingRight,
+ appearance:[getComputedStyle(effort).appearance,getComputedStyle(access).appearance],
+ chevronRight:chevron.right,chevronBottom:chevron.bottom,chevronPointer:chevron.pointerEvents};
+ });
+ assert.deepEqual(newTaskInsets.heights,[40,40,40,40,40],'New Task fields share one 40px height');
+ assert.deepEqual(newTaskInsets.paddings,['12px','12px','12px'],'New Task text fields and the read-only value share one inset');
+ assert.equal(newTaskInsets.selectPadding,'12px');
+ assert.equal(newTaskInsets.selectPaddingRight,'32px','New Task selects reserve room for the chevron');
+ assert(Math.abs(newTaskInsets.staticInset-newTaskInsets.effortInset)<1,`the read-only model and the selectable values share one inset (${newTaskInsets.staticInset} vs ${newTaskInsets.effortInset})`);
+ assert(Math.abs(newTaskInsets.staticInset-newTaskInsets.accessInset)<1);
+ assert.deepEqual(newTaskInsets.appearance,['none','none']);
+ assert.equal(newTaskInsets.chevronRight,'12px');
+ assert.equal(newTaskInsets.chevronBottom,'0px');
+ assert.equal(newTaskInsets.chevronPointer,'none','clicks pass through the chevron to the select');
  await page.locator('#new-task-effort').selectOption('high');await page.locator('#new-task-access').selectOption('auto');
  await page.locator('#new-task-cancel').click();
  failAction=true;
@@ -1323,16 +1401,18 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  for(const width of [1280,390]){
  await page.setViewportSize({width,height:844});
  settingsRestartRequired=false;
- settings.machines=[{name:'Laptop',ssh:'test'},{name:'Workstation',ssh:'workstation'}];
- Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false});
- remoteConnected=true;wakeConfigured=false;navigationDeepseek=false;machineSaveFailure=null;machineSaveGate=null;
- Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
- await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
- const groupFor=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
- const infoFor=name=>groupFor(name).locator('.machine-info');
- const dialogOpen=()=>page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
- const dialogClosed=()=>page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
- const waitFor=async(predicate)=>{const start=Date.now();while(!predicate()){if(Date.now()-start>5000)throw new Error('timed out waiting for machine state');await page.waitForTimeout(40);}};
+settings.machines=[{name:'Laptop',ssh:'test'},{name:'Workstation',ssh:'workstation'}];
+Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false});
+ syncRunning();
+remoteConnected=true;wakeConfigured=false;navigationDeepseek=false;machineSaveFailure=null;machineSaveGate=null;
+Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
+await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+const groupFor=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
+const infoFor=name=>groupFor(name).locator('.machine-info');
+const dialogOpen=()=>page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
+const dialogClosed=()=>page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
+ const openMore=async()=>{await page.locator('#machine-dialog-more-button').click();await page.locator('#machine-dialog-up').waitFor();};
+const waitFor=async(predicate)=>{const start=Date.now();while(!predicate()){if(Date.now()-start>5000)throw new Error('timed out waiting for machine state');await page.waitForTimeout(40);}};
 
  // Machine management is in the sidebar (fixed footer), not Settings.
  await open();
@@ -1361,13 +1441,23 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  await open();
 
- // Host details: editable Display Name, identified as host, no SSH/MAC/remove.
- await infoFor('Local').click();await dialogOpen();
+// Host details: editable Display Name, identified as host, no SSH/MAC/remove.
+await infoFor('Local').click();await dialogOpen();
  assert.equal(await page.locator('#machine-dialog-title').textContent(),'Machine Details');
  assert.equal(await page.locator('#machine-dialog-host').isVisible(),true);
+ assert.equal(await page.locator('#machine-dialog-host').textContent(),'Host','the host marker is a small muted label beside the title');
+ // The Host label shares the title row rather than occupying its own uppercase line.
+ const hostHeading=await page.locator('.machine-dialog-heading').evaluate(heading=>{
+ const title=heading.querySelector('#machine-dialog-title').getBoundingClientRect();
+ const host=heading.querySelector('#machine-dialog-host').getBoundingClientRect();
+ return {sameRow:Math.abs((title.top+title.bottom)/2-(host.top+host.bottom)/2)<6,rightOfTitle:host.left>=title.right-1};
+ });
+ assert.equal(hostHeading.sameRow,true,'the Host label sits beside the dialog title');
+ assert.equal(hostHeading.rightOfTitle,true,'the Host label follows the title');
  assert.equal(await page.locator('#machine-dialog-name').inputValue(),'');
  assert.equal(await page.locator('#machine-dialog-ssh-field').isVisible(),false);
  assert.equal(await page.locator('#machine-dialog-mac-field').isVisible(),false);
+ assert.equal(await page.locator('#machine-dialog-more').isVisible(),false,'the host has no More menu');
  assert.equal(await page.locator('#machine-dialog-remove').isVisible(),false);
  await page.locator('#machine-dialog-cancel').click();await dialogClosed();
 
@@ -1378,15 +1468,47 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await page.locator('#machine-dialog-name').inputValue(),'Laptop');
  assert.equal(await page.locator('#machine-dialog-ssh').inputValue(),'test');
  assert.equal(await page.locator('#machine-dialog-mac').inputValue(),'');
+ // Opening existing details must not autofocus or select a text input (mobile keyboard stays closed).
+ assert.equal(await page.evaluate(()=>document.activeElement?.id),'machine-dialog');
+ assert.equal(await page.locator('#machine-dialog-name').evaluate(n=>n===document.activeElement),false);
+ const caret=await page.locator('#machine-dialog-name').evaluate(n=>({start:n.selectionStart,end:n.selectionEnd}));
+ assert.equal(caret.start,caret.end,'opening details does not select the whole name');
+ // The footer is a small More… menu on the left and Cancel/Save on the right, with no permanent
+ // Move Up/Down or Remove buttons.
+ assert.equal(await page.locator('#machine-dialog-more').isVisible(),true,'editing an SSH machine offers More…');
+ assert.equal(await page.locator('#machine-dialog-up').isVisible(),false,'Move Up is not a permanent footer button');
+ assert.equal(await page.locator('#machine-dialog-remove').isVisible(),false,'Remove Machine is not a permanent footer button');
+ const footerOrder=await page.locator('.machine-dialog-actions').evaluate(actions=>[...actions.children].map(node=>node.id||node.className));
+ assert.deepEqual(footerOrder,['machine-dialog-more','new-task-actions'],'More… leads, Cancel/Save follow');
+ const footerSides=await page.locator('.machine-dialog-actions').evaluate(actions=>({more:actions.querySelector('#machine-dialog-more-button').getBoundingClientRect().left,cancel:actions.querySelector('#machine-dialog-cancel').getBoundingClientRect().left}));
+ assert(footerSides.more<footerSides.cancel,'More… stays on the left of the confirm row');
+ await openMore();
+ assert.equal(await page.locator('#machine-dialog-up').isVisible(),true);
+ assert.equal(await page.locator('#machine-dialog-down').isVisible(),true);
  assert.equal(await page.locator('#machine-dialog-remove').isVisible(),true);
- assert.equal(await page.locator('#machine-dialog-move').isVisible(),true);
- // Helpers live outside the labels and describe the fields.
+ assert.equal(await page.locator('#machine-dialog-wake').isVisible(),false,'Wake is hidden without a Wake MAC');
+ const menuLayout=await page.locator('.machine-dialog-menu').evaluate(menu=>{
+ const items=[...menu.querySelectorAll('button')].filter(button=>button.getBoundingClientRect().width>0);
+ return {order:items.map(button=>button.id),divider:Boolean(menu.querySelector('.machine-dialog-menu-separator'))};
+ });
+ assert.deepEqual(menuLayout.order,['machine-dialog-up','machine-dialog-down','machine-dialog-remove']);
+ assert.equal(menuLayout.divider,true,'a separator splits destructive removal from the other actions');
+ await page.locator('#machine-dialog-more-button').click();
+ // Helpers live outside the labels and describe the fields, with a positive gap below the input.
  assert.equal(await page.locator('#machine-dialog-ssh-help').textContent(),'From the host’s SSH config.');
  assert.equal(await page.locator('#machine-dialog-mac-help').textContent(),'For Wake-on-LAN.');
  assert.equal(await page.locator('label:has(#machine-dialog-ssh-help), label:has(#machine-dialog-mac-help)').count(),0,'helper text is not nested inside a label');
- // Opening existing details must not autofocus a text input (mobile keyboard stays closed).
- assert.equal(await page.evaluate(()=>document.activeElement?.id),'machine-dialog');
- assert.equal(await page.locator('#machine-dialog-name').evaluate(n=>n===document.activeElement),false);
+ const helpGaps=await page.locator('#machine-dialog').evaluate(dialog=>{
+ const gap=(inputId,helpId)=>{const input=dialog.querySelector(inputId).getBoundingClientRect();const help=dialog.querySelector(helpId).getBoundingClientRect();return help.top-input.bottom;};
+ return [gap('#machine-dialog-ssh','#machine-dialog-ssh-help'),gap('#machine-dialog-mac','#machine-dialog-mac-help')];
+ });
+ assert(helpGaps.every(gap=>gap>0),`helper text sits below its input without overlap: ${JSON.stringify(helpGaps)}`);
+ // All three input values share one font family, size, weight and color.
+ const inputType=await page.locator('#machine-dialog-name, #machine-dialog-ssh, #machine-dialog-mac').evaluateAll(inputs=>inputs.map(input=>{const s=getComputedStyle(input);return [s.fontFamily,s.fontSize,s.fontWeight,s.color,s.height,s.paddingLeft];}));
+ assert.deepEqual(inputType[1],inputType[0],'the SSH alias matches the Display Name input');
+ assert.deepEqual(inputType[2],inputType[0],'the MAC input matches the Display Name input');
+ assert.equal(inputType[0][4],'40px','Machine Details inputs share the 40px control height');
+ assert.equal(inputType[0][5],'12px','Machine Details inputs share the 12px text inset');
  await page.locator('#machine-dialog-cancel').click();await dialogClosed();
 
  // Add Machine may focus Display Name, and the new machine stays visible before restart.
@@ -1454,13 +1576,17 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
 
  const removeMachine=async name=>{
  await infoFor(name).click();await dialogOpen();
- page.removeAllListeners('dialog');page.once('dialog',d=>d.accept());
+ await openMore();
+ let prompt='';
+ page.removeAllListeners('dialog');page.once('dialog',d=>{prompt=d.message();d.accept();});
  await page.locator('#machine-dialog-remove').click();
  await dialogClosed();
  page.on('dialog',defaultDialog);
+ return prompt;
  };
  // Removing a not-yet-started machine drops only its Pocket configuration.
- await removeMachine('New box renamed');
+ const removalPrompt=await removeMachine('New box renamed');
+ assert.match(removalPrompt,/Conversations and project files are not deleted/,'removal explains that conversations and project files survive');
  await waitFor(()=>!settings.machines.some(m=>m.ssh==='newbox'));
  assert.equal(await groupFor('New box renamed').count(),0);
  // Removing a running machine keeps its live connection and tasks until restart.
@@ -1477,13 +1603,24 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#machine-dialog-submit').click();await dialogClosed();
  await waitFor(()=>settings.machines.length===2&&settings.machines[0].ssh==='workstation');
  await infoFor('Second box').click();await dialogOpen();
+ await page.locator('#machine-dialog-name').fill('Second box draft');
+ await openMore();
  await page.locator('#machine-dialog-up').click();
  await waitFor(()=>settings.machines[0].ssh==='secondbox');
  assert.equal(await page.locator('#machine-dialog').evaluate(n=>n.open),true,'Move Up keeps Machine Details open');
+ assert.equal(await page.locator('#machine-dialog-name').inputValue(),'Second box draft','Move Up keeps the unsaved draft');
  assert.equal(await page.locator('#machine-dialog-up').isDisabled(),true,'the first machine cannot move up');
+ await openMore();
  await page.locator('#machine-dialog-down').click();
  await waitFor(()=>settings.machines[0].ssh==='workstation');
  assert.equal(await page.locator('#machine-dialog').evaluate(n=>n.open),true);
+ assert.equal(await page.locator('#machine-dialog-name').inputValue(),'Second box draft','Move Down keeps the unsaved draft');
+ // Validation still runs after using a menu action: a duplicate alias is rejected, draft intact.
+ await page.locator('#machine-dialog-ssh').fill('workstation');
+ await page.locator('#machine-dialog-submit').click();
+ await page.locator('#machine-dialog-error').getByText('Duplicate SSH alias: workstation').waitFor();
+ assert.equal(await page.locator('#machine-dialog-name').inputValue(),'Second box draft','failed validation keeps the draft after a move');
+ assert.equal(settings.machines[1].ssh,'secondbox','the duplicate draft never reached the host');
  await page.locator('#machine-dialog-cancel').click();await dialogClosed();
 
  // A dedicated drag handle reorders saved SSH machines; the host stays pinned.
@@ -1520,35 +1657,117 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
  }
 
- // Dragging reorders by each group's real saved index, so a filtered-out machine keeps its slot.
- for(const width of [1280,390]){
- await page.setViewportSize({width,height:844});
- settingsRestartRequired=false;
- settings.machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two'},{name:'Three',ssh:'three'}];
+// Dragging reorders by each group's real saved index, so a filtered-out machine keeps its slot.
+for(const width of [1280,390]){
+await page.setViewportSize({width,height:844});
+settingsRestartRequired=false;
+settings.machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two'},{name:'Three',ssh:'three'}];
+Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ syncRunning();
+Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
+await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+await open();
+const filteredGroup=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
+await page.locator('#destination-search').fill('t'); // Two and Three match; One is hidden.
+await filteredGroup('Two').waitFor();await filteredGroup('Three').waitFor();
+ assert.equal(await filteredGroup('One').count(),0,'One is filtered out');
+ const waitSavedOrder=async expected=>{const start=Date.now();while(JSON.stringify(settings.machines.map(m=>m.ssh))!==JSON.stringify(expected)){if(Date.now()-start>5000)throw new Error('timed out waiting for the saved order');await page.waitForTimeout(40);}};
+ const waitDomOrder=expected=>page.waitForFunction(want=>[...document.querySelectorAll('.destination-group[data-saved-index] .machine-toggle strong')].map(node=>node.textContent).join('|')===want,expected.join('|'));
+const handle=filteredGroup('Two').locator('.machine-drag'),target=filteredGroup('Three');
+const handleBox=await handle.boundingBox(),targetBox=await target.boundingBox();
+await page.mouse.move(handleBox.x+handleBox.width/2,handleBox.y+handleBox.height/2);
+await page.mouse.down();
+await page.mouse.move(handleBox.x+handleBox.width/2,targetBox.y+targetBox.height,{steps:6});
+ // Exactly one boundary marker, and it points at the boundary the commit will use.
+ const marker=await page.evaluate(()=>[...document.querySelectorAll('.destination-group.drop-before, .destination-group.drop-after')].map(node=>({name:node.querySelector('.machine-toggle strong').textContent,after:node.classList.contains('drop-after')})));
+ assert.equal(marker.length,1,'one boundary marker is shown');
+ assert.equal(marker[0].name,'Three','the marker sits at the boundary the drop will commit to');
+await page.mouse.up();
+ await waitSavedOrder(['one','three','two']);
+ assert.deepEqual(settings.machines.map(m=>m.ssh),['one','three','two'],'the hidden machine keeps the same slot');
+ assert.equal(await page.locator('#machines-restart').isVisible(),false,'a pure reorder never requires a restart');
+await page.locator('#destination-search').fill('');
+ await waitDomOrder(['One','Three','Two']);
+assert.deepEqual(await page.locator('.destination-group[data-saved-index] .machine-toggle strong').allTextContents(),['One','Three','Two'],'the full saved order matches the filtered drag');
+await dismissTasks();await closed();
+}
+settingsRestartRequired=false;
+settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';syncRunning();
+
+ // Dragging A between B/C gives [B,A,C]; dragging A after C gives [B,C,A]; the visible marker
+ // always matches the committed boundary. Expanded groups have deliberately unequal heights, and
+ // thresholds come from machine headings rather than the midpoint of each whole expanded list.
+ for(const scenario of [
+ {name:'A between B and C',drag:'Alpha',drop:'between',expect:['bravo','alpha','charlie'],marker:'Charlie',markerAfter:false},
+ {name:'A after C',drag:'Alpha',drop:'after',expect:['bravo','charlie','alpha'],marker:'Charlie',markerAfter:true},
+ {name:'heading thresholds with a tall target',drag:'Charlie',drop:'alpha-heading',expect:['alpha','charlie','bravo'],marker:'Bravo',markerAfter:false},
+ ]){
+ // A taller viewport keeps the tall expanded groups and the last drag handle on screen together.
+ await page.setViewportSize({width:1280,height:1400});
+ settings.machines=[{name:'Alpha',ssh:'alpha'},{name:'Bravo',ssh:'bravo'},{name:'Charlie',ssh:'charlie'}];
  Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ syncRunning();
+ extraCatalogMachines=[
+ {id:'ssh:alpha',name:'Alpha',group:'ssh:alpha',connected:true,catalogAvailable:true,tasks:Array.from({length:6},(_,i)=>({id:`alpha-task-${i}`,name:`Alpha task ${i}`,cwd:'/alpha',status:'idle'}))},
+ {id:'ssh:bravo',name:'Bravo',group:'ssh:bravo',connected:true,catalogAvailable:true,tasks:[{id:'bravo-task',name:'Bravo task',cwd:'/bravo',status:'idle'}]},
+ {id:'ssh:charlie',name:'Charlie',group:'ssh:charlie',connected:true,catalogAvailable:true,tasks:[{id:'charlie-task',name:'Charlie task',cwd:'/charlie',status:'idle'},{id:'charlie-task-2',name:'Charlie task two',cwd:'/charlie',status:'idle'}]},
+ ];
  Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  await open();
- const filteredGroup=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
- await page.locator('#destination-search').fill('t'); // Two and Three match; One is hidden.
- await filteredGroup('Two').waitFor();await filteredGroup('Three').waitFor();
- assert.equal(await filteredGroup('One').count(),0,'One is filtered out');
- const waitSavedOrder=async expected=>{const start=Date.now();while(JSON.stringify(settings.machines.map(m=>m.ssh))!==JSON.stringify(expected)){if(Date.now()-start>5000)throw new Error('timed out waiting for the saved order');await page.waitForTimeout(40);}};
- const handle=filteredGroup('Two').locator('.machine-drag'),target=filteredGroup('Three');
- const handleBox=await handle.boundingBox(),targetBox=await target.boundingBox();
+ const group=name=>page.locator('.destination-group').filter({has:page.getByText(name,{exact:true})});
+ const headingBoxOf=async name=>(await group(name).locator('.destination-group-heading').boundingBox());
+ const handle=group(scenario.drag).locator('.machine-drag');
+ const handleBox=await handle.boundingBox();
+ const bravoHeading=await headingBoxOf('Bravo'),charlieHeading=await headingBoxOf('Charlie'),alphaHeading=await headingBoxOf('Alpha');
+ const dropY=(scenario.drop==='between'?bravoHeading.y+bravoHeading.height/2
+ :scenario.drop==='after'?charlieHeading.y+charlieHeading.height/2
+ :alphaHeading.y+alphaHeading.height/2)+1; // just past the heading midpoint; inside Alpha's tall body for the last case
  await page.mouse.move(handleBox.x+handleBox.width/2,handleBox.y+handleBox.height/2);
  await page.mouse.down();
- await page.mouse.move(handleBox.x+handleBox.width/2,targetBox.y+targetBox.height,{steps:6});
+ await page.mouse.move(handleBox.x+handleBox.width/2,dropY,{steps:8});
+ const painted=await page.evaluate(()=>[...document.querySelectorAll('.destination-group.drop-before, .destination-group.drop-after')].map(node=>({name:node.querySelector('.machine-toggle strong').textContent,after:node.classList.contains('drop-after')})));
+ assert.equal(painted.length,1,`exactly one boundary marker (${scenario.name})`);
+ assert.equal(painted[0].name,scenario.marker,`the marker names the committed neighbour (${scenario.name})`);
+ assert.equal(painted[0].after,scenario.markerAfter,`the marker side matches the committed boundary (${scenario.name})`);
  await page.mouse.up();
- await waitSavedOrder(['one','three','two']);
- assert.deepEqual(settings.machines.map(m=>m.ssh),['one','three','two'],'the hidden machine keeps the same slot');
- await page.locator('#destination-search').fill('');
- await filteredGroup('One').waitFor();
- assert.deepEqual(await page.locator('.destination-group[data-saved-index] .machine-toggle strong').allTextContents(),['One','Three','Two'],'the full saved order matches the filtered drag');
+ const start=Date.now();
+ while(JSON.stringify(settings.machines.map(m=>m.ssh))!==JSON.stringify(scenario.expect)){if(Date.now()-start>5000)throw new Error(`timed out waiting for ${scenario.name}`);await page.waitForTimeout(40);}
+ assert.deepEqual(settings.machines.map(m=>m.ssh),scenario.expect,scenario.name);
+ // The marker predicted the committed boundary for the dragged machine.
+ const committed=scenario.expect.indexOf(scenario.drag.toLowerCase());
+ const neighbour=scenario.expect[committed+1];
+ assert.equal(painted[0].name,neighbour?neighbour[0].toUpperCase()+neighbour.slice(1):'Charlie',`the marker matches the committed order (${scenario.name})`);
+ assert.equal(await page.locator('#machines-restart').isVisible(),false,'a pure reorder never requires a restart');
  await dismissTasks();await closed();
  }
+ extraCatalogMachines=[];
  settingsRestartRequired=false;
- settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';syncRunning();
+
+ // A reorder must not clear a restart that a genuine configuration change already required.
+ await page.setViewportSize({width:1280,height:844});
+ settings.machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two'}];
+ Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ runningSettings={...runningSettings,machines:[{name:'One',ssh:'one'}]};
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ await open();
+ assert.equal(await page.locator('#machines-restart').isVisible(),true,'a saved machine that is not running yet requires a restart');
+ const pendingHandle=page.locator('.destination-group').filter({has:page.getByText('One',{exact:true})}).locator('.machine-drag');
+ const pendingTarget=page.locator('.destination-group').filter({has:page.getByText('Two',{exact:true})});
+ const pendingHandleBox=await pendingHandle.boundingBox(),pendingTargetBox=await pendingTarget.boundingBox();
+ await page.mouse.move(pendingHandleBox.x+pendingHandleBox.width/2,pendingHandleBox.y+pendingHandleBox.height/2);
+ await page.mouse.down();
+ await page.mouse.move(pendingHandleBox.x+pendingHandleBox.width/2,pendingTargetBox.y+pendingTargetBox.height,{steps:6});
+ await page.mouse.up();
+ const pendingStart=Date.now();
+ while(JSON.stringify(settings.machines.map(m=>m.ssh))!==JSON.stringify(['two','one'])){if(Date.now()-pendingStart>5000)throw new Error('timed out waiting for the pending reorder');await page.waitForTimeout(40);}
+ assert.deepEqual(settings.machines.map(m=>m.ssh),['two','one'],'the reorder was saved');
+ assert.equal(await page.locator('#machines-restart').isVisible(),true,'reordering after an SSH/config change keeps the restart requirement');
+ await dismissTasks();await closed();
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';syncRunning();
 
  // Interleaved filter: A visible / B hidden / C visible keeps B at its exact saved index.
  for(const direction of ['C-before-A','A-after-C']){
@@ -1556,6 +1775,7 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  settingsRestartRequired=false;
  settings.machines=[{name:'Node A',ssh:'node-a'},{name:'Hub',ssh:'hub'},{name:'Node C',ssh:'node-c'}];
  Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ syncRunning();
  Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  await open();
@@ -1579,31 +1799,109 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  settingsRestartRequired=false;
  settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
 
- // Machine Details actions fit inside the dialog at phone widths.
- await page.setViewportSize({width:320,height:844});
+ // A real touch pointer reorders machines; a tap, scrolling, collapsing or a cancel never saves.
+ await page.setViewportSize({width:390,height:844});
+ settings.machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two'},{name:'Three',ssh:'three'}];
+ Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ syncRunning();
+ extraCatalogMachines=[];
+ Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
+ const touchContext=await browser.newContext({hasTouch:true,viewport:{width:390,height:844}});
+ try{
+ const touchPage=await touchContext.newPage();
+ await touchPage.goto(`http://127.0.0.1:${server.address().port}`);
+ await touchPage.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
+ if(await touchPage.locator('#destination-button').getAttribute('aria-expanded')!=='true')await touchPage.locator('#destination-button').click();
+ await touchPage.waitForTimeout(250);
+ const touchGroup=name=>touchPage.locator('.destination-group').filter({has:touchPage.getByText(name,{exact:true})});
+ const handle=touchGroup('Two').locator('.machine-drag');
+ await handle.waitFor();
+ const cdp=await touchContext.newCDPSession(touchPage);
+ const touch=(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points});
+ const savedOrder=()=>settings.machines.map(m=>m.ssh).join(',');
+ const markerCount=()=>touchPage.locator('.drop-before, .drop-after').count();
+ // Re-measure after any scroll/collapse: the touch points must land on the current layout.
+ const boxes=async()=>{await handle.scrollIntoViewIfNeeded();const handleBox=await handle.boundingBox(),targetBox=await touchGroup('Three').boundingBox();return {handleBox,targetBox};};
+ // A tap must not save.
+ const tapBox=await boxes();
+ await touch('touchStart',[{x:tapBox.handleBox.x+tapBox.handleBox.width/2,y:tapBox.handleBox.y+tapBox.handleBox.height/2,id:1}]);
+ await touch('touchEnd',[]);
+ await touchPage.waitForTimeout(150);
+ assert.equal(savedOrder(),'one,two,three','a tap on the handle saves nothing');
+ assert.equal(await markerCount(),0);
+ // Scrolling the list must not start a drag.
+ const listBox=await touchPage.locator('#destination-list').boundingBox();
+ await touch('touchStart',[{x:listBox.x+listBox.width/2,y:listBox.y+listBox.height-30,id:2}]);
+ await touch('touchMove',[{x:listBox.x+listBox.width/2,y:listBox.y+30,id:2}]);
+ await touch('touchEnd',[]);
+ await touchPage.waitForTimeout(150);
+ assert.equal(savedOrder(),'one,two,three','scrolling the list does not reorder');
+ assert.equal(await touchPage.locator('.destination-group.dragging').count(),0);
+ // Collapsing uses the toggle, not a drag.
+ await touchGroup('Two').locator('.machine-toggle').tap();
+ await touchPage.waitForTimeout(150);
+ assert.equal(await touchGroup('Two').evaluate(node=>node.classList.contains('collapsed')),true);
+ assert.equal(savedOrder(),'one,two,three','collapsing a machine does not reorder');
+ await touchGroup('Two').locator('.machine-toggle').tap();
+ await touchPage.waitForTimeout(150);
+ // A cancelled touch drag reverts without saving.
+ let dragBox=await boxes();
+ await touch('touchStart',[{x:dragBox.handleBox.x+dragBox.handleBox.width/2,y:dragBox.handleBox.y+dragBox.handleBox.height/2,id:3}]);
+ await touch('touchMove',[{x:dragBox.handleBox.x+dragBox.handleBox.width/2,y:dragBox.targetBox.y+dragBox.targetBox.height-2,id:3}]);
+ await touchPage.waitForTimeout(80);
+ assert.equal(await touchPage.locator('.destination-group.dragging').count(),1,'the touch drag starts');
+ assert.equal(await markerCount(),1,'the touch drag paints the boundary marker');
+ await touch('touchCancel',[]);
+ await touchPage.waitForTimeout(150);
+ assert.equal(savedOrder(),'one,two,three','a cancelled drag saves nothing');
+ assert.equal(await touchPage.locator('.destination-group.dragging').count(),0);
+ assert.equal(await markerCount(),0,'a cancelled drag clears the boundary marker');
+ // A genuine touch drag commits the reorder.
+ dragBox=await boxes();
+ await touch('touchStart',[{x:dragBox.handleBox.x+dragBox.handleBox.width/2,y:dragBox.handleBox.y+dragBox.handleBox.height/2,id:4}]);
+ await touch('touchMove',[{x:dragBox.handleBox.x+dragBox.handleBox.width/2,y:dragBox.targetBox.y+dragBox.targetBox.height-2,id:4}]);
+ await touch('touchEnd',[]);
+ const touchStart=Date.now();
+ while(savedOrder()!=='one,three,two'){if(Date.now()-touchStart>5000)throw new Error('timed out waiting for the touch reorder');await page.waitForTimeout(40);}
+ assert.equal(savedOrder(),'one,three,two','an actual touch drag reorders machines');
+ }finally{await touchContext.close();}
+ settingsRestartRequired=false;
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';syncRunning();
+
+ // Machine Details helper text and actions fit inside the dialog at phone widths.
+ for(const width of [320,390]){
+ await page.setViewportSize({width,height:844});
  settings.machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two'}];
  Object.assign(settings,{localName:'',headless:false,host:'127.0.0.1',port:4173,lanEnabled:false,hostName:'Local'});
+ syncRunning();
  await page.reload();await page.waitForFunction(()=>document.querySelector('#destination-label').textContent.includes('Current task'));
  await open();
  await page.locator('.destination-group').filter({has:page.getByText('Two',{exact:true})}).locator('.machine-info').click();
  await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
- const actionGeometry=await page.locator('#machine-dialog').evaluate(dialog=>{
+ await page.locator('#machine-dialog-more-button').click();
+ const geometry=await page.locator('#machine-dialog').evaluate(dialog=>{
+ const box=node=>{const rect=node.getBoundingClientRect();return {id:node.id||node.className,left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};};
  const form=dialog.querySelector('#machine-dialog-form').getBoundingClientRect();
- const buttons=[...dialog.querySelectorAll('.machine-dialog-actions button')].filter(button=>!button.hidden&&button.getBoundingClientRect().width>0);
- const box=button=>{const rect=button.getBoundingClientRect();return {id:button.id,label:button.textContent.trim(),left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};};
- return {overflow:document.documentElement.scrollWidth>innerWidth,formLeft:form.left,formRight:form.right,buttons:buttons.map(box)};
+ const gap=(inputId,helpId)=>{const input=dialog.querySelector(inputId).getBoundingClientRect();const help=dialog.querySelector(helpId).getBoundingClientRect();return help.top-input.bottom;};
+ return {overflow:document.documentElement.scrollWidth>innerWidth,dialog:box(dialog),form:{left:form.left,right:form.right},
+ menu:box(dialog.querySelector('.machine-dialog-menu')),
+ items:['#machine-dialog-up','#machine-dialog-down','#machine-dialog-remove'].map(id=>box(dialog.querySelector(id))),
+ confirm:['#machine-dialog-cancel','#machine-dialog-submit'].map(id=>box(dialog.querySelector(id))),
+ helpGaps:[gap('#machine-dialog-ssh','#machine-dialog-ssh-help'),gap('#machine-dialog-mac','#machine-dialog-mac-help')]};
  });
- assert.equal(actionGeometry.overflow,false,'320px Machine Details has no horizontal overflow');
- assert(actionGeometry.buttons.length>=5,`edit mode shows Remove, Move and Cancel/Save: ${JSON.stringify(actionGeometry.buttons)}`);
- for(const button of actionGeometry.buttons)assert(button.left>=actionGeometry.formLeft-0.5&&button.right<=actionGeometry.formRight+0.5,`${button.label} stays within the dialog: ${JSON.stringify(button)}`);
- const removeAction=actionGeometry.buttons.find(button=>button.id==='machine-dialog-remove');
- const cancelAction=actionGeometry.buttons.find(button=>button.id==='machine-dialog-cancel');
- assert(removeAction.bottom<=cancelAction.top+0.5,'Remove gets its own row above the confirm row');
+ assert.equal(geometry.overflow,false,`${width}px Machine Details has no horizontal overflow`);
+ assert(geometry.helpGaps.every(value=>value>0),`helper text sits below its input at ${width}px: ${JSON.stringify(geometry.helpGaps)}`);
+ assert(geometry.menu.left>=geometry.form.left-0.5&&geometry.menu.right<=geometry.form.right+0.5,`the More menu stays inside the dialog at ${width}px: ${JSON.stringify(geometry.menu)}`);
+ assert(geometry.menu.top>=geometry.dialog.top-0.5,`the More menu stays inside the dialog vertically at ${width}px`);
+ for(const item of [...geometry.items,...geometry.confirm])assert(item.left>=geometry.form.left-0.5&&item.right<=geometry.form.right+0.5,`${item.id} stays within the dialog at ${width}px: ${JSON.stringify(item)}`);
+ assert.equal(geometry.confirm[0].top,geometry.confirm[1].top,'Cancel and Save share one confirm row');
+ assert(geometry.items.at(-1).bottom<=geometry.confirm[0].top,'the menu opens above the confirm row');
  await page.locator('#machine-dialog-cancel').click();
  await page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
  await dismissTasks();await closed();
+ }
  settingsRestartRequired=false;
- settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';
+ settings.machines=[{name:'Second machine',ssh:'test'}];settings.localName='';syncRunning();
 
  // Themes stay neutral in dark mode, System matches the explicit themes, and navigation uses one active surface.
  for(const width of [1280,390]){
@@ -2438,81 +2736,107 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  assert.equal(await hitTesting(),'auto');
  }
  historyFixture=null;
- // Wake is a machine action, never a task selection; MAC settings survive save/reopen.
+ // Machine headings lead with the drag handle, keep status by the name, and end with Info + New
+ // Task. Wake is a Machine Details action that targets the running machine, never the edited alias.
  for(const width of [1280,390,320]){
  await page.setViewportSize({width,height:844});
  Object.assign(runtime.state,{machineId:'local',thread:task,turn:null,phase:'done',liveMessages:[],activities:[]});
  settings.headless=false;settings.machines=[{name:'Second machine',ssh:'test'}];
+ syncRunning();
  remoteConnected=false;wakeConfigured=true;wakeFailure=false;
  await page.reload();await open();
- const wake=page.getByRole('button',{name:'Wake Second machine',exact:true});await wake.waitFor();
- assert.equal(await wake.getAttribute('title'),'Wake Second machine');
- assert.equal(await wake.getAttribute('class'),'icon-button');
- assert.equal(await wake.locator('svg[aria-hidden="true"]').count(),1);
- const group=wake.locator('xpath=ancestor::section[contains(@class,"destination-group")]');
- const heading=group.locator('.destination-group-heading');
- const checkHeader=async(header,expectedCount,expectEvenGaps)=>{
- const layout=await header.evaluate(e=>{
-  const controls=e.querySelector('.machine-header-controls');
-  const boxes=[...controls.children].map(node=>node.getBoundingClientRect());
-  const name=e.querySelector('.machine-toggle').getBoundingClientRect();
-  return {count:boxes.length,gaps:boxes.slice(1).map((box,i)=>box.left-boxes[i].right),
-   hitTargets:[...controls.querySelectorAll('.icon-button')].map(node=>{const box=node.getBoundingClientRect();return [box.width,box.height];}),
-   fits:boxes.every(box=>box.left>=0&&box.right<=innerWidth)&&name.right<=controls.getBoundingClientRect().left,
-   centers:boxes.map(box=>(box.top+box.bottom)/2)};
+ // The host has no saved index, so this is the single reorderable SSH group.
+ const sshGroup=page.locator('.destination-group[data-saved-index]');
+ await sshGroup.locator('.machine-toggle').waitFor();
+ const heading=sshGroup.locator('.destination-group-heading');
+ const readHeading=()=>heading.evaluate(node=>{
+  const box=element=>{const rect=element.getBoundingClientRect();return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:rect.width,height:rect.height,center:(rect.top+rect.bottom)/2};};
+  const children=[...node.children];
+  const controls=[...node.querySelectorAll('.machine-header-controls > *')];
+  return {
+   order:children.map(child=>child.classList.contains('machine-drag')?'drag':child.classList.contains('machine-name-block')?'name':child.classList.contains('machine-header-controls')?'controls':child.className),
+   controls:controls.map(child=>[...child.classList].find(name=>name.startsWith('machine-'))||child.className),
+   hitTargets:[...node.querySelectorAll('.icon-button')].map(child=>{const rect=child.getBoundingClientRect();return [rect.width,rect.height];}),
+   gaps:controls.slice(1).map((child,index)=>child.getBoundingClientRect().left-controls[index].getBoundingClientRect().right),
+   centers:controls.map(child=>(child.getBoundingClientRect().top+child.getBoundingClientRect().bottom)/2),
+   drag:box(node.querySelector('.machine-drag')),nameBox:box(node.querySelector('.machine-toggle')),
+   statusBox:box(node.querySelector('.machine-status')),controlsBox:box(node.querySelector('.machine-header-controls')),
+   overflow:document.documentElement.scrollWidth>innerWidth,
+  };
  });
- assert.equal(layout.count,expectedCount);assert.equal(layout.fits,true);
- if(expectEvenGaps)assert(layout.gaps.every(gap=>Math.abs(gap-8)<1),JSON.stringify(layout.gaps));
- assert(layout.hitTargets.every(([width,height])=>width===36&&height===36));
+ const layout=await readHeading();
+ assert.deepEqual(layout.order,['drag','name','controls'],'the drag handle leads, then the name, then the actions');
+ assert.deepEqual(layout.controls,['machine-info','machine-create'],'Info sits immediately before New Task');
+ assert.equal(layout.drag.left<layout.nameBox.left,true,'the drag handle is at the far left');
+ assert(layout.statusBox.left>=layout.nameBox.left-0.5,'status sits with the name, not among the actions');
+ assert(layout.hitTargets.every(([buttonWidth,buttonHeight])=>buttonWidth===36&&buttonHeight===36),`icon hit targets stay 36×36: ${JSON.stringify(layout.hitTargets)}`);
+ assert(layout.gaps.every(gap=>gap<=4.5),`action gaps stay tight without shrinking targets: ${JSON.stringify(layout.gaps)}`);
  assert(layout.centers.every(center=>Math.abs(center-layout.centers[0])<1));
- };
- // Offline SSH with wake, drag, info and New Task controls.
- await checkHeader(heading,5,true);
- await heading.locator('.machine-toggle strong').evaluate(e=>e.textContent='A very long machine name that must fit without displacing controls');
- await checkHeader(heading,5,true);
- assert.equal(await heading.locator('.machine-toggle strong').evaluate(e=>getComputedStyle(e).textOverflow),'ellipsis');
- // The host heading has only info and New Task.
- await checkHeader(page.locator('.destination-group-heading').first(),2,false);
- const newTask=heading.getByRole('button',{name:'New task',exact:true});
- assert.equal(await wake.isEnabled(),true);
- assert.equal(await wake.evaluate(e=>{let opacity=1;for(let node=e;node;node=node.parentElement)opacity*=Number(getComputedStyle(node).opacity);return opacity;}),1);
- assert.equal(await newTask.isDisabled(),true);
- assert.equal(await newTask.evaluate(e=>getComputedStyle(e).opacity),'0.52');
- const groupRows=await group.locator(':scope > *').count();
- const headingHeight=(await heading.boundingBox()).height;
- const localFeedback=async()=>{
- assert.equal(await heading.locator('.wake-action [role="status"]').count(),1);
- assert.equal(await group.locator(':scope > *').count(),groupRows);
- assert.equal((await heading.boundingBox()).height,headingHeight);
- assert.equal(await group.locator('.destination-empty.wake-feedback').count(),0);
- };
+ assert.equal(layout.overflow,false,`no horizontal overflow at ${width}px`);
+ if(width<=420)assert(layout.statusBox.top>=layout.nameBox.bottom-0.5,'status drops below the name when narrow');
+ else assert(Math.abs(layout.statusBox.center-layout.nameBox.center)<6,'status sits beside the name when there is room');
+ // A long name truncates instead of displacing the controls.
+ await sshGroup.locator('.machine-toggle strong').evaluate(node=>{node.textContent='A very long machine name that must not displace the controls';});
+ assert.equal(await sshGroup.locator('.machine-toggle strong').evaluate(node=>getComputedStyle(node).textOverflow),'ellipsis');
+ const longLayout=await readHeading();
+ assert.equal(longLayout.overflow,false,`a long name still fits at ${width}px`);
+ assert(longLayout.nameBox.right<=longLayout.controlsBox.left+0.5,'the controls keep their place beside a long name');
+ // The host heading has no drag handle and only Info + New Task.
+ const hostHeading=page.locator('.destination-group-heading').first();
+ const hostControls=await hostHeading.locator('.machine-header-controls > *').evaluateAll(nodes=>nodes.map(node=>[...node.classList].find(name=>name.startsWith('machine-'))));
+ assert.deepEqual(hostControls,['machine-info','machine-create'],'the host heading keeps only Info and New Task');
+ assert.equal(await hostHeading.locator('.machine-drag').count(),0,'the host is pinned with no drag handle');
+ assert.equal(await heading.locator('.wake-action, [title^="Wake"]').count(),0,'Wake is not a heading action');
+ // Wake lives in Machine Details and uses the live runtime identity even with an edited alias draft.
  const selectionCalls=calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length;
  const label=await page.locator('#destination-label').textContent();
- await wake.click();await page.getByText('Wake packet sent',{exact:true}).waitFor();
- await localFeedback();
- assert.deepEqual(wakeBodies.at(-1),{machineId:'ssh:test'});
- assert.equal(calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length,selectionCalls);
+ const openSshDetails=async()=>{await sshGroup.locator('.machine-info').click();await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);};
+ await openSshDetails();
+ await page.locator('#machine-dialog-more-button').click();
+ const wake=page.locator('#machine-dialog-wake');
+ assert.equal(await wake.isVisible(),true,'Wake is offered for an offline machine with a MAC');
+ await page.locator('#machine-dialog-ssh').fill('edited-alias');
+ await page.locator('#machine-dialog-more-button').click(); // close
+ assert.equal(await page.locator('#machine-dialog-ssh').inputValue(),'edited-alias','toggling More keeps the draft');
+ await page.locator('#machine-dialog-more-button').click(); // reopen for the Wake action
+ await wake.click();
+ await page.locator('#machine-dialog-wake-status').getByText('Wake packet sent',{exact:true}).waitFor();
+ assert.deepEqual(wakeBodies.at(-1),{machineId:'ssh:test'},'Wake targets the running machine, not the edited alias');
+ assert.equal(calls.filter(c=>c==='/api/navigation/select'||c==='/api/thread'||c==='/api/tasks').length,selectionCalls,'Wake never changes the selected task');
  assert.equal(await page.locator('#destination-label').textContent(),label);
- await heading.locator('.wake-feedback').waitFor({state:'detached',timeout:5500});
- wakeFailure=true;await wake.click();await page.getByText('send EACCES',{exact:true}).waitFor();await localFeedback();
- if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-${width}.png`});
+ assert.equal(await page.locator('#machine-dialog-ssh').inputValue(),'edited-alias','Wake keeps the draft');
+ if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-machine-${width}.png`});
+ wakeFailure=true;
+ await page.locator('#machine-dialog-more-button').click();
+ await page.locator('#machine-dialog-wake').click();
+ await page.locator('#machine-dialog-wake-status').getByText('send EACCES',{exact:true}).waitFor();
+ wakeFailure=false;
+ await page.locator('#machine-dialog-cancel').click();
+ await page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
+ // Wake is not offered when the machine is connected or has no MAC configured.
  for(const [connected,configured] of [[true,true],[false,false]]){
  remoteConnected=connected;wakeConfigured=configured;
- await page.reload();await open();await page.locator('.machine-toggle').filter({hasText:'Second machine'}).waitFor();
- assert.equal(await page.getByRole('button',{name:/^Wake /}).count(),0);
+ await page.reload();await open();
+ await sshGroup.locator('.machine-toggle').waitFor();
+ await sshGroup.locator('.machine-info').click();
+ await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
+ await page.locator('#machine-dialog-more-button').click();
+ assert.equal(await page.locator('#machine-dialog-wake').isVisible(),false,`Wake is hidden for connected=${connected} configured=${configured}`);
+ await page.locator('#machine-dialog-cancel').click();
+ await page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
  }
  // The Wake MAC is edited in sidebar Machine Details and survives save/reopen.
- await open();
- const macGroup=page.locator('.destination-group').filter({has:page.getByText('Second machine',{exact:true})});
- await macGroup.locator('.machine-info').first().click();
+ remoteConnected=false;wakeConfigured=true;
+ settings.machines=[{name:'Second machine',ssh:'test'}];syncRunning();
+ await page.reload();await open();
+ await sshGroup.locator('.machine-info').first().click();
  await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
- const mac=page.locator('#machine-dialog-mac');await mac.fill('AA:BB:CC:DD:EE:FF');
- if(process.env.POCKET_SCREENSHOT_DIR)await page.screenshot({path:`${process.env.POCKET_SCREENSHOT_DIR}/wake-machine-${width}.png`});
+ await page.locator('#machine-dialog-mac').fill('AA:BB:CC:DD:EE:FF');
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  await page.locator('#machine-dialog-submit').click();
  await page.waitForFunction(()=>!document.querySelector('#machine-dialog').open);
  assert.equal(settings.machines[0].wakeMac,'AA:BB:CC:DD:EE:FF');
- await macGroup.locator('.machine-info').first().click();
+ await sshGroup.locator('.machine-info').first().click();
  await page.waitForFunction(()=>document.querySelector('#machine-dialog').open);
  assert.equal(await page.locator('#machine-dialog-mac').inputValue(),'AA:BB:CC:DD:EE:FF');
  await page.locator('#machine-dialog-cancel').click();
@@ -3143,5 +3467,5 @@ await row('Owned task').locator('.task-selection-error').waitFor();assert.equal(
  await page.locator('#cwd-form').evaluate(e=>e.requestSubmit());assert.equal(cwdEdits.length,beforeSwitch);
  await edit();runtime.state.machineId='ssh:changed';runtime.broadcast('snapshot',snapshot());await page.waitForFunction(()=>!document.querySelector('#cwd-dialog').open);assert.equal(cwdEdits.length,beforeSwitch);
  }
- assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters');
+ assert.deepEqual(errors,[]);console.log('PASS: desktop/mobile task-keyed text/images, failed selection preserves drafts, send clears drafts, localized Rename/Archive/Delete/Create busy and failures, new task empty, draft eviction returns empty, remote Markdown images unavailable, settings labels and filters, image-card viewer, errored-row retry, both sidebar geometry and matching shells, form control sizes, Tasks focus, frame-by-frame viewport anchoring, diff wrapping and bulk display filters, machine reorder boundaries and hidden-slot preservation, touch drag, Machine Details More menu, and shared control insets');
 }finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));for(const body of fileBodies)await rm(join(tmpdir(),'codex-pocket',body.submissionId),{recursive:true,force:true});}

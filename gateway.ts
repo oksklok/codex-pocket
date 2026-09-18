@@ -500,7 +500,23 @@ export function settingsNeedRestart(settings: LocalSettings, options: Options, a
     || desired.port !== options.port
     || desired.localName !== options.localName
     || !secretMatches(desiredPin ?? "", auth.pin ?? "")
-    || JSON.stringify(desired.machines) !== JSON.stringify(options.machines);
+    || machineConfigurationsDiffer(desired.machines, options.machines);
+}
+
+// The saved display order is irrelevant to the running connections: the same machines in a new
+// order must not force a restart. Compare as an unordered multiset so a pure reorder saves and
+// renders immediately, while any added, removed, or edited machine still requires a restart.
+export function machineConfigurationsDiffer(desired: MachineConfig[], running: MachineConfig[]): boolean {
+  if (desired.length !== running.length) return true;
+  const remaining = running.slice();
+  for (const machine of desired) {
+    const index = remaining.findIndex((candidate) => candidate.name === machine.name
+      && candidate.ssh === machine.ssh
+      && (candidate.wakeMac ?? "") === (machine.wakeMac ?? ""));
+    if (index < 0) return true;
+    remaining.splice(index, 1);
+  }
+  return false;
 }
 
 function browserUrl(host: string, port: number): string {

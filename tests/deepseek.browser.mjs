@@ -314,6 +314,26 @@ try {
   assert.equal(await detailsModelText.evaluate(node => getComputedStyle(node).textOverflow), 'ellipsis');
   assert.equal(await detailsModelText.evaluate(node => node.scrollWidth > node.clientWidth), true, 'the long model name is truncated');
   assert.equal(await page.locator('#model-select-static').evaluate(node => node.getBoundingClientRect().right <= node.closest('.runtime-panel').getBoundingClientRect().right + 0.5), true, 'the value stays inside its control');
+  // DeepSeek-Flash shares the selectable controls' 12px text inset and chevron geometry; it must
+  // not sit farther left than a select's own value.
+  const runtimeInsets = await page.evaluate(() => {
+    const contentLeft = element => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft); };
+    const staticControl = document.querySelector('#model-select-static'), staticText = document.querySelector('#model-select-static .select-static-text');
+    const effort = document.querySelector('#effort-select'), access = document.querySelector('#access-select');
+    const chevron = getComputedStyle(effort.closest('.form-field'), '::after');
+    return {staticInset: staticText.getBoundingClientRect().left - staticControl.getBoundingClientRect().left,
+      effortInset: contentLeft(effort) - effort.getBoundingClientRect().left, accessInset: contentLeft(access) - access.getBoundingClientRect().left,
+      heights: [staticControl, effort, access].map(element => element.getBoundingClientRect().height),
+      appearance: [getComputedStyle(effort).appearance, getComputedStyle(access).appearance],
+      chevronRight: chevron.right, chevronBottom: chevron.bottom, chevronPointer: chevron.pointerEvents};
+  });
+  assert(Math.abs(runtimeInsets.staticInset - runtimeInsets.effortInset) < 1, `DeepSeek-Flash and the selects share one inset (${runtimeInsets.staticInset} vs ${runtimeInsets.effortInset})`);
+  assert(Math.abs(runtimeInsets.staticInset - runtimeInsets.accessInset) < 1);
+  assert.deepEqual(runtimeInsets.heights, [40, 40, 40]);
+  assert.deepEqual(runtimeInsets.appearance, ['none', 'none']);
+  assert.equal(runtimeInsets.chevronRight, '12px');
+  assert.equal(runtimeInsets.chevronBottom, '0px');
+  assert.equal(runtimeInsets.chevronPointer, 'none');
 
   // Display filters: a positively disabled feature hides its filter, unknown capability never does.
   const filterHidden = key => page.locator(`#display-${key}`).evaluate(node => node.closest('label').hidden);

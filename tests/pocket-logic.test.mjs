@@ -2137,6 +2137,26 @@ test('Restart-required compares effective launch overrides and unmasked settings
   assert.equal(settingsNeedRestart(settings,options,auth,[],'9876'),true);
 });
 
+test('Machine reordering never needs a restart while real machine changes still do', async () => {
+  const {settingsNeedRestart}=await import('../gateway.ts');
+  const machines=[{name:'One',ssh:'one'},{name:'Two',ssh:'two',wakeMac:'AA:BB:CC:DD:EE:FF'}];
+  const options=parseArgs([],{host:'127.0.0.1',port:4173,localName:'',machines});
+  const auth={pin:null};
+  const settings={config:{lanEnabled:false,host:'127.0.0.1',port:4173,pin:null,localName:'',machines:[...machines].reverse()}};
+  // A pure reorder compares equal as an unordered set: it must save without restarting connections.
+  assert.equal(settingsNeedRestart(settings,options,auth,[],undefined),false);
+  // Real changes still require a restart, in any order.
+  settings.config.machines=[{name:'Two',ssh:'two',wakeMac:'AA:BB:CC:DD:EE:FF'},{name:'One',ssh:'one'},{name:'Three',ssh:'three'}];
+  assert.equal(settingsNeedRestart(settings,options,auth,[],undefined),true);
+  settings.config.machines=[{name:'Two',ssh:'two',wakeMac:'AA:BB:CC:DD:EE:FF'},{name:'One renamed',ssh:'one'}];
+  assert.equal(settingsNeedRestart(settings,options,auth,[],undefined),true);
+  settings.config.machines=[{name:'Two',ssh:'two'}];
+  assert.equal(settingsNeedRestart(settings,options,auth,[],undefined),true);
+  // Reordering after a genuine pending change must not clear the required restart.
+  settings.config.machines=[{name:'Three',ssh:'three'},{name:'One',ssh:'one'}];
+  assert.equal(settingsNeedRestart(settings,options,auth,[],undefined),true);
+});
+
 test('Compaction alone survives release and is authoritatively reconciled on reattach', async () => {
   for (const outcome of ['running','completed-away','different-turn','finished','unreadable','racing-completion','incomplete','older-completion','second-completed-away']) {
     const runtime=activeRuntime();const item={id:'a750986f-933a-41cc-a30f-fec514d17671',type:'contextCompaction'};

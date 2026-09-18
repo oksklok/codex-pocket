@@ -29,6 +29,7 @@
   --radius: 12px;
   --sidebar-header-height: 56px;
   --control-height: 40px;
+  --control-inset: 12px;
   --icon-size: 36px;
   --control-radius: 8px;
   /* One neutral active surface is shared by navigation hover, selection and the sidebar toggles. */
@@ -177,23 +178,25 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 /* 8px between the search field and the first machine header, without stacking extra margins. */
 .destination-group:first-child { padding-top: 8px; }
 .destination-group + .destination-group { border-top: 1px solid var(--line-soft); padding-top: 12px; }
-.destination-group-heading { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 8px; }
+.destination-group-heading { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 6px; padding: 4px 0 4px 8px; }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-ui); font-weight: 600; }
+/* The drag handle sits at the far left, then the name, then the status beside it, then actions. */
+.machine-name-block { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; }
+.machine-status { color: var(--danger); font-size: var(--text-meta); font-weight: 700; white-space: nowrap; }
 /* Providers are plain secondary metadata after a subtle separator, never a bordered badge. */
 .provider-label { flex: none; color: var(--muted); font-size: var(--text-label); font-weight: 400; white-space: nowrap; }
 .provider-label::before { content: "·"; margin-right: 5px; color: var(--subtle); }
-.machine-header-controls > span { color: var(--danger); font-size: var(--text-meta); font-weight: 700; }
-.machine-header-controls { display: flex; align-items: center; flex: none; gap: 8px; }
+.machine-header-controls { display: flex; align-items: center; flex: none; gap: 4px; }
 .machine-info, .machine-drag { color: var(--muted); }
 .machine-drag { cursor: grab; touch-action: none; }
 .machine-drag:active { cursor: grabbing; }
 .machine-drag svg circle { fill: currentColor; stroke: none; }
 .destination-group.dragging { opacity: .55; }
-.destination-group.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
-.wake-action { position: relative; display: flex; flex: none; }
-.wake-feedback { position: absolute; z-index: 1; top: 100%; right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--text-meta); overflow-wrap: anywhere; }
+/* One boundary marker marks the single insertion point the drop will commit to. */
+.destination-group.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.destination-group.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .destination-group.unavailable { opacity: .78; }
-.destination-group.unavailable .machine-header-controls > span { color: var(--warning); }
+.destination-group.unavailable .machine-status { color: var(--warning); }
 .destination-task {
   width: 100%; min-width: 0; min-height: 40px; display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
   grid-template-rows: 22px; align-items: center; align-content: start; gap: 4px 8px; padding: 8px; border: 1px solid transparent; border-radius: 8px;
@@ -678,19 +681,41 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .display-actions { display: flex; gap: 5px; }
 .display-actions button { min-height: 28px; padding: 3px 6px; font-size: var(--text-secondary); }
 
-/* Shared sizing for peer form controls, without changing composer or status surfaces. */
+/* Shared geometry for peer form controls: text inputs, native selects, and the read-only
+   single-choice value all use the same height and the same text inset. */
 .settings-card input:not([type="checkbox"]), .settings-card select, .runtime-panel select {
-  height: var(--control-height); min-height: var(--control-height); border-radius: var(--control-radius); padding: 8px; font-size: var(--text-ui);
+  height: var(--control-height); min-height: var(--control-height); border-radius: var(--control-radius);
+  padding: 0 var(--control-inset); font-size: var(--text-ui);
 }
 /* A single-choice provider renders its one value with the same box as a select. */
 .select-static {
   display: flex; align-items: center; width: 100%; min-width: 0; margin: 0; height: var(--control-height); min-height: var(--control-height);
-  padding: 8px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-strong);
+  padding: 0 var(--control-inset); overflow: hidden; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-strong);
   color: var(--text); font-size: var(--text-ui); text-overflow: ellipsis; white-space: nowrap;
 }
 .select-static.disabled { color: var(--muted); }
 .select-slot { min-width: 0; }
 .select-static > .select-static-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Native selects stay real pickers; drop the platform decoration and draw one chevron whose
+   right edge sits at the shared inset. The wrapper owns the marker so it can use theme colors
+   and never intercept a click meant for the select underneath. */
+:is(.settings-card, .runtime-panel, .new-task-settings, .new-task-dialog) select {
+  appearance: none; -webkit-appearance: none;
+  padding-right: calc(var(--control-inset) + 20px);
+}
+.form-field:has(select) { position: relative; }
+.form-field:has(select)::after {
+  content: ""; position: absolute; right: var(--control-inset); bottom: 0; width: 14px; height: var(--control-height);
+  background-color: var(--muted); pointer-events: none;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+}
+@media (forced-colors: active) {
+  :is(.settings-card, .runtime-panel, .new-task-settings, .new-task-dialog) select {
+    appearance: auto; -webkit-appearance: auto;
+  }
+  .form-field:has(select)::after { display: none; }
+}
 .secondary-button, .primary-button, .danger-button, .icon-button, .text-button, .destination-button { border-radius: var(--control-radius); }
 .settings-actions button, .settings-restart button { min-height: var(--control-height); }
 .secondary-panel h3 { font-size: var(--text-heading); }
@@ -720,7 +745,9 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-dialog { width: min(420px, calc(100% - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .new-task-dialog::backdrop { background: rgba(0,0,0,.55); }
 .new-task-dialog h2 { margin: 0 0 16px; font-size: var(--text-heading); }
-.new-task-dialog input, .queue-dialog textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
+.new-task-dialog input, .queue-dialog textarea { width: 100%; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
+.new-task-dialog input { height: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-inset); }
+.queue-dialog textarea { padding: 10px 12px; }
 .new-task-dialog .form-field + .form-field { margin-top: 12px; }
 @media (max-width: 860px) { .new-task-dialog input, .queue-dialog textarea { font-size: 16px; } }
 
@@ -730,23 +757,34 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-actions button { min-height: 40px; padding: 7px 11px; font-size: var(--text-ui); }
 
 /* Machine Details: host and SSH fields toggle by mode; helper text sits outside the labels. */
-.machine-dialog .machine-dialog-host { margin: -8px 0 12px; color: var(--muted); font-size: var(--text-label); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
-.machine-dialog .machine-dialog-help { margin: -8px 0 0; color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
+.machine-dialog .machine-dialog-heading { display: flex; align-items: baseline; gap: 8px; margin: 0 0 16px; }
+.machine-dialog .machine-dialog-heading h2 { margin: 0; }
+.machine-dialog .machine-dialog-host { color: var(--muted); font-size: var(--text-label); font-weight: 500; }
+.machine-dialog .machine-dialog-help { margin: 6px 0 0; color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
 .machine-dialog .machine-dialog-help + .form-field { margin-top: 12px; }
-.machine-dialog .machine-dialog-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.machine-dialog .machine-dialog-wake-status { margin: 8px 0 0; color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; }
+.machine-dialog .machine-dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 16px; }
 .machine-dialog .machine-dialog-actions .new-task-actions { margin: 0; }
-.machine-dialog .machine-dialog-move { display: flex; gap: 6px; }
-#machine-dialog-remove { margin-right: auto; }
-/* Phones: Remove gets its own row, then Move and Cancel/Save share a compact second row. */
-@media (max-width: 420px) {
-  #machine-dialog-remove { flex: 1 1 100%; margin-right: 0; }
-  .machine-dialog .machine-dialog-move { margin-right: auto; }
-}
+/* A compact "More…" menu keeps the footer to a secondary action plus Cancel/Save. */
+.machine-dialog-more { position: relative; }
+.machine-dialog-more > summary { list-style: none; display: flex; align-items: center; justify-content: center; min-height: 34px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+.machine-dialog-more > summary::-webkit-details-marker { display: none; }
+.machine-dialog-menu { position: absolute; z-index: 3; left: 0; bottom: calc(100% + 6px); display: grid; min-width: 184px; max-width: min(240px, calc(100vw - 48px)); padding: 4px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface); box-shadow: 0 12px 32px rgba(0,0,0,.4); }
+.machine-dialog-menu button { min-height: 36px; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: var(--text-ui); font-weight: 600; text-align: left; cursor: pointer; }
+.machine-dialog-menu button:hover:not(:disabled), .machine-dialog-menu button:focus-visible { background: var(--selected-bg); }
+.machine-dialog-menu button:disabled { opacity: .52; cursor: default; }
+.machine-dialog-menu-separator { height: 1px; margin: 4px 2px; background: var(--line-soft); }
+.machine-dialog-menu .danger-menu-item { color: var(--danger); }
 
-.machine-toggle { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; min-height: 32px; padding: 0; border: 0; background: transparent; text-align: left; color: var(--muted); }
+.machine-toggle { display: flex; align-items: center; gap: 5px; min-width: 0; min-height: 32px; padding: 0; border: 0; background: transparent; text-align: left; color: var(--muted); }
 .machine-toggle strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .machine-toggle svg { width: 10px; height: 10px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; transform: rotate(90deg); }
 .machine-toggle[aria-expanded="false"] svg { transform: none; }
+/* A narrow sidebar drops the status below the name instead of squeezing the controls. */
+@media (max-width: 420px) {
+  .machine-name-block { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
+  .machine-status { grid-column: 1; grid-row: 2; }
+}
 .destination-group.collapsed .destination-entry, .destination-group.collapsed .destination-group-empty { display: none; }
 
 /* Provider and Model take a full row each; Effort and Access share two equal columns. */
@@ -757,8 +795,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-settings .select-slot { min-width: 0; }
 /* Selectors and read-only values share one box so they align on every row. */
 .new-task-settings select, .new-task-settings .select-static {
-  width: 100%; min-width: 0; height: 36px; min-height: 36px; padding: 6px; font-size: var(--text-ui);
+  width: 100%; min-width: 0; height: var(--control-height); min-height: var(--control-height);
+  padding: 0 var(--control-inset); font-size: var(--text-ui);
 }
+.new-task-settings select { padding-right: calc(var(--control-inset) + 20px); }
 /* Narrow dialogs cannot fit "Ask for Approval" in a half-width control, so the row stacks. */
 @media (max-width: 380px) {
   .new-task-settings { grid-template-columns: minmax(0, 1fr); }

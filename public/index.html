@@ -223,8 +223,10 @@
     </dialog>
     <dialog class="new-task-dialog machine-dialog" id="machine-dialog" aria-labelledby="machine-dialog-title" tabindex="-1">
       <form id="machine-dialog-form" novalidate>
-        <h2 id="machine-dialog-title">Machine Details</h2>
-        <p class="machine-dialog-host" id="machine-dialog-host" hidden>Host machine</p>
+        <div class="machine-dialog-heading">
+          <h2 id="machine-dialog-title">Machine Details</h2>
+          <span class="machine-dialog-host" id="machine-dialog-host" hidden>Host</span>
+        </div>
         <div class="form-field" id="machine-dialog-name-field">
           <label for="machine-dialog-name">Display Name</label>
           <input id="machine-dialog-name" maxlength="80" autocomplete="off" placeholder="Name">
@@ -239,13 +241,19 @@
           <input id="machine-dialog-mac" maxlength="17" autocomplete="off" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF" aria-describedby="machine-dialog-mac-help">
         </div>
         <p class="machine-dialog-help" id="machine-dialog-mac-help">For Wake-on-LAN.</p>
+        <p class="machine-dialog-wake-status" id="machine-dialog-wake-status" role="status" hidden></p>
         <p id="machine-dialog-error" class="form-status error-text" role="alert"></p>
         <div class="machine-dialog-actions">
-          <button id="machine-dialog-remove" class="danger-button" type="button" hidden>Remove Machine</button>
-          <div class="machine-dialog-move" id="machine-dialog-move" hidden>
-            <button id="machine-dialog-up" class="icon-button" type="button" aria-label="Move machine up" title="Move machine up"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
-            <button id="machine-dialog-down" class="icon-button" type="button" aria-label="Move machine down" title="Move machine down"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14m-6-6 6 6 6-6"/></svg></button>
-          </div>
+          <details class="machine-dialog-more" id="machine-dialog-more" hidden>
+            <summary class="secondary-button" id="machine-dialog-more-button">More…</summary>
+            <div class="machine-dialog-menu" role="menu" aria-label="Machine actions">
+              <button id="machine-dialog-up" type="button" role="menuitem">Move Up</button>
+              <button id="machine-dialog-down" type="button" role="menuitem">Move Down</button>
+              <button id="machine-dialog-wake" type="button" role="menuitem" hidden>Wake</button>
+              <div class="machine-dialog-menu-separator" role="separator"></div>
+              <button id="machine-dialog-remove" class="danger-menu-item" type="button" role="menuitem">Remove Machine</button>
+            </div>
+          </details>
           <div class="new-task-actions">
             <button id="machine-dialog-cancel" class="secondary-button" type="button">Cancel</button>
             <button id="machine-dialog-submit" class="primary-button" type="submit">Save</button>

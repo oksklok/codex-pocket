@@ -122,10 +122,13 @@ const elements = {
   machineDialogSshHelp: document.querySelector("#machine-dialog-ssh-help"),
   machineDialogMacHelp: document.querySelector("#machine-dialog-mac-help"),
   machineDialogError: document.querySelector("#machine-dialog-error"),
+  machineDialogMore: document.querySelector("#machine-dialog-more"),
   machineDialogRemove: document.querySelector("#machine-dialog-remove"),
-  machineDialogMove: document.querySelector("#machine-dialog-move"),
   machineDialogUp: document.querySelector("#machine-dialog-up"),
   machineDialogDown: document.querySelector("#machine-dialog-down"),
+  machineDialogWake: document.querySelector("#machine-dialog-wake"),
+  machineDialogWakeStatus: document.querySelector("#machine-dialog-wake-status"),
+  machineDialogMenuSeparator: document.querySelector(".machine-dialog-menu-separator"),
   machineDialogCancel: document.querySelector("#machine-dialog-cancel"),
   machineDialogSubmit: document.querySelector("#machine-dialog-submit"),
   settingsRestart: document.querySelector("#settings-restart"),
@@ -949,37 +952,8 @@ function renderDestinationSwitcher(force = false) {
       [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
     });
     const controls = Object.assign(document.createElement("div"), { className: "machine-header-controls" });
-    heading.append(toggle, controls);
-    if (availability) {
-      const availabilityStatus = document.createElement("span");
-      availabilityStatus.textContent = availability;
-      controls.append(availabilityStatus);
-    }
-    if (!machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
-      const wakeAction = Object.assign(document.createElement("div"), { className: "wake-action" });
-      const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
-      wake.setAttribute("aria-label", `Wake ${machine.name}`);
-      wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
-      wake.addEventListener("click", async () => {
-        wake.disabled = true;
-        group.querySelector(".wake-feedback")?.remove();
-        const feedback = Object.assign(document.createElement("span"), { className: "wake-feedback" });
-        feedback.setAttribute("role", "status");
-        wakeAction.append(feedback);
-        try {
-          const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
-          feedback.textContent = "Wake packet sent";
-          setTimeout(() => feedback.remove(), 4000);
-        } catch (error) { feedback.textContent = error.message; }
-        finally { wake.disabled = false; }
-      });
-      wakeAction.append(wake);
-      controls.append(wakeAction);
-    }
-    // A dedicated handle (never the heading or a row) starts reordering; Move Up/Down in Machine
-    // Details remain the non-drag alternative.
+    // A dedicated drag handle at the far left starts reordering; the host never gets one, and
+    // Machine Details keeps Move Up/Down as the non-drag alternative.
     if (!machine.local && savedIndex >= 0 && !archived) {
       const drag = document.createElement("button");
       drag.type = "button";
@@ -988,8 +962,18 @@ function renderDestinationSwitcher(force = false) {
       drag.title = "Drag to reorder";
       drag.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
       drag.addEventListener("pointerdown", beginMachineDrag);
-      controls.append(drag);
+      heading.append(drag);
     }
+    // Status sits beside the name (below it when the sidebar is narrow), never among the actions.
+    const nameBlock = Object.assign(document.createElement("div"), { className: "machine-name-block" });
+    nameBlock.append(toggle);
+    if (availability) {
+      const availabilityStatus = document.createElement("span");
+      availabilityStatus.className = "machine-status";
+      availabilityStatus.textContent = availability;
+      nameBlock.append(availabilityStatus);
+    }
+    heading.append(nameBlock, controls);
     const info = document.createElement("button");
     info.type = "button";
     info.className = "icon-button machine-info";
@@ -3703,11 +3687,23 @@ function machineDialogValidation() {
   return machineFieldError(machineDialogDraft(), index, savedMachines());
 }
 
-function updateMachineDialogMoveButtons() {
-  const editing = machineDialogTarget?.mode === "edit" && machineDialogTarget.index >= 0;
-  elements.machineDialogMove.hidden = !editing;
-  elements.machineDialogUp.disabled = !editing || machineDialogBusy || machineDialogTarget.index <= 0;
-  elements.machineDialogDown.disabled = !editing || machineDialogBusy || machineDialogTarget.index >= savedMachines().length - 1;
+// The footer keeps only a small "More…" menu; every action it can offer lives inside it.
+function updateMachineDialogActions() {
+  const target = machineDialogTarget;
+  const editing = target?.mode === "edit" && target.index >= 0;
+  const enabled = Boolean(editing) && !machineDialogBusy;
+  const wakeAvailable = Boolean(target?.canWake && target.machineId);
+  elements.machineDialogMore.hidden = !editing && !wakeAvailable;
+  elements.machineDialogUp.hidden = !editing;
+  elements.machineDialogDown.hidden = !editing;
+  elements.machineDialogUp.disabled = !enabled || target.index <= 0;
+  elements.machineDialogDown.disabled = !enabled || target.index >= savedMachines().length - 1;
+  elements.machineDialogWake.hidden = !wakeAvailable;
+  elements.machineDialogWake.disabled = machineDialogBusy;
+  elements.machineDialogRemove.hidden = !editing;
+  elements.machineDialogRemove.disabled = !enabled;
+  elements.machineDialogMenuSeparator.hidden = !editing;
+  if (!editing && !wakeAvailable) elements.machineDialogMore.open = false;
 }
 
 function openMachineDialog(target) {
@@ -3727,11 +3723,13 @@ function openMachineDialog(target) {
   elements.machineDialogSshHelp.hidden = host;
   elements.machineDialogMacField.hidden = host;
   elements.machineDialogMacHelp.hidden = host;
-  elements.machineDialogRemove.hidden = host || target.mode !== "edit";
   elements.machineDialogSubmit.textContent = target.mode === "add" ? "Add" : "Save";
   elements.machineDialogError.textContent = "";
+  elements.machineDialogWakeStatus.hidden = true;
+  elements.machineDialogWakeStatus.textContent = "";
+  elements.machineDialogWakeStatus.classList.remove("error-text");
   for (const field of [elements.machineDialogName, elements.machineDialogSsh, elements.machineDialogMac]) field.setCustomValidity("");
-  updateMachineDialogMoveButtons();
+  updateMachineDialogActions();
   // Only Add Machine declares a text-input autofocus target; existing details focus the dialog so
   // the modal can open without touching a text field (and without summoning the mobile keyboard).
   elements.machineDialogName.toggleAttribute("autofocus", target.mode === "add");
@@ -3743,20 +3741,23 @@ function openMachineDialog(target) {
 
 function openMachineDetails(machine, opener) {
   if (machine.local) return openMachineDialog({ mode: "host", opener });
+  // Wake targets the live runtime by identity, never the draft alias that may not be saved yet.
+  const machineId = typeof machine.id === "string" ? machine.id : "";
+  const canWake = Boolean(machine.canWake) && !machine.local;
   const alias = machineCatalogAlias(machine);
   const index = alias ? savedMachines().findIndex((saved) => saved.ssh.trim().toLowerCase() === alias.toLowerCase()) : -1;
-  if (index >= 0) return openMachineDialog({ mode: "edit", index, opener });
-  return openMachineDialog({ mode: "add", draft: { name: machine.name || "", ssh: alias, wakeMac: machine.wakeMac || "" }, opener });
+  if (index >= 0) return openMachineDialog({ mode: "edit", index, opener, machineId, canWake });
+  return openMachineDialog({ mode: "add", draft: { name: machine.name || "", ssh: alias, wakeMac: machine.wakeMac || "" }, opener, machineId, canWake });
 }
 
 async function runMachineDialogAction(action, { close = true } = {}) {
   if (machineDialogBusy) return;
   machineDialogBusy = true;
+  elements.machineDialogMore.open = false;
   elements.machineDialogSubmit.disabled = true;
-  elements.machineDialogRemove.disabled = true;
   elements.machineDialogError.classList.remove("error-text");
   elements.machineDialogError.textContent = "Saving…";
-  updateMachineDialogMoveButtons();
+  updateMachineDialogActions();
   try {
     await action();
     if (close) elements.machineDialog.close();
@@ -3771,8 +3772,33 @@ async function runMachineDialogAction(action, { close = true } = {}) {
   } finally {
     machineDialogBusy = false;
     elements.machineDialogSubmit.disabled = false;
-    elements.machineDialogRemove.disabled = false;
-    updateMachineDialogMoveButtons();
+    updateMachineDialogActions();
+  }
+}
+
+// Wake uses the running machine id, so an edited-but-unsaved SSH alias cannot retarget it.
+async function wakeMachineFromDetails() {
+  const target = machineDialogTarget;
+  if (machineDialogBusy || !target?.canWake || !target.machineId) return;
+  machineDialogBusy = true;
+  elements.machineDialogMore.open = false;
+  elements.machineDialogWakeStatus.hidden = false;
+  elements.machineDialogWakeStatus.textContent = "Sending Wake packet…";
+  elements.machineDialogWakeStatus.classList.remove("error-text");
+  updateMachineDialogActions();
+  try {
+    const response = await apiFetch("/api/machines/wake", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: target.machineId }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
+    elements.machineDialogWakeStatus.textContent = "Wake packet sent";
+  } catch (error) {
+    elements.machineDialogWakeStatus.textContent = error instanceof Error ? error.message : String(error);
+    elements.machineDialogWakeStatus.classList.add("error-text");
+  } finally {
+    machineDialogBusy = false;
+    updateMachineDialogActions();
   }
 }
 
@@ -3796,6 +3822,11 @@ elements.machineDialogForm.addEventListener("submit", (event) => {
     if (target.mode === "add") return saveMachineConfig({ machines: [...savedMachines(), machineDialogDraft()] });
     return saveMachineConfig({ machines: savedMachines().map((machine, index) => index === target.index ? machineDialogDraft() : machine) });
   });
+});
+elements.machineDialogWake.addEventListener("click", () => void wakeMachineFromDetails());
+elements.machineDialogMore.addEventListener("click", (event) => event.stopPropagation());
+elements.machineDialog.addEventListener("click", (event) => {
+  if (elements.machineDialogMore.open && !elements.machineDialogMore.contains(event.target)) elements.machineDialogMore.open = false;
 });
 elements.machineDialogRemove.addEventListener("click", () => {
   const target = machineDialogTarget;
@@ -3831,8 +3862,9 @@ elements.machineDialog.addEventListener("close", () => {
   const opener = machineDialogTarget?.opener;
   machineDialogTarget = null;
   machineDialogBusy = false;
+  elements.machineDialogMore.open = false;
   elements.machineDialogSubmit.disabled = false;
-  elements.machineDialogRemove.disabled = false;
+  elements.machineDialogWakeStatus.hidden = true;
   if (opener?.isConnected) opener.focus({ preventScroll: true });
 });
 elements.machineDialog.addEventListener("keydown", (event) => { if (event.key === "Escape") event.stopPropagation(); });
@@ -3850,19 +3882,32 @@ function beginMachineDrag(event) {
   // drag only permutes the visible machines among the slots those machines already occupy.
   machineDrag = {
     pointerId: event.pointerId, handle: event.currentTarget, group, groups,
-    fromVisible: from, savedIndices: groups.map((candidate) => Number(candidate.dataset.savedIndex)), index: from,
+    fromVisible: from, savedIndices: groups.map((candidate) => Number(candidate.dataset.savedIndex)),
+    // One insertion slot (0..others.length) drives both the preview and the committed reorder.
+    index: null, moved: false,
   };
   group.classList.add("dragging");
-  event.currentTarget.setPointerCapture?.(event.pointerId);
+  try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* synthetic/expired pointers */ }
 }
+// Thresholds come from each remaining machine heading, not the whole group: a tall expanded task
+// list must not move its own drop boundary.
 function machineDragIndexFor(clientY) {
   let index = 0;
   for (const group of machineDrag.groups) {
     if (group === machineDrag.group) continue;
-    const box = group.getBoundingClientRect();
+    const box = (group.querySelector(".destination-group-heading") || group).getBoundingClientRect();
     if (clientY > box.top + box.height / 2) index += 1;
   }
   return index;
+}
+// Paint exactly one boundary marker at the computed insertion slot, including after the last group.
+function paintMachineDragMarker() {
+  if (!machineDrag) return;
+  for (const candidate of machineDrag.groups) candidate.classList.remove("drop-before", "drop-after");
+  const others = machineDrag.groups.filter((candidate) => candidate !== machineDrag.group);
+  const before = others[machineDrag.index];
+  if (before) before.classList.add("drop-before");
+  else others[others.length - 1]?.classList.add("drop-after");
 }
 window.addEventListener("pointermove", (event) => {
   if (!machineDrag || event.pointerId !== machineDrag.pointerId) return;
@@ -3871,17 +3916,18 @@ window.addEventListener("pointermove", (event) => {
   if (event.clientY < bounds.top + 24) list.scrollTop -= 12;
   else if (event.clientY > bounds.bottom - 24) list.scrollTop += 12;
   machineDrag.index = machineDragIndexFor(event.clientY);
-  const target = machineDrag.groups[Math.min(machineDrag.index, machineDrag.groups.length - 1)];
-  for (const group of machineDrag.groups) group.classList.toggle("drag-over", group === target && group !== machineDrag.group);
+  machineDrag.moved = true;
+  paintMachineDragMarker();
 });
 function finishMachineDrag(event, cancelled) {
   if (!machineDrag || event.pointerId !== machineDrag.pointerId) return;
-  const { handle, group, groups, fromVisible, savedIndices, index } = machineDrag;
+  const { handle, group, groups, fromVisible, savedIndices, index, moved, pointerId } = machineDrag;
   group.classList.remove("dragging");
-  for (const candidate of groups) candidate.classList.remove("drag-over");
-  handle?.releasePointerCapture?.(event.pointerId);
+  for (const candidate of groups) candidate.classList.remove("drop-before", "drop-after");
+  try { handle?.releasePointerCapture?.(pointerId); } catch { /* pointer already released */ }
   machineDrag = null;
-  if (cancelled) return;
+  // A tap, a cancelled drag, or a drag that never computed a slot must not save.
+  if (cancelled || !moved || index === null) return;
   const saved = savedMachines().map((machine) => ({ ...machine }));
   if (savedIndices.length < 2 || savedIndices.some((savedIndex) => !Number.isInteger(savedIndex) || savedIndex < 0 || savedIndex >= saved.length)) return;
   // Reorder just the visible machines, then write that sequence back into its own saved slots; any
