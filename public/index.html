@@ -32,9 +32,9 @@
 
     <main class="shell" id="app-shell" hidden>
       <header class="topbar">
-        <div class="brand" aria-label="Codex Pocket">
-          <svg aria-hidden="true" viewBox="0 0 64 64"><path d="M12 17h40v21c0 11-8 18-20 18s-20-7-20-18z"/><path d="m21 29 8 7-8 7M35 43h9"/></svg>
-        </div>
+        <button class="icon-button tasks-toggle" id="tasks-toggle" type="button" aria-controls="destination-switcher" aria-expanded="false" aria-label="Show tasks" title="Show tasks">
+          <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+        </button>
         <div class="destination-control">
           <button class="destination-button" id="destination-button" type="button" aria-haspopup="dialog" aria-expanded="false">
             <span class="destination-text" id="destination-text">
@@ -77,7 +77,11 @@
             <div class="destination-list" id="destination-list" aria-live="polite"></div>
             <div class="machines-footer">
               <p class="machines-restart" id="machines-restart" hidden>Saved. Restart required.</p>
-              <button class="secondary-button machines-add" id="machine-add" type="button"><span class="machines-add-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>Add Machine</button>
+              <p class="machines-error error-text" id="machines-error" role="alert" hidden></p>
+              <div class="machines-footer-actions">
+                <button class="secondary-button machines-add" id="machine-add" type="button"><span class="machines-add-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>Add Machine</button>
+                <button class="secondary-button machines-reorder" id="machine-reorder" type="button" aria-pressed="false">Reorder</button>
+              </div>
             </div>
           </section>
         <section class="chat-panel" aria-label="Codex conversation">
@@ -132,6 +136,7 @@
             <button class="icon-button sidebar-close" id="inspector-close" type="button" aria-label="Close task info"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
           </div>
           <div class="inspector-scroll">
+            <p class="inspector-empty" id="inspector-empty" hidden>Select a task or create one.</p>
             <dl class="metadata">
               <div><dt>Machine</dt><dd id="machine">—</dd></div>
               <div><dt>Provider</dt><dd id="provider">—</dd></div>
@@ -183,7 +188,10 @@
             <div class="form-field"><label for="settings-port">Port</label><input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" required></div>
           </div>
           <p class="field-help" id="settings-network-help">Use 0.0.0.0 for all local-network interfaces.</p>
-          <div class="phone-urls" id="phone-urls" hidden><span>Open on Your Phone</span><div id="phone-url-list"></div></div>
+          <details class="phone-urls" id="phone-urls" hidden>
+            <summary>Phone access</summary>
+            <div class="phone-url-list" id="phone-url-list"></div>
+          </details>
         </section>
         <section class="settings-section" aria-labelledby="settings-security-title">
           <h3 id="settings-security-title">Security</h3>
@@ -192,7 +200,7 @@
         </section>
         <section class="settings-section" aria-labelledby="settings-appearance-title">
           <h3 id="settings-appearance-title">Appearance</h3>
-          <div class="form-field"><label for="settings-theme">Theme</label>
+          <div class="form-field settings-inline-field" id="settings-theme-field"><label for="settings-theme">Theme</label>
           <select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
           <label class="checkbox-row translucent-preference"><input id="translucent-ui" type="checkbox" checked> Translucent UI</label>
           <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show Project Names in Tasks</label>
@@ -205,9 +213,15 @@
           <h3 id="settings-deepseek-title">Runtimes</h3>
           <p class="field-help error-text" id="settings-deepseek-error" role="status"></p>
         </section>
-        <div class="settings-restart" id="settings-restart" hidden><p>Restart Codex Pocket to apply saved changes.</p><button class="primary-button" id="restart-pocket" type="button">Restart Pocket</button></div>
+        <p class="settings-restart" id="settings-restart" hidden>Restart Codex Pocket to apply saved changes.</p>
         <p class="field-help" id="container-lifecycle" hidden>Container lifecycle is managed by Docker Compose.</p>
-        <div class="settings-quit"><p>Stops Pocket on the host machine.</p><button class="danger-button" id="quit-pocket" type="button">Quit Pocket</button></div>
+        <div class="settings-lifecycle" id="settings-lifecycle">
+          <p>Host lifecycle</p>
+          <div class="settings-lifecycle-actions">
+            <button class="secondary-button" id="restart-pocket" type="button">Restart Pocket</button>
+            <button class="danger-button" id="quit-pocket" type="button">Quit Pocket</button>
+          </div>
+        </div>
         <p class="form-status" id="settings-status" aria-live="polite"></p>
         <div class="settings-actions"><button class="secondary-button" id="settings-cancel" type="button">Cancel</button><button class="primary-button" id="settings-save" type="submit" disabled>Save</button></div>
       </form>
@@ -241,19 +255,9 @@
           <input id="machine-dialog-mac" maxlength="17" autocomplete="off" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF" aria-describedby="machine-dialog-mac-help">
         </div>
         <p class="machine-dialog-help" id="machine-dialog-mac-help">For Wake-on-LAN.</p>
-        <p class="machine-dialog-wake-status" id="machine-dialog-wake-status" role="status" hidden></p>
         <p id="machine-dialog-error" class="form-status error-text" role="alert"></p>
         <div class="machine-dialog-actions">
-          <details class="machine-dialog-more" id="machine-dialog-more" hidden>
-            <summary class="secondary-button" id="machine-dialog-more-button">More…</summary>
-            <div class="machine-dialog-menu" role="menu" aria-label="Machine actions">
-              <button id="machine-dialog-up" type="button" role="menuitem">Move Up</button>
-              <button id="machine-dialog-down" type="button" role="menuitem">Move Down</button>
-              <button id="machine-dialog-wake" type="button" role="menuitem" hidden>Wake</button>
-              <div class="machine-dialog-menu-separator" role="separator"></div>
-              <button id="machine-dialog-remove" class="danger-menu-item" type="button" role="menuitem">Remove Machine</button>
-            </div>
-          </details>
+          <button id="machine-dialog-remove" class="danger-button" type="button" hidden>Remove Machine</button>
           <div class="new-task-actions">
             <button id="machine-dialog-cancel" class="secondary-button" type="button">Cancel</button>
             <button id="machine-dialog-submit" class="primary-button" type="submit">Save</button>

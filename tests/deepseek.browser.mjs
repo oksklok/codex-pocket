@@ -270,18 +270,24 @@ try {
     const badge = document.querySelector('#destination-provider');
     const chevron = document.querySelector('#destination-button > svg');
     const button = document.querySelector('#destination-button');
+    const chevronVisible = getComputedStyle(chevron).display !== 'none';
     return {
       badgeInsideText: badge.parentElement === text && label.parentElement === text,
       gap: badge.getBoundingClientRect().left - label.getBoundingClientRect().right,
       labelClipped: label.scrollWidth > label.clientWidth + 1,
       badgeVisible: badge.getBoundingClientRect().width > 0,
-      chevronRightInset: button.getBoundingClientRect().right - chevron.getBoundingClientRect().right,
+      chevronVisible,
+      chevronRightInset: chevronVisible ? button.getBoundingClientRect().right - chevron.getBoundingClientRect().right : 0,
+      unboxed: getComputedStyle(button).borderTopWidth === '0px',
     };
   });
   const shortLayout = await adjacency();
   assert.equal(shortLayout.badgeInsideText, true, 'the badge sits inside the shrinking text group');
   assert.ok(shortLayout.gap >= 3 && shortLayout.gap <= 10, `the badge follows the text immediately (gap ${shortLayout.gap})`);
-  assert.equal(shortLayout.chevronRightInset <= 12, true, 'only the chevron stays at the far right');
+  // Wide layout: a sidebar toggle plus compact, unboxed machine/task/provider text (no rectangle).
+  assert.equal(shortLayout.unboxed, true, 'the wide destination text is unboxed');
+  assert.equal(shortLayout.chevronVisible, false, 'the wide destination drops the selector chevron');
+  assert.equal(await page.locator('#tasks-toggle').isVisible(), true, 'the wide header offers the Tasks toggle');
   // Mobile keeps the badge adjacent to the (usually untruncated) text too.
   await page.setViewportSize({ width: 390, height: 844 });
   if (await page.locator('#destination-button').getAttribute('aria-expanded') === 'true') {
@@ -293,11 +299,14 @@ try {
   const mobileLayout = await adjacency();
   assert.equal(mobileLayout.badgeVisible, true, 'the badge stays visible at 390px');
   assert.ok(mobileLayout.gap >= 3 && mobileLayout.gap <= 10, 'the badge stays adjacent to the text at 390px');
+  assert.equal(mobileLayout.chevronVisible, true, 'the narrow selector keeps its chevron');
+  assert.equal(mobileLayout.chevronRightInset <= 12, true, 'the narrow chevron hugs the far right');
+  assert.equal(mobileLayout.unboxed, false, 'the narrow selector keeps its box');
   await page.setViewportSize({ width: 1280, height: 844 });
-  assert.equal(await page.locator('#destination-button').getAttribute('title'), 'Mac mini / Same task ID [DeepSeek]');
+  assert.equal(await page.locator('#destination-button').getAttribute('title'), null, 'the destination title no longer repeats visible text');
   // A long task name truncates the text first while the provider badge stays visible and adjacent.
   const originalThread = fallback.state.thread;
-  fallback.state.thread = { ...selectedTask, name: 'A very long DeepSeek task name that must truncate before the provider tag appears' };
+  fallback.state.thread = { ...selectedTask, name: `A very long DeepSeek task name that must truncate before the provider tag appears ${'and keeps going '.repeat(8)}` };
   selected = fallback; push();
   await page.waitForFunction(() => document.querySelector('#destination-label').textContent.includes('very long DeepSeek'));
   const longLayout = await adjacency();
@@ -484,6 +493,8 @@ try {
   // New Task layout: Provider and Model take a full row each, Effort and Access share columns.
   const dialogRects = async (width) => {
     await page.setViewportSize({ width, height: 844 });
+    // Crossing the sidebar breakpoint settles before we open the drawer for this width.
+    await page.waitForTimeout(260);
     await openSwitcher();
     await page.locator('.destination-group').first().locator('.machine-header-controls .icon-button[aria-label="New task"]').click();
     await page.locator('#new-task-dialog[open]').waitFor();

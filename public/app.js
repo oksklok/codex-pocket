@@ -41,6 +41,7 @@ const elements = {
   machine: document.querySelector("#machine"),
   project: document.querySelector("#project"),
   destinationButton: document.querySelector("#destination-button"),
+  tasksToggle: document.querySelector("#tasks-toggle"),
   destinationLabel: document.querySelector("#destination-label"),
   destinationProvider: document.querySelector("#destination-provider"),
   destinationSwitcher: document.querySelector("#destination-switcher"),
@@ -92,6 +93,8 @@ const elements = {
   cancelQueue: document.querySelector("#cancel-queue"),
   inspectorButton: document.querySelector("#inspector-button"),
   inspectorClose: document.querySelector("#inspector-close"),
+  inspectorEmpty: document.querySelector("#inspector-empty"),
+  inspector: document.querySelector("#sidebar"),
   inspectorBackdrop: document.querySelector("#inspector-backdrop"),
   settingsButton: document.querySelector("#settings-button"),
   settingsScreen: document.querySelector("#settings-screen"),
@@ -108,6 +111,9 @@ const elements = {
   settingsDeepseekSection: document.querySelector("#settings-deepseek"),
   settingsDeepseekError: document.querySelector("#settings-deepseek-error"),
   machineAdd: document.querySelector("#machine-add"),
+  machineReorder: document.querySelector("#machine-reorder"),
+  machinesFooter: document.querySelector(".machines-footer"),
+  machinesError: document.querySelector("#machines-error"),
   machinesRestart: document.querySelector("#machines-restart"),
   machineDialog: document.querySelector("#machine-dialog"),
   machineDialogForm: document.querySelector("#machine-dialog-form"),
@@ -122,13 +128,7 @@ const elements = {
   machineDialogSshHelp: document.querySelector("#machine-dialog-ssh-help"),
   machineDialogMacHelp: document.querySelector("#machine-dialog-mac-help"),
   machineDialogError: document.querySelector("#machine-dialog-error"),
-  machineDialogMore: document.querySelector("#machine-dialog-more"),
   machineDialogRemove: document.querySelector("#machine-dialog-remove"),
-  machineDialogUp: document.querySelector("#machine-dialog-up"),
-  machineDialogDown: document.querySelector("#machine-dialog-down"),
-  machineDialogWake: document.querySelector("#machine-dialog-wake"),
-  machineDialogWakeStatus: document.querySelector("#machine-dialog-wake-status"),
-  machineDialogMenuSeparator: document.querySelector(".machine-dialog-menu-separator"),
   machineDialogCancel: document.querySelector("#machine-dialog-cancel"),
   machineDialogSubmit: document.querySelector("#machine-dialog-submit"),
   settingsRestart: document.querySelector("#settings-restart"),
@@ -751,7 +751,6 @@ function renderChoiceControl(slot, { entries, selected, ariaLabel, id, disabled,
   select.disabled = Boolean(disabled);
   for (const entry of entries) {
     const option = new Option(entry.label, entry.value);
-    if (entry.title) option.title = entry.title;
     select.add(option);
   }
   if (entries.some((entry) => entry.value === selected)) select.value = selected;
@@ -772,12 +771,11 @@ function renderDestinationButton() {
   const machineName = machine?.name || state?.machine || "Machine";
   const provider = providerName(machine?.provider);
   const selectedThread = loadedThreads.find((thread) => thread.id === state?.thread?.id) || state?.thread;
-  const taskName = selectedThread ? threadLabel(selectedThread) : state?.connected ? "No saved task" : "Unavailable";
-  // Machine / task truncates on its own; the provider tag is a separate item after it.
-  elements.destinationLabel.textContent = `${machineName} / ${taskName}`;
-  elements.destinationProvider.textContent = provider || "";
-  elements.destinationProvider.hidden = !provider;
-  elements.destinationButton.title = provider ? `${machineName} / ${taskName} [${provider}]` : `${machineName} / ${taskName}`;
+  // With no task selected, show only the machine name: no placeholder text and no provider suffix.
+  const hasTask = Boolean(state?.thread);
+  elements.destinationLabel.textContent = hasTask ? `${machineName} / ${threadLabel(selectedThread || state.thread)}` : machineName;
+  elements.destinationProvider.textContent = hasTask && provider ? provider : "";
+  elements.destinationProvider.hidden = !(hasTask && provider);
   elements.destinationButton.disabled = submittingMessage || updatingModel
     || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
 }
@@ -820,6 +818,7 @@ function renderDestinationSwitcher(force = false) {
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, projectsVisible, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
+    machineReorderMode, machineReorderBusy,
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -839,6 +838,11 @@ function renderDestinationSwitcher(force = false) {
     loading.className = "destination-empty";
     loading.textContent = archived ? "Loading archived tasks…" : "Loading tasks…";
     elements.destinationList.append(loading);
+    return;
+  }
+  // Reorder mode shows every machine name and nothing else; search, Archived and expansion wait.
+  if (machineReorderMode) {
+    renderMachineReorderList(catalogMachines);
     return;
   }
   const displayMachines = sidebarMachineCatalog(catalogMachines);
@@ -952,18 +956,6 @@ function renderDestinationSwitcher(force = false) {
       [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
     });
     const controls = Object.assign(document.createElement("div"), { className: "machine-header-controls" });
-    // A dedicated drag handle at the far left starts reordering; the host never gets one, and
-    // Machine Details keeps Move Up/Down as the non-drag alternative.
-    if (!machine.local && savedIndex >= 0 && !archived) {
-      const drag = document.createElement("button");
-      drag.type = "button";
-      drag.className = "icon-button machine-drag";
-      drag.setAttribute("aria-label", `Reorder ${machine.name}`);
-      drag.title = "Drag to reorder";
-      drag.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
-      drag.addEventListener("pointerdown", beginMachineDrag);
-      heading.append(drag);
-    }
     // Status sits beside the name (below it when the sidebar is narrow), never among the actions.
     const nameBlock = Object.assign(document.createElement("div"), { className: "machine-name-block" });
     nameBlock.append(toggle);
@@ -974,6 +966,30 @@ function renderDestinationSwitcher(force = false) {
       nameBlock.append(availabilityStatus);
     }
     heading.append(nameBlock, controls);
+    // Wake stays a machine action beside Info and New Task, and always targets the live runtime id.
+    if (!machine.local && !machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
+      const wakeAction = Object.assign(document.createElement("div"), { className: "wake-action" });
+      const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
+      wake.setAttribute("aria-label", `Wake ${machine.name}`);
+      wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
+      wake.addEventListener("click", async () => {
+        wake.disabled = true;
+        wakeAction.querySelector(".wake-feedback")?.remove();
+        const feedback = Object.assign(document.createElement("span"), { className: "wake-feedback" });
+        feedback.setAttribute("role", "status");
+        wakeAction.append(feedback);
+        try {
+          const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
+          feedback.textContent = "Wake packet sent";
+          setTimeout(() => feedback.remove(), 4000);
+        } catch (error) { feedback.textContent = error instanceof Error ? error.message : String(error); }
+        finally { wake.disabled = false; }
+      });
+      wakeAction.append(wake);
+      controls.append(wakeAction);
+    }
     const info = document.createElement("button");
     info.type = "button";
     info.className = "icon-button machine-info";
@@ -1013,7 +1029,7 @@ function renderDestinationSwitcher(force = false) {
       row.className = `destination-task ${selected ? "selected" : ""}`;
       row.disabled = !member.connected || !memberCatalogAvailable || Boolean(destinationSelection) || (taskActionBusy && taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id) || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
-      row.title = task.cwd || task.name || "Task";
+      if (task.cwd) row.title = task.cwd;
       const check = document.createElement("span");
       check.className = "destination-check";
       if (selected) check.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
@@ -1218,28 +1234,49 @@ function sidebarPreference(sidebar, fallback) {
   try { const value = localStorage.getItem(`codex-pocket-${sidebar}-open`); return value === null ? fallback : value === "true"; } catch { return fallback; }
 }
 
+const WIDE_LAYOUT_QUERY = matchMedia("(min-width: 1100px)");
+function isWideLayout() { return WIDE_LAYOUT_QUERY.matches; }
+function tasksSwitcherOpen() { return document.body.classList.contains("destination-open"); }
+function inspectorOpen() { return elements.appShell.classList.contains("inspector-open"); }
+function syncTasksControls() {
+  const open = tasksSwitcherOpen();
+  elements.destinationButton.setAttribute("aria-expanded", String(open));
+  elements.tasksToggle.setAttribute("aria-expanded", String(open));
+  const label = open ? "Hide tasks" : "Show tasks";
+  elements.tasksToggle.setAttribute("aria-label", label);
+  elements.tasksToggle.title = label;
+}
+
 let destinationCloseTimer;
-function closeDestinationSwitcher() {
-  if (destinationSelection || taskActionBusy) return false;
+function concealDestinationSwitcher({ clearSearch = false } = {}) {
   closeTaskMenus();
   clearTimeout(destinationCloseTimer);
   elements.destinationSwitcher.inert = true;
-  if (elements.destinationSwitcher.contains(document.activeElement)) elements.destinationButton.focus();
+  if (elements.destinationSwitcher.contains(document.activeElement)) {
+    (isWideLayout() ? elements.tasksToggle : elements.destinationButton).focus();
+  }
   // Let the 160 ms slide finish before removing the panels from layout.
   destinationCloseTimer = setTimeout(() => {
     elements.destinationSwitcher.hidden = true;
     elements.destinationBackdrop.hidden = true;
   }, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 180);
-  elements.destinationButton.setAttribute("aria-expanded", "false");
   document.body.classList.remove("destination-open");
-  saveSidebarPreference("tasks", false);
-  elements.destinationSearch.value = "";
+  if (clearSearch) elements.destinationSearch.value = "";
   destinationTaskError = null;
+  syncTasksControls();
+}
+
+function closeDestinationSwitcher() {
+  if (destinationSelection || taskActionBusy) return false;
+  concealDestinationSwitcher({ clearSearch: true });
+  saveSidebarPreference("tasks", false);
   return true;
 }
 
 function openDestinationSwitcher(animate = true) {
-  elements.destinationSwitcher.setAttribute("role", matchMedia("(min-width: 1100px)").matches ? "navigation" : "dialog");
+  elements.destinationSwitcher.setAttribute("role", isWideLayout() ? "navigation" : "dialog");
+  // Only one narrow drawer: opening Tasks closes Details.
+  if (!isWideLayout() && inspectorOpen()) closeInspector();
   clearSelectionForOverlay();
   clearTimeout(destinationCloseTimer);
   elements.destinationSwitcher.inert = false;
@@ -1247,9 +1284,9 @@ function openDestinationSwitcher(animate = true) {
   if (!animate) document.body.classList.add("destination-open");
   elements.destinationSwitcher.hidden = false;
   elements.destinationBackdrop.hidden = false;
-  elements.destinationButton.setAttribute("aria-expanded", "true");
   void elements.destinationSwitcher.offsetWidth; // Establish the closed position before transitioning.
   document.body.classList.add("destination-open");
+  syncTasksControls();
   saveSidebarPreference("tasks", true);
   refreshNavigationCatalog(archivedTasks, true);
   renderDestinationSwitcher();
@@ -1268,7 +1305,7 @@ function renderModelControls() {
     && !submittingInputRequestId
     && !submittingInterrupt;
   elements.modelSelect = renderChoiceControl(elements.modelSlot, {
-    entries: models.map((model) => ({ value: model.model, label: model.displayName || model.model, title: model.description || model.model })),
+    entries: models.map((model) => ({ value: model.model, label: model.displayName || model.model })),
     selected: state?.model,
     ariaLabel: "Model",
     id: "model-select",
@@ -1291,7 +1328,6 @@ function renderModelControls() {
     const option = document.createElement("option");
     option.value = effort.reasoningEffort;
     option.textContent = effortLabel(effort.reasoningEffort);
-    option.title = effort.description || effort.reasoningEffort;
     option.selected = effort.reasoningEffort === state?.reasoningEffort;
     elements.effortSelect.append(option);
   }
@@ -1314,7 +1350,7 @@ function renderAccessControl() {
     option.textContent = accessModeLabel(access?.mode);
     option.selected = true;
     option.disabled = true;
-    option.title = access?.description || access?.profileId || "Current task access";
+    if (access?.description || access?.profileId) option.title = access.description || access.profileId;
     elements.accessSelect.append(option);
   }
   for (const mode of available) {
@@ -1322,7 +1358,7 @@ function renderAccessControl() {
     const option = document.createElement("option");
     option.value = mode.value;
     option.textContent = mode.label;
-    option.title = choice?.reason || (mode.value === "full" ? "Unrestricted access to files and network" : mode.label);
+    if (choice?.reason) option.title = choice.reason;
     option.selected = access?.mode === mode.value;
     elements.accessSelect.append(option);
   }
@@ -1844,6 +1880,23 @@ async function addFiles(files) {
   }
 }
 
+// One maximum is shared by CSS (--composer-max-height) and JS: the smaller of a fixed cap, ~40% of
+// the usable visual viewport, and the space left after the action row and any visible extra rows.
+const COMPOSER_MAX_HEIGHT = 320;
+function composerSurroundingHeight() {
+  let total = elements.composerActions.offsetHeight;
+  for (const row of [elements.attentionBanner, elements.queueBanner, goalStrip, elements.composerImages, document.querySelector("#composer-files")]) {
+    if (row && !row.hidden) total += row.getBoundingClientRect().height;
+  }
+  return total;
+}
+function composerMaxHeight() {
+  const viewport = window.visualViewport?.height ?? window.innerHeight;
+  const byViewport = Math.round(viewport * 0.4);
+  const byFit = Math.round(viewport - composerSurroundingHeight() - 24);
+  return Math.max(40, Math.min(COMPOSER_MAX_HEIGHT, byViewport, byFit));
+}
+
 function resizeComposer() {
   const textarea = elements.messageText;
   const scrollTop = textarea.scrollTop;
@@ -1851,12 +1904,14 @@ function resizeComposer() {
   textarea.style.height = composerExpanded ? "100%" : "auto";
   const style = getComputedStyle(textarea);
   const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+  const max = composerMaxHeight();
+  elements.composerInput.style.setProperty("--composer-max-height", `${max}px`);
   // Show the normal-mode control only when its full hit target fits above the action row.
-  const height = Math.max(40, Math.min(textarea.scrollHeight + border, 112));
+  const height = Math.max(40, Math.min(textarea.scrollHeight + border, max));
   const showExpand = composerExpanded || height >= 4 + 32 + 4 + elements.composerActions.offsetHeight;
   elements.composerInput.classList.toggle("can-expand", showExpand);
   elements.expandComposer.hidden = !showExpand;
-  if (!composerExpanded) textarea.style.height = `${Math.max(height, Math.min(textarea.scrollHeight + border, 112))}px`;
+  if (!composerExpanded) textarea.style.height = `${Math.max(height, Math.min(textarea.scrollHeight + border, max))}px`;
   textarea.scrollTop = scrollTop;
 }
 
@@ -1876,6 +1931,10 @@ function renderState() {
     selectedThread.status = state.threadStatus || selectedThread.status;
   }
   setConnection(Boolean(state.connected), state.phase === "failed" || state.phase === "unavailable");
+  // No task selected: hide the task-only header meters and swap details for one plain message.
+  elements.appShell.classList.toggle("no-task", !state.thread);
+  elements.inspector.classList.toggle("no-task", !state.thread);
+  elements.inspectorEmpty.hidden = Boolean(state.thread);
   const phase = state.phase || "connecting";
   elements.phase.textContent = phaseLabels[phase] || phase;
   elements.phase.className = `phase-pill ${phase}`;
@@ -2307,6 +2366,10 @@ function activityNode(activity) {
   return article;
 }
 
+function emptyConversationText() {
+  return state?.thread ? "No conversation history yet." : "Select a task or create one.";
+}
+
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
   observeTranscriptSelection();
   deferredTranscript = false;
@@ -2362,7 +2425,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
       } else {
         const node = entry.type === "message" ? messageNode(entry.value, entry.displayCreatedAt)
           : entry.type === "activity" ? activityNode(entry.value)
-          : Object.assign(document.createElement("p"), { className: "empty-state", textContent: "No conversation history yet." });
+          : Object.assign(document.createElement("p"), { className: "empty-state", textContent: emptyConversationText() });
         node.dataset.timelineKey = key;
         if (record) {
           if (cursor === record.node) cursor = node;
@@ -2686,7 +2749,7 @@ async function loadNewTaskOptions() {
         : catalogModels[0]?.model;
     newTaskModels = sortModelsForDisplay(catalogModels);
     newTaskModel = renderChoiceControl(newTaskModelSlot, {
-      entries: newTaskModels.map(model => ({ value: model.model, label: model.displayName || model.model, title: model.description || model.model })),
+      entries: newTaskModels.map(model => ({ value: model.model, label: model.displayName || model.model })),
       selected: preferredModel,
       ariaLabel: "Model",
       id: "new-task-model",
@@ -3447,45 +3510,55 @@ function connectEvents() {
   });
 }
 
-function isMobileInspector() { return matchMedia("(max-width: 1099px)").matches; }
-matchMedia("(max-width: 1099px)").addEventListener("change", () => {
-  if (!elements.appShell.classList.contains("inspector-closed")) openInspector(); else closeInspector();
-});
+function isMobileInspector() { return !isWideLayout(); }
 function updateInspectorButtonState() {
-  const open = isMobileInspector()
-    ? elements.appShell.classList.contains("inspector-open")
-    : !elements.appShell.classList.contains("inspector-closed");
+  const open = inspectorOpen();
   elements.inspectorButton.setAttribute("aria-expanded", String(open));
   elements.inspectorButton.classList.toggle("active", open);
   const label = open ? "Hide task details" : "Show task details";
   elements.inspectorButton.setAttribute("aria-label", label);
   elements.inspectorButton.title = label;
 }
-function openInspector() {
-  saveSidebarPreference("details", true);
+function openInspector({ save = true } = {}) {
+  // Only one narrow drawer: opening Details closes Tasks.
+  if (isMobileInspector() && tasksSwitcherOpen()) closeDestinationSwitcher();
+  if (save) saveSidebarPreference("details", true);
+  elements.appShell.classList.remove("inspector-closed");
+  elements.appShell.classList.add("inspector-open");
   if (isMobileInspector()) {
-    elements.appShell.classList.remove("inspector-closed");
-    elements.appShell.classList.add("inspector-open");
     elements.inspectorBackdrop.hidden = false;
   } else {
-    elements.appShell.classList.remove("inspector-open", "inspector-closed");
     elements.inspectorBackdrop.hidden = true;
   }
+  elements.inspector.inert = false;
   updateInspectorButtonState();
 }
-function closeInspector() {
-  saveSidebarPreference("details", false);
+function closeInspector({ save = true } = {}) {
+  if (save) saveSidebarPreference("details", false);
   elements.appShell.classList.remove("inspector-open");
-  elements.inspectorBackdrop.hidden = true;
   elements.appShell.classList.add("inspector-closed");
+  elements.inspectorBackdrop.hidden = true;
+  elements.inspector.inert = true;
   updateInspectorButtonState();
 }
 function toggleInspector() {
-  const open = isMobileInspector()
-    ? elements.appShell.classList.contains("inspector-open")
-    : !elements.appShell.classList.contains("inspector-closed");
+  const open = inspectorOpen();
   if (open) closeInspector(); else openInspector();
 }
+
+// Crossing the sidebar breakpoint closes both drawers (narrow) or restores saved desktop
+// preferences (wide) without changing the selected task, drafts, or reading position.
+function applySidebarLayout() {
+  if (isWideLayout()) {
+    if (sidebarPreference("details", true)) openInspector({ save: false }); else closeInspector({ save: false });
+    if (sidebarPreference("tasks", true)) openDestinationSwitcher(false); else concealDestinationSwitcher();
+    return;
+  }
+  // Narrow always starts with both drawers closed; this also makes the hidden inspector inert.
+  closeInspector({ save: false });
+  concealDestinationSwitcher();
+}
+WIDE_LAYOUT_QUERY.addEventListener("change", applySidebarLayout);
 
 // Settings owns network/security plus browser-local appearance. Machine management lives in the
 // Tasks sidebar (see the machine dialog below), so these payloads never carry machines or localName.
@@ -3563,7 +3636,8 @@ function closeSettings() {
 let machineConfig = { saved: [], restartRequired: false, headless: false, hostName: "", localName: "" };
 let machineDialogTarget = null;
 let machineDialogBusy = false;
-let machineDrag = null;
+let machineReorderMode = false;
+let machineReorderBusy = false;
 
 const WAKE_MAC_PATTERN = /^(?:[\da-f]{12}|[\da-f]{2}([:-])(?:[\da-f]{2}\1){4}[\da-f]{2})$/i;
 // Mirrors the gateway's machine rules so the dialog can reveal the first failure before submitting.
@@ -3687,23 +3761,12 @@ function machineDialogValidation() {
   return machineFieldError(machineDialogDraft(), index, savedMachines());
 }
 
-// The footer keeps only a small "More…" menu; every action it can offer lives inside it.
+// Remove Machine is the only footer action, and only while editing a saved SSH machine.
 function updateMachineDialogActions() {
   const target = machineDialogTarget;
   const editing = target?.mode === "edit" && target.index >= 0;
-  const enabled = Boolean(editing) && !machineDialogBusy;
-  const wakeAvailable = Boolean(target?.canWake && target.machineId);
-  elements.machineDialogMore.hidden = !editing && !wakeAvailable;
-  elements.machineDialogUp.hidden = !editing;
-  elements.machineDialogDown.hidden = !editing;
-  elements.machineDialogUp.disabled = !enabled || target.index <= 0;
-  elements.machineDialogDown.disabled = !enabled || target.index >= savedMachines().length - 1;
-  elements.machineDialogWake.hidden = !wakeAvailable;
-  elements.machineDialogWake.disabled = machineDialogBusy;
   elements.machineDialogRemove.hidden = !editing;
-  elements.machineDialogRemove.disabled = !enabled;
-  elements.machineDialogMenuSeparator.hidden = !editing;
-  if (!editing && !wakeAvailable) elements.machineDialogMore.open = false;
+  elements.machineDialogRemove.disabled = !editing || machineDialogBusy;
 }
 
 function openMachineDialog(target) {
@@ -3725,9 +3788,6 @@ function openMachineDialog(target) {
   elements.machineDialogMacHelp.hidden = host;
   elements.machineDialogSubmit.textContent = target.mode === "add" ? "Add" : "Save";
   elements.machineDialogError.textContent = "";
-  elements.machineDialogWakeStatus.hidden = true;
-  elements.machineDialogWakeStatus.textContent = "";
-  elements.machineDialogWakeStatus.classList.remove("error-text");
   for (const field of [elements.machineDialogName, elements.machineDialogSsh, elements.machineDialogMac]) field.setCustomValidity("");
   updateMachineDialogActions();
   // Only Add Machine declares a text-input autofocus target; existing details focus the dialog so
@@ -3741,30 +3801,22 @@ function openMachineDialog(target) {
 
 function openMachineDetails(machine, opener) {
   if (machine.local) return openMachineDialog({ mode: "host", opener });
-  // Wake targets the live runtime by identity, never the draft alias that may not be saved yet.
-  const machineId = typeof machine.id === "string" ? machine.id : "";
-  const canWake = Boolean(machine.canWake) && !machine.local;
   const alias = machineCatalogAlias(machine);
   const index = alias ? savedMachines().findIndex((saved) => saved.ssh.trim().toLowerCase() === alias.toLowerCase()) : -1;
-  if (index >= 0) return openMachineDialog({ mode: "edit", index, opener, machineId, canWake });
-  return openMachineDialog({ mode: "add", draft: { name: machine.name || "", ssh: alias, wakeMac: machine.wakeMac || "" }, opener, machineId, canWake });
+  if (index >= 0) return openMachineDialog({ mode: "edit", index, opener });
+  return openMachineDialog({ mode: "add", draft: { name: machine.name || "", ssh: alias, wakeMac: machine.wakeMac || "" }, opener });
 }
 
-async function runMachineDialogAction(action, { close = true } = {}) {
+async function runMachineDialogAction(action) {
   if (machineDialogBusy) return;
   machineDialogBusy = true;
-  elements.machineDialogMore.open = false;
   elements.machineDialogSubmit.disabled = true;
   elements.machineDialogError.classList.remove("error-text");
   elements.machineDialogError.textContent = "Saving…";
   updateMachineDialogActions();
   try {
     await action();
-    if (close) elements.machineDialog.close();
-    else {
-      elements.machineDialogError.textContent = "";
-      elements.machineDialogError.classList.remove("error-text");
-    }
+    elements.machineDialog.close();
   } catch (error) {
     // Keep the draft so the user can correct it and retry.
     elements.machineDialogError.textContent = error instanceof Error ? error.message : String(error);
@@ -3772,32 +3824,6 @@ async function runMachineDialogAction(action, { close = true } = {}) {
   } finally {
     machineDialogBusy = false;
     elements.machineDialogSubmit.disabled = false;
-    updateMachineDialogActions();
-  }
-}
-
-// Wake uses the running machine id, so an edited-but-unsaved SSH alias cannot retarget it.
-async function wakeMachineFromDetails() {
-  const target = machineDialogTarget;
-  if (machineDialogBusy || !target?.canWake || !target.machineId) return;
-  machineDialogBusy = true;
-  elements.machineDialogMore.open = false;
-  elements.machineDialogWakeStatus.hidden = false;
-  elements.machineDialogWakeStatus.textContent = "Sending Wake packet…";
-  elements.machineDialogWakeStatus.classList.remove("error-text");
-  updateMachineDialogActions();
-  try {
-    const response = await apiFetch("/api/machines/wake", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: target.machineId }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
-    elements.machineDialogWakeStatus.textContent = "Wake packet sent";
-  } catch (error) {
-    elements.machineDialogWakeStatus.textContent = error instanceof Error ? error.message : String(error);
-    elements.machineDialogWakeStatus.classList.add("error-text");
-  } finally {
-    machineDialogBusy = false;
     updateMachineDialogActions();
   }
 }
@@ -3823,11 +3849,6 @@ elements.machineDialogForm.addEventListener("submit", (event) => {
     return saveMachineConfig({ machines: savedMachines().map((machine, index) => index === target.index ? machineDialogDraft() : machine) });
   });
 });
-elements.machineDialogWake.addEventListener("click", () => void wakeMachineFromDetails());
-elements.machineDialogMore.addEventListener("click", (event) => event.stopPropagation());
-elements.machineDialog.addEventListener("click", (event) => {
-  if (elements.machineDialogMore.open && !elements.machineDialogMore.contains(event.target)) elements.machineDialogMore.open = false;
-});
 elements.machineDialogRemove.addEventListener("click", () => {
   const target = machineDialogTarget;
   if (machineDialogBusy || !target || target.mode !== "edit") return;
@@ -3837,20 +3858,6 @@ elements.machineDialogRemove.addEventListener("click", () => {
   void runMachineDialogAction(() => saveMachineConfig({ machines: savedMachines().filter((_, index) => index !== target.index) }));
 });
 elements.machineDialogCancel.addEventListener("click", () => elements.machineDialog.close());
-for (const [button, direction] of [[elements.machineDialogUp, -1], [elements.machineDialogDown, 1]]) {
-  button.addEventListener("click", () => {
-    const target = machineDialogTarget;
-    if (machineDialogBusy || !target || target.mode !== "edit") return;
-    const from = target.index;
-    const to = from + direction;
-    const saved = savedMachines();
-    if (to < 0 || to >= saved.length) return;
-    const next = saved.map((machine) => ({ ...machine }));
-    const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved);
-    void runMachineDialogAction(async () => { await saveMachineConfig({ machines: next }); target.index = to; }, { close: false });
-  });
-}
 for (const field of [elements.machineDialogName, elements.machineDialogSsh, elements.machineDialogMac]) {
   field.addEventListener("input", () => {
     field.setCustomValidity("");
@@ -3862,88 +3869,114 @@ elements.machineDialog.addEventListener("close", () => {
   const opener = machineDialogTarget?.opener;
   machineDialogTarget = null;
   machineDialogBusy = false;
-  elements.machineDialogMore.open = false;
   elements.machineDialogSubmit.disabled = false;
-  elements.machineDialogWakeStatus.hidden = true;
   if (opener?.isConnected) opener.focus({ preventScroll: true });
 });
 elements.machineDialog.addEventListener("keydown", (event) => { if (event.key === "Escape") event.stopPropagation(); });
 elements.machineAdd.addEventListener("click", (event) => openMachineDialog({ mode: "add", opener: event.currentTarget }));
 
-// Drag a machine group by its handle to reorder the saved SSH machines; the host never moves.
-function beginMachineDrag(event) {
-  if (event.button !== 0 || machineDialogBusy) return;
-  const group = event.currentTarget.closest(".destination-group");
-  const groups = [...elements.destinationList.querySelectorAll(".destination-group[data-saved-index]")];
-  const from = groups.indexOf(group);
-  if (!group || from < 0 || groups.length < 2) return;
-  event.preventDefault();
-  // Search may hide saved machines, so work with the real saved index of every visible group: the
-  // drag only permutes the visible machines among the slots those machines already occupy.
-  machineDrag = {
-    pointerId: event.pointerId, handle: event.currentTarget, group, groups,
-    fromVisible: from, savedIndices: groups.map((candidate) => Number(candidate.dataset.savedIndex)),
-    // One insertion slot (0..others.length) drives both the preview and the committed reorder.
-    index: null, moved: false,
-  };
-  group.classList.add("dragging");
-  try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* synthetic/expired pointers */ }
-}
-// Thresholds come from each remaining machine heading, not the whole group: a tall expanded task
-// list must not move its own drop boundary.
-function machineDragIndexFor(clientY) {
-  let index = 0;
-  for (const group of machineDrag.groups) {
-    if (group === machineDrag.group) continue;
-    const box = (group.querySelector(".destination-group-heading") || group).getBoundingClientRect();
-    if (clientY > box.top + box.height / 2) index += 1;
+// Reorder mode replaces dragging: Up/Down move one saved machine one saved slot at a time. The
+// host and running-but-unsaved entries are shown but never move, and each move saves immediately.
+function reorderVisualGroups(catalogMachines) {
+  const groups = [];
+  const byKey = new Map();
+  for (const entry of sidebarMachineCatalog(catalogMachines)) {
+    const key = entry.group || entry.id;
+    let visual = byKey.get(key);
+    if (!visual) {
+      visual = { key, name: entry.name || "Machine", local: entry.local === true, savedIndex: -1, members: [] };
+      byKey.set(key, visual);
+      groups.push(visual);
+    }
+    visual.members.push(entry);
+    if (Number.isInteger(entry.savedIndex) && entry.savedIndex >= 0) visual.savedIndex = entry.savedIndex;
+    if (entry.local === true) visual.local = true;
   }
-  return index;
+  return groups;
 }
-// Paint exactly one boundary marker at the computed insertion slot, including after the last group.
-function paintMachineDragMarker() {
-  if (!machineDrag) return;
-  for (const candidate of machineDrag.groups) candidate.classList.remove("drop-before", "drop-after");
-  const others = machineDrag.groups.filter((candidate) => candidate !== machineDrag.group);
-  const before = others[machineDrag.index];
-  if (before) before.classList.add("drop-before");
-  else others[others.length - 1]?.classList.add("drop-after");
+
+function focusReorderMachine(key, direction) {
+  const row = elements.destinationList.querySelector(`.reorder-row[data-machine-key="${CSS.escape(key)}"]`);
+  if (!row) return;
+  const preferred = row.querySelector(`.icon-button[data-direction="${direction < 0 ? "up" : "down"}"]`);
+  const target = preferred && !preferred.disabled ? preferred : row.querySelector(".icon-button");
+  target?.focus();
 }
-window.addEventListener("pointermove", (event) => {
-  if (!machineDrag || event.pointerId !== machineDrag.pointerId) return;
-  const list = elements.destinationList;
-  const bounds = list.getBoundingClientRect();
-  if (event.clientY < bounds.top + 24) list.scrollTop -= 12;
-  else if (event.clientY > bounds.bottom - 24) list.scrollTop += 12;
-  machineDrag.index = machineDragIndexFor(event.clientY);
-  machineDrag.moved = true;
-  paintMachineDragMarker();
-});
-function finishMachineDrag(event, cancelled) {
-  if (!machineDrag || event.pointerId !== machineDrag.pointerId) return;
-  const { handle, group, groups, fromVisible, savedIndices, index, moved, pointerId } = machineDrag;
-  group.classList.remove("dragging");
-  for (const candidate of groups) candidate.classList.remove("drop-before", "drop-after");
-  try { handle?.releasePointerCapture?.(pointerId); } catch { /* pointer already released */ }
-  machineDrag = null;
-  // A tap, a cancelled drag, or a drag that never computed a slot must not save.
-  if (cancelled || !moved || index === null) return;
-  const saved = savedMachines().map((machine) => ({ ...machine }));
-  if (savedIndices.length < 2 || savedIndices.some((savedIndex) => !Number.isInteger(savedIndex) || savedIndex < 0 || savedIndex >= saved.length)) return;
-  // Reorder just the visible machines, then write that sequence back into its own saved slots; any
-  // machine hidden by the search keeps the exact saved index it had.
-  const others = savedIndices.filter((_, position) => position !== fromVisible).map((savedIndex) => saved[savedIndex]);
-  const dragged = saved[savedIndices[fromVisible]];
-  if (!others.length) return;
-  const nextVisible = others.slice();
-  nextVisible.splice(Math.max(0, Math.min(others.length, index)), 0, dragged);
-  if (nextVisible.every((machine, position) => machine === saved[savedIndices[position]])) return;
-  const next = saved.slice();
-  savedIndices.forEach((savedIndex, position) => { next[savedIndex] = nextVisible[position]; });
-  void saveMachineConfig({ machines: next }).catch(() => renderDestinationSwitcher());
+
+function renderMachineReorderList(catalogMachines) {
+  const groups = reorderVisualGroups(catalogMachines);
+  for (const machine of groups) {
+    const row = document.createElement("div");
+    row.className = `reorder-row${machine.local ? " reorder-host" : ""}`;
+    row.dataset.machineKey = machine.key;
+    row.tabIndex = -1;
+    const name = document.createElement("span");
+    name.className = "reorder-name";
+    name.textContent = machine.name;
+    row.append(name);
+    // Only saved SSH machines move; the host and unsaved running entries stay fixed.
+    if (!machine.local && machine.savedIndex >= 0) {
+      const actions = document.createElement("div");
+      actions.className = "reorder-actions";
+      for (const direction of [-1, 1]) {
+        const up = direction < 0;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "icon-button";
+        button.dataset.direction = up ? "up" : "down";
+        const label = `Move ${machine.name} ${up ? "up" : "down"}`;
+        button.setAttribute("aria-label", label);
+        button.title = label;
+        button.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${up ? "M12 19V5m-6 6 6-6 6 6" : "M12 5v14m-6-6 6 6 6-6"}"/></svg>`;
+        button.disabled = machineReorderBusy || (up ? machine.savedIndex <= 0 : machine.savedIndex >= savedMachines().length - 1);
+        button.addEventListener("click", () => void moveSavedMachine(machine.savedIndex, direction, machine.key));
+        actions.append(button);
+      }
+      row.append(actions);
+    }
+    elements.destinationList.append(row);
+  }
+  if (!groups.length) elements.destinationList.append(Object.assign(document.createElement("p"), { className: "destination-empty", textContent: "No machines" }));
 }
-window.addEventListener("pointerup", (event) => finishMachineDrag(event, false));
-window.addEventListener("pointercancel", (event) => finishMachineDrag(event, true));
+
+async function moveSavedMachine(from, direction, key) {
+  if (machineReorderBusy) return;
+  const saved = savedMachines();
+  const to = from + direction;
+  if (from < 0 || to < 0 || to >= saved.length) return;
+  const next = saved.map((machine) => ({ ...machine }));
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  machineReorderBusy = true;
+  elements.machinesError.hidden = true;
+  elements.machinesError.textContent = "";
+  renderDestinationSwitcher(true);
+  try {
+    await saveMachineConfig({ machines: next });
+  } catch (error) {
+    // saveMachineConfig only commits a confirmed save, so the last confirmed order stays in place.
+    elements.machinesError.textContent = error instanceof Error ? error.message : String(error);
+    elements.machinesError.hidden = false;
+  } finally {
+    machineReorderBusy = false;
+    renderDestinationSwitcher(true);
+    focusReorderMachine(key, direction);
+  }
+}
+
+function setMachineReorderMode(active) {
+  machineReorderMode = Boolean(active);
+  machineReorderBusy = false;
+  elements.machineReorder.textContent = machineReorderMode ? "Done" : "Reorder";
+  elements.machineReorder.setAttribute("aria-pressed", String(machineReorderMode));
+  elements.machinesFooter.classList.toggle("reordering", machineReorderMode);
+  elements.destinationSwitcher.classList.toggle("reordering", machineReorderMode);
+  elements.machinesError.hidden = true;
+  elements.machinesError.textContent = "";
+  renderDestinationSwitcher(true);
+  if (machineReorderMode) elements.machineReorder.focus();
+}
+elements.machineReorder.addEventListener("click", () => setMachineReorderMode(!machineReorderMode));
 function renderSettings(value) {
   settingsValue = value;
   for (const field of [elements.settingsLanEnabled, elements.settingsHost, elements.settingsPort]) field.disabled = Boolean(value.headless);
@@ -3951,7 +3984,9 @@ function renderSettings(value) {
     ? "Network binding is managed by the container/host."
     : "Use 0.0.0.0 for all local-network interfaces.";
   elements.quitPocket.disabled = Boolean(value.headless);
-  elements.quitPocket.closest(".settings-quit").hidden = Boolean(value.headless);
+  // Host lifecycle control is unavailable in a container; Restart stays available everywhere.
+  elements.quitPocket.hidden = Boolean(value.headless);
+  elements.restartPocket.hidden = false;
   document.querySelector("#container-lifecycle").hidden = !value.headless;
   // DeepSeek needs no toggle; only a broken host credential is worth surfacing here.
   elements.settingsDeepseekSection.hidden = !value.deepseekError;
@@ -4007,6 +4042,9 @@ elements.destinationButton.addEventListener("click", () => {
   if (elements.destinationButton.getAttribute("aria-expanded") !== "true") openDestinationSwitcher();
   else closeDestinationSwitcher();
 });
+elements.tasksToggle.addEventListener("click", () => {
+  if (tasksSwitcherOpen()) closeDestinationSwitcher(); else openDestinationSwitcher();
+});
 elements.destinationRefresh.addEventListener("click", () => refreshNavigationCatalog(archivedTasks, true));
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
@@ -4020,9 +4058,9 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("dialog[open]")) return;
   if (!elements.settingsScreen.hidden) { closeSettings(); return; }
   if (composerExpanded) { event.preventDefault(); toggleComposer(); return; }
-  if (!matchMedia("(min-width: 1100px)").matches) {
-    if (elements.appShell.classList.contains("inspector-open")) closeInspector();
-    else if (!elements.destinationSwitcher.hidden) closeDestinationSwitcher();
+  if (!isWideLayout()) {
+    if (inspectorOpen()) closeInspector();
+    else if (tasksSwitcherOpen()) closeDestinationSwitcher();
   }
 });
 elements.attachImage.addEventListener("click", () => elements.imagePicker.click());
@@ -4082,6 +4120,7 @@ window.visualViewport?.addEventListener("resize", () => {
 for (const type of ["touchstart", "wheel", "keydown"]) document.addEventListener(type, cancelViewportReconciliation, { passive: true });
 window.visualViewport?.addEventListener("resize", fitExpandedComposer);
 window.visualViewport?.addEventListener("scroll", fitExpandedComposer);
+window.visualViewport?.addEventListener("resize", () => resizeComposer());
 let composerWidth = 0;
 new ResizeObserver(([entry]) => {
   if (entry.contentRect.width === composerWidth) return;
@@ -4185,7 +4224,8 @@ elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
 window.addEventListener("resize", () => {
   updateInspectorButtonState();
-  elements.destinationSwitcher.setAttribute("role", matchMedia("(min-width: 1100px)").matches ? "navigation" : "dialog");
+  elements.destinationSwitcher.setAttribute("role", isWideLayout() ? "navigation" : "dialog");
+  resizeComposer();
 });
 for (const [element, key] of [
   [elements.displayFiles, "files"],
@@ -4317,8 +4357,12 @@ elements.settingsForm.addEventListener("submit", async (event) => {
 });
 elements.restartPocket.addEventListener("click", async () => {
   if (restartingPocket) return;
+  const hostName = settingsValue?.hostName || state?.hostName || "this Mac";
+  // Restart uses the configuration already saved on the host; unsaved Settings edits are not committed.
+  if (!window.confirm(`Restart Pocket on ${hostName}?\n\nActive Pocket work may be interrupted while the gateway restarts.`)) return;
   restartingPocket = true;
   elements.restartPocket.disabled = true;
+  elements.restartPocket.textContent = "Restarting…";
   elements.settingsStatus.textContent = "Preparing restart…";
   elements.settingsStatus.classList.remove("error-text");
   try {
@@ -4330,6 +4374,7 @@ elements.restartPocket.addEventListener("click", async () => {
   } catch (error) {
     restartingPocket = false;
     elements.restartPocket.disabled = false;
+    elements.restartPocket.textContent = "Restart Pocket";
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");
   }
@@ -4361,13 +4406,8 @@ async function startApp() {
   elements.loginScreen.hidden = true;
   elements.stoppedScreen.hidden = true;
   elements.appShell.hidden = false;
-  if (matchMedia("(min-width: 1100px)").matches) {
-    if (sidebarPreference("details", true)) openInspector(); else closeInspector();
-    // First desktop launch opens both sidebars; saved preferences always win.
-    if (sidebarPreference("tasks", true)) openDestinationSwitcher(false);
-  } else {
-    closeInspector();
-  }
+  // First wide-layout launch opens both sidebars; saved desktop preferences always win.
+  applySidebarLayout();
   try {
     const response = await apiFetch("/api/state");
     applySnapshot(await response.json(), false);
