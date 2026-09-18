@@ -734,11 +734,10 @@ function renderChoiceControl(slot, { entries, selected, ariaLabel, id, disabled,
     value.className = "select-static";
     value.setAttribute("aria-label", ariaLabel);
     // A flex container clips direct text without an ellipsis, so the value lives in its own
-    // shrinking element; the full value stays in the DOM and in the tooltip.
+    // shrinking element; the full value stays in the DOM and in the accessible name.
     const text = document.createElement("span");
     text.className = "select-static-text";
     text.textContent = entries.length ? entries[0].label : emptyLabel;
-    text.title = text.textContent;
     value.append(text);
     if (disabled) value.classList.add("disabled");
     slot.append(value);
@@ -3948,6 +3947,8 @@ async function moveSavedMachine(from, direction, key) {
   const [moved] = next.splice(from, 1);
   next.splice(to, 0, moved);
   machineReorderBusy = true;
+  // Reorder/Done waits with the arrows so an exit/re-enter cannot start a second save.
+  elements.machineReorder.disabled = true;
   elements.machinesError.hidden = true;
   elements.machinesError.textContent = "";
   renderDestinationSwitcher(true);
@@ -3959,6 +3960,7 @@ async function moveSavedMachine(from, direction, key) {
     elements.machinesError.hidden = false;
   } finally {
     machineReorderBusy = false;
+    elements.machineReorder.disabled = false;
     renderDestinationSwitcher(true);
     focusReorderMachine(key, direction);
   }
@@ -3966,7 +3968,8 @@ async function moveSavedMachine(from, direction, key) {
 
 function setMachineReorderMode(active) {
   machineReorderMode = Boolean(active);
-  machineReorderBusy = false;
+  // Only the in-flight save may clear machineReorderBusy; entering or leaving never does.
+  elements.machineReorder.disabled = machineReorderBusy;
   elements.machineReorder.textContent = machineReorderMode ? "Done" : "Reorder";
   elements.machineReorder.setAttribute("aria-pressed", String(machineReorderMode));
   elements.machinesFooter.classList.toggle("reordering", machineReorderMode);

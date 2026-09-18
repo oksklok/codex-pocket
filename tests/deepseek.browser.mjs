@@ -316,10 +316,10 @@ try {
   fallback.state.thread = originalThread; selected = fallback; push();
   await page.waitForFunction(() => document.querySelector('#destination-label').textContent === 'Mac mini / Same task ID');
 
-  // A long single-model value ellipsizes inside its own control and keeps the full tooltip.
+  // A long single-model value ellipsizes inside its own control without a repeating tooltip.
   const detailsModelText = page.locator('#model-select-static .select-static-text');
   assert.equal(await detailsModelText.textContent(), LONG_MODEL_NAME);
-  assert.equal(await detailsModelText.getAttribute('title'), LONG_MODEL_NAME);
+  assert.equal(await detailsModelText.getAttribute('title'), null, 'the read-only value keeps no repeating tooltip');
   assert.equal(await detailsModelText.evaluate(node => getComputedStyle(node).textOverflow), 'ellipsis');
   assert.equal(await detailsModelText.evaluate(node => node.scrollWidth > node.clientWidth), true, 'the long model name is truncated');
   assert.equal(await page.locator('#model-select-static').evaluate(node => node.getBoundingClientRect().right <= node.closest('.runtime-panel').getBoundingClientRect().right + 0.5), true, 'the value stays inside its control');
@@ -563,7 +563,7 @@ try {
       assert.equal(Math.round(rects.effortField.left), Math.round(rects.accessField.left));
       assert.equal(Math.round(rects.effortField.width), Math.round(rects.accessField.width));
     }
-    assert.equal(rects.modelText.title, LONG_MODEL_NAME, `dialog keeps the full model tooltip at ${width}`);
+    assert.equal(rects.modelText.title, null, `dialog keeps no repeating tooltip on the read-only model at ${width}`);
     assert.equal(rects.modelText.overflow, 'ellipsis');
     assert.equal(rects.modelText.truncated, true, `dialog truncates the long model name at ${width}`);
   }
