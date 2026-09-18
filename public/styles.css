@@ -787,7 +787,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 }
 
 /* Machine Details: host and SSH fields toggle by mode; helper text sits outside the labels. */
-.machine-dialog .machine-dialog-heading { display: flex; align-items: baseline; gap: 8px; margin: 0 0 16px; }
+.machine-dialog .machine-dialog-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; }
 .machine-dialog .machine-dialog-heading h2 { margin: 0; }
 /* The Host role marker reads as a small neutral outlined pill beside the dialog title. */
 .machine-dialog .machine-dialog-host {
