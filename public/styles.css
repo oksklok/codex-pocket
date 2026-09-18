@@ -376,7 +376,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .async-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .async-answer button { min-height: 40px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: var(--text-label); text-align: left; }
 .async-answer button.selected { border-color: var(--blue); }
-.async-answer textarea { display: block; width: 100%; height: 62px; min-height: 62px; margin-bottom: 6px; padding: 8px; line-height: 22px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: var(--text-ui); }
+.async-answer textarea { display: block; width: 100%; height: 62px; min-height: 62px; margin-bottom: 6px; padding: 8px; line-height: 1.58; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: var(--text-heading); }
 .async-free-text { margin-top: 8px; }
 .async-free-text > button { display: block; margin-left: auto; border-color: rgba(69,200,138,.35); border-radius: 9px; background: rgba(69,200,138,.16); color: var(--accent); font-weight: 750; cursor: pointer; }
 .async-answer .other-answer { min-height: 32px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); }
@@ -446,7 +446,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .expanded-composer .composer-input textarea { padding-right: 44px; }
 /* The draft keeps its own scroll: containment stops wheel/touch chaining to the transcript or page,
    and the scrollbar is hidden without disabling overflow. */
-.composer textarea { height: 40px; min-height: 40px; max-height: var(--composer-max-height, 320px); resize: none; padding: 8px 11px; line-height: 20px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.composer textarea { height: 40px; min-height: 40px; max-height: var(--composer-max-height, 320px); resize: none; padding: 8px 11px; line-height: 1.58; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
 .composer textarea::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .composer textarea:placeholder-shown { -webkit-user-select: none; user-select: none; }
 .composer-actions { align-self: end; gap: 6px; }
@@ -696,7 +696,8 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .task-project { display: block; color: var(--muted); font-size: var(--text-secondary); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
 .task-actions button:hover:not(:disabled), .task-actions button:focus-visible { background: var(--surface); }
 .task-actions button:active:not(:disabled) { background: var(--selected-bg); }
-.composer textarea { font-size: var(--text-ui); }
+/* Composing surfaces use the prose size so a draft matches the message it becomes. */
+.composer textarea { font-size: var(--text-heading); }
 .composer #send-message { font-size: var(--text-ui); }
 .composer #send-message { font-weight: 650; }
 /* One shared placeholder treatment: same colour and opacity everywhere, inheriting each field's typography. */
@@ -899,7 +900,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   .composer-zone:not(.expanded-composer) { padding-bottom: max(var(--action-row-inset), env(safe-area-inset-bottom)); }
 }
 
-.queue-dialog textarea { width: 100%; min-height: 96px; max-height: 35dvh; resize: vertical; }
+/* The queued-message editor holds the same text the composer produces, so it shares the prose size. */
+.queue-dialog textarea { width: 100%; min-height: 96px; max-height: 35dvh; resize: vertical; font-size: var(--text-heading); line-height: 1.58; }
 
 .metadata .working-path-card { display: grid; grid-template-columns: minmax(0, 1fr) 36px; }
 .working-path-card dt, .working-path-card dd { grid-column: 1; }

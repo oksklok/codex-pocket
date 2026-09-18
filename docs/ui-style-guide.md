@@ -15,8 +15,8 @@ One small rem scale, referenced by token everywhere except the two hero headings
 
 | Role | Token | Size | Typical use |
 | --- | --- | --- | --- |
-| Heading | `--text-heading` | 14px (`.875rem`) | message body, settings section titles |
-| UI | `--text-ui` | 13px (`.8125rem`) | controls, rows, form fields |
+| Heading | `--text-heading` | 14px (`.875rem`) | message/transcript prose and the surfaces that compose conversational text (main and fullscreen composer, queued-message editor, async free-text answer); settings section titles |
+| UI | `--text-ui` | 13px (`.8125rem`) | controls, rows, ordinary form fields and pickers (Tasks search, Settings, New Task, Machine Details, Project Folder, Task Details selects, buttons) |
 | Label | `--text-label` | 12px (`.75rem`) | most labels, secondary buttons, list rows |
 | Secondary | `--text-secondary` | 11px (`.6875rem`) | status lines, hints, meta |
 | Meta | `--text-meta` | 10px (`.625rem`) | uppercase micro-labels, badges |
@@ -25,8 +25,8 @@ One small rem scale, referenced by token everywhere except the two hero headings
 - `h2` titles are 1rem (dialogs, Tasks and Task Details headings, Settings).
 - Uppercase micro-labels (`.eyebrow`, `.metadata dt`, `.activity-kind`, `.detail-field > strong`)
   use `letter-spacing` plus weight 750–800; they never carry running copy.
-- Transcript prose is `--text-heading` at `line-height: 1.58`; UI chrome uses tighter leading
-  (1.25–1.45).
+- Transcript prose and the surfaces that compose it are `--text-heading` at `line-height: 1.58`, so
+  a draft matches the message it becomes; UI chrome uses tighter leading (1.25–1.45).
 
 ## Control heights and sizing
 
