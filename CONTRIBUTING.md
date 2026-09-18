@@ -4,19 +4,9 @@ Install the locked dependencies with Node.js 22.6 or newer and npm:
 
 ```sh
 npm ci
-npx playwright install chromium
 ```
 
-Run both suites before submitting functional or UI changes:
-
-```sh
-npm test
-npm run test:browser
-```
-
-`npm test` remains the fast logic suite. The browser suite uses the pinned Playwright development dependency; no global installation is needed. On a Linux host missing browser libraries, use `npx playwright install --with-deps chromium`. `POCKET_PLAYWRIGHT_MODULE` remains an optional override for specialized environments, not the reproducible default.
-
-The tests simulate RPC races, delayed responses, connection failures, SSH keepalive expiry, and browser widths. Report those separately from real-device tests. A read-only smoke check is `npm run probe -- --list-only --monitor-seconds 0`; it initializes and lists tasks without attaching to one. Record the app-server version from initialization as well as `codex --version`. Update compatibility claims only for the checks actually performed. Keep `SPIKE_REPORT.md` historical.
+A read-only smoke check is `npm run probe -- --list-only --monitor-seconds 0`; it initializes and lists tasks without attaching to one. Record the app-server version from initialization as well as `codex --version`. Update compatibility claims only for the checks actually performed. Keep `SPIKE_REPORT.md` historical.
 
 Only rebuild the native app with `zsh macos/build-app.sh` when its source changes.
 

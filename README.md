@@ -145,12 +145,7 @@ Image transport is limited to validated image input and images surfaced by trust
 ```sh
 npm install
 npm start
-npm test
-npx playwright install chromium
-npm run test:browser
 ```
-
-`npm test` is the fast logic suite. `npm run test:browser` uses the pinned Playwright development dependency and synthetic local fixtures at desktop/mobile widths; install Chromium once with the command above. These checks do not put a real remote device to sleep.
 
 `npm start` runs the gateway directly without the menu-bar host and uses the same saved settings. With no saved LAN configuration it listens on localhost. `CODEX_BIN` can select a local Codex executable; `--host`, `--port`, and `CODEX_POCKET_PIN` override saved network settings. Non-loopback listening requires a four-digit PIN and the network precautions above.
 

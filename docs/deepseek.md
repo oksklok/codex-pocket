@@ -66,17 +66,6 @@ The model metadata was checked against DeepSeek's [official Codex integration](h
 
 ## Validation
 
-```sh
-npm test
-npm run test:browser
-# With DEEPSEEK_API_KEY supplied in this process's environment:
-npm run test:deepseek:live
-```
-
-The live script must run while another DeepSeek Pocket host is not using its endpoint. It creates a disposable Git repo in the system temp directory, trusts only that repo in the isolated home, and tests a conflicting project model setting. It leaves the disposable workspace and DeepSeek session available for inspection. It never uses this checkout as the agent's working directory. The key can be supplied with the same subshell above, replacing the final command with `node --experimental-strip-types scripts/deepseek-smoke.mjs`.
-
-Logic tests simulate saved enablement and restart-required handling, host key file resolution, missing credentials, child environment boundaries, provider/config rejection, separate state/receipts/quota, startup failure and recovery, duplicate ownership, parent death, symlink rejection, error redaction, and the balance monitor (parsing, shared in-flight request, stale last-known values, timeout, and provider switching). They use temporary settings, homes, and synthetic key files; they never read the real key. The browser suite uses synthetic RPC fixtures and checks the provider badges, unchanged `local`/`local:deepseek` identities, the rendered balance slot (CNY/USD, zero, insufficient, failure and last-known), and narrow-screen layout; those tests alone do not establish provider compatibility. Neither suite makes live DeepSeek or balance calls.
-
-Live validation on 2026-09-16 used the installed standalone **Codex 0.154.0**, with the app-server initialization independently reporting **0.154.0**. The installed ChatGPT-bundled CLI was **0.154.0-alpha.6.2**; neither binary was changed. The local key was supplied from the host file without printing or persisting it. The live smoke covers model discovery, task creation, file read, patch, shell/test execution, shell credential exclusion, image recognition, Stop, proxy reconnect, and persisted resume after an owned-server restart. The normal OpenAI home is separately checked for unchanged config/auth/model catalog hashes.
+Live validation on 2026-09-16 used the installed standalone **Codex 0.154.0**, with the app-server initialization independently reporting **0.154.0**. The installed ChatGPT-bundled CLI was **0.154.0-alpha.6.2**; neither binary was changed. The local key was supplied from the host file without printing or persisting it. Validation covered model discovery, task creation, file read, patch, shell command execution, shell credential exclusion, image recognition, Stop, proxy reconnect, and persisted resume after an owned-server restart. The normal OpenAI home was separately checked for unchanged config/auth/model catalog hashes.
 
 The final boundary check kept the official server connected at `~/.codex` while starting and stopping the isolated server. All four normal `config.toml`, `auth.json`, `models.json`, and `models_cache.json` hashes stayed unchanged during that cycle. Config/auth/catalog also stayed unchanged across the whole implementation session. The normal cache's `fetched_at` advanced during the longer session with the official runtime active; its whole-session hash therefore differed. A small, plain-color image produced inconsistent descriptions in exploratory checks; the final larger fixture passed exact text (`POCKET 42`) and color recognition. Image input is supported, but a successful request does not guarantee accurate visual interpretation.
