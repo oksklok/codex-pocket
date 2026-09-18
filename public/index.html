@@ -33,7 +33,7 @@
     <main class="shell" id="app-shell" hidden>
       <header class="topbar">
         <button class="icon-button tasks-toggle" id="tasks-toggle" type="button" aria-controls="destination-switcher" aria-expanded="false" aria-label="Show tasks" title="Show tasks">
-          <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 5h14M3 10h14M3 15h14"/></svg>
+          <svg aria-hidden="true" viewBox="0 0 20 20"><path class="tasks-pane" d="M4 4h4v12H4z"/><path d="M3.5 3.5h13v13h-13zM8 3.5v13"/></svg>
         </button>
         <div class="destination-control">
           <button class="destination-button" id="destination-button" type="button" aria-haspopup="dialog" aria-expanded="false">
@@ -78,9 +78,13 @@
             <div class="machines-footer">
               <p class="machines-restart" id="machines-restart" hidden>Saved. Restart required.</p>
               <p class="machines-error error-text" id="machines-error" role="alert" hidden></p>
-              <div class="machines-footer-actions">
+              <div class="machines-footer-actions" id="machines-footer-actions">
                 <button class="secondary-button machines-add" id="machine-add" type="button"><span class="machines-add-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>Add Machine</button>
-                <button class="secondary-button machines-reorder" id="machine-reorder" type="button" aria-pressed="false">Reorder</button>
+                <button class="icon-button machines-reorder" id="machine-reorder" type="button" aria-label="Reorder machines" title="Reorder machines"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg></button>
+              </div>
+              <div class="machines-footer-reorder" id="machines-footer-reorder" hidden>
+                <button class="secondary-button" id="machine-reorder-cancel" type="button">Cancel</button>
+                <button class="primary-button" id="machine-reorder-save" type="button" disabled>Save</button>
               </div>
             </div>
           </section>
@@ -140,7 +144,7 @@
             <dl class="metadata">
               <div><dt>Machine</dt><dd id="machine">—</dd></div>
               <div><dt>Provider</dt><dd id="provider">—</dd></div>
-              <div class="working-path-card"><dt>Working Path</dt><dd id="project">—</dd><button id="edit-cwd" class="icon-button" type="button" aria-label="Edit Working Path" title="Edit Working Path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg></button></div>
+              <div class="working-path-card"><dt>Project Folder</dt><dd id="project">—</dd><button id="edit-cwd" class="icon-button" type="button" aria-label="Edit Project Folder" title="Edit Project Folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg></button></div>
             </dl>
             <section class="secondary-panel runtime-panel" aria-labelledby="runtime-title">
               <div class="panel-heading"><h3 id="runtime-title">Runtime</h3></div>
@@ -267,8 +271,8 @@
     </dialog>
     <dialog class="new-task-dialog" id="cwd-dialog" aria-labelledby="cwd-title">
       <form id="cwd-form" novalidate>
-        <h2 id="cwd-title">Working Path</h2>
-        <input id="cwd-input" aria-label="Working Path" maxlength="4096" autocomplete="off" spellcheck="false">
+        <h2 id="cwd-title">Project Folder</h2>
+        <input id="cwd-input" aria-label="Project Folder" maxlength="4096" autocomplete="off" spellcheck="false">
         <p id="cwd-error" class="form-status error-text" role="alert"></p>
         <div class="new-task-actions"><button id="cwd-cancel" class="secondary-button" type="button">Cancel</button><button id="cwd-save" class="primary-button" type="submit">Save</button></div>
       </form>
@@ -304,6 +308,16 @@
         </div>
         <p id="new-task-error" class="form-status error-text" role="alert"></p>
         <div class="new-task-actions"><button id="new-task-cancel" class="secondary-button" type="button">Cancel</button><button id="new-task-create" class="primary-button" type="submit">Create</button></div>
+      </form>
+    </dialog>
+    <dialog class="new-task-dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+      <form id="confirm-form" novalidate>
+        <h2 id="confirm-title">Confirm</h2>
+        <p class="confirm-message" id="confirm-message"></p>
+        <div class="new-task-actions">
+          <button id="confirm-cancel" class="secondary-button" type="button">Cancel</button>
+          <button id="confirm-submit" class="primary-button" type="submit">Confirm</button>
+        </div>
       </form>
     </dialog>
     <dialog class="image-viewer" id="image-viewer" aria-label="Image viewer">

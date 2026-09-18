@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 .codex-pocket.local.json
 .codex-pocket.local.json.tmp
+.codex-pocket.selection.json
 .codex-pocket.runtime.json
 .codex-pocket.quit
 data/

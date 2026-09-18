@@ -3,7 +3,7 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { createReadStream, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer, isIP } from "node:net";
@@ -274,6 +274,7 @@ const PUBLIC_DIR = join(ROOT_DIR, "public");
 const DATA_DIR = process.env.CODEX_POCKET_DATA_DIR || ROOT_DIR;
 const HEADLESS = process.env.CODEX_POCKET_HEADLESS === "1";
 const CONFIG_PATH = join(DATA_DIR, ".codex-pocket.local.json");
+const SELECTION_PATH = join(DATA_DIR, ".codex-pocket.selection.json");
 const RUNTIME_PATH = join(DATA_DIR, ".codex-pocket.runtime.json");
 const QUIT_PATH = join(DATA_DIR, ".codex-pocket.quit");
 const LOG_PATH = join(DATA_DIR, ".codex-pocket.log");
@@ -425,6 +426,30 @@ function loadLocalSettings(): LocalSettings {
     }
     return { path: CONFIG_PATH, config: { ...SAFE_CONFIG }, loaded: false };
   }
+}
+
+// The last successfully selected machine/task lives in host data so every browser and relaunch
+// restores the same task. It never needs a restart: it is read at startup and written on selection.
+type RememberedSelection = { machineId: string; threadId: string };
+function loadRememberedSelection(): RememberedSelection | null {
+  try {
+    const value = JSON.parse(readFileSync(SELECTION_PATH, "utf8"));
+    const machineId = typeof value?.machineId === "string" ? value.machineId : "";
+    const threadId = typeof value?.threadId === "string" ? value.threadId : "";
+    return machineId && threadId ? { machineId, threadId } : null;
+  } catch {
+    return null;
+  }
+}
+function rememberSelection(machineId: string, threadId: string): void {
+  try {
+    writeFileSync(SELECTION_PATH, `${JSON.stringify({ machineId, threadId }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch { /* A selection hint is best-effort; the live selection is unaffected. */ }
+}
+function forgetSelection(machineId: string, threadId: string): void {
+  const remembered = loadRememberedSelection();
+  if (!remembered || remembered.machineId !== machineId || remembered.threadId !== threadId) return;
+  try { rmSync(SELECTION_PATH, { force: true }); } catch { /* keep the stale hint; it falls back at startup */ }
 }
 
 export function saveLocalSettings(settings: LocalSettings, value: unknown, overridePin: string | null | undefined = process.env.CODEX_POCKET_PIN, headless = HEADLESS): LocalConfig {
@@ -4356,12 +4381,22 @@ export class PocketGateway {
       ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac, provider: "openai" as const, group: `ssh:${machine.ssh}` })),
     ];
     if (!definitions.length) throw new Error("Headless Pocket requires at least one configured SSH machine");
-    this.selectedMachineId = definitions[0].id;
+    // An explicit --thread override wins; otherwise restore the last selection when its machine
+    // still exists, and let the runtime fall back to an active/recent task when the task is gone.
+    const remembered = options.thread ? null : loadRememberedSelection();
+    const restoredMachineId = remembered && definitions.some((definition) => definition.id === remembered.machineId)
+      ? remembered.machineId
+      : null;
+    this.selectedMachineId = restoredMachineId ?? definitions[0].id;
+    const rememberedThreadId = (definition: MachineDefinition): string | undefined => {
+      if (definition.id === "local") return options.thread ?? (restoredMachineId === "local" ? remembered!.threadId : undefined);
+      return restoredMachineId === definition.id ? remembered!.threadId : undefined;
+    };
     for (const definition of definitions) {
       const runtimeOptions: Options = {
         ...options,
         ws: definition.id === "local" ? options.ws : undefined,
-        thread: definition.id === "local" ? options.thread : undefined,
+        thread: rememberedThreadId(definition),
       };
       this.runtimes.set(definition.id, new MachineRuntime(runtimeOptions, definition, () => this.refreshQuotaSource(), status => {
         for (const response of this.subscribers) this.writeSse(response, "task-status", status);
@@ -4503,6 +4538,9 @@ export class PocketGateway {
         this.refreshQuotaSource();
         this.updateBalanceWatch();
       }
+      // Remember a successful create or delete so the next launch restores the same task.
+      if (body.action === "create") rememberSelection(String(body.machineId), String(this.state.thread?.id ?? ""));
+      if (body.action === "delete") forgetSelection(String(body.machineId), String(body.threadId ?? ""));
       const snapshot = this.snapshot();
       for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
       return { ...snapshot, ...(result.warning ? { warning: result.warning } : {}) };
@@ -4545,6 +4583,8 @@ export class PocketGateway {
         const snapshot = this.snapshot();
         for (const response of this.subscribers) this.writeSse(response, "snapshot", snapshot);
       }
+      // A successful selection is the host-wide remembered startup selection.
+      rememberSelection(requestedMachineId, requestedThreadId);
       return this.snapshot();
     });
   }

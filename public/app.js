@@ -112,9 +112,19 @@ const elements = {
   settingsDeepseekError: document.querySelector("#settings-deepseek-error"),
   machineAdd: document.querySelector("#machine-add"),
   machineReorder: document.querySelector("#machine-reorder"),
+  machineReorderCancel: document.querySelector("#machine-reorder-cancel"),
+  machineReorderSave: document.querySelector("#machine-reorder-save"),
+  machinesFooterActions: document.querySelector("#machines-footer-actions"),
+  machineReorderActions: document.querySelector("#machines-footer-reorder"),
   machinesFooter: document.querySelector(".machines-footer"),
   machinesError: document.querySelector("#machines-error"),
   machinesRestart: document.querySelector("#machines-restart"),
+  confirmDialog: document.querySelector("#confirm-dialog"),
+  confirmForm: document.querySelector("#confirm-form"),
+  confirmTitle: document.querySelector("#confirm-title"),
+  confirmMessage: document.querySelector("#confirm-message"),
+  confirmCancel: document.querySelector("#confirm-cancel"),
+  confirmSubmit: document.querySelector("#confirm-submit"),
   machineDialog: document.querySelector("#machine-dialog"),
   machineDialogForm: document.querySelector("#machine-dialog-form"),
   machineDialogTitle: document.querySelector("#machine-dialog-title"),
@@ -138,6 +148,31 @@ const elements = {
   phoneUrlList: document.querySelector("#phone-url-list"),
   settingsStatus: document.querySelector("#settings-status"),
 };
+
+// One Pocket-styled confirmation dialog replaces native window.confirm for confirmable actions.
+let confirmResolve = null;
+function pocketConfirm({ title, message, confirmLabel, danger = false }) {
+  elements.confirmTitle.textContent = title;
+  elements.confirmMessage.textContent = message;
+  elements.confirmSubmit.textContent = confirmLabel || "Confirm";
+  elements.confirmSubmit.className = danger ? "danger-button" : "primary-button";
+  return new Promise((resolve) => {
+    if (confirmResolve) { const previous = confirmResolve; confirmResolve = null; previous(false); }
+    confirmResolve = resolve;
+    elements.confirmDialog.showModal();
+    elements.confirmCancel.focus();
+  });
+}
+function settleConfirm(result) {
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  if (elements.confirmDialog.open) elements.confirmDialog.close();
+  resolve?.(result);
+}
+elements.confirmForm.addEventListener("submit", (event) => { event.preventDefault(); settleConfirm(true); });
+elements.confirmCancel.addEventListener("click", () => settleConfirm(false));
+elements.confirmDialog.addEventListener("cancel", (event) => { event.preventDefault(); settleConfirm(false); });
+elements.confirmDialog.addEventListener("close", () => { if (confirmResolve) settleConfirm(false); });
 
 const markdown = window.markdownit({ html: false, linkify: false, breaks: true, typographer: false });
 const defaultImage = markdown.renderer.rules.image;
@@ -775,8 +810,9 @@ function renderDestinationButton() {
   elements.destinationLabel.textContent = hasTask ? `${machineName} / ${threadLabel(selectedThread || state.thread)}` : machineName;
   elements.destinationProvider.textContent = hasTask && provider ? provider : "";
   elements.destinationProvider.hidden = !(hasTask && provider);
-  elements.destinationButton.disabled = submittingMessage || updatingModel
-    || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt;
+  // Wide layouts render plain text, so only the narrow selector carries a disabled state.
+  elements.destinationButton.disabled = !isWideLayout() && (submittingMessage || updatingModel
+    || updatingAccess || resolvingApproval || submittingInputRequestId || submittingInterrupt);
 }
 
 async function refreshMachines() {
@@ -817,7 +853,7 @@ function renderDestinationSwitcher(force = false) {
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, projectsVisible, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
-    machineReorderMode, machineReorderBusy,
+    machineReorderMode, machineReorderBusy, machineReorderDraft,
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -955,7 +991,7 @@ function renderDestinationSwitcher(force = false) {
       [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
     });
     const controls = Object.assign(document.createElement("div"), { className: "machine-header-controls" });
-    // Status sits beside the name (below it when the sidebar is narrow), never among the actions.
+    // Status stays inline with the name, then Info, then Wake/New Task at the far right.
     const nameBlock = Object.assign(document.createElement("div"), { className: "machine-name-block" });
     nameBlock.append(toggle);
     if (availability) {
@@ -964,8 +1000,15 @@ function renderDestinationSwitcher(force = false) {
       availabilityStatus.textContent = availability;
       nameBlock.append(availabilityStatus);
     }
-    heading.append(nameBlock, controls);
-    // Wake stays a machine action beside Info and New Task, and always targets the live runtime id.
+    const info = document.createElement("button");
+    info.type = "button";
+    info.className = "icon-button machine-info";
+    info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
+    info.title = "Machine details";
+    info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
+    info.addEventListener("click", () => openMachineDetails(machine, info));
+    heading.append(nameBlock, info, controls);
+    // Wake stays a machine action at the far right and always targets the live runtime id.
     if (!machine.local && !machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
       const wakeAction = Object.assign(document.createElement("div"), { className: "wake-action" });
       const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
@@ -989,14 +1032,6 @@ function renderDestinationSwitcher(force = false) {
       wakeAction.append(wake);
       controls.append(wakeAction);
     }
-    const info = document.createElement("button");
-    info.type = "button";
-    info.className = "icon-button machine-info";
-    info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
-    info.title = "Machine details";
-    info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
-    info.addEventListener("click", () => openMachineDetails(machine, info));
-    controls.append(info);
     const create = document.createElement("button");
     create.type = "button";
     create.className = "icon-button machine-create";
@@ -1239,11 +1274,20 @@ function tasksSwitcherOpen() { return document.body.classList.contains("destinat
 function inspectorOpen() { return elements.appShell.classList.contains("inspector-open"); }
 function syncTasksControls() {
   const open = tasksSwitcherOpen();
-  elements.destinationButton.setAttribute("aria-expanded", String(open));
   elements.tasksToggle.setAttribute("aria-expanded", String(open));
   const label = open ? "Hide tasks" : "Show tasks";
   elements.tasksToggle.setAttribute("aria-label", label);
   elements.tasksToggle.title = label;
+  // Wide layouts show plain text: only the toggle icon is a control; the selector is narrow-only.
+  if (isWideLayout()) {
+    elements.destinationButton.removeAttribute("aria-expanded");
+    elements.destinationButton.removeAttribute("aria-haspopup");
+    elements.destinationButton.tabIndex = -1;
+  } else {
+    elements.destinationButton.setAttribute("aria-expanded", String(open));
+    elements.destinationButton.setAttribute("aria-haspopup", "dialog");
+    elements.destinationButton.removeAttribute("tabindex");
+  }
 }
 
 let destinationCloseTimer;
@@ -2792,6 +2836,8 @@ function renderNewTaskProvider() {
     const next = newTaskGroup.members.find(member => member.id === select.value);
     if (!next || next === newTaskMachine) return;
     newTaskMachine = next;
+    // Switching providers restores that runtime's own remembered values; never carry the old ones.
+    newTaskModelValue = "";
     // Model, Effort and Access come from the chosen runtime's own new-task options.
     newTaskOptionsLoad = loadNewTaskOptions();
   });
@@ -3108,7 +3154,7 @@ document.querySelector("#cwd-form").addEventListener("submit", async event => {
   try {
     const response = await apiFetch("/api/thread/cwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...target, cwd }) });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Could not update Working Path");
+    if (!response.ok) throw new Error(result.error || "Could not update project folder");
     if (cwdTarget === target && cwdDialogMatches()) {
       mergeState({ thread: result.thread });
       cwdDialog.close();
@@ -3547,17 +3593,18 @@ function toggleInspector() {
 
 // Crossing the sidebar breakpoint closes both drawers (narrow) or restores saved desktop
 // preferences (wide) without changing the selected task, drafts, or reading position.
-function applySidebarLayout() {
+function applySidebarLayout({ instant = false } = {}) {
   if (isWideLayout()) {
     if (sidebarPreference("details", true)) openInspector({ save: false }); else closeInspector({ save: false });
-    if (sidebarPreference("tasks", true)) openDestinationSwitcher(false); else concealDestinationSwitcher();
+    // A narrow -> wide crossing restores both drawers with the same visible slide-in.
+    if (sidebarPreference("tasks", true)) openDestinationSwitcher(!instant); else concealDestinationSwitcher();
     return;
   }
   // Narrow always starts with both drawers closed; this also makes the hidden inspector inert.
   closeInspector({ save: false });
   concealDestinationSwitcher();
 }
-WIDE_LAYOUT_QUERY.addEventListener("change", applySidebarLayout);
+WIDE_LAYOUT_QUERY.addEventListener("change", () => applySidebarLayout());
 
 // Settings owns network/security plus browser-local appearance. Machine management lives in the
 // Tasks sidebar (see the machine dialog below), so these payloads never carry machines or localName.
@@ -3637,6 +3684,7 @@ let machineDialogTarget = null;
 let machineDialogBusy = false;
 let machineReorderMode = false;
 let machineReorderBusy = false;
+let machineReorderDraft = null;
 
 const WAKE_MAC_PATTERN = /^(?:[\da-f]{12}|[\da-f]{2}([:-])(?:[\da-f]{2}\1){4}[\da-f]{2})$/i;
 // Mirrors the gateway's machine rules so the dialog can reveal the first failure before submitting.
@@ -3848,12 +3896,17 @@ elements.machineDialogForm.addEventListener("submit", (event) => {
     return saveMachineConfig({ machines: savedMachines().map((machine, index) => index === target.index ? machineDialogDraft() : machine) });
   });
 });
-elements.machineDialogRemove.addEventListener("click", () => {
+elements.machineDialogRemove.addEventListener("click", async () => {
   const target = machineDialogTarget;
   if (machineDialogBusy || !target || target.mode !== "edit") return;
   const machine = savedMachines()[target.index];
   const label = machine?.name || machine?.ssh || "this machine";
-  if (!window.confirm(`Remove ${label} from Pocket?\n\nThis removes its Pocket connection configuration. Conversations and project files are not deleted.`)) return;
+  const confirmed = await pocketConfirm({
+    title: `Remove ${label} from Pocket?`,
+    message: "This removes its Pocket connection configuration. Conversations and project files are not deleted.",
+    confirmLabel: "Remove Machine", danger: true,
+  });
+  if (!confirmed) return;
   void runMachineDialogAction(() => saveMachineConfig({ machines: savedMachines().filter((_, index) => index !== target.index) }));
 });
 elements.machineDialogCancel.addEventListener("click", () => elements.machineDialog.close());
@@ -3883,12 +3936,11 @@ function reorderVisualGroups(catalogMachines) {
     const key = entry.group || entry.id;
     let visual = byKey.get(key);
     if (!visual) {
-      visual = { key, name: entry.name || "Machine", local: entry.local === true, savedIndex: -1, members: [] };
+      visual = { key, name: entry.name || "Machine", local: entry.local === true, members: [] };
       byKey.set(key, visual);
       groups.push(visual);
     }
     visual.members.push(entry);
-    if (Number.isInteger(entry.savedIndex) && entry.savedIndex >= 0) visual.savedIndex = entry.savedIndex;
     if (entry.local === true) visual.local = true;
   }
   return groups;
@@ -3902,19 +3954,43 @@ function focusReorderMachine(key, direction) {
   target?.focus();
 }
 
+// The draft differs from the saved order only when the sequence (or its contents) differs.
+function reorderDraftChanged() {
+  if (!machineReorderMode || !machineReorderDraft) return false;
+  return JSON.stringify(machineReorderDraft) !== JSON.stringify(savedMachines());
+}
+
+function syncMachineReorderUi() {
+  elements.destinationSwitcher.classList.toggle("reordering", machineReorderMode);
+  elements.machinesFooter.classList.toggle("reordering", machineReorderMode);
+  elements.machinesFooterActions.hidden = machineReorderMode;
+  elements.machineReorderActions.hidden = !machineReorderMode;
+  elements.machineReorderSave.disabled = machineReorderBusy || !reorderDraftChanged();
+  elements.machineReorderCancel.disabled = machineReorderBusy;
+  elements.machineReorder.disabled = machineReorderBusy;
+}
+
+// Reorder mode lists the host, then the local draft order, then unsaved running machines.
 function renderMachineReorderList(catalogMachines) {
   const groups = reorderVisualGroups(catalogMachines);
-  for (const machine of groups) {
+  const draft = machineReorderDraft || [];
+  const draftKeys = new Set(draft.map((machine) => `ssh:${machine.ssh}`.toLowerCase()));
+  const rows = [
+    ...groups.filter((machine) => machine.local).map((machine) => ({ key: machine.key, name: machine.name, index: -1 })),
+    ...draft.map((machine, index) => ({ key: `ssh:${machine.ssh}`, name: machine.name || machine.ssh, index })),
+    ...groups.filter((machine) => !machine.local && !draftKeys.has(machine.key.toLowerCase())).map((machine) => ({ key: machine.key, name: machine.name, index: -1 })),
+  ];
+  for (const { key, name: machineName, index } of rows) {
     const row = document.createElement("div");
-    row.className = `reorder-row${machine.local ? " reorder-host" : ""}`;
-    row.dataset.machineKey = machine.key;
+    row.className = `reorder-row${index < 0 ? " fixed" : ""}`;
+    row.dataset.machineKey = key;
     row.tabIndex = -1;
     const name = document.createElement("span");
     name.className = "reorder-name";
-    name.textContent = machine.name;
+    name.textContent = machineName;
     row.append(name);
     // Only saved SSH machines move; the host and unsaved running entries stay fixed.
-    if (!machine.local && machine.savedIndex >= 0) {
+    if (index >= 0) {
       const actions = document.createElement("div");
       actions.className = "reorder-actions";
       for (const direction of [-1, 1]) {
@@ -3923,63 +3999,67 @@ function renderMachineReorderList(catalogMachines) {
         button.type = "button";
         button.className = "icon-button";
         button.dataset.direction = up ? "up" : "down";
-        const label = `Move ${machine.name} ${up ? "up" : "down"}`;
+        const label = `Move ${name.textContent} ${up ? "up" : "down"}`;
         button.setAttribute("aria-label", label);
         button.title = label;
         button.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${up ? "M12 19V5m-6 6 6-6 6 6" : "M12 5v14m-6-6 6 6 6-6"}"/></svg>`;
-        button.disabled = machineReorderBusy || (up ? machine.savedIndex <= 0 : machine.savedIndex >= savedMachines().length - 1);
-        button.addEventListener("click", () => void moveSavedMachine(machine.savedIndex, direction, machine.key));
+        button.disabled = machineReorderBusy || (up ? index === 0 : index === draft.length - 1);
+        button.addEventListener("click", () => moveReorderDraft(index, direction, key));
         actions.append(button);
       }
       row.append(actions);
     }
     elements.destinationList.append(row);
   }
-  if (!groups.length) elements.destinationList.append(Object.assign(document.createElement("p"), { className: "destination-empty", textContent: "No machines" }));
+  if (!rows.length) elements.destinationList.append(Object.assign(document.createElement("p"), { className: "destination-empty", textContent: "No machines" }));
 }
 
-async function moveSavedMachine(from, direction, key) {
-  if (machineReorderBusy) return;
-  const saved = savedMachines();
+// Arrow presses only change the local draft: nothing is saved and navigation is not refreshed.
+function moveReorderDraft(from, direction, key) {
+  if (!machineReorderMode || machineReorderBusy || !machineReorderDraft) return;
   const to = from + direction;
-  if (from < 0 || to < 0 || to >= saved.length) return;
-  const next = saved.map((machine) => ({ ...machine }));
-  const [moved] = next.splice(from, 1);
-  next.splice(to, 0, moved);
+  if (from < 0 || to < 0 || to >= machineReorderDraft.length) return;
+  const [moved] = machineReorderDraft.splice(from, 1);
+  machineReorderDraft.splice(to, 0, moved);
+  syncMachineReorderUi();
+  renderDestinationSwitcher(true);
+  focusReorderMachine(key, direction);
+}
+
+async function saveMachineReorder() {
+  if (!machineReorderMode || machineReorderBusy || !reorderDraftChanged()) return;
   machineReorderBusy = true;
-  // Reorder/Done waits with the arrows so an exit/re-enter cannot start a second save.
-  elements.machineReorder.disabled = true;
   elements.machinesError.hidden = true;
   elements.machinesError.textContent = "";
-  renderDestinationSwitcher(true);
+  syncMachineReorderUi();
   try {
-    await saveMachineConfig({ machines: next });
+    // saveMachineConfig only commits a confirmed save, so a failure keeps the draft for retry.
+    await saveMachineConfig({ machines: machineReorderDraft.map((machine) => ({ ...machine })) });
+    machineReorderBusy = false;
+    setMachineReorderMode(false);
   } catch (error) {
-    // saveMachineConfig only commits a confirmed save, so the last confirmed order stays in place.
+    machineReorderBusy = false;
     elements.machinesError.textContent = error instanceof Error ? error.message : String(error);
     elements.machinesError.hidden = false;
-  } finally {
-    machineReorderBusy = false;
-    elements.machineReorder.disabled = false;
-    renderDestinationSwitcher(true);
-    focusReorderMachine(key, direction);
+    syncMachineReorderUi();
   }
 }
 
 function setMachineReorderMode(active) {
-  machineReorderMode = Boolean(active);
-  // Only the in-flight save may clear machineReorderBusy; entering or leaving never does.
-  elements.machineReorder.disabled = machineReorderBusy;
-  elements.machineReorder.textContent = machineReorderMode ? "Done" : "Reorder";
-  elements.machineReorder.setAttribute("aria-pressed", String(machineReorderMode));
-  elements.machinesFooter.classList.toggle("reordering", machineReorderMode);
-  elements.destinationSwitcher.classList.toggle("reordering", machineReorderMode);
+  const next = Boolean(active);
+  if (machineReorderBusy && next !== machineReorderMode) return;
+  machineReorderMode = next;
+  machineReorderDraft = next ? savedMachines().map((machine) => ({ ...machine })) : null;
   elements.machinesError.hidden = true;
   elements.machinesError.textContent = "";
+  syncMachineReorderUi();
   renderDestinationSwitcher(true);
-  if (machineReorderMode) elements.machineReorder.focus();
+  if (next) elements.destinationList.querySelector(".reorder-row")?.focus();
+  else if (tasksSwitcherOpen()) elements.machineReorder.focus();
 }
-elements.machineReorder.addEventListener("click", () => setMachineReorderMode(!machineReorderMode));
+elements.machineReorder.addEventListener("click", () => setMachineReorderMode(true));
+elements.machineReorderCancel.addEventListener("click", () => setMachineReorderMode(false));
+elements.machineReorderSave.addEventListener("click", () => void saveMachineReorder());
 function renderSettings(value) {
   settingsValue = value;
   for (const field of [elements.settingsLanEnabled, elements.settingsHost, elements.settingsPort]) field.disabled = Boolean(value.headless);
@@ -4362,7 +4442,12 @@ elements.restartPocket.addEventListener("click", async () => {
   if (restartingPocket) return;
   const hostName = settingsValue?.hostName || state?.hostName || "this Mac";
   // Restart uses the configuration already saved on the host; unsaved Settings edits are not committed.
-  if (!window.confirm(`Restart Pocket on ${hostName}?\n\nActive Pocket work may be interrupted while the gateway restarts.`)) return;
+  const confirmed = await pocketConfirm({
+    title: `Restart Pocket on ${hostName}?`,
+    message: "Active Pocket work may be interrupted while the gateway restarts.",
+    confirmLabel: "Restart Pocket",
+  });
+  if (!confirmed) return;
   restartingPocket = true;
   elements.restartPocket.disabled = true;
   elements.restartPocket.textContent = "Restarting…";
@@ -4385,7 +4470,12 @@ elements.restartPocket.addEventListener("click", async () => {
 elements.quitPocket.addEventListener("click", async () => {
   if (quittingPocket) return;
   const hostName = settingsValue?.hostName || state?.hostName || "this Mac";
-  if (!window.confirm(`Quit Pocket on ${hostName}?\n\nPocket will stop and you won't be able to reconnect until Codex Pocket.app is launched again on that Mac.`)) return;
+  const confirmed = await pocketConfirm({
+    title: `Quit Pocket on ${hostName}?`,
+    message: "Pocket will stop and you won't be able to reconnect until Codex Pocket.app is launched again on that Mac.",
+    confirmLabel: "Quit Pocket", danger: true,
+  });
+  if (!confirmed) return;
   quittingPocket = true;
   elements.quitPocket.disabled = true;
   elements.quitPocket.textContent = "Quitting…";
@@ -4409,8 +4499,8 @@ async function startApp() {
   elements.loginScreen.hidden = true;
   elements.stoppedScreen.hidden = true;
   elements.appShell.hidden = false;
-  // First wide-layout launch opens both sidebars; saved desktop preferences always win.
-  applySidebarLayout();
+  // First wide-layout launch opens both sidebars instantly; saved desktop preferences always win.
+  applySidebarLayout({ instant: true });
   try {
     const response = await apiFetch("/api/state");
     applySnapshot(await response.json(), false);

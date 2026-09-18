@@ -173,34 +173,35 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .machines-add { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 40px; }
 .machines-add-icon { display: grid; place-items: center; }
 .machines-add-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-.machines-reorder { min-height: 40px; padding: 6px 12px; white-space: nowrap; }
-.machines-reorder[aria-pressed="true"] { border-color: rgba(69,200,138,.4); background: rgba(69,200,138,.14); color: var(--accent); }
-.machines-footer.reordering .machines-footer-actions { grid-template-columns: minmax(0,1fr); }
-.machines-footer.reordering .machines-add { display: none; }
+.machines-footer-reorder { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.machines-footer-reorder button { min-width: 76px; min-height: 40px; padding: 6px 12px; }
+.machines-reorder { border: 0; background: transparent; color: var(--muted); }
+.machines-reorder svg { width: 18px; height: 18px; }
 /* Reorder mode shows only machine names; arrows move a saved machine one saved slot at a time. */
 .reorder-row { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 0 2px 8px; }
 .reorder-row + .reorder-row { border-top: 1px solid var(--line-soft); }
 .reorder-name { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-ui); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .reorder-row .reorder-actions { display: flex; align-items: center; gap: 4px; flex: none; }
-.reorder-row .icon-button { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); display: grid; place-items: center; padding: 0; }
+.reorder-row .icon-button { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--muted); }
 .reorder-row .icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.reorder-host .reorder-name { color: var(--muted); font-weight: 500; }
+.reorder-row.fixed .reorder-name { color: var(--muted); font-weight: 500; }
+/* Reorder mode hides the search, Archived, Refresh and Close controls. */
+.destination-switcher.reordering .tasks-archived, .destination-switcher.reordering #destination-refresh, .destination-switcher.reordering .destination-close { display: none; }
 /* Keep the search element in the grid flow (zero height) so the footer keeps its own row. */
 .destination-switcher.reordering .destination-search { height: 0; min-height: 0; padding: 0; overflow: hidden; visibility: hidden; }
-.destination-switcher.reordering .tasks-archived { display: none; }
 .destination-group { display: grid; gap: 2px; padding: 4px 0 8px; }
 /* 8px between the search field and the first machine header, without stacking extra margins. */
 .destination-group:first-child { padding-top: 8px; }
 .destination-group + .destination-group { border-top: 1px solid var(--line-soft); padding-top: 12px; }
 .destination-group-heading { min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 6px; padding: 4px 0 4px 8px; }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-ui); font-weight: 600; }
-/* The drag handle sits at the far left, then the name, then the status beside it, then actions. */
-.machine-name-block { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; }
-.machine-status { color: var(--danger); font-size: var(--text-meta); font-weight: 700; white-space: nowrap; }
+/* Name plus its inline status, then Info beside the name, then Wake/New Task at the far right. */
+.machine-name-block { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.machine-status { flex: none; color: var(--danger); font-size: var(--text-meta); font-weight: 700; white-space: nowrap; }
 /* Providers are plain secondary metadata after a subtle separator, never a bordered badge. */
 .provider-label { flex: none; color: var(--muted); font-size: var(--text-label); font-weight: 400; white-space: nowrap; }
 .provider-label::before { content: "·"; margin-right: 5px; color: var(--subtle); }
-.machine-header-controls { display: flex; align-items: center; flex: none; gap: 4px; }
+.machine-header-controls { display: flex; align-items: center; flex: none; gap: 4px; margin-left: auto; }
 .machine-info { color: var(--muted); }
 .wake-action { position: relative; display: flex; flex: none; }
 .wake-feedback { position: absolute; z-index: 1; top: 100%; right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: var(--text-meta); overflow-wrap: anywhere; }
@@ -222,7 +223,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-task-label { display: contents; white-space: nowrap; }
 .destination-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 /* Task names keep one primary-text treatment in every selection state; selection stays on the row. */
-.destination-task-name > .destination-task-text { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-ui); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.destination-task-name > .destination-task-text { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-label); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .destination-check, .destination-task-label > span, .destination-task-status { grid-row: 1; line-height: 16px; }
 .destination-task-label > span { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-label > small { grid-column: 2 / -1; grid-row: 2; min-width: 0; line-height: 16px; }
@@ -253,8 +254,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .context-chip { min-width: 92px; }
 .quota-chip.multiple { min-width: 150px; max-width: 320px; }
 .quota-chip.stale { opacity: .72; }
-.quota-chip.balance { max-width: 240px; gap: 4px; }
-.quota-chip.balance .quota-balance-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-chip.balance { max-width: 240px; gap: 4px; justify-content: center; }
+.quota-chip.balance .quota-balance-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quota-chip.balance .balance-flag { flex: none; color: var(--danger); font-weight: 800; }
 .quota-chip.balance.insufficient { border-color: rgba(255,139,139,.38); color: var(--danger); }
 .quota-window { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 3px 4px; }
@@ -288,9 +289,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .sidebar-close svg { position: absolute; inset: 0; margin: auto; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 .details-toggle svg, .settings-button svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .settings-button { display: grid; place-items: center; padding: 0; }
-/* Sidebar toggles keep one resting surface whether open or closed; state shows through the icon. */
+/* Sidebar toggles keep one resting surface and one static glyph; aria-expanded carries the state. */
 .details-toggle .details-pane { fill: none; stroke: none; }
-.details-toggle.active .details-pane { fill: currentColor; }
 .text-button { padding: 5px 8px; background: transparent; color: var(--muted); font-size: var(--text-label); }
 
 .workspace { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; overflow: hidden; }
@@ -641,7 +641,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 
 @media (prefers-reduced-motion: reduce) {
   .inspector, .activity-chevron, .destination-switcher, .destination-backdrop, .destination-button svg { transition: none; }
-  .timeline-activity.running .activity-status::before, .phase-pill.working, #destination-refresh:disabled svg { animation: none; }
+  .timeline-activity.running .activity-status::before, #destination-refresh:disabled svg { animation: none; }
 }
 
 .message-images { display: flex; flex-wrap: wrap; max-width: 260px; gap: 8px; margin-top: 8px; }
@@ -667,12 +667,9 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .destination-group-heading .icon-button { display: grid; place-items: center; flex: none; border: 0; background: transparent; color: var(--muted); }
 .destination-group-heading .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
 
-.task-project { display: block; color: var(--subtle); font-size: var(--text-label); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.task-project { display: block; color: var(--muted); font-size: var(--text-secondary); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
 .task-actions button:hover:not(:disabled), .task-actions button:focus-visible { background: var(--surface); }
 .task-actions button:active:not(:disabled) { background: var(--selected-bg); }
-.phase-pill.working::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: currentColor; animation: phase-dot 1.35s ease-in-out infinite; }
-@keyframes phase-dot { 50% { opacity: .4; transform: scale(.8); box-shadow: 0 0 0 4px rgba(69,200,138,.18); } }
-@media (prefers-reduced-motion: reduce) { .phase-pill.working::before { animation: none; } }
 .composer textarea { font-size: 16px; }
 .composer #send-message { font-size: var(--text-ui); }
 .composer #send-message { font-weight: 650; }
@@ -698,12 +695,12 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   .destination-backdrop, .destination-switcher .destination-close { display: none; }
   /* Wide header: a sidebar toggle plus compact, unboxed machine/task/provider text. */
   .tasks-toggle { display: grid; place-items: center; width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); padding: 0; }
+  /* Plain, non-clickable machine/task/provider text; the toggle icon is the wide entry point. */
   .destination-button {
     display: flex; align-items: center; width: auto; max-width: 100%; min-height: 0; padding: 0;
-    overflow: hidden; border: 0; border-radius: 0; background: none; cursor: pointer; font-weight: 600;
+    overflow: hidden; border: 0; border-radius: 0; background: none; cursor: default; pointer-events: none; font-weight: 600;
   }
   .destination-button svg { display: none; }
-  .destination-button:focus-visible { background: none; }
 }
 .detail-diff.wrap { overflow-x: hidden; }
 .detail-diff.wrap .diff-line { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -775,6 +772,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-dialog { width: min(420px, calc(100% - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .new-task-dialog::backdrop { background: rgba(0,0,0,.55); }
 .new-task-dialog h2 { margin: 0 0 16px; font-size: var(--text-heading); }
+.new-task-dialog .confirm-message { margin: 0; color: var(--muted); font-size: var(--text-ui); line-height: 1.45; overflow-wrap: anywhere; }
 .new-task-dialog input, .queue-dialog textarea { width: 100%; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
 .new-task-dialog input { height: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-inset); }
 .queue-dialog textarea { padding: 10px 12px; }
@@ -801,11 +799,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .machine-toggle strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .machine-toggle svg { width: 10px; height: 10px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; transform: rotate(90deg); }
 .machine-toggle[aria-expanded="false"] svg { transform: none; }
-/* A narrow sidebar drops the status below the name instead of squeezing the controls. */
-@media (max-width: 420px) {
-  .machine-name-block { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
-  .machine-status { grid-column: 1; grid-row: 2; }
-}
 .destination-group.collapsed .destination-entry, .destination-group.collapsed .destination-group-empty { display: none; }
 
 /* Provider and Model take a full row each; Effort and Access share two equal columns. */
