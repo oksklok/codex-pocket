@@ -21,7 +21,7 @@ const {
   DeepSeekHost, deepseekConfig, deepseekEnvironment, withoutDeepseekKey,
   assertDeepseekConfig, constrainDeepseekRequest,
 } = await import("../deepseek.ts");
-const { reconcileSubmission, resolveModelEffort } = await import("../public/pocket-logic.js");
+const { reconcileSubmission, resolveModelEffort, machineCatalogAlias, sidebarMachineCatalog } = await import("../public/pocket-logic.js");
 
 const selectionPath = join(dataDir, ".codex-pocket.selection.json");
 const clearRememberedSelection = () => rmSync(selectionPath, { force: true });
@@ -360,7 +360,7 @@ test("DSH permissions fail closed and legacy session identities cannot be adopte
 test("DSH reattach does not resend an uncertain mutation or accept its late response for a new request", async () => {
   const { DshRpcClient } = await import('../dsh.ts');
   const sent=[];
-  const host={nextId:1,requests:new Map(),start:async()=>{},receiver:null,closed:null,child:{stdin:{writable:true,write:line=>sent.push(JSON.parse(line))}}};
+  const host={nextId:1,requests:new Map(),start:async()=>{},receiver:null,closed:null,child:{stdin:{writable:true,write:()=>{}}},write:(child,payload)=>sent.push(JSON.parse(payload))};
   const first=new DshRpcClient(host);
   await first.connect();
   const mutation=first.request('turn/start',{threadId:'dsh-test'},1000);
@@ -412,4 +412,82 @@ test("an unavailable DSH balance stays unknown or stale without failing the runt
   assert.equal(runtime.balanceSnapshot().stale,true);
   assert.equal(runtime.balanceSnapshot().entries[0].total,'1.23');
   assert.equal(runtime.state.connected,true);
+});
+
+test("an SSH physical machine keeps every provider runtime under one alias", () => {
+  // One alias exposing both OpenAI and DeepSeek must keep both runtimes; the
+  // old catalog collapsed them to a single entry and lost one provider.
+  const openai = { id: "ssh:mac", group: "ssh:mac", name: "Mac", local: false, provider: "openai", tasks: [] };
+  const dsh = { id: "ssh:mac:dsh", group: "ssh:mac", name: "Mac", local: false, provider: "deepseek", tasks: [] };
+  const local = { id: "local", group: "local", name: "Host", local: true, provider: "openai", tasks: [] };
+  const localDsh = { id: "local:dsh", group: "local", name: "Host", local: true, provider: "deepseek", tasks: [] };
+  assert.equal(machineCatalogAlias(openai), "mac");
+  assert.equal(machineCatalogAlias(dsh), "mac");
+  assert.equal(machineCatalogAlias(localDsh), "");
+  const ordered = sidebarMachineCatalog([local, localDsh, openai, dsh], [{ name: "Saved Mac", ssh: "mac" }], "My Host");
+  const ssh = ordered.filter((machine) => machine.id.startsWith("ssh:mac"));
+  assert.deepEqual(ssh.map((machine) => machine.id).sort(), ["ssh:mac", "ssh:mac:dsh"]);
+  assert.ok(ssh.every((machine) => machine.name === "Saved Mac" && machine.savedIndex === 0));
+  assert.equal(ordered.filter((machine) => machine.local).length, 2);
+  // An alias that is no longer running still yields its saved placeholder.
+  const missing = sidebarMachineCatalog([local], [{ name: "Gone", ssh: "gone" }], "My Host");
+  assert.ok(missing.some((machine) => machine.pending && machine.id === "ssh:gone"));
+});
+
+test("a broken DSH stdin pipe disconnects through the transport path instead of crashing", async () => {
+  const { DshHost } = await import("../dsh.ts");
+  const script = join(dataDir, "dsh-keepalive.mjs");
+  writeFileSync(script, "process.stdin.resume();\n");
+  const host = new DshHost(null, script);
+  const closed = new Promise((resolve) => { host.closed = resolve; });
+  await host.start();
+  assert.ok(host.child && host.child.stdin.writable);
+  // An EPIPE error on the child's stdin is a transport closure, not an
+  // unhandled stream error that could terminate the gateway process.
+  host.child.stdin.emit("error", new Error("EPIPE"));
+  const error = await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error("no disconnect")), 5000))]);
+  assert.match(error.message, /DSH connection ended/);
+  assert.equal(host.child, null);
+  assert.throws(() => host.write({ stdin: { writable: true } }, "x"), /DSH disconnected/);
+  await host.stop();
+});
+
+test("a persisted DSH user image is served through the session attachment API", async () => {
+  const threadId = "dsh-12345678-1234-1234-1234-123456789abc";
+  const runtime = new MachineRuntime({ machines: [] }, { id: "local:dsh", name: "DSH", ssh: null, deepseek: true, provider: "deepseek" }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: threadId, name: "Task", cwd: "/tmp" };
+  runtime.itemCache.set("msg-1", { turnId: "1", item: { type: "userMessage", id: "msg-1", content: [{ type: "image", attachment: { attachmentId: "sha256:abc", mediaType: "image/png" } }] } });
+  const calls = [];
+  runtime.rpc = { request: async (method, params) => { calls.push({ method, params }); return { mimeType: "image/png", data: Buffer.from("hi").toString("base64") }; } };
+  const image = await runtime.messageImage(threadId, "msg-1", 0);
+  assert.equal(calls[0].method, "pocket/attachment");
+  assert.equal(calls[0].params.threadId, threadId);
+  assert.equal(calls[0].params.attachmentId, "sha256:abc");
+  assert.equal(image.mimeType, "image/png");
+  assert.equal(image.data.toString(), "hi");
+});
+
+test("a marked DSH relocation notification re-keys only the selected task", () => {
+  const oldId = "dsh-11111111-1111-1111-1111-111111111111";
+  const newId = "dsh-22222222-2222-2222-2222-222222222222";
+  const runtime = new MachineRuntime({ machines: [] }, { id: "local:dsh", name: "DSH", ssh: null, deepseek: true, provider: "deepseek" }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: oldId, name: "Task", cwd: "/old" };
+  runtime.options.thread = oldId;
+  runtime.pendingTaskNames.set(oldId, { name: "Task", firstMessageAccepted: true });
+  runtime.rpc = { request: async () => ({ data: [], nextCursor: null }) };
+  runtime.handleNotification({
+    method: "thread/settings/updated",
+    params: { threadId: newId, relocatedFrom: oldId, threadSettings: { cwd: "/new", model: "deepseek-flash", reasoningEffort: "high", activePermissionProfile: { id: ":workspace" }, approvalsReviewer: "user", approvalPolicy: "on-request", sandbox: { type: "workspaceWrite" } } },
+  });
+  assert.equal(runtime.state.thread.id, newId);
+  assert.equal(runtime.state.thread.cwd, "/new");
+  assert.equal(runtime.options.thread, newId);
+  assert.equal(runtime.pendingTaskNames.has(oldId), false);
+  assert.equal(runtime.pendingTaskNames.has(newId), true);
+  // A settings event without the relocation marker never moves the identity,
+  // so a new task's start or an unrelated settings push cannot steal selection.
+  runtime.handleNotification({ method: "thread/settings/updated", params: { threadId: "dsh-33333333-3333-3333-3333-333333333333", threadSettings: { cwd: "/elsewhere" } } });
+  assert.equal(runtime.state.thread.id, newId);
 });

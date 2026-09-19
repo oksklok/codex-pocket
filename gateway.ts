@@ -2203,6 +2203,22 @@ export class MachineRuntime {
       const input = (Array.isArray(item.content) ? item.content : []).filter((input: any) => input.type === "image" || input.type === "localImage")[imageIndex];
       if (input?.type === "localImage") return this.readSurfacedImage(String(input.path ?? ""));
       if (input?.type !== "image") throw new Error("Image unavailable");
+      // DSH persists user images as session-scoped attachments; read them back
+      // through DSH's attachment API instead of inventing a second store.
+      if (this.deepseek && typeof input.attachment?.attachmentId === "string") {
+        const rpc = this.rpc;
+        if (!rpc || this.state.thread?.id !== String(threadId)) throw new Error("Image unavailable");
+        const stored = await rpc.request("pocket/attachment", { threadId: String(threadId), attachmentId: input.attachment.attachmentId });
+        if (this.rpc !== rpc || this.state.thread?.id !== String(threadId)) throw new Error("Image unavailable");
+        const mimeType = typeof stored?.mimeType === "string" && /^image\/(?:png|jpeg|gif|webp)$/.test(stored.mimeType) ? stored.mimeType : null;
+        const encoded = typeof stored?.data === "string" ? stored.data : "";
+        // Reject on the encoded length before decoding, so an oversized DSH
+        // attachment never allocates a decoded buffer just to be refused.
+        if (!mimeType || encoded.length < 1 || encoded.length > Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 16 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error("Image unavailable");
+        const data = Buffer.from(encoded, "base64");
+        if (data.length < 1 || data.length > MAX_IMAGE_BYTES) throw new Error("Image unavailable");
+        return { mimeType, data };
+      }
       const [image] = imageInputs([input]);
       const [header, data] = image.url.split(",");
       return { mimeType: header.slice(5, header.indexOf(";")), data: Buffer.from(data, "base64") };
@@ -2995,9 +3011,42 @@ export class MachineRuntime {
     const revision = this.settingsRevision;
     await this.rpc.request("thread/settings/update", { threadId, cwd });
     const confirmed = await this.waitForSettingsUpdate(revision, () => this.cwdSettingsRevision > revision && this.state.thread?.cwd !== previousCwd);
-    if (this.state.thread?.id !== threadId || !this.rpc) throw new Error("The selected task changed");
+    if (!this.rpc) throw new Error("The selected task changed");
+    // DSH relocation swaps the internal session id for the same selected task;
+    // the adopt path (driven by the marked notification) must have landed on the
+    // requested folder or this is treated as a changed selection.
+    if (this.state.thread?.id !== threadId && this.state.thread?.cwd !== cwd) throw new Error("The selected task changed");
     if (!confirmed || this.cwdSettingsRevision <= revision) throw new Error("Working Path update could not be confirmed yet");
     return { updated: true, thread: this.state.thread };
+  }
+
+  // DSH changes an existing task's Project Folder by replacing its immutable
+  // session header with a seeded session under the new cwd. Pocket keeps the
+  // same visible task, so move every per-thread cache to the new runtime id.
+  private adoptRelocatedThread(previousId: string, newId: string): void {
+    if (!this.state.thread || this.state.thread.id !== previousId) return;
+    this.state.thread.id = newId;
+    this.options.thread = newId;
+    const move = <T>(map: Map<string, T>) => {
+      if (!map.has(previousId)) return;
+      const value = map.get(previousId)!;
+      map.delete(previousId);
+      map.set(newId, value);
+    };
+    move(this.pendingTaskNames);
+    move(this.taskQueues);
+    move(this.contextByThread);
+    move(this.compactionHints);
+    move(this.taskStatuses);
+    move(this.taskStatusObservations);
+    if (Object.prototype.hasOwnProperty.call(this.terminalResults, previousId)) {
+      this.terminalResults[newId] = this.terminalResults[previousId];
+      delete this.terminalResults[previousId];
+    }
+    if (this.state.queuedMessage?.threadId === previousId) this.state.queuedMessage.threadId = newId;
+    const loaded = this.loadedThreads.find((thread) => thread.id === previousId);
+    if (loaded) loaded.id = newId;
+    this.terminalReads.delete(previousId);
   }
 
   private async refreshWorkingPathProfiles(thread: JsonObject): Promise<void> {
@@ -3830,7 +3879,10 @@ export class MachineRuntime {
     if (method === "turn/completed") {
       void this.savePendingTaskName(String(params.threadId ?? ""), String(params.turn?.id ?? params.turnId ?? ""));
     }
-    if (params.threadId && String(params.threadId) !== this.state.thread?.id) return;
+    // A relocation notification addresses the replacement id but explicitly
+    // marks the current id as its source, so it must reach the settings handler.
+    if (params.threadId && String(params.threadId) !== this.state.thread?.id
+      && String(params.relocatedFrom ?? "") !== this.state.thread?.id) return;
     switch (method) {
       case "thread/goal/updated":
         this.updateGoal(params.threadId, params.goal);
@@ -3860,6 +3912,12 @@ export class MachineRuntime {
         }
         break;
       case "thread/settings/updated": {
+        // Adopt the replacement session only when this task itself was
+        // relocated; ordinary settings events and a new task's start never move
+        // the selected runtime identity.
+        if (this.state.thread && typeof params.relocatedFrom === "string" && params.relocatedFrom === this.state.thread.id && typeof params.threadId === "string" && params.threadId !== this.state.thread.id) {
+          this.adoptRelocatedThread(this.state.thread.id, params.threadId);
+        }
         const cwdChanged = this.state.thread && typeof params.threadSettings?.cwd === "string" && this.state.thread.cwd !== params.threadSettings.cwd;
         if (this.state.thread && typeof params.threadSettings?.cwd === "string") {
           this.state.thread.cwd = params.threadSettings.cwd;
@@ -4131,14 +4189,26 @@ export class MachineRuntime {
     if (!pending.length || !this.rpc || !this.state.thread) return;
     const rpc = this.rpc;
     const threadId = this.state.thread.id;
-    // One recent item page, bypassing the cache that may still contain item/started.
+    // Walk recent item pages, bypassing the cache that may still contain
+    // item/started, until every pending assistant item is found or the bounded
+    // page budget is exhausted. Pagination can now split one turn's items.
     let items: any[] = [];
     try {
-      const page = await rpc.request("thread/items/list", {
-        threadId, turnId, cursor: null, limit: DETAIL_ITEMS_PAGE_LIMIT, sortDirection: "desc",
-      });
-      items = (Array.isArray(page?.data) ? page.data : [])
-        .filter((entry: any) => !entry.turnId || String(entry.turnId) === turnId).map((entry: any) => entry.item);
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+      for (let pageIndex = 0; pageIndex < DETAIL_ITEMS_MAX_PAGES; pageIndex += 1) {
+        const page = await rpc.request("thread/items/list", {
+          threadId, turnId, cursor, limit: DETAIL_ITEMS_PAGE_LIMIT, sortDirection: "desc",
+        });
+        items.push(...(Array.isArray(page?.data) ? page.data : [])
+          .filter((entry: any) => !entry.turnId || String(entry.turnId) === turnId).map((entry: any) => entry.item));
+        const nextCursor = page?.nextCursor ? String(page.nextCursor) : null;
+        if (!nextCursor || seenCursors.has(nextCursor)) break;
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+        const found = pending.every(message => items.some(item => item?.type === "agentMessage" && String(item.id) === message.id && typeof item.text === "string"));
+        if (found) break;
+      }
     } catch (error) {
       console.warn(`${this.definition.name}: terminal message reconciliation unavailable: ${String(error)}`);
     }
@@ -4684,7 +4754,15 @@ export class PocketGateway {
   }
 
   updateWorkingPath(body: JsonObject): Promise<JsonObject> {
-    return this.enqueue(() => this.requireSelected(body.machineId).updateWorkingPath(body.threadId, body.cwd));
+    return this.enqueue(async () => {
+      const previousId = String(body.threadId ?? "");
+      const result = await this.requireSelected(body.machineId).updateWorkingPath(body.threadId, body.cwd);
+      // A DSH Project Folder relocation changes the internal runtime id; keep
+      // the remembered startup selection pointed at the same visible task.
+      const currentId = String(this.state.thread?.id ?? "");
+      if (currentId && previousId && currentId !== previousId) rememberSelection(String(body.machineId), currentId);
+      return result;
+    });
   }
 
   updateThreadSettings(machineId: unknown, model: unknown, effort: unknown, threadId: unknown): Promise<JsonObject> {

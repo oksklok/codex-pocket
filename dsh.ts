@@ -2,6 +2,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { withoutDeepseekKey } from "./deepseek.ts";
 
+const DSH_TRANSPORT_ENDED =
+  "DSH connection ended; check execution-machine setup and ownership";
+
 // One normal DSH process per provider runtime. Browser reconnects only reattach;
 // transport uncertainty never automatically resubmits a prompt.
 export class DshHost {
@@ -15,6 +18,33 @@ export class DshHost {
   constructor(ssh: string | null, remotePath?: string) {
     this.ssh = ssh;
     this.remotePath = remotePath;
+  }
+  // Every transport-closure signal (stdin/stdout error, spawn error, exit, a
+  // synchronous write failure) funnels through here so it settles the existing
+  // disconnect path exactly once. Pending RPCs are rejected by
+  // DshRpcClient.close(); a possibly delivered message is never resent.
+  fail(child: ChildProcessWithoutNullStreams, error: Error) {
+    if (this.child !== child) return;
+    this.child = null;
+    this.requests.clear();
+    try {
+      child.stdin.destroy();
+    } catch {}
+    try {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGTERM");
+    } catch {}
+    this.closed?.(error);
+  }
+  write(child: ChildProcessWithoutNullStreams, payload: string) {
+    if (this.child !== child || !child.stdin.writable)
+      throw new Error("DSH disconnected");
+    try {
+      child.stdin.write(payload);
+    } catch {
+      this.fail(child, new Error(DSH_TRANSPORT_ENDED));
+      throw new Error("DSH disconnected");
+    }
   }
   async start() {
     if (this.child) return;
@@ -79,31 +109,44 @@ export class DshHost {
                 this.requests.delete(id);
           this.receiver?.(message);
         } catch {
-          this.closed?.(new Error("Invalid DSH protocol frame"));
+          this.fail(child, new Error("Invalid DSH protocol frame"));
+          return;
         }
       }
     });
     child.stderr.resume();
-    const close = () => {
-      if (this.child !== child) return;
-      this.child = null;
-      this.requests.clear();
-      this.closed?.(
-        new Error(
-          "DSH connection ended; check execution-machine setup and ownership",
-        ),
-      );
-    };
-    child.on("error", close);
-    child.on("exit", close);
+    // A broken stdin/stdout pipe must never reach the process as an unhandled
+    // stream error, and a half-close without an exit must still disconnect
+    // rather than leaving the gateway waiting on a dead transport.
+    child.on("error", () => this.fail(child, new Error(DSH_TRANSPORT_ENDED)));
+    child.on("exit", () => this.fail(child, new Error(DSH_TRANSPORT_ENDED)));
+    child.stdin.on("error", () =>
+      this.fail(child, new Error(DSH_TRANSPORT_ENDED)),
+    );
+    child.stdin.on("close", () =>
+      this.fail(child, new Error(DSH_TRANSPORT_ENDED)),
+    );
+    child.stdout.on("error", () =>
+      this.fail(child, new Error(DSH_TRANSPORT_ENDED)),
+    );
+    child.stdout.on("close", () =>
+      this.fail(child, new Error(DSH_TRANSPORT_ENDED)),
+    );
+    child.stderr.on("error", () => {});
   }
   async stop() {
     const child = this.child;
     if (!child) return;
     await new Promise<void>((resolve) => {
       child.once("exit", () => resolve());
-      child.stdin.end();
-      const timer = setTimeout(() => child.kill("SIGTERM"), 3000);
+      try {
+        child.stdin.end();
+      } catch {}
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGTERM");
+        } catch {}
+      }, 3000);
       timer.unref();
     });
   }
@@ -169,8 +212,9 @@ export class DshRpcClient {
     });
   }
   private send(m: any) {
-    if (!this.host.child?.stdin.writable) throw new Error("DSH disconnected");
-    this.host.child.stdin.write(JSON.stringify(m) + "\n");
+    const child = this.host.child;
+    if (!child) throw new Error("DSH disconnected");
+    this.host.write(child, JSON.stringify(m) + "\n");
   }
   notify(_method: string, _params: any = {}) {} // Pocket's initialized notification has no DSH counterpart.
   respond(id: string | number, result: any) {

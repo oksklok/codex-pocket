@@ -1,7 +1,8 @@
 // Private stdio carrier for DSH's existing Host services. DSH owns all agent work.
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { JsonRpcLineTransport } from "@deepseek-ai/dsh-sdk-protocol";
 import { DeepSeekBalanceMonitor } from "../deepseek.ts";
 import {
@@ -17,6 +18,9 @@ export const inject = [
   "permissionPresets",
   "loader",
   "agents",
+  "agentLoop",
+  "agentDefaultModel",
+  "sessionPersistence",
   "workspaceRegistry",
   "credentials",
   "goals",
@@ -32,6 +36,24 @@ export function apply(ctx) {
   const active = new Map();
   const attempts = new Map();
   const usageSeq = new Map();
+  // DSH exposes no public session-deletion command, but its AgentRegistry
+  // create/resume already return the exact lifecycle handle. Capture those
+  // handles so Pocket can dispose one live Agent before removing its session
+  // artifacts instead of guessing filesystem paths or killing the runtime.
+  const agentHandles = new Map();
+  const upstreamCreate = ctx.agents.create.bind(ctx.agents);
+  const upstreamResume = ctx.agents.resume.bind(ctx.agents);
+  ctx.agents.create = async (options) => {
+    const handle = await upstreamCreate(options);
+    agentHandles.set(handle.agent.id, handle);
+    return handle;
+  };
+  ctx.agents.resume = async (options) => {
+    const handle = await upstreamResume(options);
+    if (handle?.agent) agentHandles.set(handle.agent.id, handle);
+    return handle;
+  };
+  ctx.on("agent/disposed", ({ agent }) => agentHandles.delete(agent.id));
   const goalValue = (g) =>
     g ? { objective: g.objective, status: g.phase } : null;
   async function usage(id, events) {
@@ -126,12 +148,195 @@ export function apply(ctx) {
       ...(includeTurns ? { turns } : {}),
     };
   }
-  async function update(id, p) {
-    const a = await agent(id);
-    if (p.cwd && p.cwd !== a.session.header.cwd)
+  function pageLimit(value, fallback, max) {
+    const n = Number(value);
+    return Number.isInteger(n) && n > 0 ? Math.min(n, max) : fallback;
+  }
+  // Cursor pagination over Pocket's deterministic projection. Cursors are
+  // durable turn/item identities, so a page stays stable when newer events
+  // append instead of shifting an index.
+  function paginateBy(items, keyOf, cursor, limit, direction) {
+    const total = items.length;
+    const at = cursor
+      ? items.findIndex((item) => String(keyOf(item)) === String(cursor))
+      : -1;
+    if (direction === "asc") {
+      const start = at >= 0 ? at : 0;
+      const end = Math.min(total, start + limit);
+      return {
+        page: items.slice(start, end),
+        nextCursor: end < total ? String(keyOf(items[end])) : null,
+      };
+    }
+    // desc: the cursor names the next older entry to include, so it is
+    // inclusive; the page ends just after its index.
+    const end = at >= 0 ? at + 1 : total;
+    const start = Math.max(0, end - limit);
+    return {
+      page: items.slice(start, end).reverse(),
+      nextCursor: start > 0 ? String(keyOf(items[start - 1])) : null,
+    };
+  }
+  // The session-owned artifact path comes from DSH's own persistence scan; the
+  // whole directory (every format generation and its lock file) is removed.
+  // Content-addressed attachments are shared across sessions and never touched.
+  async function removeSessionArtifacts(id) {
+    const artifacts = await ctx.sessionPersistence.listArtifacts();
+    const artifact = artifacts.find((entry) => entry.header.id === id);
+    if (artifact) await rm(dirname(artifact.path), { recursive: true, force: true });
+  }
+  async function forgetWorkspaceSession(id) {
+    try {
+      await ctx.workspaceRegistry.unarchiveSession(id);
+    } catch {}
+    for (const workspace of ctx.workspaceRegistry.list()) {
+      if (!workspace.sessionIds.includes(id)) continue;
+      try {
+        await workspace.detachSession(id);
+      } catch {}
+    }
+  }
+  // Smallest safe Pocket-owned deletion: detach one live Agent through the
+  // handle DSH already returned, then remove its persisted session artifacts
+  // and workspace/archive bookkeeping. Never a tombstone, never report a
+  // hidden session as deleted, and never remove a running task.
+  async function deleteSession(id) {
+    sessionId(id);
+    const live = ctx.agents.get(id);
+    if (live?.status === "running") throw new Error("Stop the task first");
+    const handle = agentHandles.get(id);
+    if (handle) {
+      await handle.dispose();
+      agentHandles.delete(id);
+    } else if (live) {
       throw new Error(
-        "DSH does not expose changing an existing session workspace; create a task in that folder",
+        "This DSH task is attached without a removable handle; restart the DSH runtime and retry",
       );
+    }
+    await removeSessionArtifacts(id);
+    await forgetWorkspaceSession(id);
+    active.delete(id);
+    attempts.delete(id);
+    usageSeq.delete(id);
+  }
+  // Create a verified replacement session under `cwd` with DSH's seed/replay
+  // creation primitive. The caller deletes the original only after every
+  // replacement-side step has succeeded, so any failure leaves the original
+  // authoritative. The replacement intentionally carries no `parentSession`:
+  // Pocket keeps its top-level task slot, while native DSH forks stay hidden by
+  // the existing parent-session catalog filter.
+  async function createReplacement(id, cwd, source) {
+    if (
+      !cwd ||
+      cwd.length > 4096 ||
+      /[\r\n\0]/.test(cwd) ||
+      !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(cwd)
+    )
+      throw new Error("Enter an absolute project folder on this machine");
+    if (source.status === "running")
+      throw new Error("Stop the task before changing its project folder");
+    const inspected = await api.inspect(id);
+    const events = inspected.events;
+    let openTurn = false;
+    for (const event of events) {
+      if (event.type === "turn/start") openTurn = true;
+      if (event.type === "turn/end") openTurn = false;
+    }
+    if (openTurn)
+      throw new Error("Stop the task before changing its project folder");
+    await mkdir(cwd, { recursive: true });
+    const newId = `dsh-${randomUUID()}`;
+    const presets = ctx.get("agentPresets");
+    let setup;
+    let agentPreset = inspected.meta.agentPreset;
+    if (presets && agentPreset) {
+      const resolved = await presets.resolve(agentPreset);
+      agentPreset = resolved.id;
+      setup = async (agentCtx) => {
+        await presets.mount(agentCtx, resolved.id);
+      };
+    }
+    const { provider, model } = ctx.agentDefaultModel.currentSelection();
+    let handle;
+    try {
+      handle = await ctx.agentLoop.createAgent(ctx, {
+        sessionId: newId,
+        seed: events,
+        inheritedEventCount: events.length,
+        meta: {
+          cwd,
+          isSeeded: true,
+          ...(agentPreset ? { agentPreset } : {}),
+        },
+        agentOptions: { provider, model },
+        ...(setup ? { setup } : {}),
+      });
+      agentHandles.set(newId, handle);
+      const verified = await api.inspect(newId);
+      if (
+        verified.meta.cwd !== cwd ||
+        verified.meta.isSeeded !== true ||
+        projectEvents(verified.events).length !== projectEvents(events).length
+      )
+        throw new Error("The replacement DSH session did not verify");
+    } catch (error) {
+      await discardReplacement({ newId, handle });
+      throw error;
+    }
+    return { newId, handle };
+  }
+  async function discardReplacement(replacement) {
+    try {
+      await replacement?.handle?.dispose();
+    } catch {}
+    if (!replacement?.newId) return;
+    agentHandles.delete(replacement.newId);
+    try {
+      await removeSessionArtifacts(replacement.newId);
+    } catch {}
+  }
+  async function update(id, p) {
+    let a = await agent(id);
+    // DSH stores the workspace in an immutable session header. Pocket's
+    // Project Folder change creates a seeded replacement under the requested
+    // cwd, applies the preserved settings to it, and only then removes the
+    // original. The explicit marker lets Pocket adopt the new internal id only
+    // for this selected task's relocation, never for an unrelated settings event.
+    if (p.cwd && p.cwd !== a.session.header.cwd) {
+      const previousId = id;
+      const previous = await settings(previousId);
+      const replacement = await createReplacement(previousId, p.cwd, a);
+      let relocatedSettings;
+      try {
+        // Apply the preserved selection and permission state to the live
+        // replacement before the original is removed. An invalid requested
+        // model/effort fails here with the original still intact.
+        await api.selectModel({
+          sessionId: replacement.newId,
+          provider: "deepseek-official",
+          model: p.model ?? previous.model,
+          reasoningEffort: p.effort ?? previous.reasoningEffort,
+        });
+        const replacementAgent = await agent(replacement.newId);
+        const target = permission(
+          p,
+          ctx.permissionPresets.current(replacementAgent.session),
+        );
+        ctx.permissionPresets.set(replacementAgent.session, target);
+        relocatedSettings = await settings(replacement.newId);
+        // Commit: every replacement-side step succeeded, so remove the original.
+        await deleteSession(previousId);
+      } catch (error) {
+        await discardReplacement(replacement);
+        throw error;
+      }
+      notify("thread/settings/updated", {
+        threadId: replacement.newId,
+        relocatedFrom: previousId,
+        threadSettings: relocatedSettings,
+      });
+      return;
+    }
     const target = permission(p, ctx.permissionPresets.current(a.session));
     ctx.permissionPresets.set(a.session, target);
     if (p.model || p.effort) {
@@ -164,6 +369,23 @@ export function apply(ctx) {
       });
       await balance.refresh();
       return balance.snapshot();
+    }
+    // Pocket's existing message-image endpoint reads a durable DSH image through
+    // DSH's session-scoped attachment API; no second storage layer is added and
+    // DSH keeps enforcing that the attachment is referenced by this session.
+    if (method === "pocket/attachment") {
+      const threadId = sessionId(p.threadId);
+      if (
+        typeof p.attachmentId !== "string" ||
+        p.attachmentId.length < 1 ||
+        p.attachmentId.length > 512
+      )
+        throw new Error("Image unavailable");
+      const stored = await api.attachment({
+        sessionId: threadId,
+        attachmentId: p.attachmentId,
+      });
+      return { mimeType: stored.attachment.mediaType, data: stored.data };
     }
     if (method === "model/list") {
       const catalog = await api.modelCatalog();
@@ -262,10 +484,10 @@ export function apply(ctx) {
       ](id);
       return {};
     }
-    if (method === "thread/delete")
-      throw new Error(
-        "DSH 0.1.6-alpha.2 has no session-deletion Host operation; archive is available",
-      );
+    if (method === "thread/delete") {
+      await deleteSession(p.threadId);
+      return {};
+    }
     if (method === "thread/goal/get")
       return { goal: goalValue(ctx.goals.get(await agent(p.threadId))) };
     if (method === "thread/goal/set" || method === "thread/goal/clear") {
@@ -285,19 +507,37 @@ export function apply(ctx) {
           : ctx.goals.resume(a, ref);
       return { goal: goalValue(updated) };
     }
-    if (method === "thread/turns/list" || method === "thread/items/list") {
+    if (method === "thread/turns/list") {
       const thread = await read(p.threadId, true);
-      return {
-        data:
-          method === "thread/turns/list"
-            ? [...thread.turns].reverse()
-            : thread.turns
-                .filter((t) => !p.turnId || t.id === p.turnId)
-                .flatMap((t) =>
-                  t.items.map((item) => ({ turnId: t.id, item })),
-                ),
-        nextCursor: null,
-      };
+      const direction = p.sortDirection === "asc" ? "asc" : "desc";
+      const { page, nextCursor } = paginateBy(
+        thread.turns,
+        (turn) => turn.id,
+        p.cursor ?? null,
+        pageLimit(p.limit, 20, 200),
+        direction,
+      );
+      // "summary" keeps one turn page bounded; Pocket hydrates items separately.
+      const data =
+        p.itemsView === "summary"
+          ? page.map(({ items, ...turn }) => turn)
+          : page;
+      return { data, nextCursor };
+    }
+    if (method === "thread/items/list") {
+      const thread = await read(p.threadId, true);
+      const entries = thread.turns
+        .filter((t) => !p.turnId || t.id === p.turnId)
+        .flatMap((t) => t.items.map((item) => ({ turnId: t.id, item })));
+      const direction = p.sortDirection === "asc" ? "asc" : "desc";
+      const { page, nextCursor } = paginateBy(
+        entries,
+        (entry) => entry.item.id,
+        p.cursor ?? null,
+        pageLimit(p.limit, 100, 500),
+        direction,
+      );
+      return { data: page, nextCursor };
     }
     if (method === "turn/interrupt") {
       const id = sessionId(p.threadId);

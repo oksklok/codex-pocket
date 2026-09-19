@@ -357,3 +357,62 @@ export function resolveModelEffort(supported, current, fallback) {
   if (fallback && efforts.includes(fallback)) return fallback;
   return efforts[0] || "";
 }
+
+// Navigation entries identify SSH runtimes by their `ssh:<alias>` id (the catalog omits the raw
+// alias), so derive the alias from the id/group when the field is absent.
+export function machineCatalogAlias(machine) {
+  if (machine.ssh) return String(machine.ssh);
+  const key = String(machine.group || machine.id || "");
+  return key.startsWith("ssh:") ? key.slice(4) : "";
+}
+
+// One list for the sidebar: the host first, then the saved SSH machines in saved order, then any
+// still-running machine the saved config no longer contains (reachable until the next restart).
+// One physical machine can expose several runtimes (OpenAI and DeepSeek) under the same SSH alias;
+// every runtime for an alias is kept, and the visual grouping stays the caller's job.
+export function sidebarMachineCatalog(catalogMachines, savedMachines = [], savedHostName = "") {
+  const byAlias = new Map();
+  for (const machine of catalogMachines) {
+    const alias = machineCatalogAlias(machine);
+    if (!alias) continue;
+    const key = alias.toLowerCase();
+    const runtimes = byAlias.get(key);
+    if (runtimes) runtimes.push(machine);
+    else byAlias.set(key, [machine]);
+  }
+  // The desired saved host name is the custom localName when set, otherwise the real hostname.
+  const ordered = catalogMachines.filter((machine) => machine.local === true || !machineCatalogAlias(machine)).map((machine) => ({
+    ...machine,
+    name: savedHostName || machine.name,
+    hostPending: Boolean(savedHostName) && savedHostName !== machine.name,
+  }));
+  const consumed = new Set();
+  const savedAliases = new Set(savedMachines.map((machine) => machine.ssh.trim().toLowerCase()));
+  savedMachines.forEach((savedMachine, index) => {
+    const running = byAlias.get(savedMachine.ssh.trim().toLowerCase()) || [];
+    if (running.length) {
+      for (const machine of running) {
+        consumed.add(machine.id);
+        ordered.push({
+          ...machine,
+          name: savedMachine.name || machine.name,
+          savedIndex: index,
+          pendingConfig: (machine.name || "") !== (savedMachine.name || ""),
+        });
+      }
+    } else {
+      ordered.push({
+        id: `ssh:${savedMachine.ssh}`, name: savedMachine.name || savedMachine.ssh, provider: "openai",
+        group: `ssh:${savedMachine.ssh}`, platform: "", local: false, connected: false, catalogAvailable: false,
+        connectionError: null, canWake: false, tasks: [], ssh: savedMachine.ssh, wakeMac: savedMachine.wakeMac || null,
+        pending: true, pendingConfig: false, savedIndex: index,
+      });
+    }
+  });
+  for (const machine of catalogMachines) {
+    const alias = machineCatalogAlias(machine);
+    if (!alias || consumed.has(machine.id) || savedAliases.has(alias.toLowerCase())) continue;
+    ordered.push({ ...machine, savedIndex: -1, pendingRemoval: true });
+  }
+  return ordered;
+}

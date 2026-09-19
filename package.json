@@ -10,7 +10,8 @@
     "gateway": "node --experimental-strip-types gateway.ts",
     "probe": "node --experimental-strip-types probe.ts",
     "probe-remote": "node --experimental-strip-types probe.ts --ssh",
-    "test": "node --experimental-strip-types --test tests/critical.test.mjs"
+    "test": "node --experimental-strip-types --test tests/",
+    "test:fast": "node --experimental-strip-types --test tests/critical.test.mjs"
   },
   "engines": {
     "node": ">=22.6"

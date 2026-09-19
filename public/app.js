@@ -15,6 +15,8 @@ import {
   fileInputs, MAX_INPUT_FILES, MAX_INPUT_FILE_BYTES, MAX_INPUT_FILES_BYTES,
   resolvedAsyncAnswer,
   rememberComposerDraft,
+  machineCatalogAlias,
+  sidebarMachineCatalog as sidebarMachineCatalogFor,
 } from "./pocket-logic.js";
 
 const elements = {
@@ -3551,7 +3553,14 @@ function connectEvents() {
     updateLiveTaskCatalog(value);
   });
   on("status", (event) => { mergeState(parseEvent(event)); });
-  on("thread", (event) => { mergeState({ thread: parseEvent(event) }); });
+  on("thread", (event) => {
+    const thread = parseEvent(event);
+    const previousId = state?.thread?.id;
+    mergeState({ thread });
+    // A DSH Project Folder change swaps the internal runtime id for the same
+    // visible task; refresh the task catalog so no stale id stays clickable.
+    if (thread?.id && previousId && thread.id !== previousId) void refreshNavigationCatalog(archivedTasks, true);
+  });
   on("task-name", event => {
     const value = parseEvent(event);
     if (value.threadId === state?.thread?.id) mergeState({ taskNameWarning: value.taskNameWarning });
@@ -3766,57 +3775,9 @@ function savedMachines() {
 }
 
 // Navigation entries identify SSH runtimes by their `ssh:<alias>` id (the catalog omits the raw
-// alias), so derive the alias from the id/group when the field is absent.
-function machineCatalogAlias(machine) {
-  if (machine.ssh) return String(machine.ssh);
-  const key = String(machine.group || machine.id || "");
-  return key.startsWith("ssh:") ? key.slice(4) : "";
-}
-
-// One list for the sidebar: the host first, then the saved SSH machines in saved order, then any
-// still-running machine the saved config no longer contains (reachable until the next restart).
+// alias), so the grouping helper derives it from the id/group when the field is absent.
 function sidebarMachineCatalog(catalogMachines) {
-  const saved = savedMachines();
-  const byAlias = new Map();
-  for (const machine of catalogMachines) {
-    const alias = machineCatalogAlias(machine);
-    if (alias) byAlias.set(alias.toLowerCase(), machine);
-  }
-  // The desired saved host name is the custom localName when set, otherwise the real hostname.
-  const savedHostName = machineConfig.localName || machineConfig.hostName || "";
-  // local and local:deepseek stay separate runtimes but share one physical host heading.
-  const ordered = catalogMachines.filter((machine) => machine.local === true || !machineCatalogAlias(machine)).map((machine) => ({
-    ...machine,
-    name: savedHostName || machine.name,
-    hostPending: Boolean(savedHostName) && savedHostName !== machine.name,
-  }));
-  const consumed = new Set();
-  const savedAliases = new Set(saved.map((machine) => machine.ssh.trim().toLowerCase()));
-  saved.forEach((savedMachine, index) => {
-    const running = byAlias.get(savedMachine.ssh.trim().toLowerCase());
-    if (running) {
-      consumed.add(running.id);
-      ordered.push({
-        ...running,
-        name: savedMachine.name || running.name,
-        savedIndex: index,
-        pendingConfig: (running.name || "") !== (savedMachine.name || ""),
-      });
-    } else {
-      ordered.push({
-        id: `ssh:${savedMachine.ssh}`, name: savedMachine.name || savedMachine.ssh, provider: "openai",
-        group: `ssh:${savedMachine.ssh}`, platform: "", local: false, connected: false, catalogAvailable: false,
-        connectionError: null, canWake: false, tasks: [], ssh: savedMachine.ssh, wakeMac: savedMachine.wakeMac || null,
-        pending: true, pendingConfig: false, savedIndex: index,
-      });
-    }
-  });
-  for (const machine of catalogMachines) {
-    const alias = machineCatalogAlias(machine);
-    if (!alias || consumed.has(machine.id) || savedAliases.has(alias.toLowerCase())) continue;
-    ordered.push({ ...machine, savedIndex: -1, pendingRemoval: true });
-  }
-  return ordered;
+  return sidebarMachineCatalogFor(catalogMachines, savedMachines(), machineConfig.localName || machineConfig.hostName || "");
 }
 
 function applyMachineSettings(settings, restartRequired) {
