@@ -5,6 +5,16 @@ import { withoutDeepseekKey } from "./deepseek.ts";
 const DSH_TRANSPORT_ENDED =
   "DSH connection ended; check execution-machine setup and ownership";
 
+export function dshRemoteCommand(path: string): string {
+  if (/^[a-z]:[\\/]/i.test(path)) {
+    // Encoded PowerShell works with Windows OpenSSH's cmd, PowerShell and Git
+    // Bash shells, without letting the launcher path become shell syntax.
+    const script = `& node '${path.replace(/'/g, "''")}'; exit $LASTEXITCODE`;
+    return `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+  }
+  return `node '${path.replace(/'/g, "'\\''")}'`;
+}
+
 // One normal DSH process per provider runtime. Browser reconnects only reattach;
 // transport uncertainty never automatically resubmits a prompt.
 export class DshHost {
@@ -51,7 +61,6 @@ export class DshHost {
     const path =
       this.remotePath ??
       fileURLToPath(new URL("./dsh/launch.mjs", import.meta.url));
-    const quote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
     const command = this.ssh ? process.env.SSH_BIN || "ssh" : process.execPath;
     const args = this.ssh
       ? [
@@ -65,7 +74,7 @@ export class DshHost {
           "-o",
           "ServerAliveCountMax=3",
           this.ssh,
-          `node ${quote(path)}`,
+          dshRemoteCommand(path),
         ]
       : [path];
     const child = spawn(command, args, {

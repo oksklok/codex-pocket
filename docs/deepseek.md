@@ -30,7 +30,7 @@ The runtime launches from the isolated home, not the gateway's project directory
 
 For a local non-headless Pocket host, a valid execution credential exposes the DeepSeek provider at launch. This no longer has a macOS-only gate. Runtime installation or launch failures appear through the existing connection/error surfaces.
 
-For a Linux, Docker, NAS or other gateway using a Mac (or other POSIX execution machine) over SSH, add `dshPath` to that machine's entry in the existing Pocket configuration:
+For a Linux, Docker, NAS or other gateway using an execution machine over SSH, add `dshPath` to that machine's entry in the existing Pocket configuration:
 
 ```json
 {
@@ -46,7 +46,9 @@ For a Linux, Docker, NAS or other gateway using a Mac (or other POSIX execution 
 
 The existing OpenAI runtime remains on that machine; DeepSeek shares its physical-machine group. The absolute path is on the **execution machine**. `node` must be available in that user's noninteractive SSH PATH. Verify `ssh execution-mac 'node --version'` and provision the key file there. The gateway needs SSH access and this setting, but no DeepSeek credential or DSH installation. Existing machine edits/reordering preserve the additional setting without introducing controls.
 
-Pocket uses its existing SSH options (batch authentication, connection timeout and keepalives), with DSH JSON-RPC on stdin/stdout. No HTTP/WebSocket listener, exposed endpoint, web UI or port forwarding is added. Local Windows execution follows DSH's platform-selected tools, but was not live-tested; remote Windows shell launching is not validated by this integration.
+Pocket uses its existing SSH options (batch authentication, connection timeout and keepalives), with DSH JSON-RPC on stdin/stdout. No HTTP/WebSocket listener, exposed endpoint, web UI or port forwarding is added. Windows machines use an absolute drive-letter path such as `C:/Users/example/codex-pocket/dsh/launch.mjs`. Pocket launches it with encoded PowerShell through the existing SSH connection; `node.exe` must be in that SSH environment's PATH. Windows reports the platform family expected by Pocket's existing file and image handling.
+
+Keep execution dependencies outside cloud-synced directories. On Macs with a synced Documents checkout, install the pinned runtime files (`dsh/`, `deepseek.ts`, and `package.json`) under `~/.local/share/codex-pocket-runtime`, run `npm ci --prefix dsh` there, and point `dshPath` at that copy. This changes only the installation path; the existing `~/.codex-pocket/dsh` home and credential remain in use.
 
 ## State and lifecycle
 

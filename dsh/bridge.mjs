@@ -358,7 +358,7 @@ export function apply(ctx) {
     if (method === "initialize")
       return {
         userAgent: `DeepSeek Harness ${DSH_VERSION}`,
-        platformFamily: process.platform,
+        platformFamily: process.platform === "win32" ? "windows" : process.platform,
         platformOs: process.platform,
         backend: "dsh",
       };

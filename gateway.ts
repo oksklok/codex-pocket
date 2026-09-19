@@ -388,7 +388,7 @@ function validateMachines(value: unknown): MachineConfig[] {
     aliases.add(normalized);
     const wakeMac = candidate.wakeMac === undefined || typeof candidate.wakeMac === "string" && !candidate.wakeMac.trim() ? undefined : normalizeWakeMac(candidate.wakeMac);
     const dshPath = candidate.dshPath;
-    if (dshPath !== undefined && (typeof dshPath !== "string" || !dshPath.startsWith("/") || /[\r\n\0]/.test(dshPath))) throw new Error("dshPath must be an absolute execution-machine launcher path");
+    if (dshPath !== undefined && (typeof dshPath !== "string" || !/^(?:\/|[a-z]:[\\/])/i.test(dshPath) || /[\r\n\0]/.test(dshPath))) throw new Error("dshPath must be an absolute execution-machine launcher path");
     return { name, ssh: candidate.ssh, ...(wakeMac ? { wakeMac } : {}), ...(dshPath ? { dshPath } : {}) };
   });
 }

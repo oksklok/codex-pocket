@@ -530,3 +530,17 @@ test("the Project Folder response marks a confirmed DSH relocation", async () =>
   assert.equal(result.relocatedFrom, oldId);
   assert.equal(cwdResponseApplies({ machineId: "local:dsh", threadId: oldId }, { machineId: "local:dsh", thread: runtime.state.thread }, result), true);
 });
+
+test("DSH remote launch quotes POSIX and Windows paths without shell interpolation", async () => {
+  const { dshRemoteCommand } = await import('../dsh.ts');
+  assert.equal(dshRemoteCommand("/home/a'b/launch.mjs"), "node '/home/a'\\''b/launch.mjs'");
+  const path = "C:/Users/A O'Brien/$literal/launch.mjs";
+  const command = dshRemoteCommand(path);
+  assert.match(command, /^powershell -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
+  assert.equal(Buffer.from(command.split(' ').at(-1), 'base64').toString('utf16le'),
+    "& node 'C:/Users/A O''Brien/$literal/launch.mjs'; exit $LASTEXITCODE");
+  const config = { lanEnabled: false, host:'127.0.0.1', port:4173, pin:null, localName:'', machines: [{name:'PC',ssh:'pc',dshPath:path}] };
+  const settings = {path:join(dataDir,'windows-config.json'),loaded:true,config};
+  assert.equal(saveLocalSettings(settings,{machines:config.machines},null,false).machines[0].dshPath, path);
+  assert.throws(() => saveLocalSettings(settings,{machines:[{name:'PC',ssh:'pc',dshPath:'C:relative.mjs'}]},null,false), /absolute/);
+});
