@@ -3015,9 +3015,12 @@ export class MachineRuntime {
     // DSH relocation swaps the internal session id for the same selected task;
     // the adopt path (driven by the marked notification) must have landed on the
     // requested folder or this is treated as a changed selection.
-    if (this.state.thread?.id !== threadId && this.state.thread?.cwd !== cwd) throw new Error("The selected task changed");
+    const relocatedFrom = this.state.thread?.id !== threadId ? String(threadId) : undefined;
+    if (relocatedFrom && this.state.thread?.cwd !== cwd) throw new Error("The selected task changed");
     if (!confirmed || this.cwdSettingsRevision <= revision) throw new Error("Working Path update could not be confirmed yet");
-    return { updated: true, thread: this.state.thread };
+    // The browser uses relocatedFrom to treat the old and replacement ids as one
+    // task for exactly this confirmed relocation response.
+    return { updated: true, thread: this.state.thread, ...(relocatedFrom ? { relocatedFrom } : {}) };
   }
 
   // DSH changes an existing task's Project Folder by replacing its immutable

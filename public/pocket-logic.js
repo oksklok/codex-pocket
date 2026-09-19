@@ -416,3 +416,15 @@ export function sidebarMachineCatalog(catalogMachines, savedMachines = [], saved
   }
   return ordered;
 }
+
+// Whether a Project Folder response belongs to the operation the dialog started.
+// A DSH relocation replaces the task's internal id, so the confirmed response
+// (which carries `relocatedFrom`) is accepted once the browser has adopted the
+// replacement id for the same visible task; an unrelated task change is not.
+export function cwdResponseApplies(target, current, result) {
+  if (!target || !current || current.machineId !== target.machineId) return false;
+  if (current.thread?.id === target.threadId) return true;
+  return result?.relocatedFrom === target.threadId
+    && typeof result?.thread?.id === "string"
+    && result.thread.id === current.thread?.id;
+}

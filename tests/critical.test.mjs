@@ -21,7 +21,7 @@ const {
   DeepSeekHost, deepseekConfig, deepseekEnvironment, withoutDeepseekKey,
   assertDeepseekConfig, constrainDeepseekRequest,
 } = await import("../deepseek.ts");
-const { reconcileSubmission, resolveModelEffort, machineCatalogAlias, sidebarMachineCatalog } = await import("../public/pocket-logic.js");
+const { reconcileSubmission, resolveModelEffort, machineCatalogAlias, sidebarMachineCatalog, cwdResponseApplies } = await import("../public/pocket-logic.js");
 
 const selectionPath = join(dataDir, ".codex-pocket.selection.json");
 const clearRememberedSelection = () => rmSync(selectionPath, { force: true });
@@ -490,4 +490,43 @@ test("a marked DSH relocation notification re-keys only the selected task", () =
   // so a new task's start or an unrelated settings push cannot steal selection.
   runtime.handleNotification({ method: "thread/settings/updated", params: { threadId: "dsh-33333333-3333-3333-3333-333333333333", threadSettings: { cwd: "/elsewhere" } } });
   assert.equal(runtime.state.thread.id, newId);
+});
+
+test("a confirmed DSH relocation response is accepted as the same dialog task", () => {
+  const machineId = "local:dsh";
+  const oldId = "dsh-11111111-1111-1111-1111-111111111111";
+  const newId = "dsh-22222222-2222-2222-2222-222222222222";
+  const target = { machineId, threadId: oldId };
+  // Normal update: state and response stay on the target id.
+  assert.equal(cwdResponseApplies(target, { machineId, thread: { id: oldId } }, { thread: { id: oldId } }), true);
+  // Confirmed relocation: the browser already adopted the replacement id, or
+  // has not yet, and the marked response ties it back to the old id.
+  assert.equal(cwdResponseApplies(target, { machineId, thread: { id: newId } }, { relocatedFrom: oldId, thread: { id: newId } }), true);
+  assert.equal(cwdResponseApplies(target, { machineId, thread: { id: oldId } }, { relocatedFrom: oldId, thread: { id: newId } }), true);
+  // An unrelated task/id change is never consumed, and neither is another
+  // machine's response.
+  assert.equal(cwdResponseApplies(target, { machineId, thread: { id: "dsh-33333333-3333-3333-3333-333333333333" } }, { relocatedFrom: oldId, thread: { id: newId } }), false);
+  assert.equal(cwdResponseApplies(target, { machineId, thread: { id: newId } }, { thread: { id: newId } }), false);
+  assert.equal(cwdResponseApplies(target, { machineId: "ssh:other:dsh", thread: { id: newId } }, { relocatedFrom: oldId, thread: { id: newId } }), false);
+  assert.equal(cwdResponseApplies(null, { machineId, thread: { id: oldId } }, { thread: { id: oldId } }), false);
+});
+
+test("the Project Folder response marks a confirmed DSH relocation", async () => {
+  const oldId = "dsh-11111111-1111-1111-1111-111111111111";
+  const newId = "dsh-22222222-2222-2222-2222-222222222222";
+  const runtime = new MachineRuntime({ machines: [] }, { id: "local:dsh", name: "DSH", ssh: null, deepseek: true, provider: "deepseek" }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: oldId, name: "Task", cwd: "/old" };
+  runtime.rpc = { request: async (method) => {
+    if (method === "thread/settings/update") {
+      runtime.handleNotification({ method: "thread/settings/updated", params: { threadId: newId, relocatedFrom: oldId, threadSettings: { cwd: "/new", model: "deepseek-flash", reasoningEffort: "low", activePermissionProfile: { id: ":workspace" }, approvalsReviewer: "user", approvalPolicy: "on-request", sandbox: { type: "workspaceWrite" } } } });
+      return {};
+    }
+    return { data: [], nextCursor: null };
+  } };
+  const result = await runtime.updateWorkingPath(oldId, "/new");
+  assert.equal(result.thread.id, newId);
+  assert.equal(result.thread.cwd, "/new");
+  assert.equal(result.relocatedFrom, oldId);
+  assert.equal(cwdResponseApplies({ machineId: "local:dsh", threadId: oldId }, { machineId: "local:dsh", thread: runtime.state.thread }, result), true);
 });

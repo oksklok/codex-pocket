@@ -17,6 +17,7 @@ import {
   rememberComposerDraft,
   machineCatalogAlias,
   sidebarMachineCatalog as sidebarMachineCatalogFor,
+  cwdResponseApplies,
 } from "./pocket-logic.js";
 
 const elements = {
@@ -2039,7 +2040,10 @@ function renderState() {
   const platform = platformLabel(state.platform);
   if (platform) elements.machine.append(` · ${platform}`);
   elements.provider.textContent = providerName(state.provider) || "—";
-  if (cwdDialog.open && !cwdDialogMatches()) cwdDialog.close();
+  // While a save is in flight the response handler owns the outcome: a DSH
+  // relocation adopts the replacement id before the response returns, and the
+  // dialog must close normally from that confirmed response, not here.
+  if (cwdDialog.open && !cwdBusy && !cwdDialogMatches()) cwdDialog.close();
   document.querySelector("#edit-cwd").disabled = !state.connected || !state.thread || cwdBusy;
   elements.project.textContent = state.thread?.cwd || "—";
   elements.project.title = state.thread?.cwd || "";
@@ -3213,7 +3217,9 @@ document.querySelector("#cwd-form").addEventListener("submit", async event => {
     const response = await apiFetch("/api/thread/cwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...target, cwd }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not update project folder");
-    if (cwdTarget === target && cwdDialogMatches()) {
+    // Accept the confirmed response for this exact dialog operation, including a
+    // DSH relocation that already adopted the replacement id, then close normally.
+    if (cwdTarget === target && cwdResponseApplies(target, state, result)) {
       mergeState({ thread: result.thread });
       cwdDialog.close();
     }
