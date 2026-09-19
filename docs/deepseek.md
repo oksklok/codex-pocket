@@ -82,9 +82,15 @@ Native DSH search uses DeepSeek's Anthropic-compatible Messages API and the **sa
 
 Balance is fetched and cached **on the execution machine** through the existing sanitized balance monitor. Only availability, currency/amount, timestamp and freshness metadata cross SSH to the gateway. The account-wide Balance continues to occupy the existing quota slot, including the native host's existing quota/balance presentation. A failed balance request never blocks a turn or becomes a zero balance.
 
-## Validation (2026-09-19)
+## Validation (2026-09-20)
 
-The isolated local macOS smoke used DSH **0.1.6-alpha.2**, corresponding to official source commit `ddefc45fbc7f8e46dd73185e68295696d1297887`:
+The headless NAS/Docker gateway was live-verified over SSH against five execution machines: two Macs, two Windows PCs, and one Linux machine. All ten provider runtimes (OpenAI/Codex and DeepSeek/DSH on each machine) passed task creation, a real model turn, resume, and a second real model turn. The NAS catalog and mobile browser UI showed the correct five physical-machine groups. DSH remained pinned at **0.1.6-alpha.2**, with state and DeepSeek credentials on the execution machines and none provisioned on the NAS. Both Windows DSH runtimes used the encoded PowerShell launcher.
+
+All five DSH conversations also restored their persisted two-turn history after a NAS gateway restart. These checks exercised awake machines; wake-from-sleep and unattended availability after a machine reboot were not validated.
+
+### Earlier local macOS validation (2026-09-19)
+
+The isolated local macOS smoke used the same DSH **0.1.6-alpha.2**, corresponding to official source commit `ddefc45fbc7f8e46dd73185e68295696d1297887`:
 
 - Created and executed `hello.py` with DSH's native write and bash tools.
 - Exercised Pocket's `MachineRuntime` create, model/effort selection, Ask mode, streaming, tool activity and history.
@@ -95,11 +101,13 @@ The isolated local macOS smoke used DSH **0.1.6-alpha.2**, corresponding to offi
 - Pocket queue delivery ran a separate follow-up turn successfully; rename and archive/unarchive were verified. A staged text-file attachment was read correctly, and a later resume restored title and context usage.
 - A shell presence-only check confirmed DeepSeek/OpenAI keys were absent from tool environments. Balance returned sanitized metadata.
 
-The configured remote Mac was reachable through SSH but had no `node` in its noninteractive PATH and no key at the required path. Remote model execution, NAS/Docker deployment and Windows execution were not live-tested. The live Pocket host was not restarted and unrelated tasks were not interrupted.
-
 The delete/relocation/pagination/image/transport fixes were later validated against isolated DSH **0.1.6-alpha.2** processes with a local fake Messages endpoint and a fully separate DSH home: two turns were created, turn and item history paginated with cursors, a persisted user image was read back through `pocket/attachment`, the task was relocated to a new folder with its title, conversation, access and effort preserved (and the next model request confirmed the preserved effort), deleted for real, and the deletion stayed gone after a fresh DSH process. A forced relocation failure during settings application rolled the replacement back and left the original task usable, a synthetic SSH alias exposing OpenAI and DeepSeek kept both runtimes, and a broken DSH stdin pipe disconnected the adapter without terminating the process. These checks are `tests/dsh-integration.test.mjs`; they skip when `npm ci --prefix dsh` has not installed the separately locked runtime.
 
-`npm test` passes **25** fast checks plus the **2** isolated DSH bridge checks (**27** total); syntax checks and the separately locked DSH installation dry run also passed. The fast suite covers critical permission mapping, legacy ID rejection, per-runtime receipt separation, late responses across reattachment, catalog grouping with two providers per SSH alias, image routing, relocation adoption, transport closure, and cancellation/tool result projection alongside the existing checks. The read-only OpenAI probe initialized and listed tasks using app-server **0.154.0**. The installed standalone CLI was **0.154.0** and the app-bundled CLI **0.155.0-alpha.2.6**; neither was changed.
+### Automated regression checks (2026-09-20)
+
+The migration's `npm test` run passed **28** fast checks plus the **2** isolated DSH bridge checks (**30** total, none skipped). The fast suite covers critical permission mapping, legacy ID rejection, per-runtime receipt separation, late responses across reattachment, catalog grouping with two providers per SSH alias, image routing, relocation adoption, transport closure, cancellation/tool result projection, and POSIX/Windows launcher-path quoting and validation alongside the existing checks.
+
+Earlier syntax checks and the separately locked DSH installation dry run also passed. The earlier local read-only OpenAI probe initialized and listed tasks using app-server **0.154.0**. At that time, the local standalone CLI was **0.154.0** and the app-bundled CLI **0.155.0-alpha.2.6**; neither was changed by that validation.
 
 After installing DSH on the execution machine and applying configuration, restart Pocket to load the backend change. **No native-app rebuild is needed.** The delete, relocation, pagination and image-routing changes live in `dsh/bridge.mjs`, which DSH loads when it launches: an already-running gateway with a live DSH child keeps the previous adapter until that runtime is relaunched. Existing task data needs no migration.
 
