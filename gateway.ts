@@ -17,6 +17,10 @@ import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStat
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
+// Must match DSH_ADAPTER_PROTOCOL in dsh/projection.mjs; a test asserts they stay in sync. The
+// gateway refuses an execution-side adapter it does not understand.
+export const DSH_ADAPTER_PROTOCOL = 2;
+
 type JsonObject = Record<string, any>;
 type PendingRpc = {
   resolve: (value: any) => void;
@@ -1478,7 +1482,12 @@ function activityFromItem(
   }
   if (item.type === "fileChange") {
     const paths = Array.isArray(item.changes) ? item.changes.length : 0;
-    return { ...base, kind: "files", label: `Edited ${paths} file${paths === 1 ? "" : "s"}`, expandable: true };
+    const label = item.unchanged === true
+      ? "No file changes"
+      : paths
+        ? `Edited ${paths} file${paths === 1 ? "" : "s"}`
+        : status === "failed" ? "Edit failed" : "File change requested";
+    return { ...base, kind: "files", label, expandable: true };
   }
   if (item.type === "reasoning") {
     const summary = Array.isArray(item.summary)
@@ -1588,7 +1597,15 @@ function activityDetailFromItem(item: any): JsonObject | null {
       };
     });
     if (Array.isArray(item.changes) && item.changes.length > changes.length) truncated = true;
-    return { type: "fileChange", status: String(item.status ?? "completed"), changes, truncated };
+    return {
+      type: "fileChange",
+      status: String(item.status ?? "completed"),
+      changes,
+      truncated,
+      // Applied (true), failed (false), or requested without authoritative metadata (null).
+      applied: item.applied === true ? true : item.applied === false ? false : null,
+      unchanged: item.unchanged === true,
+    };
   }
   if (item.type === "mcpToolCall") {
     const argumentsValue = boundedJson(item.arguments);
@@ -1942,6 +1959,8 @@ export class MachineRuntime {
   private trustedImagePaths = new Set<string>();
   private selectionQueue: Promise<void> = Promise.resolve();
   private pendingAttachment: { threadId: string; replay: Array<() => void> } | null = null;
+  // Pending runtime requests replayed on attach before the task is selected, held by thread id.
+  private deferredServerRequests = new Map<string, JsonObject[]>();
   private startingQueuedMessage = false;
   // Original browser file bytes for a queued message, retained only until the queue is delivered,
   // withdrawn or replaced, so editing a queued message restores the real attachments.
@@ -1952,7 +1971,9 @@ export class MachineRuntime {
   private itemCache = new Map<string, { turnId: string; item: JsonObject }>();
   private itemTurns = new Map<string, string>();
   private historyItemsSupported: boolean | null = null;
-  private historyPaginatedSupported: boolean | null = null;
+  // History interface per thread, plus the machine-side cache for a legacy thread's full read.
+  private historyThreadModes = new Map<string, "paginated" | "legacy">();
+  private legacyHistoryTurns = new Map<string, JsonObject[]>();
   private recentHistory: JsonObject[] = [];
   private recentHistoryOldest = false;
   private submissions: MessageSubmissions;
@@ -2106,12 +2127,13 @@ export class MachineRuntime {
     const rpc = this.rpc;
     const threadId = this.state.thread.id;
     const deadline = Date.now() + 20_000;
-    // A legacy thread — or a runtime whose store cannot list turns — exposes only a full thread
-    // read. The capability check keeps a paginated thread on its cursor interface instead of
-    // silently replacing it with an unbounded read.
-    if (this.historyPaginatedSupported === false || this.state.thread.historyMode === "legacy") {
-      const turns = await this.readLegacyHistory(rpc, threadId);
-      return this.finishHistoryPage(rpc, threadId, turns, null);
+    // Per-thread mode: an observed unsupported error is authoritative for this connection; a thread
+    // the runtime declares legacy never tries the paginated call. One thread's failure never marks
+    // the whole runtime legacy.
+    const mode = this.historyThreadModes.get(threadId) ?? this.state.thread.historyMode ?? null;
+    if (mode === "legacy") {
+      const legacy = await this.legacyHistoryPage(rpc, threadId, cursor, limit);
+      return this.finishHistoryPage(rpc, threadId, legacy.page, legacy.nextCursor);
     }
     let page: any;
     try {
@@ -2130,10 +2152,10 @@ export class MachineRuntime {
       if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (!isUnsupportedMethodError(message)) throw error;
-      console.warn(`${this.definition.name}: paginated history unavailable (${compact(message, 160)}); using the legacy thread read`);
-      const turns = await this.readLegacyHistory(rpc, threadId);
-      this.historyPaginatedSupported = false;
-      return this.finishHistoryPage(rpc, threadId, turns, null);
+      console.warn(`${this.definition.name}: paginated history unavailable for this task (${compact(message, 160)}); using the legacy thread read`);
+      this.historyThreadModes.set(threadId, "legacy");
+      const legacy = await this.legacyHistoryPage(rpc, threadId, cursor, limit);
+      return this.finishHistoryPage(rpc, threadId, legacy.page, legacy.nextCursor);
     }
     if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
     const rawTurns = Array.isArray(page?.data) ? page.data : [];
@@ -2142,8 +2164,20 @@ export class MachineRuntime {
     return this.finishHistoryPage(rpc, threadId, turns, page?.nextCursor ?? null);
   }
 
-  // The legacy interface: one full thread read, normalized to the same turn shape as a page. It has
-  // no cursor because the read already returns the complete history.
+  // The legacy upstream returns one full thread; Pocket keeps that read machine-side and serves
+  // bounded pages to the browser so the HTTP response stays paginated. The full read is refreshed on
+  // a first-page request; older pages are sliced from the cache captured for that read.
+  private async legacyHistoryPage(rpc: RpcClient | DshRpcClient, threadId: string, cursor: string | null, limit: number): Promise<{ page: JsonObject[]; nextCursor: string | null }> {
+    const cached = this.legacyHistoryTurns.get(threadId);
+    const all = cursor && cached ? cached : await this.readLegacyHistory(rpc, threadId);
+    if (!cursor || !cached) this.legacyHistoryTurns.set(threadId, all);
+    const parsed = cursor === null ? null : Number(cursor);
+    const end = Number.isInteger(parsed) ? Math.max(0, Math.min(all.length, parsed as number)) : all.length;
+    const start = Math.max(0, end - Math.max(1, limit));
+    return { page: all.slice(start, end), nextCursor: start > 0 ? String(start) : null };
+  }
+
+  // The legacy interface: one full thread read, normalized to the same turn shape as a page.
   private async readLegacyHistory(rpc: RpcClient | DshRpcClient, threadId: string): Promise<JsonObject[]> {
     const result = await rpc.request("thread/read", { threadId, includeTurns: true });
     if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
@@ -2480,11 +2514,15 @@ export class MachineRuntime {
   // started is never withdrawn.
   cancelQueuedMessage(threadId: unknown = this.state.thread?.id, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): JsonObject {
     this.assertQueuedMessage(threadId, queueId);
-    if (this.startingQueuedMessage) return { cancelled: false };
+    if (this.startingQueuedMessage) return { cancelled: false, reason: "in-flight" };
     const queued = this.state.queuedMessage;
     if (!queued) return { cancelled: false, queuedMessage: null, files: [] };
+    // A message whose delivery is uncertain must not be withdrawn into an editable copy.
+    if (queued.deliveryUnknown) return { cancelled: false, reason: "uncertain" };
     const key = queued.id ?? String(queued.createdAt);
     const files = this.queuedFileUploads.get(key) ?? [];
+    // Never withdraw an attachment message whose original bytes cannot be restored.
+    if (queued.files?.length && !files.length) return { cancelled: false, reason: "attachments" };
     this.queuedFileUploads.delete(key);
     this.state.queuedMessage = null;
     this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
@@ -2551,9 +2589,12 @@ export class MachineRuntime {
     this.state.phase = "connecting";
     this.permissionProfiles = [];
     this.allowedReviewers = null;
-    this.historyPaginatedSupported = null;
+    this.historyThreadModes.clear();
+    this.legacyHistoryTurns.clear();
     this.state.pending = [];
     this.pendingServerRequests.clear();
+    // A fresh connection re-receives unanswered requests from the durable runtime on attach.
+    this.deferredServerRequests.clear();
     this.broadcast("status", this.statusPayload());
     const rpc = this.deepseek ? new DshRpcClient(this.deepseek) : new RpcClient();
     this.rpc = rpc;
@@ -2597,6 +2638,11 @@ export class MachineRuntime {
       rpc.notify("initialized");
       this.codexHome = typeof initialized?.codexHome === "string" ? initialized.codexHome : null;
       if (this.deepseek && initialized?.backend !== "dsh") throw new Error("Unexpected DeepSeek backend");
+      // Refuse an execution-side adapter from a different protocol generation rather than running
+      // an incompatible mix. The deployment command updates both together.
+      if (this.deepseek && Number(initialized?.adapterProtocol) !== DSH_ADAPTER_PROTOCOL) {
+        throw new Error("The execution-machine DSH adapter is out of date; run the deployment command to update it");
+      }
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.technicalConnectionError = null;
@@ -3696,6 +3742,12 @@ export class MachineRuntime {
     }
     this.state.phase = this.computePhase();
     if (rpc instanceof DshRpcClient) rpc.replayRequests(threadId);
+    // Deliver requests the durable runtime replayed before this task was selected.
+    const deferred = this.deferredServerRequests.get(threadId);
+    if (deferred?.length) {
+      this.deferredServerRequests.delete(threadId);
+      for (const message of deferred) this.handleServerRequest(message);
+    }
     if (broadcastReset) this.broadcast("snapshot", this.snapshot());
     console.log(`${this.definition.name}: attached to ${this.state.thread.id} (${this.state.thread.name})`);
   }
@@ -3777,8 +3829,18 @@ export class MachineRuntime {
     }
     const method = String(message.method ?? "");
     const params = message.params ?? {};
-    if (!this.state.thread) return;
     const requestThreadId = String(params.threadId ?? params.conversationId ?? "");
+    // A durable runtime replays unanswered requests on attach, which can arrive before the task is
+    // selected. Hold them by thread and deliver them once that thread is attached.
+    if (!this.state.thread) {
+      if (requestThreadId) {
+        const queued = (this.deferredServerRequests.get(requestThreadId) ?? [])
+          .filter((held) => String(held.id) !== String(message.id));
+        queued.push(message);
+        this.deferredServerRequests.set(requestThreadId, queued);
+      }
+      return;
+    }
     if (requestThreadId && requestThreadId !== this.state.thread.id) return;
     let request: PocketRequest | null = null;
     let supported = false;
@@ -4370,7 +4432,8 @@ export class MachineRuntime {
     this.state.reasoningEffort = "Not exposed";
     this.state.access = emptyAccess();
     this.state.queuedMessage = null;
-    this.queuedFileUploads.clear();
+    // queuedFileUploads deliberately outlives a task switch: the queued message is parked and
+    // restored with its attachment bytes, which are dropped only on delivery or discard.
     this.state.stoppingTurnId = null;
     this.startingQueuedMessage = false;
     this.canAcceptDirectInput = false;

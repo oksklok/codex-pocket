@@ -7,6 +7,7 @@ import { JsonRpcLineTransport } from "@deepseek-ai/dsh-sdk-protocol";
 import { DeepSeekBalanceMonitor } from "../deepseek.ts";
 import {
   DSH_VERSION,
+  DSH_ADAPTER_PROTOCOL,
   sessionId,
   permission,
   projectEvents,
@@ -368,6 +369,7 @@ export function apply(ctx) {
         platformFamily: process.platform === "win32" ? "windows" : process.platform,
         platformOs: process.platform,
         backend: "dsh",
+        adapterProtocol: DSH_ADAPTER_PROTOCOL,
       };
     if (method === "pocket/home") return { home: homedir() };
     if (method === "pocket/balance") {

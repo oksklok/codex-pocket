@@ -171,6 +171,20 @@ class BridgeDriver {
 
 const installed = existsSync(DSH_BIN);
 
+// The durable machine-side runtime outlives a carrier; stopping it explicitly gives the next
+// driver a genuinely fresh DSH process, which is what these persistence checks want to observe.
+function stopRuntime(home) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--experimental-strip-types", join(ROOT, "dsh/runtime.mjs"), "--stop"], {
+      env: { ...process.env, POCKET_DSH_HOME: home, DEEPSEEK_API_KEY: "sk-dummy-test-key-000000000000" },
+      stdio: "ignore",
+    });
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(); }, 5000);
+    timer.unref();
+    child.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
+}
+
 test("a persisted DSH task deletes for real and a Project Folder relocation preserves history", { skip: !installed && "install dsh/node_modules with npm ci --prefix dsh" }, async () => {
   const home = mkdtempSync(join(tmpdir(), "pocket-dsh-it-"));
   const projectA = join(home, "project-a");
@@ -262,6 +276,7 @@ test("a persisted DSH task deletes for real and a Project Folder relocation pres
     assert.deepEqual((await first.call("thread/list", {})).result.data, []);
     await first.stop();
     first = null;
+    await stopRuntime(home);
 
     // A fresh DSH process must not resurrect it.
     second = new BridgeDriver(home);
@@ -270,6 +285,7 @@ test("a persisted DSH task deletes for real and a Project Folder relocation pres
   } finally {
     await first?.stop();
     await second?.stop();
+    await stopRuntime(home);
     fake.server.close();
     rmSync(home, { recursive: true, force: true });
   }
@@ -321,6 +337,7 @@ test("a forced relocation failure leaves the original DSH task intact", { skip: 
     await followUp;
   } finally {
     await driver?.stop();
+    await stopRuntime(home);
     fake.server.close();
     rmSync(home, { recursive: true, force: true });
   }

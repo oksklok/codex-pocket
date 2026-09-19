@@ -2463,6 +2463,8 @@ function renderRichActivityDetail(container, activity, value) {
       field.append(heading, diffNode(change.diff));
       container.append(field);
     }
+    if (detail.unchanged) append(detailField("", "No changes were applied", "detail-note"));
+    else if (detail.applied === false) append(detailField("", "Requested; the runtime reported a failure", "detail-note"));
     if (detail.truncated) append(detailField("", "Output truncated", "detail-note"));
   } else if (detail.type === "mcpToolCall" || detail.type === "dynamicToolCall") {
     append(detailField("Tool", [detail.server || detail.namespace, detail.tool].filter(Boolean).join(" / ")));
@@ -3475,8 +3477,8 @@ async function editQueuedMessage() {
     return;
   }
   const queueId = queued.id ?? String(queued.createdAt);
-  const current = () => machineId === state?.machineId && threadId === state?.thread?.id
-    && queueId === (state?.queuedMessage?.id ?? String(state?.queuedMessage?.createdAt));
+  const sameTask = () => machineId === state?.machineId && threadId === state?.thread?.id;
+  const taskDraftKey = draftKey(machineId, threadId);
   cancellingQueue = true;
   composerError = "";
   renderQueue();
@@ -3488,26 +3490,46 @@ async function editQueuedMessage() {
     const response = await apiFetch(url, { method: "DELETE" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not withdraw the queued message");
-    if (result.cancelled !== true) throw new Error("The queued message is already being sent; it can no longer be edited.");
-    if (!current()) return;
-    // The message is withdrawn; rebuild the complete draft including the original attachment bytes.
-    elements.messageText.value = queued.text || "";
-    selectedImages = [...(queued.images || [])];
-    selectedFiles = Array.isArray(result.files) && result.files.length ? [...result.files] : [];
-    if (!selectedFiles.length && queued.files?.length) {
-      composerError = "The queued files could not be restored; re-attach them before sending.";
+    if (result.cancelled !== true) throw new Error(queuedEditFailure(result.reason));
+    const withdrawn = {
+      text: queued.text || "",
+      images: [...(queued.images || [])],
+      files: Array.isArray(result.files) ? [...result.files] : [],
+    };
+    // The queue-cleared SSE event can arrive before this response. The captured operation and its
+    // confirmed response decide the outcome, never the continued presence of the withdrawn queue.
+    if (!sameTask()) {
+      rememberComposerDraft(composerDrafts, taskDraftKey, withdrawn);
+      return;
     }
+    if (elements.messageText.value.trim() || selectedImages.length || selectedFiles.length) {
+      // A draft typed during the request wins; keep it intact and explain what happened.
+      rememberComposerDraft(composerDrafts, taskDraftKey, withdrawn);
+      composerError = "The queued message was withdrawn, but your current draft was left unchanged.";
+      return;
+    }
+    elements.messageText.value = withdrawn.text;
+    selectedImages = withdrawn.images;
+    selectedFiles = withdrawn.files;
     mergeState({ queuedMessage: null });
     resizeComposer();
     elements.messageText.focus({ preventScroll: true });
     const end = elements.messageText.value.length;
     elements.messageText.setSelectionRange(end, end);
   } catch (error) {
-    if (current()) composerError = uiErrorMessage(error);
+    if (sameTask()) composerError = uiErrorMessage(error);
   } finally {
     cancellingQueue = false;
     renderComposer();
   }
+}
+
+// Server-side withdrawal refusals carry a reason instead of a partial success.
+function queuedEditFailure(reason) {
+  if (reason === "uncertain") return "Delivery is unconfirmed; the queued message can't be edited.";
+  if (reason === "in-flight") return "The queued message is already being sent, so it can't be edited.";
+  if (reason === "attachments") return "The queued message's files can't be restored, so it can't be edited.";
+  return "The queued message can no longer be edited.";
 }
 
 async function cancelQueuedMessage() {

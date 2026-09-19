@@ -1,5 +1,8 @@
 // Pocket's existing event vocabulary, projected from DSH's durable facts.
 export const DSH_VERSION = "0.1.6-alpha.2";
+// Bumped whenever the gateway and the execution-side adapter must be upgraded together. The gateway
+// refuses an adapter it does not understand so a partial rollout cannot activate a mismatch.
+export const DSH_ADAPTER_PROTOCOL = 2;
 export function sessionId(value) {
   if (
     typeof value !== "string" ||
@@ -213,7 +216,9 @@ export function projectEvents(events) {
         });
       if (FILE_TOOLS.has(d.name)) {
         const changes = intendedChanges(d.name, args);
-        if (changes.length) Object.assign(item, { type: "fileChange", changes });
+        // Requested, not yet applied: the call view shows the intended target; a result with
+        // authoritative metadata replaces it with the applied hunks.
+        if (changes.length) Object.assign(item, { type: "fileChange", changes, applied: null });
       }
       const subagentKind = SUBAGENT_TOOLS[d.name];
       if (subagentKind)
@@ -244,8 +249,20 @@ export function projectEvents(events) {
           results: r.content,
         });
         if (item.type === "fileChange") {
-          const changes = changesFromDiffs(Array.isArray(meta?.diffs) ? meta.diffs : []);
-          if (changes.length) item.changes = changes;
+          const applied = changesFromDiffs(Array.isArray(meta?.diffs) ? meta.diffs : []);
+          if (applied.length) {
+            // The durable result metadata is authoritative for the applied change.
+            Object.assign(item, { changes: applied, applied: true, unchanged: false });
+          } else if (meta?.operation === "create") {
+            // A create has no before-image; the whole file is the applied addition.
+            Object.assign(item, { changes: intendedChanges(item.tool, item.arguments), applied: true, unchanged: false });
+          } else if (meta && typeof meta === "object" && "diffs" in meta) {
+            // An update with no hunks: the file content did not change.
+            Object.assign(item, { changes: [], applied: true, unchanged: true });
+          } else if (r.isError) {
+            Object.assign(item, { applied: false });
+          }
+          // No metadata and no error keeps the requested changes as unconfirmed.
         }
         if (item.type === "collabAgentToolCall") item.kind = r.isError ? "interrupted" : "completed";
       }

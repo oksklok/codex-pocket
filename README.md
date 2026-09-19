@@ -166,11 +166,19 @@ Docker runs Pocket as an SSH-runtime-only gateway; it does not run Codex locally
 - `data/.codex-pocket.local.json`: Pocket settings with `lanEnabled: true`, `host: "0.0.0.0"`, `port: 4173`, your four-digit `pin`, and `machines` entries containing a display `name` and SSH alias (`ssh`). You can copy an existing Pocket settings file and adjust the machines.
 - `ssh/`: a dedicated outbound SSH key, `config`, and verified `known_hosts`. Each alias must specify its host, user, and `IdentityFile ~/.ssh/id_ed25519`. Install only this key's public half on the runtime machines. Protect the directories and private key with permissions 700 and 600 respectively.
 
-The supplied container uses the image’s non-root `node` user (UID 1000). The mounted data and SSH files must be owned by UID 1000. Compose mounts SSH files read-only (`./ssh:/home/node/.ssh:ro`); provision keys and verified host records before starting Pocket. It has no privileged mode, Docker socket, or host filesystem access beyond these two mounts. Verify each alias can run `codex --version` and reach its shared Codex app-server before using Pocket. The image carries the DSH transport adapter. A machine entry with `dshPath` can use DSH on that SSH execution machine without installing DSH or provisioning provider credentials in the container; see [DeepSeek setup](docs/deepseek.md).
+The supplied container uses the image’s non-root `node` user (UID 1000). The mounted data and SSH files must be owned by UID 1000. Compose mounts SSH files read-only (`./ssh:/home/node/.ssh:ro`); provision keys and verified host records before starting Pocket. It has no privileged mode, Docker socket, or host filesystem access beyond these two mounts. Verify each alias can run `codex --version` and reach its shared Codex app-server before using Pocket. A machine entry with `dshPath` uses the DSH adapter installed on that SSH execution machine; the container provisions no DSH runtime and no provider credentials. See [DeepSeek setup](docs/deepseek.md).
 
 ```sh
 docker compose up -d --build
 ```
+
+Deploy updates with one command from the checkout on the gateway host:
+
+```sh
+node scripts/deploy.mjs
+```
+
+(`npm run deploy` is equivalent where npm is available.) It rebuilds the gateway image and distributes the execution-side DSH adapter through the existing SSH aliases and `dshPath` values, staging each update and activating it only when that machine's runtime is idle. Busy or offline machines are reported as pending; rerun the same command to finish. A gateway/UI-only change updates only the NAS. See [DeepSeek setup](docs/deepseek.md) for the durable runtime lifecycle and the one-time cutover.
 
 Open the host's LAN or Tailscale IPv4 address on port 4173 and sign in with your existing PIN. Use LAN/private VPN access only: the PIN is a convenience gate, not internet-grade authentication. **Never port-forward Pocket directly to the internet.**
 

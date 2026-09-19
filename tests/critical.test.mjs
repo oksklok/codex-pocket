@@ -573,6 +573,8 @@ test("DSH projects applied file diffs, keeps failures provisional, and never tre
     { ...result('write-1'), data: { turn: 1, step: 1, meta: { operation: 'create', diffs: [] }, message: { content: [{ type: 'tool-result', toolCallId: 'write-1', isError: false, content: [{ type: 'text', text: 'created' }] }] } } },
     { type: 'tool/call', time: 6, data: { turn: 1, step: 1, callId: 'edit-2', name: 'edit', arguments: JSON.stringify({ file_path: 'b.ts', old_string: 'p', new_string: 'q' }) } },
     result('edit-2', true, [{ type: 'text', text: 'failed' }]),
+    { type: 'tool/call', time: 7, data: { turn: 1, step: 1, callId: 'write-2', name: 'write', arguments: JSON.stringify({ file_path: 'same.ts', content: 'unchanged' }) } },
+    { ...result('write-2'), data: { turn: 1, step: 1, meta: { operation: 'update', diffs: [] }, message: { content: [{ type: 'tool-result', toolCallId: 'write-2', isError: false, content: [{ type: 'text', text: 'updated' }] }] } } },
     { type: 'tool/call', time: 8, data: { turn: 1, step: 1, callId: 'read-1', name: 'read', arguments: JSON.stringify({ file_path: 'c.ts' }) } },
     result('read-1', false, [{ type: 'text', text: 'contents' }]),
   ]);
@@ -580,18 +582,27 @@ test("DSH projects applied file diffs, keeps failures provisional, and never tre
   const edit = items.find((item) => item.id === 'edit-1');
   assert.equal(edit.type, 'fileChange');
   assert.equal(edit.status, 'completed');
+  assert.equal(edit.applied, true);
   assert.equal(edit.changes[0].path, 'a.ts');
   assert.match(edit.changes[0].diff, /-x/);
   assert.match(edit.changes[0].diff, /\+y/);
   const write = items.find((item) => item.id === 'write-1');
   assert.equal(write.type, 'fileChange');
+  assert.equal(write.applied, true);
   assert.equal(write.changes[0].kind, 'add');
   assert.match(write.changes[0].diff, /\+one/);
-  // A failed edit keeps its provisional call-time changes instead of claiming they were applied.
+  // A failed edit keeps its provisional call-time changes but never claims they were applied.
   const failed = items.find((item) => item.id === 'edit-2');
   assert.equal(failed.type, 'fileChange');
   assert.equal(failed.status, 'failed');
+  assert.equal(failed.applied, false);
   assert.match(failed.changes[0].diff, /-p/);
+  // An authoritative update with no hunks is unchanged: provisional additions are dropped.
+  const unchanged = items.find((item) => item.id === 'write-2');
+  assert.equal(unchanged.type, 'fileChange');
+  assert.equal(unchanged.applied, true);
+  assert.equal(unchanged.unchanged, true);
+  assert.deepEqual(unchanged.changes, []);
   // A read is never File Changes.
   const read = items.find((item) => item.id === 'read-1');
   assert.equal(read.type, 'dynamicToolCall');
@@ -640,28 +651,61 @@ test("model display names and ordering prefer V4.1 Flash over V4 Pro without gue
   assert.equal(modelDisplayName({ model: 'future-v9', displayName: 'Future V9' }), 'Future V9');
 });
 
-test("unsupported paginated history falls back to the legacy thread read once", async () => {
+test("unsupported paginated history falls back per thread and pages a legacy read", async () => {
   clearRememberedSelection();
   const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
   runtime.state.connected = true;
   runtime.state.thread = { id: 'thread-1', name: 'T', cwd: '/tmp', source: 'appServer', historyMode: 'paginated' };
+  const turns = Array.from({ length: 5 }, (_, index) => ({ id: `t${index + 1}`, status: 'completed', items: [] }));
   const calls = [];
   runtime.rpc = { request: async (method) => {
     calls.push(method);
     if (method === 'thread/turns/list') throw new Error('paginated_threads is not supported yet (-32601)');
-    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [{ id: 't1', status: 'completed', items: [] }] } };
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns } };
     throw new Error(`unexpected ${method}`);
   } };
-  const page = await runtime.history(null, 2);
+  const first = await runtime.history(null, 2);
   assert.equal(calls.includes('thread/read'), true);
-  assert.equal(page.nextCursor, null);
-  assert.equal(page.turns.length, 1);
-  assert.equal(runtime.historyPaginatedSupported, false);
-  // A thread the runtime marks legacy goes straight to the full read.
+  assert.equal(first.turns.length, 2);
+  assert.equal(first.turns.at(-1).id, 't5');
+  assert.equal(first.nextCursor, '3');
+  assert.equal(runtime.historyThreadModes.get('thread-1'), 'legacy');
+  // An older page is sliced from the cached full read, not re-fetched whole.
+  calls.length = 0;
+  const older = await runtime.history('3', 2);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(older.turns.map((turn) => turn.id), ['t2', 't3']);
+  assert.equal(older.nextCursor, '1');
+  // A thread the runtime marks legacy never calls the paginated method.
   runtime.state.thread = { ...runtime.state.thread, historyMode: 'legacy' };
   calls.length = 0;
   await runtime.history(null, 2);
   assert.deepEqual(calls, ['thread/read']);
+  clearRememberedSelection();
+});
+
+test("legacy history mode is tracked per thread, not across the runtime", async () => {
+  clearRememberedSelection();
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: 'legacy-thread', name: 'L', cwd: '/tmp', source: 'appServer', historyMode: 'paginated' };
+  runtime.rpc = { request: async (method) => {
+    if (method === 'thread/turns/list') throw new Error('paginated_history is not supported yet');
+    if (method === 'thread/read') return { thread: { id: 'legacy-thread', turns: [] } };
+    throw new Error(`unexpected ${method}`);
+  } };
+  await runtime.history(null, 2);
+  assert.equal(runtime.historyThreadModes.get('legacy-thread'), 'legacy');
+  // A second thread still uses the paginated interface.
+  runtime.state.thread = { id: 'paginated-thread', name: 'P', cwd: '/tmp', source: 'appServer', historyMode: 'paginated' };
+  let paginated = false;
+  runtime.rpc = { request: async (method) => {
+    if (method === 'thread/turns/list') { paginated = true; return { data: [], nextCursor: null }; }
+    throw new Error(`unexpected ${method}`);
+  } };
+  await runtime.history(null, 2);
+  assert.equal(paginated, true);
+  assert.equal(runtime.historyThreadModes.has('paginated-thread'), false);
   clearRememberedSelection();
 });
 
@@ -697,8 +741,67 @@ test("withdrawing a queued message returns its original file bytes and refuses w
   // A delivery already in flight is never withdrawn or duplicated.
   runtime.startingQueuedMessage = true;
   runtime.state.queuedMessage = { id: 'q2', threadId: 'thread-1', text: 'x', createdAt: 2 };
-  assert.deepEqual(runtime.cancelQueuedMessage('thread-1', 'q2'), { cancelled: false });
+  assert.deepEqual(runtime.cancelQueuedMessage('thread-1', 'q2'), { cancelled: false, reason: 'in-flight' });
   assert.equal(runtime.state.queuedMessage.id, 'q2');
+});
+
+test("queued attachment bytes survive a task switch and block an unsafe withdraw", () => {
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: 'thread-1', name: 'T', cwd: '/tmp', source: 'appServer' };
+  runtime.state.turn = { id: 'turn-1', status: 'inProgress' };
+  const uploads = [{ name: 'notes.txt', data: 'aGk=', size: 2 }];
+  runtime.queuedFileUploads.set('q1', uploads);
+  runtime.state.queuedMessage = { id: 'q1', threadId: 'thread-1', text: '', files: [{ name: 'notes.txt', path: '/tmp/1-notes.txt', size: 2 }], createdAt: 1 };
+  // Park the queue the way a task switch does, then reset the live task state.
+  runtime.taskQueues.set('thread-1', runtime.state.queuedMessage);
+  runtime.resetThreadState();
+  runtime.state.thread = { id: 'thread-2', name: 'Other', cwd: '/tmp', source: 'appServer' };
+  // Returning to the first task restores its parked queue with the retained bytes intact.
+  runtime.state.thread = { id: 'thread-1', name: 'T', cwd: '/tmp', source: 'appServer' };
+  runtime.state.queuedMessage = runtime.taskQueues.get('thread-1');
+  const restored = runtime.cancelQueuedMessage('thread-1', 'q1');
+  assert.equal(restored.cancelled, true);
+  assert.deepEqual(restored.files, uploads);
+  // Without retained bytes the server refuses rather than withdrawing a lossy draft.
+  runtime.state.thread = { id: 'thread-2', name: 'Other', cwd: '/tmp', source: 'appServer' };
+  runtime.state.queuedMessage = { id: 'q3', threadId: 'thread-2', text: '', files: [{ name: 'a.txt', path: '/tmp/a', size: 1 }], createdAt: 3 };
+  assert.deepEqual(runtime.cancelQueuedMessage('thread-2', 'q3'), { cancelled: false, reason: 'attachments' });
+  assert.equal(runtime.state.queuedMessage.id, 'q3');
+  // Uncertain delivery is refused server-side too.
+  runtime.state.queuedMessage = { id: 'q4', threadId: 'thread-2', text: 'x', deliveryUnknown: true, createdAt: 4 };
+  assert.deepEqual(runtime.cancelQueuedMessage('thread-2', 'q4'), { cancelled: false, reason: 'uncertain' });
+  assert.equal(runtime.state.queuedMessage.id, 'q4');
+});
+
+test("gateway and execution-side adapter protocol versions stay in sync", async () => {
+  const { DSH_ADAPTER_PROTOCOL } = await import('../dsh/projection.mjs');
+  const gateway = await import('../gateway.ts');
+  assert.equal(gateway.DSH_ADAPTER_PROTOCOL, DSH_ADAPTER_PROTOCOL);
+});
+
+test("a request replayed before its thread attaches is delivered after attach", async () => {
+  clearRememberedSelection();
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  const request = { id: 41, method: 'item/tool/requestUserInput', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'q', isBlocking: true, questions: [{ id: 'q1', header: 'H', question: 'Pick', isOther: true, options: [{ label: 'A', description: '' }] }] } };
+  // The durable runtime replays this before the gateway has selected a task.
+  runtime.handleServerRequest(request);
+  assert.equal(runtime.deferredServerRequests.get('thread-1').length, 1);
+  assert.equal(runtime.state.pending.length, 0);
+  runtime.loadedThreads = [{ id: 'thread-1', name: 'T', preview: '', cwd: '/tmp', project: 'tmp', status: 'idle', loaded: true, updatedAt: 0 }];
+  runtime.rpc = { request: async (method) => {
+    if (method === 'thread/resume') return { thread: { id: 'thread-1', name: 'T', cwd: '/tmp', status: 'idle' } };
+    if (method === 'thread/goal/get') return { goal: null };
+    if (method === 'permissionProfile/list') return { data: [], nextCursor: null };
+    return {};
+  } };
+  await runtime.attachLoadedThread('thread-1', false);
+  assert.equal(runtime.deferredServerRequests.size, 0);
+  assert.equal(runtime.state.pending.length, 1);
+  assert.equal(runtime.state.pending[0].id, '41');
+  assert.equal(runtime.state.pending[0].questions[0].question, 'Pick');
+  clearRememberedSelection();
 });
 
 test("an authoritative thread-name update replaces a stale pending name", () => {

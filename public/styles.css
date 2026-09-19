@@ -316,6 +316,11 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 
 .workspace { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; overflow: hidden; }
 .chat-panel { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; background: var(--bg); }
+/* Stable rows: a hidden status row collapses to zero but never lets the transcript and composer
+   swap grid rows. Ignored once the mobile breakpoint switches the panel to flex. */
+.chat-panel > .history-status { grid-row: 1; }
+.chat-panel > .conversation { grid-row: 2; }
+.chat-panel > .composer-zone { grid-row: 3; }
 /* History loading and errors are in-flow above the transcript, never an overlay on messages. */
 .history-status {
   padding: 7px 12px; border-bottom: 1px solid var(--line-soft);
