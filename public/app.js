@@ -4119,7 +4119,7 @@ function renderSettings(value) {
   const urls = Array.isArray(value.accessUrls) && value.accessUrls.length
     ? value.accessUrls
     : value.headless ? [location.origin] : Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
-  elements.phoneUrls.querySelector("summary").textContent = urls.length === 1 ? "Access URL" : "Access URLs";
+  elements.phoneUrls.querySelector("#access-urls-title").textContent = urls.length === 1 ? "Access URL" : "Access URLs";
   for (const url of urls) {
     const link = document.createElement("a");
     link.href = url;

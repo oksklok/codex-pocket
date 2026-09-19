@@ -565,8 +565,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 .checkbox-row input { width: 17px; min-height: 17px; }
 .field-help { margin: 0; color: var(--subtle); font-size: var(--text-secondary); line-height: 1.4; }
 .phone-urls { margin: 0; border-radius: 8px; background: rgba(69,200,138,.08); font-size: var(--text-label); }
-.phone-urls > summary { padding: 8px 10px; color: var(--muted); cursor: pointer; }
-.phone-urls[open] > summary { border-bottom: 1px solid var(--line-soft); }
+.phone-urls > h4 { margin: 0; padding: 8px 10px; color: var(--muted); font-size: inherit; font-weight: 500; border-bottom: 1px solid var(--line-soft); }
 .phone-url-list, #phone-url-list { display: grid; gap: 3px; padding: 8px 10px 10px; }
 #phone-url-list a { color: var(--accent); overflow-wrap: anywhere; }
 .settings-inline-field { grid-template-columns: auto minmax(120px, 170px); align-items: center; justify-content: start; gap: 8px; }
