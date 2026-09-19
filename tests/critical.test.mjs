@@ -213,7 +213,12 @@ test("partial settings saves preserve unrelated saved values", () => {
     const settings = { path: join(dir, "config.json"), loaded: true, config: {
       lanEnabled: true, host: "0.0.0.0", port: 4173, pin: "1234", localName: "", machines: [{ name: "Remote", ssh: "remote" }],
     } };
+    saveLocalSettings(settings, { accessUrls: ["http://pocket.lan:4173/", "https://pocket.lan:8443", "https://pocket.lan:8443/"] }, undefined, false);
     saveLocalSettings(settings, { localName: "Renamed" }, undefined, false);
+    assert.deepEqual(settings.config.accessUrls, ["http://pocket.lan:4173", "https://pocket.lan:8443"]);
+    for (const url of ["javascript:alert(1)", "https://user:secret@pocket.lan", "https://pocket.lan/path", "https://pocket.lan/?query=1", "https://pocket.lan/#fragment"]) {
+      assert.throws(() => saveLocalSettings(settings, { accessUrls: [url] }, undefined, false), /accessUrls/);
+    }
     assert.equal(settings.config.localName, "Renamed");
     const disk = JSON.parse(readFileSync(settings.path, "utf8"));
     assert.deepEqual([disk.pin, disk.host, disk.port, disk.lanEnabled, disk.machines], ["1234", "0.0.0.0", 4173, true, [{ name: "Remote", ssh: "remote" }]]);

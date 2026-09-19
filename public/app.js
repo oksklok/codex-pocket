@@ -4116,7 +4116,10 @@ function renderSettings(value) {
   elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
   elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured." : "No PIN configured.";
   elements.phoneUrlList.replaceChildren();
-  const urls = value.headless ? [location.origin] : Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
+  const urls = Array.isArray(value.accessUrls) && value.accessUrls.length
+    ? value.accessUrls
+    : value.headless ? [location.origin] : Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
+  elements.phoneUrls.querySelector("summary").textContent = urls.length === 1 ? "Access URL" : "Access URLs";
   for (const url of urls) {
     const link = document.createElement("a");
     link.href = url;

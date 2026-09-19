@@ -55,6 +55,7 @@ type MachineDefinition = {
   group?: string;
 };
 type LocalConfig = {
+  accessUrls?: string[];
   lanEnabled: boolean;
   host: string;
   port: number;
@@ -393,6 +394,20 @@ function validateMachines(value: unknown): MachineConfig[] {
   });
 }
 
+function validateAccessUrls(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error("accessUrls must be an array of HTTP(S) origins");
+  return [...new Set(value.map((entry) => {
+    if (typeof entry !== "string") throw new Error("accessUrls must contain HTTP(S) origins");
+    let url: URL;
+    try { url = new URL(entry); } catch { throw new Error("accessUrls must contain HTTP(S) origins"); }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+      throw new Error("accessUrls must contain HTTP(S) origins without credentials, paths, queries or fragments");
+    }
+    return url.origin;
+  }))];
+}
+
 export function validateLocalConfig(value: unknown, overridePin: string | null | undefined = process.env.CODEX_POCKET_PIN): LocalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected a JSON object");
   const candidate = value as JsonObject;
@@ -418,6 +433,7 @@ export function validateLocalConfig(value: unknown, overridePin: string | null |
     pin: candidate.pin,
     localName: localName.trim(),
     machines: validateMachines(candidate.machines),
+    ...(candidate.accessUrls !== undefined ? { accessUrls: validateAccessUrls(candidate.accessUrls) } : {}),
   };
 }
 
@@ -475,6 +491,7 @@ export function saveLocalSettings(settings: LocalSettings, value: unknown, overr
     pin,
     localName: candidate.localName ?? settings.config.localName,
     machines: candidate.machines ?? settings.config.machines,
+    accessUrls: candidate.accessUrls ?? settings.config.accessUrls,
   }, overridePin);
   if (headless && !config.machines.length) throw new Error("Headless Pocket requires at least one SSH machine");
   const temporaryPath = `${settings.path}.tmp`;
@@ -497,6 +514,7 @@ export function publicSettings(settings: LocalSettings, fallbackPin: string | nu
     // DeepSeek is a provider, not a toggle: only a broken credential needs surfacing here.
     deepseekError,
     phoneUrls: phoneUrls(settings.config),
+    accessUrls: settings.config.accessUrls ?? [],
     machines: settings.config.machines.map((machine) => ({ ...machine })),
   };
 }
