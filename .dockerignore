@@ -3,6 +3,7 @@
 !package.json
 !package-lock.json
 !gateway.ts
+!dsh.ts
 !deepseek.ts
 !deepseek-server.mjs
 !deepseek-models.json
