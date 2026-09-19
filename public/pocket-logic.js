@@ -238,7 +238,7 @@ export function orderTranscriptEntries(entries) {
 }
 
 export function isUnsupportedMethodError(message) {
-  return /(?:method[^\n]*not found|unsupported[^\n]*method|-32601)/i.test(String(message || ""));
+  return /(?:method[^\n]*not found|unsupported[^\n]*method|-32601|is not supported yet)/i.test(String(message || ""));
 }
 
 export function pocketPhase({ connectionError, connected, pending, turn, threadStatus }) {
@@ -294,10 +294,28 @@ export function compareTaskOrder(left, right) {
     || String(left.id).localeCompare(String(right.id));
 }
 
+// The two known DSH catalog entries, which advertise the compact names
+// "DeepSeek-V41-Flash" and "DeepSeek-V4-Pro". Pocket applies its newer-generation-first display
+// policy and normalized names to exactly these known ids; an unknown future model keeps its catalog
+// name and the deterministic fallback order instead of having a version guessed for it.
+const DEEPSEEK_MODEL_DISPLAY = new Map([
+  ["deepseek-flash", { name: "DeepSeek V4.1 Flash", version: [4, 1] }],
+  ["deepseek-v4-pro", { name: "DeepSeek V4 Pro", version: [4] }],
+]);
+const deepseekModelKey = (model) => String(model?.model ?? model?.id ?? "").trim().toLowerCase();
+
+// Display-only name for the known DeepSeek entries; every other model keeps its catalog name.
+export function modelDisplayName(model) {
+  return DEEPSEEK_MODEL_DISPLAY.get(deepseekModelKey(model))?.name
+    || model?.displayName || model?.model || model?.id || "";
+}
+
 // Recognizable GPT versions sort newest first; anything else keeps a deterministic name/id order
 // instead of guessing a quality or release ranking that the catalog does not state.
 export function modelVersionParts(model) {
   if (!model) return null;
+  const known = DEEPSEEK_MODEL_DISPLAY.get(deepseekModelKey(model));
+  if (known) return [...known.version];
   for (const text of [model.model, model.displayName]) {
     if (typeof text !== "string") continue;
     const match = /(?:^|[^a-z0-9])gpt[-\s]?(\d+(?:\.\d+)*)/i.exec(text)

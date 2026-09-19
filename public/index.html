@@ -206,7 +206,7 @@
           <div class="form-field settings-inline-field" id="settings-theme-field"><label for="settings-theme">Theme</label>
           <span class="select-slot"><select id="settings-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></span></div>
           <label class="checkbox-row translucent-preference"><input id="translucent-ui" type="checkbox" checked> Translucent UI</label>
-          <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show Project Names in Tasks</label>
+          <label class="checkbox-row"><input id="show-projects" type="checkbox"> Show Folder Names in Tasks</label>
           <label class="checkbox-row"><input id="show-machine-controls" type="checkbox" checked> Show Machine Controls</label>
           <label class="checkbox-row"><input id="show-context" type="checkbox" checked> Show Context Usage</label>
           <label class="checkbox-row"><input id="show-quota" type="checkbox" checked> Show Quota or Balance</label>
@@ -218,7 +218,6 @@
           <p class="field-help error-text" id="settings-deepseek-error" role="status"></p>
         </section>
         <p class="settings-restart" id="settings-restart" hidden>Restart Codex Pocket to apply saved changes.</p>
-        <p class="field-help" id="container-lifecycle" hidden>Pocket is managed by Docker Compose.</p>
         <div class="settings-lifecycle" id="settings-lifecycle">
           <p>Pocket Controls</p>
           <div class="settings-lifecycle-actions">
@@ -279,7 +278,7 @@
     </dialog>
     <dialog class="new-task-dialog" id="goal-clear-dialog" aria-labelledby="goal-clear-title">
       <form id="goal-clear-form">
-        <h2 id="goal-clear-title">Clear unfinished goal?</h2>
+        <h2 id="goal-clear-title">Clear Unfinished Goal?</h2>
         <p>This goal hasn't been completed yet.</p>
         <div class="new-task-actions"><button id="goal-clear-keep" class="secondary-button" type="button">Keep</button><button class="danger-button" type="submit">Clear</button></div>
       </form>
@@ -288,7 +287,6 @@
       <form id="queue-dialog-form" novalidate>
         <h2 id="queue-dialog-title"></h2>
         <p id="queue-dialog-copy">This queued message will be discarded and can't be recovered.</p>
-        <textarea id="queue-dialog-text" aria-label="Queued message" rows="4" maxlength="12000" hidden></textarea>
         <p id="queue-dialog-error" class="form-status error-text" role="alert"></p>
         <div class="new-task-actions"><button id="queue-dialog-cancel" class="secondary-button" type="button">Keep</button><button id="queue-dialog-submit" class="danger-button" type="submit">Discard</button></div>
       </form>

@@ -60,6 +60,86 @@ export function textContent(content) {
     .map((p) => p.text)
     .join("\n");
 }
+
+// DSH tools whose calls Pocket classifies outside the generic Tool category, and the argument that
+// names what they searched for.
+const SEARCH_TOOLS = { web_search: "query", web_fetch: "url", grep: "pattern", glob: "pattern" };
+const FILE_TOOLS = new Set(["write", "edit", "str_replace_editor"]);
+// Subagent tools render under Pocket's Subagents category; the value is the call-time kind.
+const SUBAGENT_TOOLS = { subagent: "started", send_message: "interacted", interrupt_agent: "interrupted" };
+
+function addedLines(text) {
+  const value = String(text ?? "");
+  return value ? value.split("\n").map((line) => `+${line}`).join("\n") : "";
+}
+
+// A bounded line diff for Pocket's existing File Changes renderer. DSH passes hunk-sized old/new
+// text, so this stays small; a create has no prior text and is all additions.
+function diffText(oldText, newText) {
+  const after = String(newText ?? "");
+  if (oldText === null || oldText === undefined) return addedLines(after);
+  const before = String(oldText);
+  if (before === after) return "";
+  const a = before ? before.split("\n") : [];
+  const b = after ? after.split("\n") : [];
+  // Hunk-sized text stays exact; a pathologically large pair falls back to a coarse replace so the
+  // projection never allocates a quadratic table for one tool result.
+  if (a.length * b.length > 1_000_000) {
+    return [...a.map((line) => `-${line}`), ...b.map((line) => `+${line}`)].join("\n");
+  }
+  const dp = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i -= 1)
+    for (let j = b.length - 1; j >= 0; j -= 1)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const lines = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { lines.push(` ${a[i]}`); i += 1; j += 1; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { lines.push(`-${a[i]}`); i += 1; }
+    else { lines.push(`+${b[j]}`); j += 1; }
+  }
+  while (i < a.length) { lines.push(`-${a[i]}`); i += 1; }
+  while (j < b.length) { lines.push(`+${b[j]}`); j += 1; }
+  return lines.join("\n");
+}
+
+// One File Changes entry per file: DSH emits one diff per hunk, but Pocket's renderer and its
+// "Edited N files" label count files.
+function changesFromDiffs(diffs) {
+  const byPath = new Map();
+  for (const diff of Array.isArray(diffs) ? diffs : []) {
+    if (!diff || typeof diff.path !== "string" || !diff.path) continue;
+    const text = diffText(diff.oldText, diff.newText);
+    const entry = byPath.get(diff.path);
+    if (entry) {
+      if (text) entry.parts.push(text);
+      continue;
+    }
+    byPath.set(diff.path, {
+      path: diff.path,
+      add: diff.oldText === null || diff.oldText === undefined,
+      parts: text ? [text] : [],
+    });
+  }
+  return [...byPath.values()].map(({ path, add, parts }) => ({ path, kind: add ? "add" : "update", diff: parts.join("\n") }));
+}
+
+// The change a call intends before any result exists, so a pending or failed edit still shows the
+// real target file instead of the raw arguments.
+function intendedChanges(name, args) {
+  if (!args || typeof args !== "object") return [];
+  if (name === "write" && typeof args.file_path === "string")
+    return changesFromDiffs([{ path: args.file_path, oldText: null, newText: args.content ?? "" }]);
+  if (name === "edit" && typeof args.file_path === "string")
+    return changesFromDiffs([{ path: args.file_path, oldText: typeof args.old_string === "string" ? args.old_string : null, newText: args.new_string ?? "" }]);
+  if (name === "str_replace_editor" && typeof args.path === "string") {
+    if (args.command === "create") return changesFromDiffs([{ path: args.path, oldText: null, newText: args.file_text ?? "" }]);
+    if (args.command === "str_replace") return changesFromDiffs([{ path: args.path, oldText: args.old_str ?? null, newText: args.new_str ?? "" }]);
+    if (args.command === "insert") return changesFromDiffs([{ path: args.path, oldText: null, newText: args.new_str ?? "" }]);
+  }
+  return [];
+}
+
 export function projectEvents(events) {
   const turns = [],
     calls = new Map();
@@ -124,16 +204,35 @@ export function projectEvents(events) {
           type: "commandExecution",
           command: args.command ?? args.script ?? d.arguments,
         });
-      if (d.name === "web_search")
+      const searchKey = SEARCH_TOOLS[d.name];
+      if (searchKey)
         Object.assign(item, {
           type: "webSearch",
-          query: args.query ?? args.queries?.join("; "),
+          query: args?.[searchKey] ?? args?.query ?? args?.queries?.join("; "),
           action: args,
+        });
+      if (FILE_TOOLS.has(d.name)) {
+        const changes = intendedChanges(d.name, args);
+        if (changes.length) Object.assign(item, { type: "fileChange", changes });
+      }
+      const subagentKind = SUBAGENT_TOOLS[d.name];
+      if (subagentKind)
+        Object.assign(item, {
+          type: "collabAgentToolCall",
+          kind: subagentKind,
+          tool: d.name,
+          prompt: args?.prompt ?? args?.message ?? "",
+          model: args?.model,
+          reasoningEffort: args?.reasoning_effort ?? args?.reasoningEffort,
         });
       calls.set(d.callId, item);
       turn.items.push(item);
     }
     if (e.type === "tool/result") {
+      // The applied file diff rides the opaque result metadata and replays identically from the
+      // durable session log. A result without it (failure, or a create with no before-image) keeps
+      // the call-time changes instead of pretending they were applied.
+      const meta = d.meta;
       for (const r of d.message.content ?? []) {
         const item = calls.get(r.toolCallId ?? r.callId ?? r.id);
         if (!item) continue;
@@ -144,6 +243,11 @@ export function projectEvents(events) {
           aggregatedOutput: textContent(r.content),
           results: r.content,
         });
+        if (item.type === "fileChange") {
+          const changes = changesFromDiffs(Array.isArray(meta?.diffs) ? meta.diffs : []);
+          if (changes.length) item.changes = changes;
+        }
+        if (item.type === "collabAgentToolCall") item.kind = r.isError ? "interrupted" : "completed";
       }
     }
     if (e.type === "compaction/start")

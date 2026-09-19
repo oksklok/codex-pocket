@@ -159,6 +159,7 @@ type LoadedThreadSummary = {
   status: string;
   loaded: boolean;
   updatedAt: number;
+  historyMode?: string | null;
 };
 type PocketModel = {
   id: string;
@@ -180,7 +181,7 @@ type QueuedMessage = {
   error?: string;
 };
 type StagedFile = { name: string; path: string; size: number };
-type PocketGoal = { objective: string; status: string; timeUsedSeconds?: number; tokenBudget?: number | null; tokensUsed?: number };
+type PocketGoal = { objective: string; status: string; timeUsedSeconds?: number; tokenBudget?: number | null; tokensUsed?: number; blockedReason?: string; activation?: string };
 
 type PocketState = {
   goal: PocketGoal | null;
@@ -197,6 +198,7 @@ type PocketState = {
     name: string;
     cwd: string;
     source: string;
+    historyMode?: string | null;
   };
   model: string;
   reasoningEffort: string;
@@ -513,7 +515,6 @@ export function publicSettings(settings: LocalSettings, fallbackPin: string | nu
     localName: settings.config.localName,
     // DeepSeek is a provider, not a toggle: only a broken credential needs surfacing here.
     deepseekError,
-    phoneUrls: phoneUrls(settings.config),
     accessUrls: settings.config.accessUrls ?? [],
     machines: settings.config.machines.map((machine) => ({ ...machine })),
   };
@@ -593,10 +594,6 @@ function isPhoneIpv4(address: string): boolean {
     || parts[0] === 10
     || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
     || (parts[0] === 192 && parts[1] === 168);
-}
-
-function phoneUrls(config: LocalConfig): string[] {
-  return config.lanEnabled ? phoneUrlsFor(config.host, config.port) : [];
 }
 
 function phoneUrlsFor(host: string, port: number): string[] {
@@ -868,6 +865,8 @@ function loadedThreadSummary(thread: any, id: string, loaded: boolean): LoadedTh
     status: statusText(thread?.status),
     loaded,
     updatedAt: numberTime(thread?.recencyAt ?? thread?.updatedAt ?? thread?.createdAt, 0),
+    // The runtime's own history interface for this thread: "paginated" or "legacy".
+    historyMode: typeof thread?.historyMode === "string" ? thread.historyMode : null,
   };
 }
 
@@ -1932,7 +1931,7 @@ export class MachineRuntime {
   private loadedThreads: LoadedThreadSummary[] = [];
   private compactionHints = new Map<string, { activity: PocketActivity; occurrence?: number; baseline?: Promise<void> }>();
   private taskQueues = new Map<string, QueuedMessage>();
-  private pendingTaskNames = new Map<string, { name: string; firstMessageAccepted: boolean; saving?: Promise<void>; lastTurnId?: string; warning?: string }>();
+  private pendingTaskNames = new Map<string, { name: string; firstMessageAccepted: boolean; saving?: Promise<void>; lastTurnId?: string; warning?: string; saved?: boolean }>();
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
@@ -1944,12 +1943,16 @@ export class MachineRuntime {
   private selectionQueue: Promise<void> = Promise.resolve();
   private pendingAttachment: { threadId: string; replay: Array<() => void> } | null = null;
   private startingQueuedMessage = false;
+  // Original browser file bytes for a queued message, retained only until the queue is delivered,
+  // withdrawn or replaced, so editing a queued message restores the real attachments.
+  private queuedFileUploads = new Map<string, { name: string; data: string; size: number }[]>();
   private permissionProfiles: PermissionProfileSummary[] = [];
   private allowedReviewers: string[] | null = null;
   private pendingServerRequests = new Map<string, PendingServerRequest>();
   private itemCache = new Map<string, { turnId: string; item: JsonObject }>();
   private itemTurns = new Map<string, string>();
   private historyItemsSupported: boolean | null = null;
+  private historyPaginatedSupported: boolean | null = null;
   private recentHistory: JsonObject[] = [];
   private recentHistoryOldest = false;
   private submissions: MessageSubmissions;
@@ -2103,34 +2106,66 @@ export class MachineRuntime {
     const rpc = this.rpc;
     const threadId = this.state.thread.id;
     const deadline = Date.now() + 20_000;
-    const page = await rpc.request("thread/turns/list", {
-      threadId,
-      cursor,
-      limit,
-      sortDirection: "desc",
-      itemsView: "summary",
-    }).catch(error => {
-      if (this.state.thread?.id === threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.firstMessageAccepted === false
-        && /not materialized yet[\s\S]*before (?:the )?first user message/i.test(String(error))) return { data: [], nextCursor: null };
-      throw error;
-    });
+    // A legacy thread — or a runtime whose store cannot list turns — exposes only a full thread
+    // read. The capability check keeps a paginated thread on its cursor interface instead of
+    // silently replacing it with an unbounded read.
+    if (this.historyPaginatedSupported === false || this.state.thread.historyMode === "legacy") {
+      const turns = await this.readLegacyHistory(rpc, threadId);
+      return this.finishHistoryPage(rpc, threadId, turns, null);
+    }
+    let page: any;
+    try {
+      page = await rpc.request("thread/turns/list", {
+        threadId,
+        cursor,
+        limit,
+        sortDirection: "desc",
+        itemsView: "summary",
+      }).catch(error => {
+        if (this.state.thread?.id === threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.firstMessageAccepted === false
+          && /not materialized yet[\s\S]*before (?:the )?first user message/i.test(String(error))) return { data: [], nextCursor: null };
+        throw error;
+      });
+    } catch (error) {
+      if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isUnsupportedMethodError(message)) throw error;
+      console.warn(`${this.definition.name}: paginated history unavailable (${compact(message, 160)}); using the legacy thread read`);
+      const turns = await this.readLegacyHistory(rpc, threadId);
+      this.historyPaginatedSupported = false;
+      return this.finishHistoryPage(rpc, threadId, turns, null);
+    }
     if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
     const rawTurns = Array.isArray(page?.data) ? page.data : [];
     for (const turn of rawTurns) for (const item of turn.items ?? []) this.rememberItem(item, String(turn.id));
     const turns = (await this.hydrateHistoryTurns(rpc, threadId, rawTurns, deadline)).reverse();
+    return this.finishHistoryPage(rpc, threadId, turns, page?.nextCursor ?? null);
+  }
+
+  // The legacy interface: one full thread read, normalized to the same turn shape as a page. It has
+  // no cursor because the read already returns the complete history.
+  private async readLegacyHistory(rpc: RpcClient | DshRpcClient, threadId: string): Promise<JsonObject[]> {
+    const result = await rpc.request("thread/read", { threadId, includeTurns: true });
+    if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
+    const rawTurns = Array.isArray(result?.thread?.turns) ? result.thread.turns : [];
+    for (const turn of rawTurns) for (const item of turn.items ?? []) this.rememberItem(item, String(turn.id));
+    return rawTurns.map((turn) => normalizeHistoryTurn(turn));
+  }
+
+  private finishHistoryPage(rpc: RpcClient | DshRpcClient, threadId: string, turns: JsonObject[], nextCursor: string | null): JsonObject {
     if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
     this.recentHistory = turns.map(turn => ({ id: turn.id, firstUserMessageId: turn.firstUserMessageId,
       messages: turn.messages.filter((message: JsonObject) => message.role === "user") }));
-    this.recentHistoryOldest = !page?.nextCursor;
+    this.recentHistoryOldest = !nextCursor;
     for (const queued of [this.state.queuedMessage, this.taskQueues.get(threadId)]) {
-      if (queued?.threadId === threadId) this.recoverQueuedDelivery(queued, queued.submission, turns, !page?.nextCursor);
+      if (queued?.threadId === threadId) this.recoverQueuedDelivery(queued, queued.submission, turns, !nextCursor);
     }
     for (const turn of turns) {
       for (const activity of Array.isArray(turn.activities) ? turn.activities : []) {
         this.itemTurns.set(String(activity.id), String(turn.id));
       }
     }
-    return { machineId: this.definition.id, threadId, turns, nextCursor: page?.nextCursor ?? null };
+    return { machineId: this.definition.id, threadId, turns, nextCursor };
   }
 
   private async hydrateHistoryTurns(rpc: RpcClient | DshRpcClient, threadId: string, rawTurns: any[], deadline = Date.now() + 20_000): Promise<JsonObject[]> {
@@ -2434,32 +2469,26 @@ export class MachineRuntime {
     if (matches(this.taskQueues.get(queued.threadId))) this.taskQueues.delete(queued.threadId);
     if (this.state.thread?.id === queued.threadId && matches(this.state.queuedMessage)) {
       this.state.queuedMessage = null;
+      this.queuedFileUploads.delete(queued.id ?? String(queued.createdAt));
       this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
     }
     return submission.confirmed;
   }
 
-  editQueuedMessage(threadId: unknown, value: unknown, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): JsonObject {
-    this.assertQueuedMessage(threadId, queueId);
-    const queued = this.state.queuedMessage;
-    if (!this.state.thread || threadId !== this.state.thread.id || queued?.threadId !== threadId) throw new Error("The selected task no longer has this queued message");
-    if (this.startingQueuedMessage) throw new Error("Queued message is already being sent");
-    if (typeof value !== "string") throw new Error("message text is required");
-    const text = value.replace(/\r\n/g, "\n");
-    if (text.length > MAX_MESSAGE_LENGTH) throw new Error(`message exceeds ${MAX_MESSAGE_LENGTH.toLocaleString()} characters`);
-    if (!text.trim() && !queued.images?.length && !queued.files?.length) throw new Error("Enter a message or attach files");
-    this.state.queuedMessage = { ...queued, text };
-    this.broadcast("queue", { queuedMessage: this.state.queuedMessage, message: this.messageCapability() });
-    return { queuedMessage: this.state.queuedMessage };
-  }
-
+  // Withdraw the still-pending queue atomically and return everything Edit needs to rebuild the
+  // draft: the queued message plus the original uploaded file bytes. A delivery that has already
+  // started is never withdrawn.
   cancelQueuedMessage(threadId: unknown = this.state.thread?.id, queueId: unknown = this.state.queuedMessage?.id ?? String(this.state.queuedMessage?.createdAt)): JsonObject {
     this.assertQueuedMessage(threadId, queueId);
     if (this.startingQueuedMessage) return { cancelled: false };
-    if (!this.state.queuedMessage) return { cancelled: false, queuedMessage: null };
+    const queued = this.state.queuedMessage;
+    if (!queued) return { cancelled: false, queuedMessage: null, files: [] };
+    const key = queued.id ?? String(queued.createdAt);
+    const files = this.queuedFileUploads.get(key) ?? [];
+    this.queuedFileUploads.delete(key);
     this.state.queuedMessage = null;
     this.broadcast("queue", { queuedMessage: null, message: this.messageCapability() });
-    return { cancelled: true, queuedMessage: null };
+    return { cancelled: true, queuedMessage: queued, files };
   }
 
   updateWorkingPath(threadId: unknown, value: unknown): Promise<JsonObject> {
@@ -2522,6 +2551,7 @@ export class MachineRuntime {
     this.state.phase = "connecting";
     this.permissionProfiles = [];
     this.allowedReviewers = null;
+    this.historyPaginatedSupported = null;
     this.state.pending = [];
     this.pendingServerRequests.clear();
     this.broadcast("status", this.statusPayload());
@@ -2778,7 +2808,8 @@ export class MachineRuntime {
         const previous = previousThreads.find(previous => previous.id === task.id);
         if (previous) task.updatedAt = Math.max(task.updatedAt, previous.updatedAt);
         const pendingName = this.pendingTaskNames.get(task.id);
-        if (pendingName) task = { ...task, name: pendingName.name };
+        // A confirmed upstream name wins; only an unsaved local name is shown over the catalog.
+        if (pendingName && !pendingName.saved) task = { ...task, name: pendingName.name };
         // Live observations during this read take precedence, even after active -> idle -> active.
         const observation = this.taskStatusObservations.get(task.id);
         return observation && observation !== observationsAtStart.get(task.id)
@@ -2939,6 +2970,15 @@ export class MachineRuntime {
       await this.attachLoadedThread(id, true, started);
       this.options.thread = id;
       const warnings: string[] = [];
+      // Persist the confirmed name now rather than only overriding it locally. A runtime that
+      // cannot yet name a zero-turn thread keeps the pending first-turn retry.
+      try {
+        await this.rpc.request("thread/name/set", { threadId: id, name });
+        const pending = this.pendingTaskNames.get(id);
+        if (pending) pending.saved = true;
+      } catch (error) {
+        warnings.push(`Name: ${compact(error, 160)}`);
+      }
       if (body.model || body.effort) {
         try {
           const model = body.model || this.state.model;
@@ -2965,14 +3005,20 @@ export class MachineRuntime {
       const name = typeof body.name === "string" ? body.name.trim() : "";
       if (!name || name.length > 180) throw new Error("Enter a task name up to 180 characters");
       const pendingName = this.pendingTaskNames.get(id);
-      if (pendingName && !pendingName.firstMessageAccepted) this.pendingTaskNames.set(id, { name, firstMessageAccepted: false });
-      else {
-        // An explicit rename must be the final write if deferred naming is in flight.
-        await pendingName?.saving;
+      // An explicit rename must be the final write if deferred naming is in flight.
+      await pendingName?.saving;
+      try {
         await this.rpc.request("thread/name/set", { threadId: id, name });
         this.pendingTaskNames.delete(id);
+      } catch (error) {
+        // Only a zero-turn task keeps the pending fallback; an ordinary rename surfaces the failure.
+        if (!pendingName || pendingName.firstMessageAccepted) throw error;
+        this.pendingTaskNames.set(id, { ...pendingName, name, saved: false, warning: "Task name could not be saved yet. Pocket will retry after the first message." });
       }
-      if (this.state.thread?.id === id) this.state.thread.name = name;
+      if (this.state.thread?.id === id) {
+        this.state.thread.name = name;
+        this.broadcast("task-name", { threadId: id, taskNameWarning: this.pendingTaskNames.get(id)?.warning ?? null });
+      }
       try { await this.refreshLoadedThreads(); } catch { /* Mutation already succeeded; the browser refresh reconciles the catalog. */ }
       return this.snapshot();
     }
@@ -3271,7 +3317,20 @@ export class MachineRuntime {
     visible.resolving = true;
     this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
     this.rpc.respond(pending.rawId, result);
+    this.settlePendingRequest(requestId);
     return { accepted: true, requestId, decision };
+  }
+
+  // Retire a pending server request as soon as its answer is sent, or when the runtime reports it
+  // resolved/cancelled. DSH has no separate resolved notification for a user answer, so leaving the
+  // entry would keep the task stuck in waiting_input for the rest of the turn.
+  private settlePendingRequest(requestId: string): void {
+    this.pendingServerRequests.delete(requestId);
+    const next = this.state.pending.filter((request) => request.id !== requestId);
+    if (next.length === this.state.pending.length) return;
+    this.state.pending = next;
+    this.state.phase = this.computePhase();
+    this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
   }
 
   private async resolveInputNow(requestIdValue: unknown, answersValue: unknown): Promise<JsonObject> {
@@ -3330,6 +3389,7 @@ export class MachineRuntime {
     visible.resolving = true;
     this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
     this.rpc.respond(pending.rawId, { answers });
+    this.settlePendingRequest(requestId);
     return { accepted: true, requestId };
   }
 
@@ -3355,6 +3415,7 @@ export class MachineRuntime {
       const files = await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
       if (!current()) throw new Error("Codex disconnected while staging files");
       this.state.queuedMessage = { id: randomBytes(16).toString("hex"), threadId, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}), createdAt: Date.now() };
+      if (uploads.length) this.queuedFileUploads.set(this.state.queuedMessage.id!, uploads);
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
       // Completion may arrive while bytes are being uploaded, before the queue exists.
@@ -3423,6 +3484,8 @@ export class MachineRuntime {
       ...(typeof goal.timeUsedSeconds === "number" ? { timeUsedSeconds: goal.timeUsedSeconds } : {}),
       ...(typeof goal.tokensUsed === "number" ? { tokensUsed: goal.tokensUsed } : {}),
       ...(goal.tokenBudget !== undefined ? { tokenBudget: goal.tokenBudget } : {}),
+      ...(typeof goal.blockedReason === "string" && goal.blockedReason ? { blockedReason: compact(goal.blockedReason, 400) } : {}),
+      ...(typeof goal.activation === "string" && goal.activation ? { activation: goal.activation } : {}),
     } : null;
     this.broadcast("goal", { machineId: this.state.machineId, threadId, goal: this.state.goal });
     const displayGoal = this.state.goal, rpc = this.rpc;
@@ -3471,7 +3534,11 @@ export class MachineRuntime {
         if (!result.cleared) throw new Error("Goal was not cleared; refresh and try again");
         this.updateGoal(threadId, null);
       } else {
-        if (this.state.goal.status !== (action === "pause" ? "active" : "paused")) throw new Error("Goal status changed; try again");
+        const goal = this.state.goal;
+        // Resume is valid for paused and blocked goals, and for a DSH goal whose run is disarmed.
+        const resumable = goal.status === "paused" || goal.status === "blocked"
+          || (goal.status === "active" && goal.activation === "disarmed");
+        if (action === "pause" ? goal.status !== "active" : !resumable) throw new Error("This goal cannot be resumed; refresh and try again");
         const result = await this.rpc.request("thread/goal/set", { threadId, status: action === "pause" ? "paused" : "active" });
         this.updateGoal(threadId, result.goal);
       }
@@ -3541,6 +3608,7 @@ export class MachineRuntime {
       if (this.taskQueues.get(thread.id) === queued) this.taskQueues.delete(thread.id);
       if (this.rpc !== rpc || this.state.thread !== thread) return result;
       if (this.state.queuedMessage === queued) this.state.queuedMessage = null;
+      this.queuedFileUploads.delete(queued.id ?? String(queued.createdAt));
       const payload = { queuedMessage: this.state.queuedMessage, message: this.messageCapability() };
       this.broadcast("queue", payload);
       return { ...result, ...payload };
@@ -3564,9 +3632,10 @@ export class MachineRuntime {
     this.pendingAttachment = changed ? attachment : null;
     let resumed: JsonObject;
     let goal = null;
+    let goalKnown = false;
     try {
       resumed = started ?? await rpc.request("thread/resume", { threadId, excludeTurns: true });
-      try { goal = (await rpc.request("thread/goal/get", { threadId })).goal ?? null; }
+      try { goal = (await rpc.request("thread/goal/get", { threadId })).goal ?? null; goalKnown = true; }
       catch (error) { console.warn(`Goal unavailable: ${compact(error, 180)}`); }
     }
     finally { if (this.pendingAttachment === attachment) this.pendingAttachment = null; }
@@ -3581,6 +3650,7 @@ export class MachineRuntime {
       name: this.pendingTaskNames.get(threadId)?.name || compact(thread.name ?? thread.preview, 180) || summary.name,
       cwd: String(thread.cwd ?? summary.cwd),
       source: String(thread.source ?? "unknown"),
+      historyMode: typeof thread.historyMode === "string" ? thread.historyMode : summary.historyMode ?? null,
     };
     if (changed) {
       const cached = this.contextByThread.get(threadId);
@@ -3593,7 +3663,8 @@ export class MachineRuntime {
     this.canAcceptDirectInput = thread.canAcceptDirectInput === true;
     this.state.threadStatus = statusText(thread.status ?? summary.status);
     this.updateModel(resumed);
-    this.updateGoal(threadId, goal);
+    // A transient goal read failure must not erase a saved goal.
+    if (goalKnown) this.updateGoal(threadId, goal);
     for (const replay of attachment.replay) replay();
     const selectedThread = this.state.thread;
     const current = () => this.rpc === rpc && this.state.thread === selectedThread;
@@ -3930,12 +4001,23 @@ export class MachineRuntime {
         this.state.phase = this.computePhase();
         this.broadcast("status", this.statusPayload());
         break;
-      case "thread/name/updated":
-        if (this.state.thread && params.name) {
-          this.state.thread.name = this.pendingTaskNames.get(this.state.thread.id)?.name ?? compact(params.name, 180);
+      case "thread/name/updated": {
+        // The runtime sends threadName; adopting it lets another client's rename win over a stale
+        // local pending name while keeping the zero-turn guard entry.
+        const threadId = String(params.threadId ?? this.state.thread?.id ?? "");
+        const name = compact(params.threadName ?? params.name, 180);
+        const pending = this.pendingTaskNames.get(threadId);
+        if (pending && !pending.saving && name) {
+          pending.name = name;
+          pending.saved = true;
+          pending.warning = undefined;
+        }
+        if (this.state.thread?.id === threadId && name) {
+          this.state.thread.name = name;
           this.broadcast("thread", this.state.thread);
         }
         break;
+      }
       case "thread/settings/updated": {
         // Adopt the replacement session only when this task itself was
         // relocated; ordinary settings events and a new task's start never move
@@ -4067,11 +4149,16 @@ export class MachineRuntime {
         this.handleItem(params.item, params.turnId, method === "item/started" ? "start" : "done");
         break;
       case "serverRequest/resolved":
-        this.pendingServerRequests.delete(String(params.requestId));
-        this.state.pending = this.state.pending.filter((request) => request.id !== String(params.requestId));
-        this.state.phase = this.computePhase();
-        this.broadcast("request", { pending: this.state.pending, phase: this.state.phase, message: this.messageCapability() });
+        this.settlePendingRequest(String(params.requestId));
         break;
+      case "pocket/requestResolved": {
+        // DSH's adapter reports a user question or approval as resolved by its own request id.
+        const pocketRequestId = String(params.pocketRequestId ?? "");
+        if (!pocketRequestId) break;
+        for (const [id, pending] of [...this.pendingServerRequests])
+          if (String(pending.params?.pocketRequestId ?? "") === pocketRequestId) this.settlePendingRequest(id);
+        break;
+      }
       case "error": {
         const error = compact(params.error?.message ?? params.message ?? params, 400);
         console.warn(`${this.definition.name}: turn ${params.turnId ?? "unknown"} error (willRetry=${params.willRetry === true}): ${error}`);
@@ -4283,6 +4370,7 @@ export class MachineRuntime {
     this.state.reasoningEffort = "Not exposed";
     this.state.access = emptyAccess();
     this.state.queuedMessage = null;
+    this.queuedFileUploads.clear();
     this.state.stoppingTurnId = null;
     this.startingQueuedMessage = false;
     this.canAcceptDirectInput = false;
@@ -4294,6 +4382,8 @@ export class MachineRuntime {
     if (!pending || !rpc || !turnId || pending.saving || pending.lastTurnId === turnId) return;
     pending.firstMessageAccepted = true;
     pending.lastTurnId = turnId;
+    // An immediately persisted name has nothing left to write; release the zero-turn guard.
+    if (pending.saved) { this.pendingTaskNames.delete(threadId); return; }
     // Completion is authoritative: the first real turn now has a persisted rollout.
     // Retry failures only on a later turn completion, never on a timer or start response.
     pending.saving = (async () => {
@@ -4342,6 +4432,7 @@ export class MachineRuntime {
       if (pendingName) pendingName.firstMessageAccepted = true;
       if (this.state.queuedMessage !== queued) return true;
       this.state.queuedMessage = null;
+      this.queuedFileUploads.delete(queued.id ?? String(queued.createdAt));
       const turn = result?.turn ?? {};
       if (this.state.turn === previousTurn) {
         this.state.turn = {
@@ -4770,10 +4861,6 @@ export class PocketGateway {
       submissionId ? { id: submissionId, receipts: this.submissionStore(machineId) } : undefined));
   }
 
-  editQueuedMessage(body: JsonObject): Promise<JsonObject> {
-    return this.enqueue(async () => this.requireSelected(body.machineId, body.threadId).editQueuedMessage(body.threadId, body.text, body.queueId ?? null));
-  }
-
   cancelQueuedMessage(machineId: unknown, threadId: unknown, queueId: unknown): Promise<JsonObject> {
     return this.enqueue(async () => this.requireSelected(machineId, threadId).cancelQueuedMessage(threadId, queueId ?? null));
   }
@@ -5111,7 +5198,7 @@ export async function handleRequest(
       sendJson(response, 403, { error: "Same-origin request required" }, gateway);
       return;
     }
-    if ((method === "POST" || (method === "PATCH" && url.pathname === "/api/message/queue")) && JSON_POST_ROUTES.has(url.pathname)
+    if (method === "POST" && JSON_POST_ROUTES.has(url.pathname)
       && request.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
       sendJson(response, 415, { error: "Content-Type must be application/json" }, gateway);
       return;
@@ -5292,14 +5379,6 @@ export async function handleRequest(
       const submission = typeof submissionId === "string" && /^[a-zA-Z0-9-]{8,100}$/.test(submissionId)
         ? await receipts.recover(submissionId) : null;
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error), ...(submission ? { submission } : {}) }, gateway);
-    }
-    return;
-  }
-  if (method === "PATCH" && url.pathname === "/api/message/queue") {
-    try {
-      sendJson(response, 200, await gateway.editQueuedMessage(await readJsonBody(request)), gateway);
-    } catch (error) {
-      sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
     return;
   }

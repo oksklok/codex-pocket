@@ -1,6 +1,7 @@
 import {
   compareTaskOrder,
   sortModelsForDisplay,
+  modelDisplayName,
   resolveModelEffort,
   createSelectionHold,
   usageLimitMessage,
@@ -214,7 +215,70 @@ function renderMarkdownInto(element, value, message = null) {
     table.replaceWith(scroll);
     scroll.append(table);
   }
+  // Code blocks get their own Copy action; the copied text is the original code without the
+  // fence, wrapping or button label. Never nest a control inside another button.
+  for (const pre of element.querySelectorAll("pre")) if (!pre.closest("button")) wrapCodeBlock(pre);
   for (const img of element.querySelectorAll("img")) enableImageViewer(img);
+}
+
+// Clipboard support is optional outside a secure context (for example a plain-HTTP LAN origin);
+// fall back to the selection command and report a genuine failure instead of a silent no-op.
+async function writeClipboard(text) {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch {}
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.top = "-1000px";
+    document.body.append(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
+// One shared Copy control for code and command/output blocks.
+function copyButton(getText, label = "Copy code") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "copy-button text-button";
+  button.textContent = "Copy";
+  button.setAttribute("aria-label", label);
+  button.addEventListener("click", async () => {
+    const copied = await writeClipboard(getText());
+    button.textContent = copied ? "Copied" : "Copy failed";
+    button.classList.toggle("error-text", !copied);
+    clearTimeout(button.copyReset);
+    button.copyReset = setTimeout(() => {
+      button.textContent = "Copy";
+      button.classList.remove("error-text");
+    }, 1600);
+  });
+  return button;
+}
+
+function withCopyControls(pre, text) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "code-block";
+  pre.replaceWith(wrapper);
+  wrapper.append(pre);
+  const actions = document.createElement("div");
+  actions.className = "code-block-actions";
+  actions.append(copyButton(() => text));
+  wrapper.append(actions);
+}
+
+function wrapCodeBlock(pre) {
+  if (pre.closest(".code-block")) return;
+  // Markdown-it appends one trailing newline to a fenced block; copy the original code instead.
+  const text = ((pre.querySelector("code") || pre).textContent || "").replace(/\n$/, "");
+  withCopyControls(pre, text);
 }
 
 function enableImageViewer(img) {
@@ -231,8 +295,8 @@ const phaseLabels = {
   connecting: "Connecting",
   unavailable: "Unavailable",
   working: "Working",
-  waiting_input: "Waiting for input",
-  waiting_permission: "Waiting for approval",
+  waiting_input: "Turn Paused",
+  waiting_permission: "Waiting for Approval",
   done: "Done",
   stopped: "Stopped",
   failed: "Failed",
@@ -258,6 +322,9 @@ let transcriptScrollElement = null;
 let pendingSendNavigation = null;
 let historyEpoch = 0;
 let historyRequest = null;
+// The transcript's own load state, separate from any live event: the empty-history message may only
+// follow a successful (possibly empty) history result.
+let historyPhase = "loading";
 let threadsRequest = null;
 let machinesRequest = null;
 // Active and archived catalogs are independent; mutations invalidate both.
@@ -630,6 +697,25 @@ function setHistoryStatus(message = "") {
   elements.historyStatus.hidden = !message;
 }
 
+// Concise, actionable history copy. The raw RPC/method detail stays in diagnostics.
+function historyErrorMessage(error) {
+  const message = String(error?.message || error || "");
+  if (/is not supported yet|-32601|not found|unsupported/i.test(message)) return "This task's history format isn't supported.";
+  if (/timed out|timeout|disconnected|connection|closed/i.test(message)) return "Could not load history. Check the connection and try again.";
+  return "Could not load history. Try again.";
+}
+
+// Replace raw RPC/method failures with concise, actionable copy. Pocket-authored messages pass
+// through unchanged; the technical detail stays in the gateway logs.
+function uiErrorMessage(error, fallback = "Something went wrong. Try again.") {
+  const message = String(error?.message || error || "").trim();
+  if (!message) return fallback;
+  if (/is not supported yet|-32601|method[^\n]*not found|unsupported[^\n]*method/i.test(message)) return "This action isn't supported by the connected runtime.";
+  if (/timed out|timeout/i.test(message)) return "The runtime didn't respond in time. Try again.";
+  if (/disconnected|connection closed|connection lost|EPIPE|ECONNRESET|socket/i.test(message)) return "The connection was lost. Check the runtime and try again.";
+  return message;
+}
+
 function formatElapsed(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
   const total = Math.floor(milliseconds / 1000);
@@ -827,10 +913,12 @@ function renderDestinationButton() {
 async function refreshMachines() {
   if (machinesRequest) return machinesRequest;
   const machineStateAtStart = machines;
+  const epoch = navigationEpoch;
   machinesRequest = (async () => {
     const response = await apiFetch("/api/machines");
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || "Machines unavailable");
+    if (epoch !== navigationEpoch) return;
     if (machines === machineStateAtStart) machines = Array.isArray(value.machines) ? value.machines : [];
     renderDestinationButton();
     renderDestinationSwitcher();
@@ -1050,7 +1138,7 @@ function renderDestinationSwitcher(force = false) {
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
           feedback.textContent = "Wake packet sent";
-          setTimeout(() => feedback.remove(), 4000);
+          setTimeout(() => feedback.remove(), 3000);
         } catch (error) { feedback.textContent = error instanceof Error ? error.message : String(error); }
         finally { wake.disabled = false; }
       });
@@ -1163,9 +1251,13 @@ function renderDestinationSwitcher(force = false) {
         button.disabled = !member.connected || (taskActionBusy && taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id) || (action !== "rename" && task.status?.startsWith("active"));
         button.addEventListener("click", () => {
           if (destinationSelection || taskActionBusy) return;
+          // Withdraw the overflow menu before its action leaves this surface (dialog or request);
+          // remember the disclosure so focus can return sensibly when the action settles.
+          taskMenuReturnFocus = summary;
+          closeTaskMenus();
           const body = { machineId: member.id, threadId: task.id, archived: Boolean(task.archived), action };
           if (action === "rename" || action === "delete") openTaskDialog(body, task.name);
-          else performTaskAction(body);
+          else void performTaskAction(body).finally(restoreTaskMenuFocus);
         });
         menu.append(button);
       }
@@ -1192,6 +1284,7 @@ function renderDestinationSwitcher(force = false) {
 async function refreshLoadedThreads() {
   const requestedMachineId = state?.machineId || "local";
   if (threadsRequest?.machineId === requestedMachineId) return threadsRequest.promise;
+  const epoch = navigationEpoch;
   const token = { machineId: requestedMachineId, promise: null };
   token.promise = (async () => {
     const url = new URL("/api/threads", location.origin);
@@ -1199,7 +1292,7 @@ async function refreshLoadedThreads() {
     const response = await apiFetch(url);
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || "Saved tasks unavailable");
-    if (requestedMachineId !== state?.machineId) return;
+    if (epoch !== navigationEpoch || requestedMachineId !== state?.machineId) return;
     loadedThreads = Array.isArray(value.threads) ? value.threads : [];
     renderDestinationButton();
   })();
@@ -1207,10 +1300,12 @@ async function refreshLoadedThreads() {
   try {
     await token.promise;
   } catch (error) {
-    if (requestedMachineId === state?.machineId) {
+    if (epoch === navigationEpoch && requestedMachineId === state?.machineId) {
       loadedThreads = [];
       renderDestinationButton();
-      setHistoryStatus(error.message);
+      // A saved-task read failure belongs to the task list, not the conversation's history status.
+      navigationErrors[Number(archivedTasks)] = uiErrorMessage(error, "Saved tasks unavailable. Try again.");
+      renderDestinationSwitcher(true);
     }
   } finally {
     if (threadsRequest === token) threadsRequest = null;
@@ -1222,6 +1317,24 @@ function invalidateNavigationCatalogs() {
   navigationCatalogs.fill(null);
   navigationRequests.fill(null);
   navigationErrors.fill("");
+  // Drop in-flight catalog-adjacent reads too: their epoch guard now discards the response, and
+  // clearing the token lets the forced refresh start immediately.
+  threadsRequest = null;
+  machinesRequest = null;
+}
+
+// After a reconnection every cached task catalog is suspect: a machine that slept may now be
+// reachable, and its cached catalogAvailable:false must not keep its tasks disabled. Offline
+// machines stay offline because only a successful /api/navigation read for a connected runtime
+// can report availability.
+function refreshTaskSurface() {
+  invalidateNavigationCatalogs();
+  void Promise.allSettled([
+    refreshMachines(),
+    refreshLoadedThreads(),
+    refreshNavigationCatalog(false, true),
+    refreshNavigationCatalog(true, true),
+  ]);
 }
 
 // A confirmed mutation updates the cached lists immediately so the sidebar keeps rendering the row
@@ -1285,7 +1398,7 @@ async function refreshNavigationCatalog(archived = archivedTasks, force = false)
       navigationCatalogs[slot] = value;
       navigationErrors[slot] = "";
     } catch (error) {
-      if (epoch === navigationEpoch) navigationErrors[slot] = error.message || "Task catalog unavailable";
+      if (epoch === navigationEpoch) navigationErrors[slot] = uiErrorMessage(error, "Task catalog unavailable. Try again.");
     } finally {
       if (epoch === navigationEpoch) {
         navigationRequests[slot] = null;
@@ -1305,6 +1418,15 @@ function closeTaskMenus(except = null) {
   for (const actions of elements.destinationList.querySelectorAll(".task-actions[open]")) {
     if (actions !== except) actions.open = false;
   }
+}
+// The disclosure that opened an action; focus returns here once the dialog or request settles,
+// or to the task-list surface when the acted-on row is gone (for example after Delete).
+let taskMenuReturnFocus = null;
+function restoreTaskMenuFocus() {
+  const target = taskMenuReturnFocus;
+  taskMenuReturnFocus = null;
+  if (target?.isConnected) target.focus({ preventScroll: true });
+  else if (!elements.destinationSwitcher.hidden) elements.destinationRefresh.focus({ preventScroll: true });
 }
 document.addEventListener("pointerdown", (event) => closeTaskMenus(event.target.closest(".task-actions")));
 elements.destinationList.addEventListener("scroll", () => closeTaskMenus());
@@ -1393,7 +1515,7 @@ function renderModelControls() {
     && !submittingInputRequestId
     && !submittingInterrupt;
   elements.modelSelect = renderChoiceControl(elements.modelSlot, {
-    entries: models.map((model) => ({ value: model.model, label: model.displayName || model.model })),
+    entries: models.map((model) => ({ value: model.model, label: modelDisplayName(model) })),
     selected: state?.model,
     ariaLabel: "Model",
     id: "model-select",
@@ -1525,6 +1647,15 @@ function renderDisplayControls() {
   elements.displayHideAll.disabled = visibleCategories.length === 0 || checkedCount === 0;
 }
 
+function attachmentSummary(value) {
+  const parts = [];
+  const images = value?.images?.length || 0;
+  const files = value?.files?.length || 0;
+  if (images) parts.push(`${images} ${images === 1 ? "image" : "images"}`);
+  if (files) parts.push(`${files} ${files === 1 ? "file" : "files"}`);
+  return parts.join(" and ");
+}
+
 function renderQueue() {
   const queued = state?.queuedMessage;
   if (queueDialog.open && !queueDialogMatches()) queueDialog.close();
@@ -1532,11 +1663,11 @@ function renderQueue() {
   renderImageThumbnails(elements.queueImages, queued?.images || []);
   renderFileChips(document.querySelector("#queue-files"), queued?.files || []);
   if (queued) {
-    elements.queueText.textContent = queued.text || (queued.files?.length ? `${queued.files.length} file(s)` : `${queued.images?.length || 0} image(s)`);
+    elements.queueText.textContent = queued.text || attachmentSummary(queued);
     elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
-    elements.sendQueue.disabled = queued?.deliveryUnknown || queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue || queueDialogBusy;
+    elements.sendQueue.disabled = queued?.deliveryUnknown || queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue;
     elements.sendQueue.classList.toggle("icon-button", turnActive);
     elements.sendQueue.classList.toggle("text-button", !turnActive);
     const actionLabel = turnActive ? "Steer Now" : sendingQueuedMessage ? "Sending…" : "Send";
@@ -1545,7 +1676,7 @@ function renderQueue() {
     elements.sendQueue.innerHTML = turnActive
       ? '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 19v-7a5 5 0 0 1 5-5h9m-5-5 5 5-5 5"/></svg>'
       : actionLabel;
-    elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage || queueDialogBusy;
+    elements.cancelQueue.disabled = submittingMessage || cancellingQueue || sendingQueuedMessage;
     document.querySelector("#edit-queue").disabled = elements.cancelQueue.disabled || queueDeliveryUnknown;
   }
 }
@@ -1567,9 +1698,13 @@ function renderStructuredInput(pending) {
   heading.className = "approval-heading";
   const title = document.createElement("strong");
   title.textContent = "Input Needed";
-  const behavior = document.createElement("span");
-  behavior.textContent = pending.blocking === false ? "Non-blocking" : "Turn paused";
-  heading.append(title, behavior);
+  heading.append(title);
+  // A structured input still requires an answer, so only the blocking case carries a status.
+  if (pending.blocking !== false) {
+    const behavior = document.createElement("span");
+    behavior.textContent = "Turn Paused";
+    heading.append(behavior);
+  }
   elements.attentionBanner.append(heading);
 
   if (!pending.supported || !Array.isArray(pending.questions)) {
@@ -1642,7 +1777,7 @@ function renderStructuredInput(pending) {
           radio.checked = true;
           draft.set({ type: "other", value: other.value });
         };
-        radio.addEventListener("change", selectOther);
+        radio.addEventListener("change", () => { selectOther(); other.focus({ preventScroll: true }); });
         other.addEventListener("focus", selectOther);
         other.addEventListener("input", selectOther);
         copy.append(label, other);
@@ -1674,7 +1809,7 @@ function renderStructuredInput(pending) {
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.className = "approval-approve";
-  submit.textContent = submittingInputRequestId === pending.id || pending.resolving ? "Sending…" : "Send Answer";
+  submit.textContent = submittingInputRequestId === pending.id || pending.resolving ? "Sending…" : "Answer";
   submit.disabled = requestDisabled;
   actions.append(submit);
   form.append(actions);
@@ -1770,21 +1905,26 @@ function renderGoal() {
   if (goalClearDialog.open && !goalClearTargetMatches()) goalClearDialog.close();
   goalStrip.hidden = !goal;
   if (!goal) { goalClock = null; return; }
-  const clockKey = JSON.stringify([state.machineId, state.thread?.id, goal.objective, goal.status, goal.timeUsedSeconds]);
-  if (goalClock?.key !== clockKey) goalClock = { key: clockKey, seconds: goal.timeUsedSeconds, active: goal.status === "active", receivedAt: Date.now() };
+  const pursuing = goal.status === "active" && goal.activation !== "disarmed";
+  const resumable = goal.status === "paused" || goal.status === "blocked"
+    || (goal.status === "active" && goal.activation === "disarmed");
+  const clockKey = JSON.stringify([state.machineId, state.thread?.id, goal.objective, goal.status, goal.activation, goal.timeUsedSeconds]);
+  if (goalClock?.key !== clockKey) goalClock = { key: clockKey, seconds: goal.timeUsedSeconds, active: pursuing, receivedAt: Date.now() };
   renderGoalTime();
   const labels = { active: "Pursuing Goal", paused: "Goal Paused", blocked: "Goal Blocked", usageLimited: "Goal Usage Limited", budgetLimited: "Goal Budget Limited", complete: "Goal Complete" };
   document.querySelector("#goal-status").textContent = labels[goal.status] || `Goal ${goal.status}`;
   const objective = document.querySelector("#goal-objective");
   objective.textContent = goal.objective;
   objective.title = goal.objective;
-  goalStrip.title = typeof goal.tokensUsed === "number" ? `${goal.tokensUsed.toLocaleString()} tokens used${typeof goal.tokenBudget === "number" ? ` / ${goal.tokenBudget.toLocaleString()} budget` : ""}` : "";
-  const active = goal.status === "active";
-  goalToggle.hidden = !active && goal.status !== "paused";
-  goalToggle.dataset.action = active ? "pause" : "resume";
-  goalToggle.title = active ? "Pause goal" : "Resume goal";
+  goalStrip.title = [
+    typeof goal.tokensUsed === "number" ? `${goal.tokensUsed.toLocaleString()} tokens used${typeof goal.tokenBudget === "number" ? ` / ${goal.tokenBudget.toLocaleString()} budget` : ""}` : "",
+    goal.blockedReason || "",
+  ].filter(Boolean).join(" · ");
+  goalToggle.hidden = !pursuing && !resumable;
+  goalToggle.dataset.action = pursuing ? "pause" : "resume";
+  goalToggle.title = pursuing ? "Pause goal" : "Resume goal";
   goalToggle.setAttribute("aria-label", goalToggle.title);
-  goalToggle.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${active ? "M8 5v14M16 5v14" : "m8 5 11 7-11 7Z"}"/></svg>`;
+  goalToggle.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${pursuing ? "M8 5v14M16 5v14" : "m8 5 11 7-11 7Z"}"/></svg>`;
   goalToggle.disabled = goalClear.disabled = Boolean(goalActionBusy) || !state.connected;
 }
 async function performGoalAction(body) {
@@ -1797,7 +1937,7 @@ async function performGoalAction(body) {
     if (!response.ok) throw new Error(result.error || "Goal action failed");
     if (state?.machineId === body.machineId && state?.thread?.id === body.threadId) mergeState({ goal: result.goal });
   } catch (error) {
-    if (state?.machineId === body.machineId && state?.thread?.id === body.threadId) composerError = error.message;
+    if (state?.machineId === body.machineId && state?.thread?.id === body.threadId) composerError = uiErrorMessage(error);
   } finally { goalActionBusy = null; renderComposer(); }
 }
 goalToggle.addEventListener("click", () => performGoalAction({ machineId: state.machineId, threadId: state.thread.id, action: goalToggle.dataset.action }));
@@ -1966,7 +2106,7 @@ async function addFiles(files) {
       if (taskKey) rememberComposerDraft(composerDrafts, taskKey, { text: composerDrafts.get(taskKey)?.text || "", images: nextImages, files: nextFiles });
     } else { selectedImages = nextImages; selectedFiles = nextFiles; }
   } catch (error) {
-    composerError = error.message;
+    composerError = uiErrorMessage(error);
   } finally {
     readingAttachments = false;
     elements.imagePicker.value = "";
@@ -2080,6 +2220,14 @@ function messageNode(message, displayCreatedAt) {
   const body = document.createElement("div");
   body.className = "message-body";
   renderMarkdownInto(body, message.text, message);
+  // Keep the async question an answer belongs to visible without reverting to synthetic reply text.
+  if (message.role === "user" && message.questionReplies?.length) {
+    const reference = document.createElement("div");
+    reference.className = "question-reply-reference";
+    const titles = message.questionReplies.map((reply) => reply.question).filter(Boolean);
+    reference.textContent = titles.length ? `In response to: ${titles.join(" · ")}` : "Answer to a question";
+    body.prepend(reference);
+  }
   if (message.role === "user" && message.imageCount) {
     const images = document.createElement("div");
     images.className = "message-images";
@@ -2239,7 +2387,7 @@ async function submitAsyncAnswer(message, index, draft) {
     if (machineId !== state?.machineId || threadId !== state?.thread?.id) return;
     if (!result.recovered) mergeState(result, true);
   } catch (error) {
-    draft.error = error.message;
+    draft.error = uiErrorMessage(error, "Could not send the answer. Try again.");
     draft.uncertain = Boolean(error.deliveryUnknown);
   } finally {
     draft.sending = false;
@@ -2247,16 +2395,24 @@ async function submitAsyncAnswer(message, index, draft) {
   }
 }
 
+const COPYABLE_DETAIL_LABELS = new Set(["Command", "Output"]);
 function detailField(label, value, className = "detail-code") {
   if (value === null || value === undefined || value === "") return null;
   const field = document.createElement("div");
   field.className = "detail-field";
   const heading = document.createElement("strong");
   heading.textContent = label;
+  const headingRow = document.createElement("div");
+  headingRow.className = "detail-field-heading";
+  headingRow.append(heading);
   const content = document.createElement(className === "detail-code" ? "pre" : "div");
   content.className = className;
   content.textContent = String(value);
-  field.append(heading, content);
+  // Command and output blocks get the same Copy control as Markdown code.
+  if (className === "detail-code" && COPYABLE_DETAIL_LABELS.has(label)) {
+    headingRow.append(copyButton(() => String(value), `Copy ${label.toLowerCase()}`));
+  }
+  field.append(headingRow, content);
   return field;
 }
 
@@ -2377,7 +2533,7 @@ async function loadActivityDetail(activity, force = false) {
   } catch (error) {
     if (activityDetailVersions.get(activity.id) !== version || activityDetailRequests.get(activity.id) !== request
       || epoch !== historyEpoch || state?.machineId !== machineId || state?.thread?.id !== threadId) return;
-    activityDetails.set(activity.id, { expanded: true, error: error.message || "Details unavailable" });
+    activityDetails.set(activity.id, { expanded: true, error: uiErrorMessage(error, "Details unavailable. Try again.") });
   } finally {
     if (activityDetailRequests.get(activity.id) === request) activityDetailRequests.delete(activity.id);
   }
@@ -2465,7 +2621,11 @@ function activityNode(activity) {
 }
 
 function emptyConversationText() {
-  return state?.thread ? "No conversation history yet." : "Select a task or create one.";
+  if (!state?.thread) return "Select a task or create one.";
+  // Only a successful empty history page may claim there is no conversation history.
+  if (historyPhase === "loading") return "Loading recent messages…";
+  if (historyPhase === "error") return "";
+  return "No conversation history yet.";
 }
 
 function renderConversation({ preserveScroll = null, forceBottom = false, restoreScrollTop = null } = {}) {
@@ -2497,6 +2657,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   const signature = entry => JSON.stringify([
     entry.value,
     entry.displayCreatedAt,
+    entry.type === "empty" ? historyPhase : null,
     entry.type === "activity" ? [activityDetails.get(entry.value.id)] : null,
     entry.type === "message" && entry.value.questions?.length ? [
       state?.message?.allowed,
@@ -2551,6 +2712,26 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   }
   rememberTranscriptScroll();
   updateJumpLatest();
+  settleBottomAfterImages();
+}
+
+// Images decode after layout, so a following view can end up short of the bottom. Re-pin on each
+// image load and after the next frame, but only while the user is still following the bottom.
+function settleBottomAfterImages() {
+  const pin = () => {
+    if (!shouldFollowConversation || selectionHold.active || transcriptSelectionActive()) return;
+    const scroller = transcriptScroller();
+    scroller.scrollTop = scroller.scrollHeight;
+    rememberTranscriptScroll();
+    updateJumpLatest();
+  };
+  if (!shouldFollowConversation || selectionHold.active || transcriptSelectionActive()) return;
+  requestAnimationFrame(pin);
+  for (const img of elements.conversation.querySelectorAll("img")) {
+    if (img.complete) continue;
+    img.addEventListener("load", pin, { once: true });
+    img.addEventListener("error", pin, { once: true });
+  }
 }
 
 function transcriptSelectionActive() {
@@ -2695,6 +2876,7 @@ function resetConversationState() {
   terminalDetailRefreshes.clear();
   nextCursor = null;
   historyRequest = null;
+  historyPhase = "loading";
   shouldFollowConversation = true;
   transcriptUpwardScroll = 0;
   submittingInputRequestId = null;
@@ -2745,6 +2927,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   const token = { epoch };
   let automaticCursor = null;
   historyRequest = token;
+  if (!cursor) historyPhase = "loading";
   setHistoryStatus(cursor ? "Loading earlier…" : "Loading recent…");
   try {
     const url = new URL("/api/history", location.origin);
@@ -2768,6 +2951,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
       for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
     }
     nextCursor = page.nextCursor;
+    historyPhase = "ready";
     setHistoryStatus();
     renderConversation({ preserveScroll, forceBottom });
     void recoverUnresolvedSubmission();
@@ -2775,7 +2959,11 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {
     if (epoch !== historyEpoch || requestedMachineId !== state?.machineId || requestedThreadId !== state?.thread?.id) return;
-    setHistoryStatus(error.message || "History unavailable");
+    // An earlier-page failure keeps the history already on screen; only the initial read can leave
+    // the transcript without a resolved history state.
+    if (!cursor) historyPhase = "error";
+    setHistoryStatus(historyErrorMessage(error));
+    if (!cursor) renderConversation();
   } finally {
     if (historyRequest === token) historyRequest = null;
   }
@@ -2847,7 +3035,7 @@ async function loadNewTaskOptions() {
         : catalogModels[0]?.model;
     newTaskModels = sortModelsForDisplay(catalogModels);
     newTaskModel = renderChoiceControl(newTaskModelSlot, {
-      entries: newTaskModels.map(model => ({ value: model.model, label: model.displayName || model.model })),
+      entries: newTaskModels.map(model => ({ value: model.model, label: modelDisplayName(model) })),
       selected: preferredModel,
       ariaLabel: "Model",
       id: "new-task-model",
@@ -2982,7 +3170,7 @@ function openTaskDialog(body, name) {
   else { taskDialogName.focus(); taskDialogName.select(); }
 }
 taskDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
-taskDialog.addEventListener("close", () => { if (!taskDialog.open) taskDialogAction = null; });
+taskDialog.addEventListener("close", () => { if (!taskDialog.open) { taskDialogAction = null; restoreTaskMenuFocus(); } });
 document.querySelector("#task-dialog-cancel").addEventListener("click", () => taskDialog.close());
 taskDialogForm.addEventListener("submit", event => {
   event.preventDefault();
@@ -3043,6 +3231,9 @@ async function performTaskAction(body) {
   navigationEpoch += 1;
   navigationRequests.fill(null);
   navigationErrors.fill("");
+  // Let the post-mutation refreshes start fresh; an in-flight pre-mutation read would be discarded.
+  threadsRequest = null;
+  machinesRequest = null;
   renderDestinationSwitcher();
   void Promise.allSettled([refreshNavigationCatalog(false, true), refreshNavigationCatalog(true, true)]);
   await Promise.allSettled([refreshMachines(), refreshLoadedThreads()]);
@@ -3056,7 +3247,8 @@ async function performTaskAction(body) {
 }
 
 function taskFailureMessage(message) {
-  return /another Codex runtime|active writer/i.test(message) ? "Open elsewhere. Close it and retry." : message;
+  if (/another Codex runtime|active writer/i.test(message)) return "Open elsewhere. Close it and retry.";
+  return uiErrorMessage(message, "Task action failed. Try again.");
 }
 
 async function selectDestination(machineId, threadId) {
@@ -3173,7 +3365,7 @@ async function submitMessage(action) {
       elements.messageText.value = text;
       resizeComposer();
     }
-    composerError = error.message;
+    composerError = uiErrorMessage(error);
   } finally {
     submittingMessage = false;
     renderState();
@@ -3233,70 +3425,90 @@ document.querySelector("#cwd-form").addEventListener("submit", async event => {
 });
 
 const queueDialog = document.querySelector("#queue-dialog");
-const queueDialogText = document.querySelector("#queue-dialog-text");
 const queueDialogError = document.querySelector("#queue-dialog-error");
 const queueDialogSubmit = document.querySelector("#queue-dialog-submit");
 const queueDialogCancel = document.querySelector("#queue-dialog-cancel");
 let queueDialogTarget = null;
-let queueDialogBusy = false;
 function queueDialogMatches() {
   return queueDialogTarget && state?.queuedMessage
     && state.machineId === queueDialogTarget.machineId && state.thread?.id === queueDialogTarget.threadId
     && state.queuedMessage.threadId === queueDialogTarget.threadId && (state.queuedMessage.id ?? String(state.queuedMessage.createdAt)) === queueDialogTarget.queueId;
 }
-function openQueueDialog(mode) {
-  if (!state?.queuedMessage || queueDialogBusy || submittingMessage || sendingQueuedMessage || cancellingQueue || destinationSelection || taskActionBusy) return;
-  queueDialogTarget = { machineId: state.machineId, threadId: state.thread.id, createdAt: state.queuedMessage.createdAt, queueId: state.queuedMessage.id ?? String(state.queuedMessage.createdAt), mode };
-  const editing = mode === "edit";
-  document.querySelector("#queue-dialog-title").textContent = editing ? "Edit queued message" : "Cancel queued message?";
-  document.querySelector("#queue-dialog-copy").hidden = editing;
-  queueDialogText.hidden = !editing;
-  queueDialogText.value = editing ? state.queuedMessage.text : "";
+// The dialog now only confirms discard; editing happens in the main composer.
+function openQueueDialog() {
+  if (!state?.queuedMessage || submittingMessage || sendingQueuedMessage || cancellingQueue || destinationSelection || taskActionBusy) return;
+  queueDialogTarget = { machineId: state.machineId, threadId: state.thread.id, createdAt: state.queuedMessage.createdAt, queueId: state.queuedMessage.id ?? String(state.queuedMessage.createdAt) };
+  document.querySelector("#queue-dialog-title").textContent = "Cancel Queued Message?";
   queueDialogError.textContent = "";
-  queueDialogCancel.textContent = editing ? "Cancel" : "Keep";
-  queueDialogSubmit.textContent = editing ? "Save" : "Discard";
-  queueDialogSubmit.className = editing ? "primary-button" : "danger-button";
+  queueDialogCancel.textContent = "Keep";
+  queueDialogSubmit.textContent = "Discard";
+  queueDialogSubmit.className = "danger-button";
   queueDialog.showModal();
-  (editing ? queueDialogText : queueDialogCancel).focus();
+  queueDialogCancel.focus();
 }
 queueDialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
-queueDialog.addEventListener("cancel", event => { if (queueDialogBusy) event.preventDefault(); });
 queueDialog.addEventListener("close", () => { if (!queueDialog.open) queueDialogTarget = null; });
 queueDialogCancel.addEventListener("click", () => queueDialog.close());
-document.querySelector("#queue-dialog-form").addEventListener("submit", async event => {
+document.querySelector("#queue-dialog-form").addEventListener("submit", event => {
   event.preventDefault();
-  if (queueDialogBusy || !queueDialogMatches()) return;
-  if (queueDialogTarget.mode === "cancel") {
-    queueDialog.close();
-    void cancelQueuedMessage();
+  if (!queueDialogMatches()) return;
+  queueDialog.close();
+  void cancelQueuedMessage();
+});
+
+// Edit withdraws the pending message into the main composer instead of a separate text-only
+// dialog. It refuses to touch an existing draft or a delivery that may already be in flight.
+async function editQueuedMessage() {
+  if (destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || cancellingQueue || readingAttachments) return;
+  const queued = state?.queuedMessage;
+  const machineId = state?.machineId, threadId = state?.thread?.id;
+  if (!queued || !machineId || !threadId) return;
+  if (queued.deliveryUnknown || queueDeliveryUnknown) {
+    composerError = "Delivery unconfirmed. The queued message can't be edited until its outcome is known.";
+    renderComposer();
     return;
   }
-  const target = queueDialogTarget;
-  const text = queueDialogText.value;
-  if (!text.trim() && !state.queuedMessage.images?.length && !state.queuedMessage.files?.length) {
-    queueDialogError.textContent = "Enter a message or attach files";
+  if (elements.messageText.value.trim() || selectedImages.length || selectedFiles.length) {
+    composerError = "Clear the current draft before editing the queued message.";
+    renderComposer();
+    elements.messageText.focus({ preventScroll: true });
     return;
   }
-  queueDialogBusy = true;
-  queueDialogError.textContent = "";
-  queueDialogSubmit.disabled = queueDialogCancel.disabled = queueDialogText.disabled = true;
+  const queueId = queued.id ?? String(queued.createdAt);
+  const current = () => machineId === state?.machineId && threadId === state?.thread?.id
+    && queueId === (state?.queuedMessage?.id ?? String(state?.queuedMessage?.createdAt));
+  cancellingQueue = true;
+  composerError = "";
   renderQueue();
   try {
-    const response = await apiFetch("/api/message/queue", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: target.machineId, threadId: target.threadId, queueId: target.queueId, text }) });
+    const url = new URL("/api/message/queue", location.origin);
+    url.searchParams.set("machineId", machineId);
+    url.searchParams.set("threadId", threadId);
+    url.searchParams.set("queueId", queueId);
+    const response = await apiFetch(url, { method: "DELETE" });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Could not edit queued message");
-    if (queueDialogTarget === target && queueDialogMatches()) {
-      mergeState({ queuedMessage: result.queuedMessage });
-      queueDialog.close();
+    if (!response.ok) throw new Error(result.error || "Could not withdraw the queued message");
+    if (result.cancelled !== true) throw new Error("The queued message is already being sent; it can no longer be edited.");
+    if (!current()) return;
+    // The message is withdrawn; rebuild the complete draft including the original attachment bytes.
+    elements.messageText.value = queued.text || "";
+    selectedImages = [...(queued.images || [])];
+    selectedFiles = Array.isArray(result.files) && result.files.length ? [...result.files] : [];
+    if (!selectedFiles.length && queued.files?.length) {
+      composerError = "The queued files could not be restored; re-attach them before sending.";
     }
+    mergeState({ queuedMessage: null });
+    resizeComposer();
+    elements.messageText.focus({ preventScroll: true });
+    const end = elements.messageText.value.length;
+    elements.messageText.setSelectionRange(end, end);
   } catch (error) {
-    if (queueDialogTarget === target && queueDialogMatches()) queueDialogError.textContent = error.message;
+    if (current()) composerError = uiErrorMessage(error);
   } finally {
-    queueDialogBusy = false;
-    queueDialogSubmit.disabled = queueDialogCancel.disabled = queueDialogText.disabled = false;
-    renderQueue();
+    cancellingQueue = false;
+    renderComposer();
   }
-});
+}
 
 async function cancelQueuedMessage() {
   if (destinationSelection || taskActionBusy) return;
@@ -3319,7 +3531,7 @@ async function cancelQueuedMessage() {
       mergeState({ queuedMessage: null });
     }
   } catch (error) {
-    if (current()) composerError = error.message;
+    if (current()) composerError = uiErrorMessage(error);
   } finally {
     cancellingQueue = false;
     renderComposer();
@@ -3343,7 +3555,7 @@ async function sendQueuedMessage() {
   } catch (error) {
     if (!current()) return;
     queueDeliveryUnknown = Boolean(error.deliveryUnknown);
-    if (current()) composerError = error.message;
+    if (current()) composerError = uiErrorMessage(error);
   } finally {
     if (requestedEpoch === historyEpoch) sendingQueuedMessage = false;
     renderState();
@@ -3369,7 +3581,7 @@ async function interruptTurn() {
     const result = await response.json();
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the stop request");
   } catch (error) {
-    if (machineId === state?.machineId && expectedThreadId === state?.thread?.id) composerError = error.message;
+    if (machineId === state?.machineId && expectedThreadId === state?.thread?.id) composerError = uiErrorMessage(error);
   } finally {
     submittingInterrupt = false;
     renderState();
@@ -3393,7 +3605,7 @@ async function updateThreadSettings(model, effort) {
     if (!current()) return;
     mergeState({ model: result.model, reasoningEffort: result.reasoningEffort });
   } catch (error) {
-    if (current()) composerError = error.message;
+    if (current()) composerError = uiErrorMessage(error);
   } finally {
     updatingModel = false;
     renderState();
@@ -3417,7 +3629,7 @@ async function updateAccess(mode) {
     if (!current()) return;
     mergeState({ access: result.access });
   } catch (error) {
-    if (current()) composerError = error.message;
+    if (current()) composerError = uiErrorMessage(error);
   } finally {
     updatingAccess = false;
     renderState();
@@ -3442,7 +3654,7 @@ async function resolveApproval(requestId, decision) {
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the approval response");
   } catch (error) {
     if (!current()) return;
-    composerError = error.message;
+    composerError = uiErrorMessage(error);
     try {
       const response = await apiFetch("/api/state");
       if (response.ok) {
@@ -3505,7 +3717,7 @@ async function submitStructuredInput(pending) {
     if (!response.ok || !result.accepted) throw new Error(result.error || "Codex did not accept the answer");
   } catch (error) {
     if (!current()) return;
-    composerError = error.message;
+    composerError = uiErrorMessage(error);
     try {
       const response = await apiFetch("/api/state");
       if (response.ok) {
@@ -3545,7 +3757,12 @@ function connectEvents() {
       pending.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => handler(event) });
     } else handler(event);
   });
-  on("open", () => { setConnection(true); void recoverUnresolvedSubmission(); });
+  on("open", () => {
+    setConnection(true);
+    void recoverUnresolvedSubmission();
+    // A reconnect may have changed which machines are reachable; reconcile every catalog.
+    refreshTaskSurface();
+  });
   on("error", handleEventError);
   on("snapshot", (event) => { applySnapshot(parseEvent(event)); });
   on("task-status", event => {
@@ -3583,7 +3800,14 @@ function connectEvents() {
   });
   on("context", (event) => { mergeState(parseEvent(event)); });
   on("answers", (event) => { mergeState(parseEvent(event), true); });
-  on("machines", (event) => { mergeState(parseEvent(event), false); });
+  on("machines", (event) => {
+    const value = parseEvent(event);
+    // A machine that transitions from disconnected to connected must have its cached catalog
+    // re-read, or its tasks stay disabled behind a stale catalogAvailable:false.
+    const wasDisconnected = new Set(machines.filter((machine) => !machine.connected).map((machine) => machine.id));
+    mergeState(value, false);
+    if ((value.machines || []).some((machine) => machine.connected && wasDisconnected.has(machine.id))) refreshTaskSurface();
+  });
   on("quota", (event) => mergeState({ quota: parseEvent(event) }, false));
   on("turn", (event) => {
     const value = parseEvent(event);
@@ -4105,7 +4329,6 @@ function renderSettings(value) {
   // Host lifecycle control is unavailable in a container; Restart stays available everywhere.
   elements.quitPocket.hidden = Boolean(value.headless);
   elements.restartPocket.hidden = false;
-  document.querySelector("#container-lifecycle").hidden = !value.headless;
   // DeepSeek needs no toggle; only a broken host credential is worth surfacing here.
   elements.settingsDeepseekSection.hidden = !value.deepseekError;
   elements.settingsDeepseekError.textContent = value.deepseekError || "";
@@ -4116,9 +4339,12 @@ function renderSettings(value) {
   elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
   elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured." : "No PIN configured.";
   elements.phoneUrlList.replaceChildren();
+  // Show only usable, browser-facing origins: the configured deployment addresses when present,
+  // otherwise the exact origin this browser is already using. Never synthesize a URL from the
+  // address and port the gateway happens to listen on.
   const urls = Array.isArray(value.accessUrls) && value.accessUrls.length
     ? value.accessUrls
-    : value.headless ? [location.origin] : Array.isArray(value.phoneUrls) ? value.phoneUrls : [];
+    : [location.origin];
   elements.phoneUrls.querySelector("#access-urls-title").textContent = urls.length === 1 ? "Access URL" : "Access URLs";
   for (const url of urls) {
     const link = document.createElement("a");
@@ -4143,6 +4369,9 @@ async function openSettings() {
   elements.settingsStatus.textContent = "Loading settings…";
   elements.settingsStatus.classList.remove("error-text");
   elements.settingsRestart.hidden = true;
+  // Focus the heading's Close control without scrolling or summoning the phone keyboard; the
+  // async settings load below must not steal focus once the user has moved on.
+  elements.settingsClose.focus({ preventScroll: true });
   try {
     const response = await apiFetch("/api/settings");
     const result = await response.json();
@@ -4152,7 +4381,6 @@ async function openSettings() {
     updateSettingsSave();
     elements.settingsRestart.hidden = !result.restartRequired;
     elements.settingsStatus.textContent = "";
-    (settingsValue?.headless ? elements.settingsPin : elements.settingsLanEnabled).focus();
   } catch (error) {
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");
@@ -4292,8 +4520,8 @@ elements.composer.addEventListener("submit", (event) => {
   else submitMessage(action === "queue" ? "queue" : "start");
 });
 elements.sendQueue.addEventListener("click", sendQueuedMessage);
-elements.cancelQueue.addEventListener("click", () => openQueueDialog("cancel"));
-document.querySelector("#edit-queue").addEventListener("click", () => openQueueDialog("edit"));
+elements.cancelQueue.addEventListener("click", () => openQueueDialog());
+document.querySelector("#edit-queue").addEventListener("click", () => void editQueuedMessage());
 elements.messageText.addEventListener("input", () => {
   if (unresolvedSubmission) unresolvedSubmission.restoreDraft = false;
   composerError = "";
@@ -4560,7 +4788,7 @@ async function startApp() {
     refreshNavigationCatalog();
     await Promise.all([refreshMachineConfig(), refreshMachines(), refreshLoadedThreads()]);
   } catch (error) {
-    setHistoryStatus(error.message);
+    setHistoryStatus(uiErrorMessage(error, "Gateway unavailable. Try again."));
     setConnection(false, true);
   }
   await loadHistory(null, historyEpoch, true);

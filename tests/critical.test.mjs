@@ -558,3 +558,157 @@ test("DSH remote launch quotes POSIX and Windows paths without shell interpolati
   assert.equal(saveLocalSettings(settings,{machines:config.machines},null,false).machines[0].dshPath, path);
   assert.throws(() => saveLocalSettings(settings,{machines:[{name:'PC',ssh:'pc',dshPath:'C:relative.mjs'}]},null,false), /absolute/);
 });
+
+test("DSH projects applied file diffs, keeps failures provisional, and never treats reads as file changes", async () => {
+  const { projectEvents } = await import('../dsh/projection.mjs');
+  const result = (callId, isError = false, content = []) => ({
+    type: 'tool/result', time: 3,
+    data: { turn: 1, step: 1, message: { content: [{ type: 'tool-result', toolCallId: callId, isError, content }] } },
+  });
+  const turns = projectEvents([
+    { type: 'turn/start', time: 1, data: { turn: 1 } },
+    { type: 'tool/call', time: 2, data: { turn: 1, step: 1, callId: 'edit-1', name: 'edit', arguments: JSON.stringify({ file_path: 'a.ts', old_string: 'x', new_string: 'y' }) } },
+    { ...result('edit-1', false, [{ type: 'text', text: 'ok' }]), data: { turn: 1, step: 1, meta: { diffs: [{ path: 'a.ts', oldText: 'x', newText: 'y' }] }, message: { content: [{ type: 'tool-result', toolCallId: 'edit-1', isError: false, content: [{ type: 'text', text: 'ok' }] }] } } },
+    { type: 'tool/call', time: 4, data: { turn: 1, step: 1, callId: 'write-1', name: 'write', arguments: JSON.stringify({ file_path: 'new.ts', content: 'one\ntwo' }) } },
+    { ...result('write-1'), data: { turn: 1, step: 1, meta: { operation: 'create', diffs: [] }, message: { content: [{ type: 'tool-result', toolCallId: 'write-1', isError: false, content: [{ type: 'text', text: 'created' }] }] } } },
+    { type: 'tool/call', time: 6, data: { turn: 1, step: 1, callId: 'edit-2', name: 'edit', arguments: JSON.stringify({ file_path: 'b.ts', old_string: 'p', new_string: 'q' }) } },
+    result('edit-2', true, [{ type: 'text', text: 'failed' }]),
+    { type: 'tool/call', time: 8, data: { turn: 1, step: 1, callId: 'read-1', name: 'read', arguments: JSON.stringify({ file_path: 'c.ts' }) } },
+    result('read-1', false, [{ type: 'text', text: 'contents' }]),
+  ]);
+  const items = turns[0].items;
+  const edit = items.find((item) => item.id === 'edit-1');
+  assert.equal(edit.type, 'fileChange');
+  assert.equal(edit.status, 'completed');
+  assert.equal(edit.changes[0].path, 'a.ts');
+  assert.match(edit.changes[0].diff, /-x/);
+  assert.match(edit.changes[0].diff, /\+y/);
+  const write = items.find((item) => item.id === 'write-1');
+  assert.equal(write.type, 'fileChange');
+  assert.equal(write.changes[0].kind, 'add');
+  assert.match(write.changes[0].diff, /\+one/);
+  // A failed edit keeps its provisional call-time changes instead of claiming they were applied.
+  const failed = items.find((item) => item.id === 'edit-2');
+  assert.equal(failed.type, 'fileChange');
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.changes[0].diff, /-p/);
+  // A read is never File Changes.
+  const read = items.find((item) => item.id === 'read-1');
+  assert.equal(read.type, 'dynamicToolCall');
+  assert.equal(read.changes, undefined);
+});
+
+test("DSH coalesces per-hunk diffs into one File Changes entry per path", async () => {
+  const { projectEvents } = await import('../dsh/projection.mjs');
+  const turns = projectEvents([
+    { type: 'turn/start', time: 1, data: { turn: 1 } },
+    { type: 'tool/call', time: 2, data: { turn: 1, step: 1, callId: 'e', name: 'edit', arguments: JSON.stringify({ file_path: 'a.ts', old_string: 'x\ny', new_string: 'x\nz' }) } },
+    { type: 'tool/result', time: 3, data: { turn: 1, step: 1, meta: { diffs: [
+      { path: 'a.ts', oldText: 'x\ny', newText: 'x\nz' },
+      { path: 'a.ts', oldText: 'p', newText: 'q' },
+    ] }, message: { content: [{ type: 'tool-result', toolCallId: 'e', isError: false, content: [] }] } } },
+  ]);
+  const item = turns[0].items[0];
+  assert.equal(item.type, 'fileChange');
+  assert.equal(item.changes.length, 1);
+  assert.equal(item.changes[0].path, 'a.ts');
+});
+
+test("DSH maps search tools and subagents while unknown tools stay Tool", async () => {
+  const { projectEvents } = await import('../dsh/projection.mjs');
+  const turns = projectEvents([
+    { type: 'turn/start', time: 1, data: { turn: 1 } },
+    { type: 'tool/call', time: 2, data: { turn: 1, step: 1, callId: 'g', name: 'grep', arguments: JSON.stringify({ pattern: 'needle' }) } },
+    { type: 'tool/call', time: 3, data: { turn: 1, step: 1, callId: 's', name: 'subagent', arguments: JSON.stringify({ prompt: 'help' }) } },
+    { type: 'tool/call', time: 4, data: { turn: 1, step: 1, callId: 'u', name: 'mystery_tool', arguments: '{}' } },
+  ]);
+  const byId = (id) => turns[0].items.find((item) => item.id === id);
+  assert.equal(byId('g').type, 'webSearch');
+  assert.equal(byId('g').query, 'needle');
+  assert.equal(byId('s').type, 'collabAgentToolCall');
+  assert.equal(byId('u').type, 'dynamicToolCall');
+});
+
+test("model display names and ordering prefer V4.1 Flash over V4 Pro without guessing unknown versions", async () => {
+  const { modelDisplayName, sortModelsForDisplay } = await import('../public/pocket-logic.js');
+  const flash = { id: 'deepseek-flash', model: 'deepseek-flash', displayName: 'DeepSeek-V41-Flash' };
+  const pro = { id: 'deepseek-v4-pro', model: 'deepseek-v4-pro', displayName: 'DeepSeek-V4-Pro' };
+  assert.equal(modelDisplayName(flash), 'DeepSeek V4.1 Flash');
+  assert.equal(modelDisplayName(pro), 'DeepSeek V4 Pro');
+  assert.deepEqual(sortModelsForDisplay([pro, flash]).map((model) => model.model), ['deepseek-flash', 'deepseek-v4-pro']);
+  // An unknown model keeps its catalog name; no version is inferred.
+  assert.equal(modelDisplayName({ model: 'future-v9', displayName: 'Future V9' }), 'Future V9');
+});
+
+test("unsupported paginated history falls back to the legacy thread read once", async () => {
+  clearRememberedSelection();
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: 'thread-1', name: 'T', cwd: '/tmp', source: 'appServer', historyMode: 'paginated' };
+  const calls = [];
+  runtime.rpc = { request: async (method) => {
+    calls.push(method);
+    if (method === 'thread/turns/list') throw new Error('paginated_threads is not supported yet (-32601)');
+    if (method === 'thread/read') return { thread: { id: 'thread-1', turns: [{ id: 't1', status: 'completed', items: [] }] } };
+    throw new Error(`unexpected ${method}`);
+  } };
+  const page = await runtime.history(null, 2);
+  assert.equal(calls.includes('thread/read'), true);
+  assert.equal(page.nextCursor, null);
+  assert.equal(page.turns.length, 1);
+  assert.equal(runtime.historyPaginatedSupported, false);
+  // A thread the runtime marks legacy goes straight to the full read.
+  runtime.state.thread = { ...runtime.state.thread, historyMode: 'legacy' };
+  calls.length = 0;
+  await runtime.history(null, 2);
+  assert.deepEqual(calls, ['thread/read']);
+  clearRememberedSelection();
+});
+
+test("a blocked goal resumes while a completed goal does not", async () => {
+  clearRememberedSelection();
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: 'thread-1', name: 'T', cwd: '/tmp', source: 'appServer' };
+  runtime.state.goal = { objective: 'Ship it', status: 'blocked', blockedReason: 'needs input' };
+  runtime.rpc = { request: async (method, params) => {
+    if (method === 'thread/goal/set') return { goal: { objective: 'Ship it', status: params.status } };
+    throw new Error(`unexpected ${method}`);
+  } };
+  const result = await runtime.goalAction({ threadId: 'thread-1', action: 'resume' });
+  assert.equal(result.goal.status, 'active');
+  runtime.state.goal = { objective: 'Ship it', status: 'complete' };
+  await assert.rejects(runtime.goalAction({ threadId: 'thread-1', action: 'resume' }), /cannot be resumed/);
+  clearRememberedSelection();
+});
+
+test("withdrawing a queued message returns its original file bytes and refuses while sending", () => {
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: 'thread-1', name: 'T', cwd: '/tmp', source: 'appServer' };
+  runtime.state.turn = { id: 'turn-1', status: 'inProgress' };
+  const uploads = [{ name: 'notes.txt', data: 'aGk=', size: 2 }];
+  runtime.queuedFileUploads.set('q1', uploads);
+  runtime.state.queuedMessage = { id: 'q1', threadId: 'thread-1', text: '', files: [{ name: 'notes.txt', path: '/tmp/1-notes.txt', size: 2 }], createdAt: 1 };
+  const withdrawn = runtime.cancelQueuedMessage('thread-1', 'q1');
+  assert.equal(withdrawn.cancelled, true);
+  assert.deepEqual(withdrawn.files, uploads);
+  assert.equal(runtime.state.queuedMessage, null);
+  // A delivery already in flight is never withdrawn or duplicated.
+  runtime.startingQueuedMessage = true;
+  runtime.state.queuedMessage = { id: 'q2', threadId: 'thread-1', text: 'x', createdAt: 2 };
+  assert.deepEqual(runtime.cancelQueuedMessage('thread-1', 'q2'), { cancelled: false });
+  assert.equal(runtime.state.queuedMessage.id, 'q2');
+});
+
+test("an authoritative thread-name update replaces a stale pending name", () => {
+  clearRememberedSelection();
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  runtime.state.thread = { id: 'thread-1', name: 'Local Name', cwd: '/tmp', source: 'appServer' };
+  runtime.pendingTaskNames.set('thread-1', { name: 'Local Name', firstMessageAccepted: false });
+  runtime.handleNotification({ method: 'thread/name/updated', params: { threadId: 'thread-1', threadName: 'Renamed Elsewhere' } });
+  assert.equal(runtime.state.thread.name, 'Renamed Elsewhere');
+  assert.equal(runtime.pendingTaskNames.get('thread-1').saved, true);
+  clearRememberedSelection();
+});

@@ -98,7 +98,7 @@ Open the trusted HTTPS URL in Edge/Chromium on Android, choose **Add to phone / 
 
 Keep Caddy configuration, certificates, CA private keys, and all other machine-local HTTPS material outside the repository. Do not commit them. HTTPS does not change Pocket's [private-network security boundary](SECURITY.md).
 
-The optional `accessUrls` array in `.codex-pocket.local.json` lists the HTTP(S) origins shown in Settings (for example, `["http://pocket.lan:4173", "https://pocket.lan:8443"]`). Configure the actual deployment addresses; Pocket does not discover reverse-proxy URLs. Without a list, a headless gateway shows the current browser origin. The heading uses “Access URL” for one address and “Access URLs” for multiple.
+The optional `accessUrls` array in `.codex-pocket.local.json` lists the HTTP(S) origins shown in Settings (for example, `["http://pocket.lan:4173", "https://pocket.lan:8443"]`). Configure the actual deployment addresses; Pocket does not discover reverse-proxy URLs. Without a list, Settings shows the exact origin the browser is using rather than a URL synthesized from the port the gateway listens on. The heading uses “Access URL” for one address and “Access URLs” for multiple.
 
 ## SSH machines
 

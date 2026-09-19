@@ -55,7 +55,14 @@ export function apply(ctx) {
   };
   ctx.on("agent/disposed", ({ agent }) => agentHandles.delete(agent.id));
   const goalValue = (g) =>
-    g ? { objective: g.objective, status: g.phase } : null;
+    g
+      ? {
+          objective: g.objective,
+          status: g.phase,
+          ...(g.blockedReason ? { blockedReason: g.blockedReason } : {}),
+          ...(g.activation ? { activation: g.activation } : {}),
+        }
+      : null;
   async function usage(id, events) {
     const e = events.findLast(
       (e) =>

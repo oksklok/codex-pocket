@@ -315,11 +315,11 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .text-button { padding: 5px 8px; background: transparent; color: var(--muted); font-size: var(--text-label); }
 
 .workspace { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; overflow: hidden; }
-.chat-panel { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0,1fr) auto; background: var(--bg); }
+.chat-panel { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; background: var(--bg); }
+/* History loading and errors are in-flow above the transcript, never an overlay on messages. */
 .history-status {
-  position: absolute; z-index: 2; top: 8px; left: 50%; max-width: calc(100% - 32px); padding: 5px 9px;
-  transform: translateX(-50%); overflow: hidden; border: 1px solid var(--line-soft); border-radius: 999px;
-  background: var(--surface); color: var(--muted); font-size: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap;
+  padding: 7px 12px; border-bottom: 1px solid var(--line-soft);
+  background: var(--surface); color: var(--muted); font-size: var(--text-secondary); line-height: 1.35; text-align: center;
 }
 .conversation {
   min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
@@ -340,6 +340,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .message-body { color: var(--text); font-size: var(--text-heading); line-height: 1.58; overflow-wrap: anywhere; }
 .message.user .message-meta { gap: 16px; }
 .message.user .message-body { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--surface-strong); }
+.question-reply-reference { margin-bottom: 6px; color: var(--muted); font-size: var(--text-secondary); line-height: 1.35; }
 .message.streaming .message-body::after { content: ""; display: inline-block; width: 5px; height: 1em; margin-left: 3px; background: var(--accent); vertical-align: -.15em; animation: blink 1s infinite; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
@@ -353,6 +354,11 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .markdown code { padding: .1em .3em; border-radius: 4px; background: var(--surface-strong); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
 .markdown pre { max-width: 100%; overflow-x: auto; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--surface-strong); }
 .markdown pre code { padding: 0; background: transparent; white-space: pre; }
+/* Code and command/output blocks carry their own Copy action without entering the copied text. */
+.code-block { position: relative; margin: .45em 0; }
+.code-block > pre { margin: 0; }
+.code-block-actions { position: absolute; z-index: 1; top: 5px; right: 5px; }
+.copy-button.text-button { min-height: 24px; padding: 2px 7px; background: var(--surface); font-size: var(--text-secondary); }
 .markdown a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
 .table-scroll { max-width: 100%; overflow-x: auto; margin: .6em 0; }
 .markdown table { width: 100%; border-collapse: collapse; font-size: .9em; }
@@ -414,7 +420,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   color: var(--muted); font-size: var(--text-secondary); line-height: 1.45;
 }
 .detail-field { display: grid; gap: 4px; min-width: 0; }
-.detail-field > strong { color: var(--subtle); font-size: var(--text-meta); letter-spacing: .07em; text-transform: uppercase; }
+.detail-field > strong, .detail-field-heading > strong { color: var(--subtle); font-size: var(--text-meta); letter-spacing: .07em; text-transform: uppercase; }
+.detail-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .detail-change-heading { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
 .detail-change-heading strong { flex: none; color: var(--subtle); font-size: var(--text-meta); letter-spacing: .07em; text-transform: uppercase; }
 .detail-change-heading code { min-width: 0; overflow-wrap: anywhere; color: var(--text); font: .67rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -464,8 +471,10 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .expand-composer svg { display: block; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .expand-composer .fullscreen-exit, .expanded-composer .fullscreen-enter { display: none; }
 .expanded-composer .fullscreen-exit { display: initial; }
-.expanded-composer { position: fixed; z-index: 15; inset: var(--composer-top, 0px) 0 auto; height: var(--composer-height, 100dvh); display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(8px, env(safe-area-inset-bottom)); }
+.expanded-composer { position: fixed; z-index: 15; inset: var(--composer-top, 0px) 0 auto; height: var(--composer-height, 100dvh); display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(var(--action-row-inset), env(safe-area-inset-bottom)); }
 .expanded-composer .jump-latest { display: none; }
+/* The goal and Queued Next cards are hidden while writing fullscreen; their state is untouched. */
+.expanded-composer .goal-strip, .expanded-composer .queue-banner { display: none; }
 .expanded-composer { background: var(--bg); }
 .expanded-composer .composer { flex: 1; min-height: 0; grid-template-columns: 1fr; grid-template-rows: minmax(0,1fr) auto; }
 .expanded-composer .composer-input { grid-row: 1; }
@@ -493,11 +502,13 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   display: grid; gap: 8px; max-height: min(42dvh, 380px); padding-right: 2px;
   overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
 }
-.input-question { min-width: 0; margin: 0; padding: 8px; border: 1px solid rgba(240,195,106,.2); border-radius: 7px; }
-.input-question legend { padding: 0 4px; color: var(--warning); font-size: var(--text-meta); font-weight: 800; }
+.input-question { min-width: 0; margin: 0; padding: 0; border: 0; }
+.input-question legend { padding: 0; color: var(--muted); font-size: var(--text-label); font-weight: 600; }
 .input-prompt { margin-bottom: 7px; color: var(--text); font-size: var(--text-secondary); line-height: 1.4; overflow-wrap: anywhere; }
 .input-choices { display: grid; gap: 5px; }
-.input-choice { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 7px; color: var(--text); cursor: pointer; }
+/* Option rows use the same flat filled-card treatment as the async option buttons. */
+.input-choice { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 7px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); cursor: pointer; }
+.input-choice:has(> input[type="radio"]:checked) { border-color: var(--blue); }
 .input-choice > input[type="radio"] { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent-strong); }
 .input-choice > span { min-width: 0; display: grid; gap: 1px; }
 .input-choice strong { font-size: var(--text-label); line-height: 1.35; overflow-wrap: anywhere; }
@@ -608,6 +619,8 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   /* Match the 12px screen inset below the final transcript entry. */
   .conversation > :last-child { margin-bottom: 12px; }
   .composer-zone { padding-inline: 9px; }
+  /* Fullscreen keeps the same action-row inset as normal mode at this viewport. */
+  .expanded-composer { padding-inline: 9px; }
   .jump-latest { right: 13px; }
   .activity-rich-detail { margin-inline: 7px; padding: 8px; }
   .detail-code { overflow-wrap: anywhere; }
@@ -807,9 +820,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-dialog::backdrop { background: rgba(0,0,0,.55); }
 .new-task-dialog h2 { margin: 0 0 16px; font-size: 1rem; }
 .new-task-dialog .confirm-message { margin: 0; color: var(--muted); font-size: var(--text-ui); line-height: 1.45; overflow-wrap: anywhere; }
-.new-task-dialog input, .queue-dialog textarea { width: 100%; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
-.new-task-dialog input { height: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-inset); }
-.queue-dialog textarea { padding: 10px 12px; }
+.new-task-dialog input { width: 100%; height: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-inset); border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
 .new-task-dialog .form-field + .form-field { margin-top: 12px; }
 
 .new-task-dialog label { color: var(--muted); font-size: var(--text-label); font-weight: 500; }
@@ -870,6 +881,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "status time actions" "objective objective actions"; }
   .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective actions"; }
   .composer-card { row-gap: 0; padding-top: 5px; padding-bottom: 5px; }
+  /* With the card's row-gap collapsed on mobile, attachment rows keep the shared 8px rhythm. */
+  .queue-banner .composer-images:not([hidden]), .queue-banner .file-chips:not([hidden]) { margin-top: var(--action-row-gap); }
 }
 .composer-card .icon-button { flex: none; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); }
 .composer-card .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -888,9 +901,6 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 @media (max-width: 860px) {
   .composer-zone:not(.expanded-composer) { padding-bottom: max(var(--action-row-inset), env(safe-area-inset-bottom)); }
 }
-
-/* The queued-message editor holds the same text the composer produces, so it shares the prose size. */
-.queue-dialog textarea { width: 100%; min-height: 96px; max-height: 35dvh; resize: vertical; font-size: var(--text-heading); line-height: 1.58; }
 
 .metadata .working-path-card { display: grid; grid-template-columns: minmax(0, 1fr) 36px; }
 .working-path-card dt, .working-path-card dd { grid-column: 1; }

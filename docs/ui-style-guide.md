@@ -144,6 +144,22 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
 - Settings is a full-screen `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a 600px
   card and a sticky action footer.
 
+## Copy and capitalization
+
+Pocket-authored copy follows one capitalization rule; model-generated text, user text, task names,
+code and tool output are never rewritten to match it.
+
+- **Title Case** for dialog headings, action labels, and compact status labels: "Rename Task",
+  "Cancel Queued Message?", "Clear Unfinished Goal?", "New Task", "Answer", "Steer Now",
+  "Turn Paused", "Waiting for Approval", "Working", "Tasks Unavailable".
+- **Sentence case** for explanatory text, hints and user-facing errors: "Clear the current draft
+  before editing the queued message.", "Open elsewhere. Close it and retry.", "Could not load
+  history. Check the connection and try again."
+- Raw RPC/method failures are never shown verbatim. A transport or method error becomes concise,
+  actionable copy ("The runtime didn't respond in time. Try again.", "This action isn't supported by
+  the connected runtime."); the technical detail stays in gateway logs and diagnostics.
+- Model-generated questions, answers, task names, code and tool output are presented unchanged.
+
 ## Validation, status and error copy
 
 `--subtle` `.form-status` for neutral status; `.error-text` switches it to `--danger`; an empty
