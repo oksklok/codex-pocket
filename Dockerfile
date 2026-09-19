@@ -5,9 +5,9 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY gateway.ts ./
-# gateway.ts imports deepseek.ts; the catalog and supervisor stay inert because DeepSeek
-# is macOS-only and disabled on Linux. No provider credentials are added to the image.
+COPY gateway.ts dsh.ts ./
+# Remote DSH runs on the SSH execution machine; the image needs only the adapter.
+# No DSH runtime dependency or provider credential is installed on the gateway.
 COPY deepseek.ts deepseek-server.mjs deepseek-models.json ./
 COPY public ./public
 USER node

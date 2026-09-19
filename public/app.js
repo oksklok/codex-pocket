@@ -2052,7 +2052,7 @@ function renderState() {
   elements.contextPercent.textContent = context ? `${context.lastKnown ? "~" : ""}${context.usedPercent}%` : "—";
   elements.contextFill.style.width = `${context?.usedPercent ?? 0}%`;
   elements.context.title = context ? `${context.lastKnown ? "Last known · " : ""}${context.usedPercent}% context used · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
-  elements.runtimeReason.textContent = ["local", "local:deepseek"].includes(state.machineId) ? state.connectionError || "" : "";
+  elements.runtimeReason.textContent = ["local", "local:dsh"].includes(state.machineId) ? state.connectionError || "" : "";
   elements.runtimeReason.hidden = !elements.runtimeReason.textContent;
   renderComposer();
 }
@@ -3822,7 +3822,7 @@ function sidebarMachineCatalog(catalogMachines) {
 function applyMachineSettings(settings, restartRequired) {
   const value = settings || {};
   machineConfig = {
-    saved: (Array.isArray(value.machines) ? value.machines : []).map((machine) => ({ name: machine.name || "", ssh: machine.ssh || "", wakeMac: machine.wakeMac || "" })),
+    saved: (Array.isArray(value.machines) ? value.machines : []).map((machine) => ({ name: machine.name || "", ssh: machine.ssh || "", wakeMac: machine.wakeMac || "", ...(machine.dshPath ? { dshPath: machine.dshPath } : {}) })),
     restartRequired: Boolean(restartRequired),
     headless: Boolean(value.headless),
     hostName: value.hostName || "",
@@ -3953,7 +3953,7 @@ elements.machineDialogForm.addEventListener("submit", (event) => {
   void runMachineDialogAction(() => {
     if (target.mode === "host") return saveMachineConfig({ localName: elements.machineDialogName.value.trim() });
     if (target.mode === "add") return saveMachineConfig({ machines: [...savedMachines(), machineDialogDraft()] });
-    return saveMachineConfig({ machines: savedMachines().map((machine, index) => index === target.index ? machineDialogDraft() : machine) });
+    return saveMachineConfig({ machines: savedMachines().map((machine, index) => index === target.index ? { ...machine, ...machineDialogDraft(), wakeMac: machineDialogDraft().wakeMac || "" } : machine) });
   });
 });
 elements.machineDialogRemove.addEventListener("click", async () => {

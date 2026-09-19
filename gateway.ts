@@ -12,6 +12,7 @@ import { dirname, extname, join, posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
+import { DshHost, DshRpcClient } from "./dsh.ts";
 import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStatus, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL, DeepSeekBalanceMonitor, EMPTY_DEEPSEEK_BALANCE, DEEPSEEK_BALANCE_REFRESH_MS, type DeepSeekBalance } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
@@ -40,12 +41,14 @@ type MachineConfig = {
   name: string;
   ssh: string;
   wakeMac?: string;
+  dshPath?: string;
 };
 type MachineDefinition = {
   id: string;
   name: string;
   ssh: string | null;
   wakeMac?: string;
+  dshPath?: string;
   deepseek?: boolean;
   provider?: "openai" | "deepseek";
   // Physical machine this runtime belongs to; several providers can share one host.
@@ -300,7 +303,7 @@ Options:
 Environment:
   CODEX_BIN      Codex executable to spawn (default: codex)
   CODEX_POCKET_PIN Four-digit PIN required for non-loopback hosts
-  DEEPSEEK_API_KEY Optional DeepSeek credential override (macOS); otherwise the host key file is read
+  DEEPSEEK_API_KEY Optional local DeepSeek credential override; otherwise the execution key file is read
 `);
   process.exit(0);
 }
@@ -384,7 +387,9 @@ function validateMachines(value: unknown): MachineConfig[] {
     if (aliases.has(normalized)) throw new Error(`duplicate SSH alias: ${candidate.ssh}`);
     aliases.add(normalized);
     const wakeMac = candidate.wakeMac === undefined || typeof candidate.wakeMac === "string" && !candidate.wakeMac.trim() ? undefined : normalizeWakeMac(candidate.wakeMac);
-    return { name, ssh: candidate.ssh, ...(wakeMac ? { wakeMac } : {}) };
+    const dshPath = candidate.dshPath;
+    if (dshPath !== undefined && (typeof dshPath !== "string" || !dshPath.startsWith("/") || /[\r\n\0]/.test(dshPath))) throw new Error("dshPath must be an absolute execution-machine launcher path");
+    return { name, ssh: candidate.ssh, ...(wakeMac ? { wakeMac } : {}), ...(dshPath ? { dshPath } : {}) };
   });
 }
 
@@ -496,16 +501,16 @@ export function publicSettings(settings: LocalSettings, fallbackPin: string | nu
   };
 }
 
-// DeepSeek is exposed on macOS whenever a valid credential exists; a broken credential is
+// Local DeepSeek is exposed whenever a valid credential exists; a broken credential is
 // surfaced in Settings instead of failing the whole host. The key never enters process.env,
 // saved settings, or any runtime other than the isolated DeepSeek one.
 export function deepseekStartupOptions(
   env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
+  _platform: NodeJS.Platform = process.platform,
   headless: boolean = HEADLESS,
   keyPath: string = DEEPSEEK_KEY_PATH,
 ): Options["deepseek"] {
-  if (headless || platform !== "darwin") return { enabled: false };
+  if (headless) return { enabled: false };
   const credentials = deepseekCredentialStatus(env, keyPath);
   if (credentials.error) return { enabled: false, error: credentials.error };
   if (!credentials.key) return { enabled: false };
@@ -537,7 +542,8 @@ export function machineConfigurationsDiffer(desired: MachineConfig[], running: M
   for (const machine of desired) {
     const index = remaining.findIndex((candidate) => candidate.name === machine.name
       && candidate.ssh === machine.ssh
-      && (candidate.wakeMac ?? "") === (machine.wakeMac ?? ""));
+      && (candidate.wakeMac ?? "") === (machine.wakeMac ?? "")
+      && (candidate.dshPath ?? "") === (machine.dshPath ?? ""));
     if (index < 0) return true;
     remaining.splice(index, 1);
   }
@@ -1878,12 +1884,26 @@ function normalizeInputQuestions(params: JsonObject): PocketInputQuestion[] | nu
 }
 
 export class MachineRuntime {
-  private deepseek: DeepSeekHost | undefined;
+  private dshBalance: DeepSeekBalance = { ...EMPTY_DEEPSEEK_BALANCE };
+  balanceSnapshot(): DeepSeekBalance {
+    return this.state.connected ? this.dshBalance : { ...this.dshBalance, stale: this.dshBalance.available };
+  }
+  async refreshBalance(): Promise<void> {
+    if (!this.deepseek || !this.rpc) return;
+    const rpc = this.rpc;
+    try {
+      const result = await rpc.request("pocket/balance", {}, 7000);
+      if (this.rpc === rpc) this.dshBalance = result ?? { ...this.dshBalance, stale: this.dshBalance.available };
+    } catch {
+      this.dshBalance = { ...this.dshBalance, stale: this.dshBalance.available };
+    }
+  }
+  private deepseek: DshHost | undefined;
   readonly state: PocketState;
-  private rpc: RpcClient | null = null;
+  private rpc: RpcClient | DshRpcClient | null = null;
   private codexHome: string | null = null;
   private upstreamGoal: JsonObject | null = null;
-  private goalObjectiveRead: { objective: string; rpc: RpcClient; text: Promise<string> } | null = null;
+  private goalObjectiveRead: { objective: string; rpc: RpcClient | DshRpcClient; text: Promise<string> } | null = null;
   private subscribers = new Set<ServerResponse>();
   private assistantFlushes = new Map<string, { delta: string; timer: NodeJS.Timeout }>();
   private canAcceptDirectInput = false;
@@ -1930,7 +1950,7 @@ export class MachineRuntime {
     this.submissions = submissions;
     this.options = options;
     this.definition = definition;
-    this.deepseek = definition.deepseek ? new DeepSeekHost(undefined, process.env, this.options.deepseek) : undefined;
+    this.deepseek = definition.deepseek ? new DshHost(definition.ssh, definition.dshPath) : undefined;
     this.onQuotaChange = onQuotaChange;
     this.onTaskStatus = onTaskStatus;
     this.state = {
@@ -2091,7 +2111,7 @@ export class MachineRuntime {
     return { machineId: this.definition.id, threadId, turns, nextCursor: page?.nextCursor ?? null };
   }
 
-  private async hydrateHistoryTurns(rpc: RpcClient, threadId: string, rawTurns: any[], deadline = Date.now() + 20_000): Promise<JsonObject[]> {
+  private async hydrateHistoryTurns(rpc: RpcClient | DshRpcClient, threadId: string, rawTurns: any[], deadline = Date.now() + 20_000): Promise<JsonObject[]> {
     if (this.historyItemsSupported === false) {
       return rawTurns.map((turn) => normalizeHistoryTurn(turn));
     }
@@ -2467,7 +2487,7 @@ export class MachineRuntime {
     this.state.pending = [];
     this.pendingServerRequests.clear();
     this.broadcast("status", this.statusPayload());
-    const rpc = new RpcClient(this.deepseek);
+    const rpc = this.deepseek ? new DshRpcClient(this.deepseek) : new RpcClient();
     this.rpc = rpc;
     const current = () => this.rpc === rpc && !this.shuttingDown;
     rpc.onRawPayload = (bytes) => {
@@ -2508,15 +2528,12 @@ export class MachineRuntime {
       if (!current()) return;
       rpc.notify("initialized");
       this.codexHome = typeof initialized?.codexHome === "string" ? initialized.codexHome : null;
-      if (this.deepseek) {
-        if (this.codexHome !== this.deepseek.home) throw new Error("DeepSeek server returned an unexpected CODEX_HOME");
-        assertDeepseekConfig((await rpc.request("config/read", { includeLayers: false })).config, this.deepseek.home);
-      }
+      if (this.deepseek && initialized?.backend !== "dsh") throw new Error("Unexpected DeepSeek backend");
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.technicalConnectionError = null;
       await Promise.all([this.loadModels(), this.loadAccessConstraints()]);
-      if (this.deepseek && (this.state.models.length !== 1 || this.state.models[0].model !== DEEPSEEK_MODEL)) throw new Error("DeepSeek model catalog isolation check failed");
+
       if (!current()) return;
       const loadedThreads = await this.refreshLoadedThreads();
       if (!current()) return;
@@ -2837,6 +2854,7 @@ export class MachineRuntime {
   private async targetHomeDirectory(): Promise<string> {
     const rpc = this.rpc;
     if (!rpc) throw new Error("Codex is disconnected");
+    if (this.deepseek) return (await rpc.request("pocket/home")).home;
     const windows = /windows/i.test(this.state.platform);
     const script = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();[Console]::Write([Environment]::GetFolderPath('UserProfile'))";
     const command = windows
@@ -3276,7 +3294,7 @@ export class MachineRuntime {
       const files = stagedFiles.length ? stagedFiles : await stageMessageFiles(uploads, submissionId, this.definition.ssh, /windows/i.test(this.state.platform));
       if (!current()) throw new Error("Codex disconnected while staging files");
       const input = messageWithFiles(text, images, files);
-      const result = await rpc.request("turn/steer", { threadId, expectedTurnId, input });
+      const result = await rpc.request("turn/steer", { threadId, expectedTurnId, input, ...(this.deepseek && typeof submissionId === "string" ? { requestId: submissionId } : {}) });
       return {
         accepted: true,
         mode: "steer",
@@ -3291,7 +3309,7 @@ export class MachineRuntime {
     if (!current()) throw new Error("Codex disconnected while staging files");
     const previousTurn = this.state.turn;
     const input = messageWithFiles(text, images, files);
-    const result = await rpc.request("turn/start", { threadId, input });
+    const result = await rpc.request("turn/start", { threadId, input, ...(this.deepseek && typeof submissionId === "string" ? { requestId: submissionId } : {}) });
     if (!current()) return { accepted: true, mode: "start", turnId: result?.turn?.id };
     const pendingName = this.pendingTaskNames.get(threadId);
     if (pendingName) pendingName.firstMessageAccepted = true;
@@ -3346,7 +3364,7 @@ export class MachineRuntime {
     });
   }
 
-  private async readGoalObjective(path: string, rpc: RpcClient): Promise<string> {
+  private async readGoalObjective(path: string, rpc: RpcClient | DshRpcClient): Promise<string> {
     const fallback = "Goal objective unavailable";
     const windows = /windows/i.test(this.state.platform);
     const paths = windows ? win32 : posix;
@@ -3532,11 +3550,12 @@ export class MachineRuntime {
       this.taskQueues.delete(threadId);
     }
     this.state.phase = this.computePhase();
+    if (rpc instanceof DshRpcClient) rpc.replayRequests(threadId);
     if (broadcastReset) this.broadcast("snapshot", this.snapshot());
     console.log(`${this.definition.name}: attached to ${this.state.thread.id} (${this.state.thread.name})`);
   }
 
-  private async completedCompactions(rpc: RpcClient, threadId: string, turnId: string): Promise<any[] | null> {
+  private async completedCompactions(rpc: RpcClient | DshRpcClient, threadId: string, turnId: string): Promise<any[] | null> {
     const deadline = Date.now() + 5000;
     let cursor: string | null = null;
     const cursors = new Set<string>();
@@ -4302,11 +4321,7 @@ export class MachineRuntime {
   // the client must treat as "not unsupported" rather than hiding the filter.
   private activityCapabilities(): JsonObject {
     if (!this.deepseek) return { search: null, collaboration: null };
-    const config = deepseekConfig(this.deepseek.home);
-    return {
-      search: config.web_search !== "disabled",
-      collaboration: config["features.multi_agent"] !== false,
-    };
+    return { search: true, collaboration: true };
   }
 
   private messageCapability(): JsonObject {
@@ -4353,9 +4368,12 @@ export class MachineRuntime {
 
 export class PocketGateway {
   readonly submissions = new MessageSubmissions();
-  private deepseekSubmissions = new MessageSubmissions();
+  private deepseekSubmissions = new Map<string, MessageSubmissions>();
   submissionStore(machineId: unknown = this.selectedMachineId): MessageSubmissions {
-    return machineId === "local:deepseek" ? this.deepseekSubmissions : this.submissions;
+    if (typeof machineId !== "string" || !machineId.endsWith(":dsh")) return this.submissions;
+    let store = this.deepseekSubmissions.get(machineId);
+    if (!store) { store = new MessageSubmissions(); this.deepseekSubmissions.set(machineId, store); }
+    return store;
   }
   private runtimes = new Map<string, MachineRuntime>();
   private selectedMachineId = "local";
@@ -4372,7 +4390,14 @@ export class PocketGateway {
     balance: null,
   };
   private lastGoodQuota: PocketQuota | null = null;
-  private balanceMonitor: DeepSeekBalanceMonitor | null = null;
+  private get balanceMonitor() {
+    const runtime=this.runtimes.get(this.selectedMachineId);
+    return this.selectedMachineId.endsWith(":dsh") && runtime ? {
+      snapshot: () => runtime.balanceSnapshot(),
+      refresh: () => runtime.refreshBalance(),
+      stop: () => {},
+    } : null;
+  }
   private balanceRefreshTimer: NodeJS.Timeout | null = null;
   private balanceRefreshing = false;
   private warnedAccountMismatch = false;
@@ -4383,9 +4408,12 @@ export class PocketGateway {
       ...(headless ? [] : [{ id: "local", name: options.localName || localMachineName(), ssh: null, provider: "openai" as const, group: "local" }]),
       // The provider is separate metadata; the machine name stays the configured name.
       ...(!headless && options.deepseek?.enabled === true
-        ? [{ id: "local:deepseek", name: options.localName || localMachineName(), ssh: null, deepseek: true, provider: "deepseek" as const, group: "local" }]
+        ? [{ id: "local:dsh", name: options.localName || localMachineName(), ssh: null, deepseek: true, provider: "deepseek" as const, group: "local" }]
         : []),
-      ...options.machines.map((machine) => ({ id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac, provider: "openai" as const, group: `ssh:${machine.ssh}` })),
+      ...options.machines.flatMap((machine) => [
+        { id: `ssh:${machine.ssh}`, name: machine.name, ssh: machine.ssh, wakeMac: machine.wakeMac, provider: "openai" as const, group: `ssh:${machine.ssh}` },
+        ...(machine.dshPath ? [{ id: `ssh:${machine.ssh}:dsh`, name: machine.name, ssh: machine.ssh, dshPath: machine.dshPath, wakeMac: machine.wakeMac, deepseek: true, provider: "deepseek" as const, group: `ssh:${machine.ssh}` }] : []),
+      ]),
     ];
     if (!definitions.length) throw new Error("Headless Pocket requires at least one configured SSH machine");
     // An explicit --thread override wins; otherwise restore the last selection when its machine
@@ -4409,10 +4437,7 @@ export class PocketGateway {
         for (const response of this.subscribers) this.writeSse(response, "task-status", status);
       }, this.submissionStore(definition.id)));
     }
-    // DeepSeek's balance is account-wide, so one host-side monitor serves every client that selects it.
-    if (definitions.some((definition) => definition.id === "local:deepseek" && definition.deepseek) && options.deepseek?.enabled) {
-      this.balanceMonitor = new DeepSeekBalanceMonitor({ key: options.deepseek.key });
-    }
+
   }
 
   get state(): PocketState {
@@ -4496,7 +4521,7 @@ export class PocketGateway {
         provider: summary.provider,
         group: summary.group,
         platform: summary.platform,
-        local: id === "local" || id === "local:deepseek",
+        local: id === "local" || id === "local:dsh",
         canWake: summary.canWake,
         connected: Boolean(runtime.state.connected),
         catalogAvailable,
@@ -4718,15 +4743,15 @@ export class PocketGateway {
       console.warn("Quota warning: connected runtimes report incompatible limit windows; using one source without aggregation.");
     }
     let next: PocketQuota;
-    if (this.selectedMachineId === "local:deepseek") {
+    if (this.selectedMachineId.endsWith(":dsh")) {
       // Only the selected DeepSeek runtime may surface an account balance; a late response for a
       // provider the user has already left never overwrites the OpenAI quota.
       const balance = this.balanceMonitor?.snapshot() ?? null;
       next = {
         available: Boolean(balance?.available),
         stale: Boolean(balance?.stale),
-        sourceMachineId: balance ? "local:deepseek" : null,
-        sourceMachine: balance ? this.runtimes.get("local:deepseek")?.state.machine ?? null : null,
+        sourceMachineId: balance ? this.selectedMachineId : null,
+        sourceMachine: balance ? this.runtimes.get(this.selectedMachineId)?.state.machine ?? null : null,
         limitName: null,
         windows: [],
         updatedAt: balance?.updatedAt ?? null,
@@ -4768,7 +4793,7 @@ export class PocketGateway {
   // The balance slot is only relevant while the DeepSeek runtime is the selected one; on demand there,
   // then on a coarse timer, and never per client request.
   private updateBalanceWatch(): void {
-    const relevant = this.selectedMachineId === "local:deepseek" && Boolean(this.balanceMonitor);
+    const relevant = this.selectedMachineId.endsWith(":dsh") && Boolean(this.balanceMonitor);
     if (!relevant) {
       if (this.balanceRefreshTimer) clearInterval(this.balanceRefreshTimer);
       this.balanceRefreshTimer = null;

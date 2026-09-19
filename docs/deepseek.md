@@ -1,72 +1,101 @@
-# Optional local DeepSeek runtime
+# DeepSeek Harness backend
 
-DeepSeek runs **through Codex app-server**, alongside the existing OpenAI runtimes. It is macOS-only and appears only when a valid credential exists. The task list shows one group per local physical machine; when that Mac exposes more than one provider, each task row shows OpenAI/DeepSeek as plain secondary provider metadata rather than a badge. **New Task** exposes a Provider choice in the same case. The machine name is never rewritten; the provider is separate metadata, and the runtimes keep their own ids, tasks, drafts, queues, receipts and sessions. There is no browser-to-DeepSeek connection, automatic failover, or conversation migration.
+OpenAI continues to use the existing Codex app-server backend. DeepSeek uses **DeepSeek Harness (DSH) 0.1.6-alpha.2**, pinned with its dependency tree in `dsh/package-lock.json`. The full shipped `sdk` profile inherits `dsh-base`; Pocket adds DSH's existing Host session services, its native question tool, and a private JSON-RPC stdio carrier. It does not use `sdk-minimal`, DSH's web UI, a Codex subagent, or a fork of DSH.
 
-## When DeepSeek appears
+Pocket remains the UI. Physical-machine grouping and the OpenAI/DeepSeek provider choice are unchanged. The adapter projects DSH's sessions, durable events, native tool activity, approvals and errors into Pocket's existing contract. DSH owns its agent loop, tools, workspace instructions, compaction, attachments and session persistence. Pocket's existing task orchestration, staged files, queues and submission receipts remain in use.
 
-There is no provider toggle. On macOS, Pocket exposes DeepSeek at launch whenever a credential resolves: `DEEPSEEK_API_KEY` is set and valid, or the host key file below exists and is valid.
+## Execution-machine setup
 
-With no credential at all, DeepSeek is simply absent from the available providers and the OpenAI runtimes are unchanged. If a credential exists but is unsafe, unreadable, or invalid, DeepSeek is still left out and **Settings → Runtimes** shows that configuration error instead of accepting it silently. Linux, Windows, and Docker/headless hosts never create the runtime. Removing the credential removes the provider on the next launch; its sessions and other state stay on disk in the isolation home, but message submission receipts live only in the host process memory, so a removed or restarted provider cannot recover a pending submission from them.
+On each machine that will run DeepSeek tasks, install Node **22.19+** (or 24+) and this checkout, then install the separately locked runtime dependencies:
 
-## Host key file
-
-When `DEEPSEEK_API_KEY` is not explicitly set, Pocket reads the key from:
-
+```sh
+npm ci --prefix dsh
 ```
+
+Do this on the execution machine, not a gateway that only uses SSH. The gateway's normal `npm ci` does not install DSH. A recent npm may ask you to approve DSH's native dependency installation scripts; follow that npm version's installation policy. The local macOS smoke test used Node 26.8.2 and the distributed native components.
+
+Place a single DeepSeek API key in the execution user's file:
+
+```text
 ~/.codex-pocket/secrets/deepseek-api-key
 ```
 
-Create the directory with permissions `700` and the file with `600`, and put one key in it, optionally with a single trailing newline (`chmod 700 ~/.codex-pocket/secrets; chmod 600 ~/.codex-pocket/secrets/deepseek-api-key`).
+Use directory permissions `700` and file permissions `600` on POSIX. Symlinks, non-regular files, wrong ownership, oversized files and permissive POSIX file modes are rejected. On Windows, restrict the file with the user's ACL; POSIX mode bits do not establish Windows access control. A local launch may instead inherit `DEEPSEEK_API_KEY`; an explicitly invalid environment value fails rather than falling back to the file.
 
-The value is passed directly to the DeepSeek supervisor/server/proxy. It is never written to saved settings, browser responses or storage, logs, diagnostics, command arguments, or the environment of ordinary OpenAI/SSH children. An unreadable, oversized, symlinked, non-regular, or too-permissive file is reported in Settings instead of being used. If `DEEPSEEK_API_KEY` **is** set, it wins; an explicitly supplied but invalid value (for example an empty string or one with embedded newlines) is reported rather than falling back to the file. There is no key-entry UI, Keychain integration, configurable secret path, or automatic migration.
+The execution-side launcher provisions DSH's private managed credential store under `~/.codex-pocket/dsh/.credentials.yaml`. It strips DeepSeek/OpenAI/Codex/ChatGPT credential environment variables before starting DSH. Tool processes do not inherit the key. Browser payloads, diagnostics and command arguments contain no key; outgoing protocol frames redact it. This is not a security boundary against deliberate credential-file reads by software running as the same OS user with sufficient filesystem access.
 
-## Foreground launch
+The runtime launches from the isolated home, not the gateway's project directory. It does not discover normal `~/.dsh` profiles or credentials. Pocket owns the generated credential and patch files in this home. Do not put unrelated DSH integrations in its profile. The shipped base tool composition remains enabled, including native search/fetch and subagents. No MCP/plugin-management UI or automatic integration discovery is added.
 
-Quit the **Pocket menu-bar host** before launching this foreground instance. Leave ChatGPT/Codex and its daemon running. A menu-bar app does not generally inherit a terminal's environment.
+## Local and SSH selection
 
-From this checkout, with Node 22.6+ available:
+For a local non-headless Pocket host, a valid execution credential exposes the DeepSeek provider at launch. This no longer has a macOS-only gate. Runtime installation or launch failures appear through the existing connection/error surfaces.
 
-```sh
-(
-  set +x
-  export DEEPSEEK_API_KEY
-  IFS= read -r DEEPSEEK_API_KEY < "$HOME/Documents/deepseek-api-key.txt"
-  export CODEX_BIN="$HOME/.local/bin/codex"
-  exec node --experimental-strip-types gateway.ts --host 127.0.0.1 --port 8787
-)
+For a Linux, Docker, NAS or other gateway using a Mac (or other POSIX execution machine) over SSH, add `dshPath` to that machine's entry in the existing Pocket configuration:
+
+```json
+{
+  "machines": [
+    {
+      "name": "Execution Mac",
+      "ssh": "execution-mac",
+      "dshPath": "/Users/example/codex-pocket/dsh/launch.mjs"
+    }
+  ]
+}
 ```
 
-The file must contain only the API key; supplying it in the environment is enough to expose DeepSeek for that launch. Pocket does not persist the key or expose it through settings. The subshell confines these environment changes to this launch. Do not enable shell tracing. If `node` is not on PATH on this Mac, replace `node` above with:
+The existing OpenAI runtime remains on that machine; DeepSeek shares its physical-machine group. The absolute path is on the **execution machine**. `node` must be available in that user's noninteractive SSH PATH. Verify `ssh execution-mac 'node --version'` and provision the key file there. The gateway needs SSH access and this setting, but no DeepSeek credential or DSH installation. Existing machine edits/reordering preserve the additional setting without introducing controls.
 
-```sh
-"$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
-```
+Pocket uses its existing SSH options (batch authentication, connection timeout and keepalives), with DSH JSON-RPC on stdin/stdout. No HTTP/WebSocket listener, exposed endpoint, web UI or port forwarding is added. Local Windows execution follows DSH's platform-selected tools, but was not live-tested; remote Windows shell launching is not validated by this integration.
 
-Open the printed local URL and choose the separate DeepSeek entry when creating a task. Existing local and SSH entries remain available. A missing credential simply leaves DeepSeek out of the available providers, and a credential that exists but is unsafe or invalid is reported in **Settings → Runtimes**; neither affects the other runtimes. LAN access still uses Pocket's existing host/PIN settings.
+## State and lifecycle
 
-## Isolation and lifecycle
+DSH uses `~/.codex-pocket/dsh`, runtime IDs `local:dsh` / `ssh:<alias>:dsh`, and new `dsh-<uuid>` task IDs. Task catalogs, browser drafts/choices, queues and in-memory receipt stores use these distinct runtime identities. Old IDs are rejected before DSH session activation.
 
-- The fixed absolute home is `~/.codex-pocket/deepseek`. Pocket generates `config.toml` and `models.json` there; sessions, SQLite state, and logs also stay there. Treat those two generated files as Pocket-owned. They contain no API key.
-- Pocket starts one foreground Codex server on `~/.codex-pocket/deepseek/pocket.sock`, then uses its existing HTTP-upgrade/WebSocket framing through `codex app-server proxy --sock …`. Bare app-server stdio is not used. No daemon bootstrap, default daemon restart, or daemon replacement occurs.
-- An exclusive `pocket-owner` lock prevents duplicate hosts. A small supervisor stops its specific child when Pocket exits or loses IPC. A dropped proxy reconnects to the same owned server; a dead server is restarted by the existing runtime backoff. Normal exit removes the owned endpoint and lock, while keeping sessions. An unowned endpoint or stale ownership lock fails clearly rather than attaching to or killing another process. If the supervisor itself is forcibly killed, inspect the lock's PID and endpoint before removing stale files; never use broad process-killing commands.
-- Both server and proxy receive the separate home and pinned provider configuration. Effective configuration is checked on connection and before task start/resume, settings changes, and new turns. Trusted project model settings cannot redirect this runtime to OpenAI. Incompatible provider/auth/storage settings fail closed. Symlinked homes/configuration are rejected.
-- The API key comes from `DEEPSEEK_API_KEY` or the host key file and is passed only to the DeepSeek supervisor/server/proxy; it is never added to `process.env`. Ordinary local/SSH children have it removed. Agent shells exclude it and OpenAI credentials, and configuration that would reintroduce those names through `shell_environment_policy.set` is rejected; login shells are disabled for this runtime. Standalone `command/exec` calls explicitly unset it as well. Project MCP servers, notification commands, and hooks are rejected because this version does not provision credential isolation for those extra processes. The key is still a host secret, not a security boundary against software running as the same OS user or deliberate file access with Full access.
-- Runtime identity separates task catalogs, drafts, choices, queues, and receipts. DeepSeek has a separate receipt store and epoch, and those receipts are in-memory like the OpenAI ones. No existing conversation is copied.
-- To remove the provider: delete `~/.codex-pocket/secrets/deepseek-api-key` and unset `DEEPSEEK_API_KEY`, then restart Pocket. Keep `~/.codex-pocket/deepseek` to resume its sessions on a later launch. This does not alter `~/.codex`, shell profiles, launchctl, the official app, or the Codex installation.
+**Legacy Codex-based DeepSeek sessions cannot resume in DSH.** Their `~/.codex-pocket/deepseek` state is left intact. Normal Codex state is also untouched. There is no conversation converter, migration, provider fallback or failover.
 
-## Supported controls
+A private exclusive `pocket-owner` file prevents a second launcher from sharing the DSH home. Normal EOF or shutdown disposes DSH and removes ownership. An unclean kill can leave a stale lock: inspect its PID and the owned process before removing it; never kill unrelated runtimes or delete session files as recovery.
 
-The initial model is `deepseek-flash`, using `https://api.deepseek.com/responses` via Codex's Responses provider. The catalog exposes `low`, `high`, and `max` effort, with `high` initially selected; the chosen task effort is preserved on resume. Text, native image input, shell commands, freeform `apply_patch`, Pocket's staged file attachments, history, Stop, queue, and reconnect use the existing runtime code.
+One normal DSH process serves each configured DeepSeek runtime. Browser reconnect and in-process adapter reattachment reuse it, read durable history and restore pending approval requests. Reattachment never resends a prompt. A lost SSH transport can end the execution-side process and interrupt a turn; reconnect can resume its persisted session after cleanup. It does not promise uninterrupted execution across SSH loss or gateway restart. Pocket receipts remain process-local; uncertain delivery stays uncertain instead of triggering an automatic retry. The optional `POCKET_DSH_HOME` execution environment variable is available for isolated smoke testing.
 
-Ask and Full access use the existing Codex permission profiles. Automatic approval review is unavailable. Web search and multi-agent delegation are disabled. OpenAI subscription quota is never shown as a DeepSeek allowance. Provider-side file uploads, built-in search, and OpenAI apps are not added by this integration. Pocket attachments remain files staged on the host for the agent to read.
+Optional telemetry, incremental session-log uploads and plugin-inventory request metadata are disabled in the Pocket profile. Required model and search requests still go to their services.
 
-While the DeepSeek runtime is selected, the top-bar quota slot shows the account-wide balance instead of subscription windows (for example `Balance ¥83.42` or `Balance $12.34`).
-The native macOS menu-bar host mirrors that slot: while DeepSeek is the selected runtime its section heading becomes **Balance** and it shows the same account-wide figure instead of the OpenAI quota windows. Pocket reads it from the official `GET https://api.deepseek.com/user/balance` endpoint using the same resolved host credential; the currency and `total_balance` come from `balance_infos`, and `is_available` marks insufficient funds. The figure is the whole account's monetary balance, not a per-task or per-token cost, and separate currencies are never added together. One host-side cache and one in-flight request are shared by every client; Pocket refreshes on selection and about once a minute while the runtime stays selected, with a short timeout; failed attempts cool down like successful ones instead of retrying in a loop. A failed, timed-out or malformed response shows `Balance —`, or keeps a last-known value clearly marked as such, and never becomes zero or blocks sending, task creation, connection or reconnect. Only the currency, amount, availability and freshness reach the browser — never the key, authorization headers or raw upstream errors, and there is still no browser-to-DeepSeek request, key-entry UI, billing dashboard or cost estimate. Switching back to an OpenAI runtime restores its subscription windows; a late DeepSeek response cannot replace them. A balance-fetch failure never affects message delivery. The existing **Show Quota or Balance** preference controls this slot; there is no separate toggle.
+## Controls and limitations
 
-The model metadata was checked against DeepSeek's [official Codex integration](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) and its [published setup script](https://cdn.deepseek.com/api-docs/codex-deepseek-setup-en.sh), inspected without executing it. `deepseek-models.json` retains the documented model/tool/effort metadata, disables search, and supplies a short Pocket coding-agent instruction instead of copying the setup script's long prompt. The [Responses compatibility table](https://api-docs.deepseek.com/guides/responses_api/) documents image input, function tools and the `apply_patch` custom tool; built-in search is ignored. Codex's [configuration reference](https://developers.openai.com/codex/config-reference/) documents provider and environment configuration.
+The catalog comes from the pinned DSH adapter: the tested runtime exposed `deepseek-flash` and `deepseek-v4-pro`, with Off/Low/High/Max reasoning. Ask maps to DSH `workspace-write` plus `ask`; Full access maps explicitly to `danger-full-access` plus `never`. Conflicting or unsupported permission mappings fail closed. Automatic approval review is not configured. DSH's one-shot approvals use Pocket's existing approval surface; compatible single-selection/free-text questions use its existing input surface. Questions exceeding Pocket's existing limits (three single-selection questions, twenty options each) are rejected rather than truncated.
 
-## Validation
+Create/resume/history, rename, archive/unarchive, task switching, messages/activity, Stop, queue/steer, image input and staged files use the adapter. DSH's native `web_search` appears as search activity; `web_fetch` and other native tools use existing tool activity/details. Compaction stays inside DSH and its lifecycle maps to existing compaction activity.
 
-Live validation on 2026-09-16 used the installed standalone **Codex 0.154.0**, with the app-server initialization independently reporting **0.154.0**. The installed ChatGPT-bundled CLI was **0.154.0-alpha.6.2**; neither binary was changed. The local key was supplied from the host file without printing or persisting it. Validation covered model discovery, task creation, file read, patch, shell command execution, shell credential exclusion, image recognition, Stop, proxy reconnect, and persisted resume after an owned-server restart. The normal OpenAI home was separately checked for unchanged config/auth/model catalog hashes.
+Two concrete Host API gaps remain in this pinned DSH version:
 
-The final boundary check kept the official server connected at `~/.codex` while starting and stopping the isolated server. All four normal `config.toml`, `auth.json`, `models.json`, and `models_cache.json` hashes stayed unchanged during that cycle. Config/auth/catalog also stayed unchanged across the whole implementation session. The normal cache's `fetched_at` advanced during the longer session with the official runtime active; its whole-session hash therefore differed. A small, plain-color image produced inconsistent descriptions in exploratory checks; the final larger fixture passed exact text (`POCKET 42`) and color recognition. Image input is supported, but a successful request does not guarantee accurate visual interpretation.
+- **Delete:** there is no public durable-session deletion operation. Pocket returns an explicit error; it does not report an archive or hidden tombstone as a deletion.
+- **Changing an existing task's Project Folder:** DSH persists the session cwd in its immutable header and exposes no session-cwd update operation. Creating a new task in a specified folder works; changing an existing task's folder returns an explicit error. Pocket does not rewrite DSH's logs or convert the conversation.
+
+DSH goal status/objectives and pause/resume/clear map to the existing goal surface. DSH's round cap is not presented as a token budget. The Context chip uses a DSH-reported full-call token total only when the adapter also supplies that model's context-window capacity; missing metadata remains unknown.
+
+## Search, fetch and balance
+
+Native DSH search uses DeepSeek's Anthropic-compatible Messages API and the **same DeepSeek API key**. No additional search credential was needed in the live test. It requires service/network access to that search endpoint and incurs model-request usage. DSH's `web-fetch-http` provider fetches webpages directly and enforces its public-address checks; it needs no additional credential. DNS/proxy setups that resolve public domains to private or fake addresses can cause fetch rejection. Pocket does not disable that guard or substitute shell networking.
+
+Balance is fetched and cached **on the execution machine** through the existing sanitized balance monitor. Only availability, currency/amount, timestamp and freshness metadata cross SSH to the gateway. The account-wide Balance continues to occupy the existing quota slot, including the native host's existing quota/balance presentation. A failed balance request never blocks a turn or becomes a zero balance.
+
+## Validation (2026-09-19)
+
+The isolated local macOS smoke used DSH **0.1.6-alpha.2**, corresponding to official source commit `ddefc45fbc7f8e46dd73185e68295696d1297887`:
+
+- Created and executed `hello.py` with DSH's native write and bash tools.
+- Exercised Pocket's `MachineRuntime` create, model/effort selection, Ask mode, streaming, tool activity and history.
+- Image input correctly read `POCKET 42` and red/blue rectangles; DSH used its native image-reading tool.
+- Native `web_search` returned real official Python documentation results. Native `web_fetch` ran against two public-domain URLs but failed because local DNS resolved them to non-public addresses. It subsequently retrieved `https://1.1.1.1/cdn-cgi/trace` successfully; domain-based fetch remains constrained by this local DNS setup.
+- Resume after process shutdown read persisted history. Reattachment during a running shell command kept the same process/session/active turn, and Stop yielded `interrupted` / `stopped`.
+- An actual sandbox-denied write produced an approval request, retained it through reattachment, and completed only after approval while remaining in Ask mode. The native question tool also completed a structured option selection through Pocket and cleared the pending request.
+- Pocket queue delivery ran a separate follow-up turn successfully; rename and archive/unarchive were verified. A staged text-file attachment was read correctly, and a later resume restored title and context usage.
+- A shell presence-only check confirmed DeepSeek/OpenAI keys were absent from tool environments. Balance returned sanitized metadata.
+
+The configured remote Mac was reachable through SSH but had no `node` in its noninteractive PATH and no key at the required path. Remote model execution, NAS/Docker deployment and Windows execution were not live-tested. The live Pocket host was not restarted and unrelated tasks were not interrupted.
+
+`npm test` passed all **21** checks; syntax checks and the separately locked DSH installation dry run also passed. The suite covers critical permission mapping, legacy ID rejection, per-runtime receipt separation, late responses across reattachment, and cancellation/tool result projection alongside the existing checks. The read-only OpenAI probe initialized and listed tasks using app-server **0.154.0**. The installed standalone CLI was **0.154.0** and the app-bundled CLI **0.155.0-alpha.2.6**; neither was changed.
+
+After installing DSH on the execution machine and applying configuration, restart Pocket to load the backend change. **No native-app rebuild is needed.**
+
+Official interfaces inspected: [SDK protocol](https://github.com/deepseek-ai/deepseek-harness/tree/ddefc45fbc7f8e46dd73185e68295696d1297887/packages/sdk/protocol), [Host session controller](https://github.com/deepseek-ai/deepseek-harness/tree/ddefc45fbc7f8e46dd73185e68295696d1297887/packages/api/session-controller), [full SDK profile](https://github.com/deepseek-ai/deepseek-harness/tree/ddefc45fbc7f8e46dd73185e68295696d1297887/packages/bundle/sdk-app), and [native search](https://github.com/deepseek-ai/deepseek-harness/tree/ddefc45fbc7f8e46dd73185e68295696d1297887/packages/web/web-search-deepseek).

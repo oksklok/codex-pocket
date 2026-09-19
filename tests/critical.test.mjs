@@ -15,7 +15,7 @@ test.after(() => rmSync(dataDir, { recursive: true, force: true }));
 const {
   MachineRuntime, MessageSubmissions, PocketGateway, RpcClient,
   isMessageNotSent, parseArgs, saveLocalSettings, settingsNeedRestart,
-  sessionCookie,
+  sessionCookie, machineConfigurationsDiffer,
 } = await import("../gateway.ts");
 const {
   DeepSeekHost, deepseekConfig, deepseekEnvironment, withoutDeepseekKey,
@@ -280,11 +280,11 @@ test("the DeepSeek credential never leaks into child config, other runtimes or s
   assert.equal(host.proxyOptions().env.CODEX_HOME, "/isolated");
   clearRememberedSelection();
   const gateway = new PocketGateway({ machines: [{ name: "Remote", ssh: "remote" }], deepseek: { enabled: true, key } });
-  assert.ok(gateway.runtimes.get("local:deepseek").deepseek);
+  assert.ok(gateway.runtimes.get("local:dsh").deepseek);
   assert.equal(gateway.runtimes.get("local").deepseek, undefined, "the OpenAI runtime stays unisolated");
   assert.equal(gateway.runtimes.get("ssh:remote").deepseek, undefined);
   assert.equal(gateway.runtimes.get("local").machineSummary().provider, "openai");
-  for (const payload of [gateway.snapshot(), gateway.listMachines(), gateway.runtimes.get("local:deepseek").diagnostics()]) {
+  for (const payload of [gateway.snapshot(), gateway.listMachines(), gateway.runtimes.get("local:dsh").diagnostics()]) {
     assert.equal(JSON.stringify(payload).includes(key), false, "browser-facing payloads never carry the key");
   }
 });
@@ -343,4 +343,73 @@ test("the session cookie is Secure only for a same-origin HTTPS login", () => {
   // A mismatched (or missing) Origin is never trusted even when the page is served over a proxy.
   assert.equal(sessionCookie({ headers: { host: "pocket.example.lan", origin: "https://other.example" } }, "sid"), base);
   assert.equal(sessionCookie({ headers: { host: "pocket.example.lan" } }, "sid"), base);
+});
+
+test("DSH permissions fail closed and legacy session identities cannot be adopted", async () => {
+  const { permission, sessionId } = await import('../dsh/projection.mjs');
+  assert.equal(permission({ permissions: ':workspace', approvalPolicy: 'on-request' }, 'danger-full-access'), 'workspace-write');
+  assert.equal(permission({ permissions: ':danger-full-access', approvalPolicy: 'never' }), 'danger-full-access');
+  assert.throws(() => permission({ approvalPolicy: 'never' }), /Refusing/);
+  assert.throws(() => permission({ permissions: ':danger-full-access', approvalPolicy: 'on-request' }), /Refusing/);
+  assert.throws(() => permission({ approvalsReviewer: 'auto_review' }), /not configured/);
+  assert.throws(() => permission({ permissions: ':unknown' }), /Unsupported/);
+  assert.throws(() => sessionId('01900000-0000-0000-0000-000000000000'), /legacy/);
+  assert.equal(sessionId('dsh-12345678-1234-1234-1234-123456789abc'), 'dsh-12345678-1234-1234-1234-123456789abc');
+});
+
+test("DSH reattach does not resend an uncertain mutation or accept its late response for a new request", async () => {
+  const { DshRpcClient } = await import('../dsh.ts');
+  const sent=[];
+  const host={nextId:1,requests:new Map(),start:async()=>{},receiver:null,closed:null,child:{stdin:{writable:true,write:line=>sent.push(JSON.parse(line))}}};
+  const first=new DshRpcClient(host);
+  await first.connect();
+  const mutation=first.request('turn/start',{threadId:'dsh-test'},1000);
+  const rejected=assert.rejects(mutation,/delivery may be unknown/);
+  first.close();await rejected;
+  const next=new DshRpcClient(host);await next.connect();
+  const query=next.request('thread/read',{threadId:'dsh-test'},1000);
+  assert.notEqual(sent[0].id,sent[1].id);
+  host.receiver({id:sent[0].id,result:{wrong:true}});
+  host.receiver({id:sent[1].id,result:{thread:{id:'dsh-test'}}});
+  assert.deepEqual(await query,{thread:{id:'dsh-test'}});
+  assert.equal(sent.filter(m=>m.method==='turn/start').length,1);
+  next.close();
+});
+
+test("DSH receipt stores stay distinct across providers and execution machines", () => {
+  clearRememberedSelection();
+  const gateway=new PocketGateway({machines:[{name:'Remote',ssh:'remote',dshPath:'/opt/pocket/dsh/launch.mjs'}],deepseek:{enabled:true}},true);
+  assert.notEqual(gateway.submissionStore('ssh:remote:dsh'),gateway.submissionStore('ssh:remote'));
+  assert.notEqual(gateway.submissionStore('ssh:remote:dsh'),gateway.submissionStore('local:dsh'));
+  assert.equal(gateway.runtimes.get('ssh:remote:dsh').machineSummary().provider,'deepseek');
+  assert.equal(gateway.runtimes.get('ssh:remote').machineSummary().provider,'openai');
+  assert.equal(machineConfigurationsDiffer([{name:'Remote',ssh:'remote',dshPath:'/new'}],[{name:'Remote',ssh:'remote',dshPath:'/old'}]),true);
+});
+
+test("DSH cancellation is a stopped turn and native tool results retain their call identity", async () => {
+  const {projectEvents}=await import('../dsh/projection.mjs');
+  const turns=projectEvents([
+    {type:'turn/start',time:1,data:{turn:1}},
+    {type:'tool/call',time:2,data:{turn:1,step:1,callId:'call',name:'web_fetch',arguments:'{"url":"https://example.org"}'}},
+    {type:'tool/result',time:3,data:{turn:1,step:1,message:{content:[{type:'tool-result',toolCallId:'call',isError:true,content:[{type:'text',text:'blocked'}]}]}}},
+    {type:'turn/end',time:4,data:{turn:1,reason:{kind:'aborted',reason:{kind:'user'}}}},
+  ]);
+  assert.equal(turns[0].status,'interrupted');
+  assert.equal(turns[0].items.length,1);
+  assert.equal(turns[0].items[0].status,'failed');
+  assert.equal(turns[0].items[0].aggregatedOutput,'blocked');
+});
+
+test("an unavailable DSH balance stays unknown or stale without failing the runtime", async () => {
+  const runtime=new MachineRuntime({machines:[]},{id:'local:dsh',name:'DSH',ssh:null,deepseek:true,provider:'deepseek'},()=>{});
+  runtime.state.connected=true;
+  runtime.rpc={request:async()=>null};
+  await runtime.refreshBalance();
+  assert.equal(runtime.balanceSnapshot().available,false);
+  runtime.dshBalance={available:true,stale:false,isAvailable:true,entries:[{currency:'CNY',total:'1.23'}],updatedAt:123};
+  runtime.rpc={request:async()=>{throw Error('balance service unavailable');}};
+  await runtime.refreshBalance();
+  assert.equal(runtime.balanceSnapshot().stale,true);
+  assert.equal(runtime.balanceSnapshot().entries[0].total,'1.23');
+  assert.equal(runtime.state.connected,true);
 });

@@ -1,0 +1,23 @@
+# Full shipped sdk/base agent composition; only the carrier is replaced.
+- id: sdk-jsonrpc-server
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- insert:
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+    - id: connection
+      name: '@deepseek-ai/dsh-client-connection'
+    - id: file-upload
+      name: '@deepseek-ai/dsh-client-file-upload'
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+    - id: session-controller
+      name: '@deepseek-ai/dsh-api-session-controller'
+    - id: pocket
+      name: POCKET_DSH_ADAPTER
+      inject: [sdkAppStartup]

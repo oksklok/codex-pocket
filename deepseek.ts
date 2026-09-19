@@ -52,7 +52,7 @@ export function readDeepseekKeyFile(path = DEEPSEEK_KEY_PATH): string {
   }
   if (stats.isSymbolicLink() || !stats.isFile()) throw new Error(`DeepSeek API key path must be a regular file, not a link or directory: ${path}`);
   if (typeof process.getuid === "function" && stats.uid !== process.getuid()) throw new Error(`DeepSeek API key file must be owned by the current user: ${path}`);
-  if ((stats.mode & 0o077) !== 0) throw new Error(`DeepSeek API key file must not be accessible by other users; run chmod 600 ${path}`);
+  if (process.platform !== "win32" && (stats.mode & 0o077) !== 0) throw new Error(`DeepSeek API key file must not be accessible by other users; run chmod 600 ${path}`);
   if (stats.size > 4096) throw new Error(`DeepSeek API key file is unexpectedly large: ${path}`);
   let content: string;
   try { content = readFileSync(path, "utf8"); }
