@@ -699,17 +699,21 @@ function cookieValue(request: IncomingMessage, name: string): string | null {
   return null;
 }
 
-// Add Secure only when the browser's own Origin proves a same-origin HTTPS login. Proxy headers
-// are deliberately not trusted, so direct HTTP/LAN logins keep their current cookie.
+// Cookies share a namespace across ports. A Secure HTTPS cookie prevents HTTP from
+// overwriting the same name, so LAN HTTP logins need their own cookie name.
+// Trust only the browser's same-origin HTTPS Origin, never proxy headers.
 export function sessionCookie(request: IncomingMessage, sessionId: string): string {
-  const secure = request.headers.origin === `https://${request.headers.host}` ? "; Secure" : "";
-  return `codex_pocket_session=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure}`;
+  const secure = request.headers.origin === `https://${request.headers.host}`;
+  const name = secure ? "codex_pocket_session" : "codex_pocket_session_http";
+  return `${name}=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure ? "; Secure" : ""}`;
 }
 
-function isAuthenticated(request: IncomingMessage, auth: AuthConfig): boolean {
+export function isAuthenticated(request: IncomingMessage, auth: AuthConfig): boolean {
   if (!auth.required) return true;
-  const session = cookieValue(request, "codex_pocket_session");
-  return Boolean(session && secretMatches(session, auth.sessionId));
+  return ["codex_pocket_session", "codex_pocket_session_http"].some((name) => {
+    const session = cookieValue(request, name);
+    return Boolean(session && secretMatches(session, auth.sessionId));
+  });
 }
 
 function loginClient(request: IncomingMessage): string {
