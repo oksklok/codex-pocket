@@ -138,6 +138,9 @@ never carry a Copy control.
 - Text-field caret/selection: the login PIN is focused programmatically with the caret at the end of
   an entered value, and the reveal/hide toggle re-asserts the exact caret or selection after the
   password/text swap and focus transition have settled.
+- The login PIN offsets its trailing `letter-spacing` with an equal `text-indent`, so the entered
+  digits sit on the field's true centre, and its reveal control changes glyph with its state — open
+  eye to show, slashed eye to hide — alongside `aria-pressed` and the matching label.
 - `prefers-reduced-motion: reduce` disables the drawer/chevron transitions and the spin/pulse
   animations.
 

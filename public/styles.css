@@ -118,15 +118,20 @@ h3 { margin: 0; font-size: var(--text-ui); }
   background: var(--surface-strong); color: var(--text);
 }
 .login-card input { min-height: 56px; padding: 9px 14px; font-size: 1.55rem; letter-spacing: .42em; text-align: center; }
-/* One explicit reveal control with symmetric reserved space keeps the centered digits still. */
+/* One explicit reveal control with symmetric reserved space; the indent offsets the trailing
+   letter-space so the centred digits sit on the field's true centre. */
 .login-pin { position: relative; }
-.login-pin input { padding: 9px 44px; }
+.login-pin input { padding: 9px 44px; text-indent: .42em; }
 .login-card .login-pin-reveal {
   position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
   display: grid; place-items: center; width: 36px; min-width: 36px; height: 36px; min-height: 36px;
   margin: 0; padding: 0; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--muted); cursor: pointer;
 }
 .login-pin-reveal svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+/* The reveal control shows the action it performs: open eye to show, slashed eye to hide. */
+.login-pin-reveal .pin-reveal-hide { display: none; }
+.login-pin-reveal[aria-pressed="true"] .pin-reveal-show { display: none; }
+.login-pin-reveal[aria-pressed="true"] .pin-reveal-hide { display: block; }
 .login-card .login-pin-reveal:hover { color: var(--text); }
 /* Suppress the platform password reveal so only the Pocket control shows. */
 .login-pin input::-ms-reveal { display: none; }
