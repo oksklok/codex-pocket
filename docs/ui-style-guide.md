@@ -102,7 +102,7 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
 ## Copy control
 
 Fenced code blocks in assistant-authored conversation messages carry exactly one Copy control. It is a
-28px outline icon button with the conventional Copy glyph at 18px, optically centred,
+28px outline icon button with the conventional Copy glyph at 16px, optically centred,
 `aria-label`/`title` "Copy code", and a brief "Copied" or "Copy failed" state; a transient success
 confirmation lasts 2 seconds. The button sits in a reserved right gutter so it never covers code, and
 the copied text is the original fenced code without the fence, wrapping or button. User messages,
@@ -134,8 +134,8 @@ non-assistant Markdown never carry a Copy control.
 - Persistent status is always shown and is never treated as busy chrome: Working / Waiting / Failed /
   Offline, validation, errors, warnings, confirmations and "Restart required".
 - Text-field caret/selection: the login PIN is focused programmatically with the caret at the end of
-  an entered value, and the reveal/hide toggle re-asserts the exact caret or selection after the
-  password/text swap and focus transition have settled.
+  an entered value. The reveal/hide toggle re-asserts the exact caret or selection only when the PIN
+  field was already focused; clicked from elsewhere it must not focus the field or summon the keyboard.
 - The login PIN offsets its trailing `letter-spacing` with an equal `text-indent`, so the entered
   digits sit on the field's true centre. The input's empty placeholder gates that indent on
   `:placeholder-shown`, so an empty field keeps its caret centred too. Its reveal control changes
@@ -156,9 +156,8 @@ non-assistant Markdown never carry a Copy control.
 - Only one narrow drawer is open at a time: opening Task Details closes Tasks.
 - Concealed drawers get `inert` and translate off-screen; the toggle exposes `aria-expanded`
   together with a "Show/Hide" label.
-- Going offline or unavailable never erases the last-known task list: cached rows stay rendered but
-  disabled, and only a later authoritative catalog read (runtime connected and catalog available)
-  replaces them. This is browser-session state only; there is no persistence layer.
+- An offline machine shows no task rows; when it reconnects, its current catalog is fetched and shown
+  normally. Nothing is retained across the offline window.
 
 ## Dialogs and confirmation dialogs
 
@@ -178,8 +177,9 @@ non-assistant Markdown never carry a Copy control.
 
 ## Machine Details runtimes
 
-Machine Details shows runtime-management information when runtime state is available, and keeps the
-dialog free of redundant offline or diagnostic noise when it is not.
+Machine Details shows runtime status, installed/latest versions, and Update controls for a reachable
+machine. A fully offline machine shows only "Unavailable while offline.": runtime inspection is skipped
+and no provider Offline rows, connection errors, or diagnostic prose are listed.
 
 ## Copy and capitalization
 

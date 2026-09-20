@@ -82,7 +82,7 @@ Codex Desktop itself is not required. Running Desktop alone does not necessarily
 
 4. Open the task selector in the top bar to browse machines and saved tasks in the Tasks drawer.
 
-For a phone, set `lanEnabled`, `host`, `port`, and a four-digit `pin` in `.codex-pocket.local.json`, then **Restart Pocket** if prompted. Open the configured host and port from that machine's LAN or Tailscale address and enter the PIN over your trusted network.
+For a phone, set `lanEnabled`, `host`, `port`, and a four-digit `pin` in `.codex-pocket.local.json`, then relaunch the process or container so it rereads the file — the web **Restart Pocket** action does not reread an externally edited config. Open the configured host and port from that machine's LAN or Tailscale address and enter the PIN over your trusted network.
 
 Phone URLs include local LAN and Tailscale/CGNAT IPv4 addresses (`100.64.0.0/10`). Use these only over a trusted LAN or private VPN.
 

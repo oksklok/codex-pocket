@@ -367,9 +367,6 @@ let attachmentDeliveryUnknown = false;
 let enterSends = !matchMedia("(max-width: 860px)").matches;
 try { const saved = localStorage.getItem("codex-pocket-enter-sends"); if (saved !== null) enterSends = saved !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
-const showProjects = document.querySelector("#show-projects");
-try { showProjects.checked = localStorage.getItem("codex-pocket-show-projects") === "true"; } catch {}
-let projectsVisible = showProjects.checked;
 let composerExpanded = false;
 let composing = false;
 let deferredTranscript = false;
@@ -535,7 +532,7 @@ function showStopped() {
 async function apiFetch(url, options) {
   const response = await fetch(url, options);
   if (response.status === 401) {
-    showLogin("Session expired. Enter PIN.");
+    showLogin("Session expired.");
     throw new Error("Authentication required");
   }
   return response;
@@ -974,7 +971,7 @@ function renderDestinationSwitcher(force = false) {
   const renderKey = JSON.stringify([
     [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake]), elements.destinationSearch.value, Boolean(navigationRequest),
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
-    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, projectsVisible, navigationErrors[slot],
+    taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
     machineReorderMode, machineReorderBusy, machineReorderDraft,
   ]);
@@ -1209,10 +1206,6 @@ function renderDestinationSwitcher(force = false) {
       label.append(taskName);
       const taskError = [newTaskLeaveWarning, destinationTaskError].find(error => error?.machineId === member.id && error?.threadId === task.id)?.message || "";
       if (taskError) label.append(Object.assign(document.createElement("small"), { className: "task-selection-error", textContent: taskError }));
-      else if (projectsVisible) {
-        const project = task.project || projectName(task.cwd);
-        if (project && project !== "—") label.append(Object.assign(document.createElement("small"), { className: "task-project", textContent: project }));
-      }
       const status = document.createElement("span");
       // A row always shows its persistent status; opening and task actions only disable the row.
       const statusText = destinationTaskStatus(member, task, state, taskTerminalResults.get(draftKey(member.id, task.id)));
@@ -1323,12 +1316,11 @@ async function refreshLoadedThreads() {
   }
 }
 
-// `keepTasks` drops the cached connection/catalog metadata but keeps the last-known task rows on
-// screen, so a reconnect or an offline transition cannot blank the task list before the forced read
-// answers. A settings change keeps the default and clears the catalogs wholesale.
-function invalidateNavigationCatalogs({ keepTasks = false } = {}) {
+// Drop every cached catalog and any in-flight read so the next fetch is authoritative. Clearing the
+// rows too means an offline machine shows no tasks until it reconnects.
+function invalidateNavigationCatalogs() {
   navigationEpoch += 1;
-  if (!keepTasks) navigationCatalogs.fill(null);
+  navigationCatalogs.fill(null);
   navigationRequests.fill(null);
   navigationErrors.fill("");
   // Drop in-flight catalog-adjacent reads too: their epoch guard now discards the response, and
@@ -1342,25 +1334,13 @@ function invalidateNavigationCatalogs({ keepTasks = false } = {}) {
 // machines stay offline because only a successful /api/navigation read for a connected runtime
 // can report availability.
 function refreshTaskSurface() {
-  invalidateNavigationCatalogs({ keepTasks: true });
+  invalidateNavigationCatalogs();
   void Promise.allSettled([
     refreshMachines(),
     refreshLoadedThreads(),
     refreshNavigationCatalog(false, true),
     refreshNavigationCatalog(true, true),
   ]);
-}
-
-// An offline or unavailable runtime cannot list its tasks, so a catalog read must not erase the rows
-// the browser last saw. A later authoritative read (connected and catalogAvailable) replaces them.
-function preserveUnavailableTasks(previous, value) {
-  if (!previous || !Array.isArray(value?.machines)) return;
-  for (const machine of value.machines) {
-    if (machine.connected && machine.catalogAvailable !== false) continue;
-    if (Array.isArray(machine.tasks) && machine.tasks.length) continue;
-    const lastKnown = previous.machines?.find(candidate => candidate.id === machine.id);
-    if (Array.isArray(lastKnown?.tasks) && lastKnown.tasks.length) machine.tasks = lastKnown.tasks;
-  }
 }
 
 // A confirmed mutation updates the cached lists immediately so the sidebar keeps rendering the row
@@ -1417,7 +1397,6 @@ async function refreshNavigationCatalog(archived = archivedTasks, force = false)
       if (machines === machineStateAtStart && Array.isArray(value.machines)) {
         machines = value.machines.map(machine => ({ ...machines.find(current => current.id === machine.id), ...machine }));
       }
-      preserveUnavailableTasks(navigationCatalogs[slot], value);
       for (const status of request.taskStatuses) updateCatalogTaskStatus(value, status);
       for (const machine of value.machines || []) for (const task of machine.tasks || []) {
         if (task.status?.startsWith("active")) taskTerminalResults.delete(draftKey(machine.id, task.id));
@@ -2864,13 +2843,15 @@ function scrollTranscriptToEdge(edge) {
 // clears the composer; an edge anywhere else is left to the browser's own scrolling.
 function keepSelectionEdgeVisible(selection) {
   if (!matchMedia("(max-width: 860px)").matches) return;
-  const range = selection.getRangeAt(selection.rangeCount - 1).cloneRange();
-  range.collapse(false);
-  const edge = range.getBoundingClientRect();
+  // Measure from the focus, not the range's logical end, so a backward drag moves with the finger.
+  const edge = document.createRange();
+  edge.setStart(selection.focusNode, selection.focusOffset);
+  edge.collapse(true);
+  const rect = edge.getBoundingClientRect();
   const composer = elements.composerZone?.getBoundingClientRect();
-  if (composer && edge.bottom > composer.top && edge.top < composer.bottom) {
+  if (composer && rect.bottom > composer.top && rect.top < composer.bottom) {
     const scroller = transcriptScroller();
-    scroller.scrollTop += edge.bottom - composer.top;
+    scroller.scrollTop += rect.bottom - composer.top;
   }
 }
 
@@ -3923,7 +3904,7 @@ async function handleEventError() {
   try {
     const response = await fetch("/api/auth");
     const auth = await response.json();
-    if (auth.required && !auth.authenticated) showLogin("Your session expired. Enter the PIN again.");
+    if (auth.required && !auth.authenticated) showLogin("Session expired.");
   } catch {
     // EventSource retries transient gateway outages itself.
   }
@@ -4100,7 +4081,6 @@ function localSettingsValue() {
   return {
     theme: elements.settingsTheme.value,
     enterSends: elements.enterSends.checked,
-    projects: showProjects.checked,
     display: { ...(settingsDisplayDraft || displayPreferences) },
   };
 }
@@ -4108,18 +4088,16 @@ function localSettingsValue() {
 function restoreLocalSettingsControls() {
   elements.settingsTheme.value = selectedTheme;
   elements.enterSends.checked = enterSends;
-  showProjects.checked = projectsVisible;
   renderDisplayControls();
 }
 
 function commitLocalSettings(value) {
   selectedTheme = value.theme;
   enterSends = value.enterSends;
-  projectsVisible = value.projects;
   Object.assign(displayPreferences, value.display);
   try {
     localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
-    for (const [key, setting] of [["enter-sends", enterSends], ["show-projects", projectsVisible]]) {
+    for (const [key, setting] of [["enter-sends", enterSends]]) {
       localStorage.setItem("codex-pocket-" + key, String(setting));
     }
   } catch {}
@@ -4248,9 +4226,9 @@ function machineRuntimeProviderName(detail) {
   return detail.provider === "deepseek" ? "DSH" : "Codex";
 }
 
-// One provider row. A reachable runtime shows its version line and any provider-specific error; on
-// an unreachable machine the provider is only named and marked Offline, never given repeated filler.
-function machineRuntimeRow(detail, machineOffline, target) {
+// One provider row: name, status, installed/latest version, and the Update control. Provider
+// inspection failures are not printed here; a failed user-triggered update uses the dialog error.
+function machineRuntimeRow(detail, target) {
   const row = document.createElement("div");
   row.className = "machine-runtime-row";
   const info = document.createElement("div");
@@ -4265,21 +4243,17 @@ function machineRuntimeRow(detail, machineOffline, target) {
   status.textContent = detail.status || "Offline";
   heading.append(name, status);
   info.append(heading);
-  const updating = machineRuntimeUpdates.has(detail.machineId) || detail.updating;
-  if (!machineOffline) {
-    const versions = document.createElement("p");
-    versions.className = "machine-runtime-versions";
-    // A prerelease's version already carries its channel, so no separate "(alpha)" suffix. When the
-    // installed and latest versions match there is nothing new to name.
-    const installed = detail.installed || "Unavailable";
-    const latest = detail.latest || "Unavailable";
-    versions.textContent = installed === latest ? `Installed ${installed} · Latest` : `Installed ${installed} · Latest ${latest}`;
-    info.append(versions);
-    if (detail.error) info.append(Object.assign(document.createElement("p"), { className: "machine-runtime-note machine-runtime-error", textContent: detail.error }));
-    else if (detail.busy && detail.status === "Running") info.append(Object.assign(document.createElement("p"), { className: "machine-runtime-note", textContent: "Executing a turn" }));
-  }
+  const versions = document.createElement("p");
+  versions.className = "machine-runtime-versions";
+  // A prerelease's version already carries its channel, so no separate "(alpha)" suffix. When the
+  // installed and latest versions match there is nothing new to name.
+  const installed = detail.installed || "Unavailable";
+  const latest = detail.latest || "Unavailable";
+  versions.textContent = installed === latest ? `Installed ${installed} · Latest` : `Installed ${installed} · Latest ${latest}`;
+  info.append(versions);
   row.append(info);
-  if (!machineOffline && (detail.updateAvailable || updating)) {
+  const updating = machineRuntimeUpdates.has(detail.machineId) || detail.updating;
+  if (detail.updateAvailable || updating) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "secondary-button";
@@ -4318,15 +4292,14 @@ async function renderMachineRuntimes(target, refresh = false) {
   const list = section.querySelector("#machine-runtime-list");
   const group = target.mode === "host" ? "local" : `ssh:${savedMachines()[target.index]?.ssh}`;
   const entries = machines.filter(machine => (machine.group || machine.id) === group);
-  // A physical machine with no connected runtime has nothing to inspect: keep the dialog to its
-  // configuration fields instead of showing an empty Runtimes section with Offline rows.
+  section.hidden = false;
+  // A physical machine with no reachable runtime is offline: say so once instead of probing it or
+  // listing provider-level Offline rows and connection errors.
   if (!entries.some(machine => machine.connected)) {
-    list.replaceChildren();
-    section.hidden = true;
+    list.replaceChildren(Object.assign(document.createElement("p"), { className: "machine-runtime-offline", textContent: "Unavailable while offline." }));
     machineRuntimeInspecting = null;
     return;
   }
-  section.hidden = false;
   const token = ++machineRuntimeRender;
   // Stable inspection state before the first rows; later polls refresh in place and keep them.
   if (!list.querySelector(".machine-runtime-row")) {
@@ -4350,14 +4323,7 @@ async function renderMachineRuntimes(target, refresh = false) {
   });
   if (machineDialogTarget !== target || token !== machineRuntimeRender) return;
   list.replaceChildren();
-  // A machine whose every runtime is Offline is itself unreachable: show compact provider rows and
-  // one machine-level connection error instead of repeating the same timeout under Codex and DSH.
-  const machineOffline = results.length > 0 && results.every(detail => detail.status === "Offline");
-  for (const detail of results) list.append(machineRuntimeRow(detail, machineOffline, target));
-  if (machineOffline) {
-    const errors = [...new Set(results.map(detail => detail.error).filter(Boolean))];
-    if (errors.length) list.append(Object.assign(document.createElement("p"), { className: "machine-runtime-error", textContent: errors.join(" · ") }));
-  }
+  for (const detail of results) list.append(machineRuntimeRow(detail, target));
 }
 
 function openMachineDialog(target) {
@@ -4436,7 +4402,6 @@ elements.machineDialogForm.addEventListener("submit", (event) => {
     const field = error.field === "name" ? elements.machineDialogName : error.field === "ssh" ? elements.machineDialogSsh : elements.machineDialogMac;
     field.setCustomValidity(error.message);
     field.focus();
-    field.reportValidity();
     elements.machineDialogError.textContent = error.message;
     elements.machineDialogError.classList.add("error-text");
     return;
@@ -4931,10 +4896,12 @@ elements.loginPin.addEventListener("input", () => {
   }
   elements.loginError.textContent = "";
 });
-// Keep focus (and the mobile keyboard) on the PIN field while toggling the revealed type.
+// Toggling the revealed type keeps focus only when the PIN field was already being edited: clicking
+// the eye from elsewhere must not focus the field or summon the mobile keyboard.
 elements.loginPinReveal.addEventListener("pointerdown", (event) => event.preventDefault());
 elements.loginPinReveal.addEventListener("click", () => {
   const pin = elements.loginPin;
+  const wasFocused = document.activeElement === pin;
   const start = pin.selectionStart ?? pin.value.length;
   const end = pin.selectionEnd ?? start;
   const direction = pin.selectionDirection;
@@ -4944,6 +4911,7 @@ elements.loginPinReveal.addEventListener("click", () => {
   elements.loginPinReveal.setAttribute("aria-label", label);
   elements.loginPinReveal.title = label;
   elements.loginPinReveal.setAttribute("aria-pressed", String(!revealed));
+  if (!wasFocused) return;
   const restore = () => {
     if (document.activeElement !== pin) pin.focus({ preventScroll: true });
     try { pin.setSelectionRange(start, end, direction); } catch { /* unsupported type */ }
@@ -5101,7 +5069,9 @@ async function start() {
     }
     await startApp();
   } catch (error) {
-    showLogin(`Gateway unavailable: ${error.message}`);
+    // A 401 already showed the login screen; never print the internal auth sentinel over it.
+    if (error instanceof Error && error.message === "Authentication required") showLogin("Session expired.");
+    else showLogin(`Gateway unavailable: ${error.message}`);
   }
 }
 
