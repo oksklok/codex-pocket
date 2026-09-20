@@ -178,7 +178,7 @@ non-assistant Markdown never carry a Copy control.
 ## Machine Details runtimes
 
 Machine Details shows runtime status, installed/latest versions, and Update controls for a reachable
-machine. A fully offline machine shows only "Unavailable while offline.": runtime inspection is skipped
+machine. A fully offline machine shows only "Unavailable while offline": runtime inspection is skipped
 and no provider Offline rows, connection errors, or diagnostic prose are listed.
 
 ## Copy and capitalization

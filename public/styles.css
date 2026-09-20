@@ -81,6 +81,10 @@
 /* Selection rule: transcript content and editable form fields are selectable; ordinary app chrome,
    dialog, and sidebar text is not. The opt-ins below and the .conversation rules are the exceptions. */
 body { -webkit-user-select: none; user-select: none; }
+/* Chromium's UA stylesheet makes <dialog> content selectable, which would leak the chrome rule into
+   every dialog regardless of body; restate it so labels, help text, runtime rows and buttons stay
+   unselectable. Editable fields keep their own opt-in below. */
+dialog { -webkit-user-select: none; user-select: none; }
 [hidden] { display: none !important; }
 html, body { width: 100%; height: 100%; overflow: hidden; }
 body { margin: 0; min-width: 320px; background: var(--bg); }

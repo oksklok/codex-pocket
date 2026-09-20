@@ -512,6 +512,9 @@ function showLogin(message = "") {
   source?.close();
   source = null;
   closeSettings();
+  // A modal dialog lives in the top layer, above the login screen, and an action that keeps running
+  // could still write its caught error there; close every open dialog so only this copy is visible.
+  for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
   elements.appShell.hidden = true;
   elements.stoppedScreen.hidden = true;
   elements.loginScreen.hidden = false;
@@ -1032,6 +1035,8 @@ function renderDestinationSwitcher(force = false) {
       || (providerName(member.provider) || "").toLowerCase().includes(query) || taskMatches(task);
     const rows = [];
     for (const member of visual.members) {
+      // A disconnected runtime cannot list tasks, so never render rows a stale catalog still holds.
+      if (!member.connected) continue;
       for (const task of (Array.isArray(member.tasks) ? member.tasks : [])) {
         if (!rowVisible(member, task)) continue;
         rows.push({ member, task });
@@ -4296,7 +4301,7 @@ async function renderMachineRuntimes(target, refresh = false) {
   // A physical machine with no reachable runtime is offline: say so once instead of probing it or
   // listing provider-level Offline rows and connection errors.
   if (!entries.some(machine => machine.connected)) {
-    list.replaceChildren(Object.assign(document.createElement("p"), { className: "machine-runtime-offline", textContent: "Unavailable while offline." }));
+    list.replaceChildren(Object.assign(document.createElement("p"), { className: "machine-runtime-offline", textContent: "Unavailable while offline" }));
     machineRuntimeInspecting = null;
     return;
   }
