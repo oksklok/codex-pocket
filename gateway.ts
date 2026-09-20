@@ -121,6 +121,7 @@ type PocketInputQuestion = {
   question: string;
   isOther: boolean;
   isSecret: boolean;
+  multiSelect: boolean;
   options: PocketInputOption[] | null;
 };
 type PocketRequest = {
@@ -1466,6 +1467,63 @@ function pluginCommandSummary(pluginIdValue: unknown, scriptPathValue: unknown):
   return "";
 }
 
+// A DSH ask_user_question call leaves a compact, durable Question record: the full questions plus the
+// user's answers, read back from the same tool-call/result items the runtime replays.
+function parseDshJson(value: unknown): any {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text.startsWith("{") && !text.startsWith("[")) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function dshQuestionAnswers(item: any): Map<string, string[]> {
+  const candidates: unknown[] = [
+    item?.aggregatedOutput,
+    item?.result,
+    ...(Array.isArray(item?.contentItems) ? item.contentItems.map((block: any) => block?.text) : []),
+    ...(Array.isArray(item?.results) ? item.results.map((block: any) => block?.text) : []),
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseDshJson(candidate);
+    if (!parsed || !Array.isArray(parsed.answers)) continue;
+    const byId = new Map<string, string[]>();
+    for (const answer of parsed.answers) {
+      const id = String(answer?.id ?? "");
+      if (!id) continue;
+      const values = [
+        ...(Array.isArray(answer?.selected) ? answer.selected : []),
+        ...(typeof answer?.custom === "string" ? [answer.custom] : []),
+      ].map((entry) => String(entry)).filter((entry) => entry.trim());
+      byId.set(id, values);
+    }
+    return byId;
+  }
+  return new Map();
+}
+
+function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string; detail: string } | null {
+  const questions = Array.isArray(item?.arguments?.questions) ? item.arguments.questions : [];
+  if (!questions.length) return null;
+  const answers = dshQuestionAnswers(item);
+  const lines: string[] = [];
+  for (const question of questions) {
+    const text = compact(question?.question, 600) || compact(question?.header, 160);
+    if (!text) continue;
+    lines.push(text);
+    if (phase === "done") {
+      const values = answers.get(String(question?.id ?? "")) ?? [];
+      lines.push(`Answer: ${values.length ? values.join("; ") : "(not recorded)"}`);
+    }
+  }
+  if (!lines.length) return null;
+  return { label: compact(questions[0]?.header || questions[0]?.question, 200) || "Question", detail: lines.join("\n") };
+}
+
 function activityFromItem(
   item: any,
   phase: "start" | "done",
@@ -1495,6 +1553,13 @@ function activityFromItem(
     return { ...base, kind: "tool", label: compact(`${item.server ?? "tool"}/${item.tool ?? "unknown"}`), expandable: true };
   }
   if (item.type === "dynamicToolCall") {
+    // A DSH ask_user_question call reads as a Question record, not generic DSH/<tool> tool noise.
+    if (item.tool === "ask_user_question") {
+      const record = dshQuestionRecord(item, phase);
+      if (record) {
+        return { ...base, kind: "question", label: record.label, detail: boundedDetail(record.detail, 8_000).text, expandable: false };
+      }
+    }
     return { ...base, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`), expandable: true };
   }
   if (item.type === "collabAgentToolCall" || item.type === "subAgentActivity") {
@@ -1959,6 +2024,7 @@ function normalizeInputQuestions(params: JsonObject): PocketInputQuestion[] | nu
       question: safeSummary(value.question, 1_000),
       isOther: value.isOther === true,
       isSecret: value.isSecret === true,
+      multiSelect: value.multiSelect === true,
       options,
     });
   }
@@ -3559,29 +3625,54 @@ export class MachineRuntime {
     for (const [questionIndex, question] of questions.entries()) {
       const submission = submissions.get(question.id);
       if (!submission) throw new Error("Answer every question before sending");
-      let answer = "";
+      const answerList: string[] = [];
       if (question.options) {
-        if (submission.type === "option") {
+        if (question.multiSelect) {
+          // A multi-select answer is the selected option labels plus an optional non-empty Other.
+          if (submission.type !== "options" || !Array.isArray(submission.optionIndices)) {
+            throw new Error(`Choose a valid option for ${question.header || "the question"}`);
+          }
+          const picked = new Set<number>();
+          for (const value of submission.optionIndices) {
+            const index = Number(value);
+            if (!Number.isInteger(index) || index < 0 || index >= question.options.length) {
+              throw new Error(`Choose a valid option for ${question.header || "the question"}`);
+            }
+            picked.add(index);
+          }
+          // Option order, not submission order, so the recorded answer is stable.
+          for (const index of [...picked].sort((a, b) => a - b)) {
+            answerList.push(String(pending.params.questions[questionIndex].options[index].label));
+          }
+          if (question.isOther && typeof submission.value === "string" && submission.value.trim()) {
+            answerList.push(submission.value.replace(/\r\n/g, "\n"));
+          }
+          if (answerList.length === 0) {
+            throw new Error(`Choose a valid option for ${question.header || "the question"}`);
+          }
+        } else if (submission.type === "option") {
           const index = Number(submission.optionIndex);
           if (!Number.isInteger(index) || index < 0 || index >= question.options.length) {
             throw new Error(`Choose a valid option for ${question.header || "the question"}`);
           }
-          answer = String(pending.params.questions[questionIndex].options[index].label);
+          answerList.push(String(pending.params.questions[questionIndex].options[index].label));
         } else if (submission.type === "other" && question.isOther && typeof submission.value === "string") {
-          answer = submission.value.replace(/\r\n/g, "\n");
+          answerList.push(submission.value.replace(/\r\n/g, "\n"));
         } else {
           throw new Error(`Choose a valid option for ${question.header || "the question"}`);
         }
       } else if (submission.type === "text" && typeof submission.value === "string") {
-        answer = submission.value.replace(/\r\n/g, "\n");
+        answerList.push(submission.value.replace(/\r\n/g, "\n"));
       } else {
         throw new Error(`Enter a valid answer for ${question.header || "the question"}`);
       }
-      if (!answer.trim()) throw new Error(`Answer ${question.header || "every question"} before sending`);
-      if (answer.length > MAX_INPUT_ANSWER_LENGTH) {
-        throw new Error(`An answer exceeds ${MAX_INPUT_ANSWER_LENGTH.toLocaleString()} characters`);
+      for (const answer of answerList) {
+        if (!answer.trim()) throw new Error(`Answer ${question.header || "every question"} before sending`);
+        if (answer.length > MAX_INPUT_ANSWER_LENGTH) {
+          throw new Error(`An answer exceeds ${MAX_INPUT_ANSWER_LENGTH.toLocaleString()} characters`);
+        }
       }
-      answers[question.id] = { answers: [answer] };
+      answers[question.id] = { answers: answerList };
     }
 
     visible.resolving = true;

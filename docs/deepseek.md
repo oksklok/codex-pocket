@@ -66,7 +66,7 @@ Optional telemetry, incremental session-log uploads and plugin-inventory request
 
 ## Controls and limitations
 
-The catalog comes from the pinned DSH adapter: the tested runtime exposed `deepseek-flash` and `deepseek-v4-pro`, with Off/Low/High/Max reasoning. Ask maps to DSH `workspace-write` plus `ask`; Full access maps explicitly to `danger-full-access` plus `never`. Conflicting or unsupported permission mappings fail closed. Automatic approval review is not configured. DSH's one-shot approvals use Pocket's existing approval surface; compatible single-selection/free-text questions use its existing input surface. Questions exceeding Pocket's existing limits (three single-selection questions, twenty options each) are rejected rather than truncated.
+The catalog comes from the pinned DSH adapter: the tested runtime exposed `deepseek-flash` and `deepseek-v4-pro`, with Off/Low/High/Max reasoning. Ask maps to DSH `workspace-write` plus `ask`; Full access maps explicitly to `danger-full-access` plus `never`. Conflicting or unsupported permission mappings fail closed. Automatic approval review is not configured. DSH's one-shot approvals use Pocket's existing approval surface; compatible choice or free-text questions, single- or multi-select, use its existing input surface. Questions exceeding Pocket's existing limits (three questions, twenty options each) are rejected rather than truncated.
 
 Create/resume/history, rename, archive/unarchive, task switching, messages/activity, Stop, queue/steer, image input and staged files use the adapter. DSH's native `web_search` appears as search activity; `web_fetch` and other native tools use existing tool activity/details. Compaction stays inside DSH and its lifecycle maps to existing compaction activity.
 

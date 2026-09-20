@@ -690,12 +690,9 @@ export function apply(ctx) {
   }
   ctx.on("user-questions/request", async (req, next) => {
     if (!req.agent || !/^dsh-/.test(req.agent.id)) return next();
-    if (
-      req.questions.length > 3 ||
-      req.questions.some((q) => q.multiSelect || (q.options?.length ?? 0) > 20)
-    )
+    if (req.questions.length > 3 || req.questions.some((q) => (q.options?.length ?? 0) > 20))
       throw new Error(
-        "Pocket supports at most three single-selection DSH questions with at most twenty options each",
+        "Pocket supports at most three DSH questions with at most twenty options each",
       );
     const result = await humanRequest(
       "item/tool/requestUserInput",
@@ -709,6 +706,7 @@ export function apply(ctx) {
           header: q.header ?? "Question",
           question: [q.question, q.detail].filter(Boolean).join("\n\n"),
           isOther: true,
+          multiSelect: q.multiSelect === true,
           options: q.options?.map((o) => ({
             ...o,
             description: o.description ?? "",

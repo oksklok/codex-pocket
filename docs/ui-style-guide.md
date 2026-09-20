@@ -199,7 +199,7 @@ code and tool output are never rewritten to match it.
 
 - **Title Case** for dialog headings, action labels, and compact status labels: "Rename Task",
   "Cancel Queued Message?", "Clear Unfinished Goal?", "New Task", "Answer", "Steer Now",
-  "Turn Paused", "Waiting for Approval", "Working", "Tasks Unavailable".
+  "Waiting", "Working", "Tasks Unavailable".
 - **Sentence case** for explanatory text, hints and user-facing errors: "Clear the current draft
   before editing the queued message.", "Open elsewhere. Close it and retry.", "Could not load
   history. Check the connection and try again."
@@ -244,7 +244,8 @@ status paragraph is hidden. Copy rules already settled on:
 Task Details → Display exposes seven shared filters in this order: Command, Tool, Search, File
 Changes, Subagents, Image, Context Compaction. Each filters its own activity kind; a control is
 hidden only when the runtime disables the feature and the task has no such activity, so unknown
-capability never hides one. "Show All"/"Hide All" act only on the visible categories.
+capability never hides one. "Show All"/"Hide All" act only on the visible categories. Reasoning,
+Review and an answered question sit outside the filters and always render.
 
 Each category owns its activity color token in both themes, and distinct categories stay distinct:
 Command (`--activity-command`, amber) and Tool (`--activity-tool`, steel blue) are deliberately

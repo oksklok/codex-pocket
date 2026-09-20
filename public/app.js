@@ -304,8 +304,8 @@ const phaseLabels = {
   connecting: "Connecting",
   unavailable: "Unavailable",
   working: "Working",
-  waiting_input: "Turn Paused",
-  waiting_permission: "Waiting for Approval",
+  waiting_input: "Waiting",
+  waiting_permission: "Waiting",
   done: "Done",
   stopped: "Stopped",
   failed: "Failed",
@@ -499,8 +499,8 @@ function saveDisplayPreferences() {
 }
 
 function activityVisible(activity) {
-  // Reasoning and Review are parsed and rendered but are not part of the Display controls.
-  if (activity.kind === "reasoning" || activity.kind === "review") return true;
+  // Reasoning, Review and Question are parsed and rendered but are not part of the Display controls.
+  if (activity.kind === "reasoning" || activity.kind === "review" || activity.kind === "question") return true;
   if (activity.kind === "files") return displayPreferences.files;
   if (activity.kind === "collaboration") return displayPreferences.collaboration;
   if (activity.kind === "image") return displayPreferences.images;
@@ -1791,18 +1791,42 @@ function inputDraft(requestId, questionId) {
   };
 }
 
+// One question's draft is a single value: { type: "option", optionIndex } or { type: "other", value }
+// for a single choice, { type: "options", optionIndices, value } for a multi-select (value carries the
+// optional Other text), and { type: "text", value } for free text. This turns a complete draft into
+// the submission payload, or null while the answer is still incomplete.
+function structuredInputAnswer(question, value) {
+  if (Array.isArray(question.options)) {
+    if (question.multiSelect) {
+      if (value?.type !== "options") return null;
+      const optionIndices = [...new Set(Array.isArray(value.optionIndices) ? value.optionIndices : [])]
+        .filter((index) => Number.isInteger(index) && index >= 0 && index < question.options.length)
+        .sort((a, b) => a - b);
+      const other = question.isOther ? String(value.value || "").trim() : "";
+      if (!optionIndices.length && !other) return null;
+      return { questionId: question.id, type: "options", optionIndices, ...(other ? { value: String(value.value).replace(/\r\n/g, "\n") } : {}) };
+    }
+    if (value?.type === "option" && Number.isInteger(value.optionIndex)
+      && value.optionIndex >= 0 && value.optionIndex < question.options.length) {
+      return { questionId: question.id, type: "option", optionIndex: value.optionIndex };
+    }
+    if (value?.type === "other" && question.isOther && String(value.value || "").trim()) {
+      return { questionId: question.id, type: "other", value: value.value };
+    }
+    return null;
+  }
+  if (value?.type === "text" && String(value.value || "").trim()) {
+    return { questionId: question.id, type: "text", value: value.value };
+  }
+  return null;
+}
+
 function renderStructuredInput(pending) {
   const heading = document.createElement("div");
   heading.className = "approval-heading";
   const title = document.createElement("strong");
   title.textContent = "Input Needed";
   heading.append(title);
-  // A structured input still requires an answer, so only the blocking case carries a status.
-  if (pending.blocking !== false) {
-    const behavior = document.createElement("span");
-    behavior.textContent = "Turn Paused";
-    heading.append(behavior);
-  }
   elements.attentionBanner.append(heading);
 
   if (!pending.supported || !Array.isArray(pending.questions)) {
@@ -1813,11 +1837,27 @@ function renderStructuredInput(pending) {
     return;
   }
   const requestDisabled = Boolean(submittingInputRequestId || pending.resolving || state?.stoppingTurnId);
-
+  // Only the questions scroll; the Answer action stays pinned below that scroll area.
+  const scroller = document.createElement("div");
+  scroller.className = "structured-input-questions";
   const form = document.createElement("form");
   form.className = "structured-input-form";
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "approval-approve";
+  submit.textContent = "Answer";
+  actions.append(submit);
+  // "Answer" is validity-driven: it enables only once every question has a complete answer.
+  const updateSubmit = () => {
+    submit.disabled = requestDisabled
+      || !pending.questions.every((question) => structuredInputAnswer(question, inputDraft(pending.id, question.id).get()) !== null);
+  };
+
   pending.questions.forEach((question, questionIndex) => {
     const draft = inputDraft(pending.id, question.id);
+    const multi = question.multiSelect === true;
     const fieldset = document.createElement("fieldset");
     fieldset.className = "input-question";
     const legend = document.createElement("legend");
@@ -1830,16 +1870,28 @@ function renderStructuredInput(pending) {
     if (Array.isArray(question.options)) {
       const choices = document.createElement("div");
       choices.className = "input-choices";
+      const chosen = () => {
+        const value = draft.get();
+        return multi && value?.type === "options" && Array.isArray(value.optionIndices) ? value.optionIndices : [];
+      };
       question.options.forEach((option, optionIndex) => {
         const row = document.createElement("label");
         row.className = "input-choice";
-        const radio = document.createElement("input");
-        radio.type = "radio";
-        radio.name = `input-${questionIndex}`;
-        radio.checked = draft.get()?.type === "option" && draft.get()?.optionIndex === optionIndex;
-        radio.disabled = requestDisabled;
-        radio.addEventListener("change", () => {
-          if (radio.checked) draft.set({ type: "option", optionIndex });
+        const input = document.createElement("input");
+        input.type = multi ? "checkbox" : "radio";
+        input.name = `input-${questionIndex}`;
+        input.checked = multi ? chosen().includes(optionIndex)
+          : draft.get()?.type === "option" && draft.get()?.optionIndex === optionIndex;
+        input.disabled = requestDisabled;
+        input.addEventListener("change", () => {
+          if (multi) {
+            const next = new Set(chosen());
+            if (input.checked) next.add(optionIndex); else next.delete(optionIndex);
+            draft.set({ type: "options", optionIndices: [...next].sort((a, b) => a - b), value: draft.get()?.value || "" });
+          } else if (input.checked) {
+            draft.set({ type: "option", optionIndex });
+          }
+          updateSubmit();
         });
         const copy = document.createElement("span");
         const label = document.createElement("strong");
@@ -1850,17 +1902,19 @@ function renderStructuredInput(pending) {
           description.textContent = option.description;
           copy.append(description);
         }
-        row.append(radio, copy);
+        row.append(input, copy);
         choices.append(row);
       });
       if (question.isOther) {
         const row = document.createElement("label");
         row.className = "input-choice input-other";
-        const radio = document.createElement("input");
-        radio.type = "radio";
-        radio.name = `input-${questionIndex}`;
-        radio.checked = draft.get()?.type === "other";
-        radio.disabled = requestDisabled;
+        const toggle = document.createElement("input");
+        toggle.type = multi ? "checkbox" : "radio";
+        toggle.name = `input-${questionIndex}`;
+        toggle.checked = multi
+          ? Boolean(draft.get()?.type === "options" && String(draft.get()?.value || "").trim())
+          : draft.get()?.type === "other";
+        toggle.disabled = requestDisabled;
         const copy = document.createElement("span");
         const label = document.createElement("strong");
         label.textContent = "Other";
@@ -1869,17 +1923,29 @@ function renderStructuredInput(pending) {
         other.maxLength = 4000;
         other.autocomplete = "off";
         other.placeholder = "Type another answer";
-        other.value = draft.get()?.type === "other" ? draft.get().value || "" : "";
+        other.value = multi
+          ? (draft.get()?.type === "options" ? draft.get()?.value || "" : "")
+          : (draft.get()?.type === "other" ? draft.get().value || "" : "");
         other.disabled = requestDisabled;
         const selectOther = () => {
-          radio.checked = true;
-          draft.set({ type: "other", value: other.value });
+          toggle.checked = true;
+          if (multi) draft.set({ type: "options", optionIndices: chosen(), value: other.value });
+          else draft.set({ type: "other", value: other.value });
+          updateSubmit();
         };
-        radio.addEventListener("change", () => { selectOther(); other.focus({ preventScroll: true }); });
+        toggle.addEventListener("change", () => {
+          if (multi && !toggle.checked) {
+            other.value = "";
+            draft.set({ type: "options", optionIndices: chosen(), value: "" });
+            updateSubmit();
+            return;
+          }
+          selectOther();
+        });
         other.addEventListener("focus", selectOther);
         other.addEventListener("input", selectOther);
         copy.append(label, other);
-        row.append(radio, copy);
+        row.append(toggle, copy);
         choices.append(row);
       }
       fieldset.append(choices);
@@ -1896,26 +1962,19 @@ function renderStructuredInput(pending) {
       answer.placeholder = question.isSecret ? "Enter private answer" : "Type your answer";
       answer.value = draft.get()?.type === "text" ? draft.get().value || "" : "";
       answer.disabled = requestDisabled;
-      answer.addEventListener("input", () => draft.set({ type: "text", value: answer.value }));
+      answer.addEventListener("input", () => { draft.set({ type: "text", value: answer.value }); updateSubmit(); });
       fieldset.append(answer);
     }
-    form.append(fieldset);
+    scroller.append(fieldset);
   });
 
-  const actions = document.createElement("div");
-  actions.className = "approval-actions";
-  const submit = document.createElement("button");
-  submit.type = "submit";
-  submit.className = "approval-approve";
-  submit.textContent = "Answer";
-  submit.disabled = requestDisabled;
-  actions.append(submit);
-  form.append(actions);
+  form.append(scroller, actions);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     submitStructuredInput(pending);
   });
   elements.attentionBanner.append(form);
+  updateSubmit();
 }
 
 let attentionRenderKey = null;
@@ -2114,7 +2173,10 @@ function renderComposer() {
     elements.sendMessage.classList.remove("stop-action");
     elements.sendMessage.disabled = !allowed || !hasText || Boolean(state?.queuedMessage);
   }
-  const capabilityError = !stopping && !resolvingApproval && !submittingInputRequestId
+  // A visible pending card already explains why the composer is blocked, so its capability reason is
+  // not repeated underneath.
+  const pendingCardVisible = (state?.pending || []).length > 0;
+  const capabilityError = !stopping && !resolvingApproval && !submittingInputRequestId && !pendingCardVisible
     && capability?.allowed === false && capability.reason !== "Stopping the active turn…" ? capability.reason : "";
   // With no task selected the conversation already says so; task-specific messages stay suppressed.
   const noTask = !state?.thread;
@@ -2748,6 +2810,7 @@ function activityNode(activity) {
   const labels = {
     command: "Command", tool: "Tool", search: "Search", files: "File Changes",
     reasoning: "Reasoning", collaboration: "Subagents", image: "Image", compaction: "Context Compaction", review: "Review",
+    question: "Question",
   };
   kind.textContent = labels[activity.kind] || "Activity";
   const activityStatus = document.createElement("span");
@@ -3949,29 +4012,11 @@ async function submitStructuredInput(pending) {
   const requestDraft = inputDrafts.get(pending.id) || new Map();
   const answers = [];
   for (const question of pending.questions || []) {
-    const value = requestDraft.get(question.id);
-    if (!value) {
-      composerError = `Answer ${question.header || "every question"} before sending`;
-      renderComposer();
-      return;
-    }
-    if (Array.isArray(question.options)) {
-      if (value.type === "option" && Number.isInteger(value.optionIndex)) {
-        answers.push({ questionId: question.id, type: "option", optionIndex: value.optionIndex });
-      } else if (value.type === "other" && question.isOther && String(value.value || "").trim()) {
-        answers.push({ questionId: question.id, type: "other", value: value.value });
-      } else {
-        composerError = `Choose an answer for ${question.header || "every question"}`;
-        renderComposer();
-        return;
-      }
-    } else if (value.type === "text" && String(value.value || "").trim()) {
-      answers.push({ questionId: question.id, type: "text", value: value.value });
-    } else {
-      composerError = `Answer ${question.header || "every question"} before sending`;
-      renderComposer();
-      return;
-    }
+    const answer = structuredInputAnswer(question, requestDraft.get(question.id));
+    // An incomplete form never reaches here: the Answer action stays disabled. This guard only keeps a
+    // stray submit (such as Enter in a text field) from surfacing validation through composerError.
+    if (!answer) return;
+    answers.push(answer);
   }
 
   submittingInputRequestId = pending.id;

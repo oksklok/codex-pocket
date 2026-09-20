@@ -433,7 +433,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .timeline-activity.collaboration { --activity-color: var(--activity-collaboration); }
 .timeline-activity.search { --activity-color: var(--activity-search); }
 .timeline-activity.image { --activity-color: var(--activity-image); }
-.timeline-activity.compaction, .timeline-activity.review { --activity-color: var(--activity-neutral); }
+.timeline-activity.compaction, .timeline-activity.review, .timeline-activity.question { --activity-color: var(--activity-neutral); }
 .timeline-activity.failed, .timeline-activity.interrupted { --activity-color: var(--danger); }
 .timeline-activity.running .activity-status { color: var(--warning); }
 .timeline-activity.running .activity-status::before {
@@ -544,8 +544,12 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .approval-actions button { min-height: 32px; padding: 5px 11px; border-radius: 7px; cursor: pointer; font-size: var(--text-label); font-weight: 750; }
 .approval-deny { border: 1px solid var(--line); background: var(--surface-strong); color: var(--muted); }
 .approval-approve { border: 1px solid rgba(69,200,138,.4); background: rgba(69,200,138,.17); color: var(--accent); }
+/* The card keeps its bounded height, but only the questions scroll so the Answer action stays put. */
 .structured-input-form {
-  display: grid; gap: 8px; max-height: min(42dvh, 380px); padding-right: 2px;
+  display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; max-height: min(42dvh, 380px);
+}
+.structured-input-questions {
+  display: grid; gap: 8px; min-height: 0; padding-right: 2px;
   overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
 }
 .input-question { min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -586,7 +590,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 /* With no task selected the details pane shows one message instead of stale task controls. */
 .inspector.no-task .metadata, .inspector.no-task .runtime-panel, .inspector.no-task #plan-panel, .inspector.no-task .display-panel { display: none; }
 .shell.no-task .phase-row { display: none; }
-.destination-list, .inspector-scroll, .settings-card, .structured-input-form { overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.destination-list, .inspector-scroll, .settings-card, .structured-input-questions { overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .metadata { display: grid; gap: 8px; margin: 0 0 12px; }
 .metadata div { min-width: 0; padding: 8px; border-radius: var(--control-radius); background: var(--surface-strong); }
 .metadata dt { color: var(--subtle); font-size: var(--text-meta); font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
