@@ -3889,6 +3889,7 @@ function connectEvents() {
   on("error", handleEventError);
   on("snapshot", (event) => { applySnapshot(parseEvent(event)); });
   on("task-status", event => {
+    if (machineDialogTarget && elements.machineDialog.open) void renderMachineRuntimes(machineDialogTarget);
     const value = parseEvent(event);
     const key = draftKey(value.machineId, value.threadId);
     if (Object.hasOwn(value, "terminalResult")) {
@@ -4193,8 +4194,79 @@ function updateMachineDialogActions() {
   elements.machineDialogRemove.disabled = !editing || machineDialogBusy;
 }
 
+let machineRuntimeTimer = null;
+const machineRuntimeUpdates = new Set();
+async function renderMachineRuntimes(target, refresh = false) {
+  const section = document.querySelector("#machine-runtime-details");
+  if (machineDialogTarget !== target || target.mode === "add") return;
+  const group = target.mode === "host" ? "local" : `ssh:${savedMachines()[target.index]?.ssh}`;
+  const entries = machines.filter(machine => (machine.group || machine.id) === group);
+  section.hidden = false;
+  if (!section.children.length) section.textContent = "Checking runtimes…";
+  const results = await Promise.all(entries.map(async machine => {
+    try {
+      const response = await apiFetch(`/api/runtime?machineId=${encodeURIComponent(machine.id)}&refresh=${refresh}`);
+      const detail = await response.json();
+      return { ...detail, machineId: machine.id, provider: machine.provider };
+    } catch (error) { return { machineId: machine.id, provider: machine.provider, error: error.message, status: "Offline" }; }
+  }));
+  if (machineDialogTarget !== target) return;
+  section.replaceChildren();
+  for (const detail of results) {
+    const row = document.createElement("div");
+    row.className = "machine-runtime-row";
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${detail.provider === "deepseek" ? "DSH" : "Codex"} · ${detail.status || "Offline"}`;
+    const versions = document.createElement("p");
+    versions.className = "machine-dialog-help";
+    versions.textContent = `Installed ${detail.installed || "Unavailable"} · Latest ${detail.latest || "Unavailable"}${detail.channel && detail.channel !== "latest" ? ` (${detail.channel})` : ""}`;
+    info.append(title, versions);
+    const updating = machineRuntimeUpdates.has(detail.machineId) || detail.updating;
+    if (detail.error || detail.busy && detail.status === "Running") {
+      const note = document.createElement("p");
+      note.className = "machine-dialog-help";
+      note.textContent = detail.error || "Executing a turn";
+      info.append(note);
+    }
+    row.append(info);
+    if (detail.updateAvailable || updating) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary-button";
+      button.textContent = updating ? "Updating…" : "Update";
+      button.disabled = updating || detail.busy;
+      button.addEventListener("click", async () => {
+        machineRuntimeUpdates.add(detail.machineId);
+        button.disabled = true;
+        button.textContent = "Updating…";
+        try {
+          const response = await apiFetch("/api/runtime/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: detail.machineId }) });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "Runtime update failed");
+        } catch (error) {
+          if (machineDialogTarget === target) elements.machineDialogError.textContent = error.message;
+        } finally {
+          machineRuntimeUpdates.delete(detail.machineId);
+          if (machineDialogTarget === target) await renderMachineRuntimes(target, true);
+        }
+      });
+      row.append(button);
+    }
+    section.append(row);
+  }
+}
+
 function openMachineDialog(target) {
   machineDialogTarget = target;
+  clearInterval(machineRuntimeTimer);
+  const runtimeSection = document.querySelector("#machine-runtime-details");
+  runtimeSection.replaceChildren();
+  runtimeSection.hidden = target.mode === "add";
+  if (target.mode !== "add") {
+    void renderMachineRuntimes(target, true);
+    machineRuntimeTimer = setInterval(() => { void renderMachineRuntimes(target); }, 5000);
+  }
   const host = target.mode === "host";
   const draft = host
     ? { name: machineConfig.localName, ssh: "", wakeMac: "" }
@@ -4297,6 +4369,7 @@ for (const field of [elements.machineDialogName, elements.machineDialogSsh, elem
 elements.machineDialog.addEventListener("close", () => {
   const opener = machineDialogTarget?.opener;
   machineDialogTarget = null;
+  clearInterval(machineRuntimeTimer);
   machineDialogBusy = false;
   elements.machineDialogSubmit.disabled = false;
   if (opener?.isConnected) opener.focus({ preventScroll: true });

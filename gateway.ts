@@ -993,6 +993,35 @@ function localRuntimeReason(error: string): string {
   return compact(error.replace(/^Error:\s*/, ""), 180);
 }
 
+// One short-lived machine-side command; SSH failure is never interpreted as daemon absence.
+export async function manageRuntime(ssh: string | null, request: JsonObject): Promise<any> {
+  const source = readFileSync(new URL("./runtime-management.mjs", import.meta.url), "utf8");
+  const script = Buffer.from(source + `\ntry { console.log(JSON.stringify({result:await manage(${JSON.stringify(request)})})); } catch(e) { console.log(JSON.stringify({error:e.message})); }\n`);
+  // Read the known byte count: some SSH servers retain stdin after the sender ends it.
+  const loader = `const b=Buffer.alloc(${script.length});let n=0;while(n<b.length){const r=require('fs').readSync(0,b,n,b.length-n,null);if(!r)throw Error('Incomplete runtime command');n+=r}import('data:text/javascript;base64,'+b.toString('base64'))`;
+  return new Promise((resolve, reject) => {
+    const child = spawn(ssh ? process.env.SSH_BIN || "ssh" : process.execPath,
+      ssh ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ssh, `node -e "${loader}"`] : ["-e", loader],
+      { stdio: ["pipe", "pipe", "pipe"], env: withoutDeepseekKey() });
+    let output = "", error = "";
+    const timer = setTimeout(() => { child.kill(); reject(new Error("Runtime operation timed out")); }, 360_000);
+    child.stdout.on("data", chunk => { output = (output + chunk).slice(-20000); });
+    child.stderr.on("data", chunk => { error = (error + chunk).slice(-2000); });
+    child.on("error", failure => { clearTimeout(timer); reject(failure); });
+    child.stdin.on("error", () => {});
+    child.on("close", code => {
+      clearTimeout(timer);
+      try {
+        if (code !== 0) throw new Error(error.trim() || `Runtime command exited ${code}`);
+        const value = JSON.parse(output.trim().split("\n").at(-1)!);
+        if (value.error) throw new Error(value.error);
+        resolve(value.result);
+      } catch (failure) { reject(failure); }
+    });
+    child.stdin.end(script);
+  });
+}
+
 const TRANSPORT_HANDSHAKE_MS = 15_000;
 
 function connectProxy(
@@ -1967,6 +1996,9 @@ export class MachineRuntime {
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
+  private runtimeUpdating = false;
+  private runtimeUpdateError: string | null = null;
+  private runtimeVersions: any = null;
   private daemonStart: ReturnType<typeof execFile> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelayIndex = 0;
@@ -2654,20 +2686,12 @@ export class MachineRuntime {
       try {
         await rpc.connect(this.definition.ssh ? undefined : this.options.ws, this.definition.ssh ?? undefined);
       } catch (error) {
-        // Only the local proxy's missing shared socket warrants starting its daemon.
-        if (!current() || this.deepseek || this.definition.ssh || this.options.ws || !/failed to connect to socket/i.test(String(error)) || !/No such file/i.test(String(error))) throw error;
-        try {
-          await new Promise<void>((resolve, reject) => {
-            const starting = execFile(process.env.CODEX_BIN || "codex", ["app-server", "daemon", "start"], { timeout: 15_000, env: withoutDeepseekKey() }, (failure) => {
-              if (this.daemonStart === starting) this.daemonStart = null;
-              failure ? reject(failure) : resolve();
-            });
-            this.daemonStart = starting;
-          });
-        } catch { throw error; }
+        if (!current() || this.deepseek || this.options.ws) throw error;
+        // The machine-side socket probe distinguishes absent/refused from permissions and timeouts.
+        // It is reached only after a proxy failure; SSH must independently succeed to run it.
+        await manageRuntime(this.definition.ssh, { provider: "openai", action: "start" });
         if (!current()) throw error;
-        // One retry only; failure flows to the normal reconnect backoff below.
-        await rpc.connect();
+        await rpc.connect(undefined, this.definition.ssh ?? undefined);
       }
       if (!current()) return;
       const initialized = await rpc.request("initialize", {
@@ -2781,7 +2805,7 @@ export class MachineRuntime {
   }
 
   private scheduleReconnect(): void {
-    if (this.shuttingDown || this.reconnectTimer) return;
+    if (this.shuttingDown || this.runtimeUpdating || this.runtimeUpdateError || this.reconnectTimer) return;
     const delays = [5_000, 10_000, 20_000, 30_000, 60_000];
     const delay = delays[this.reconnectDelayIndex];
     this.reconnectDelayIndex = Math.min(this.reconnectDelayIndex + 1, delays.length - 1);
@@ -2789,6 +2813,82 @@ export class MachineRuntime {
       this.reconnectTimer = null;
       this.connect().catch((error) => console.error(error));
     }, delay);
+  }
+
+  private runtimeRequest(action: string, extra: JsonObject = {}): Promise<any> {
+    return manageRuntime(this.definition.ssh, { action, provider: this.deepseek ? "deepseek" : "openai",
+      path: this.definition.dshPath ?? fileURLToPath(new URL("./dsh/launch.mjs", import.meta.url)), ...extra });
+  }
+
+  private async runtimeBusy(): Promise<boolean> {
+    if (!this.rpc || !this.state.connected) throw new Error("Cannot verify whether the runtime is idle");
+    let cursor: string | undefined;
+    do {
+      const page = await this.rpc.request("thread/loaded/list", { cursor });
+      for (const value of page.data ?? []) {
+        const result = await this.rpc.request("thread/read", { threadId: typeof value === "string" ? value : value.id, includeTurns: false });
+        if (!result.thread?.status) throw new Error("Runtime did not report task status");
+        if (result.thread.status.type === "active") return true;
+      }
+      cursor = page.nextCursor || undefined;
+    } while (cursor);
+    return false;
+  }
+
+  async runtimeDetails(refresh = true): Promise<JsonObject> {
+    let error = this.runtimeUpdateError;
+    if (refresh && !this.runtimeUpdating) {
+      try { this.runtimeVersions = await this.runtimeRequest("inspect"); }
+      catch (failure) { error = String(failure instanceof Error ? failure.message : failure); }
+    }
+    let busy = true;
+    try { busy = await this.runtimeBusy(); } catch (failure) { if (this.state.connected && !error) error = failure instanceof Error ? failure.message : String(failure); }
+    return { machineId: this.definition.id, provider: this.deepseek ? "deepseek" : "openai",
+      ...this.runtimeVersions, status: this.state.connected ? "Running" : "Offline", busy,
+      updating: this.runtimeUpdating, error: compact(error || this.runtimeVersions?.error || (!this.state.connected ? this.technicalConnectionError : ""), 400) || null };
+  }
+
+  updateRuntime(): Promise<JsonObject> {
+    const operation = this.selectionQueue.then(async () => {
+      if (this.runtimeUpdating) throw new Error("Runtime update is already in progress");
+      if (await this.runtimeBusy()) throw new Error("Runtime is executing a turn; wait until it is idle");
+      const versions = await this.runtimeRequest("inspect");
+      if (!versions.updateAvailable) throw new Error(versions.error || "Runtime is already up to date");
+      // Recheck after the package-source request, before changing the installation.
+      if (await this.runtimeBusy()) throw new Error("Runtime is executing a turn; wait until it is idle");
+      this.runtimeUpdating = true;
+      this.runtimeUpdateError = null;
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      try {
+        // DSH's machine-side shutdown checks busy atomically. Codex stays available during download
+        // so work accepted through another client can be detected before its restart.
+        if (this.deepseek) { this.state.connected = false; this.broadcast("status", this.statusPayload()); }
+        await this.runtimeRequest("install", { version: versions.latest });
+        if (!this.deepseek) {
+          if (await this.runtimeBusy()) throw new Error("CLI installed; restart deferred because Codex became busy");
+          this.state.connected = false;
+          this.broadcast("status", this.statusPayload());
+          await this.runtimeRequest("restart");
+        }
+        this.runtimeUpdateError = null;
+        await this.connect();
+        if (!this.state.connected) throw new Error(this.technicalConnectionError || "Updated runtime could not reconnect");
+        this.runtimeVersions = await this.runtimeRequest("inspect");
+        return await this.runtimeDetails(false);
+      } catch (failure) {
+        const error = failure instanceof Error ? failure.message : String(failure);
+        this.runtimeUpdateError = error;
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        this.state.connectionError = compact(error, 400);
+        if (!this.state.connected) this.state.phase = "unavailable";
+        this.broadcast("snapshot", this.snapshot());
+        throw new Error(compact(error, 400));
+      } finally { this.runtimeUpdating = false; }
+    });
+    this.selectionQueue = operation.then(() => {}, () => {});
+    return operation;
   }
 
   async wake(): Promise<JsonObject> {
@@ -4522,6 +4622,7 @@ export class MachineRuntime {
   }
 
   private async startQueuedMessage(threadId: string, tracked = false): Promise<boolean> {
+    if (this.runtimeUpdating) return false;
     if (this.startingQueuedMessage) return false;
     const queued = this.state.queuedMessage;
     if (!queued || queued.deliveryUnknown || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return false;
@@ -4623,6 +4724,7 @@ export class MachineRuntime {
   }
 
   private messageCapability(): JsonObject {
+    if (this.runtimeUpdating) return { allowed: false, mode: null, reason: "Runtime is updating" };
     if (!this.state.connected || !this.rpc) return { allowed: false, mode: null, reason: "Codex is disconnected" };
     if (!this.state.thread) return { allowed: false, mode: null, reason: "No task is selected" };
     if (this.state.stoppingTurnId) return { allowed: false, mode: null, reason: "Stopping the active turn…" };
@@ -4792,6 +4894,12 @@ export class PocketGateway {
       ...runtime.machineSummary(),
       selected: runtime.state.machineId === this.selectedMachineId,
     }));
+  }
+
+  async runtimeManagement(machineId: unknown, update = false, refresh = true): Promise<JsonObject> {
+    const runtime = typeof machineId === "string" ? this.runtimes.get(machineId) : undefined;
+    if (!runtime) throw new Error("Machine runtime is not configured");
+    return update ? runtime.updateRuntime() : runtime.runtimeDetails(refresh);
   }
 
   async wakeMachine(machineId: unknown): Promise<JsonObject> {
@@ -5263,7 +5371,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
 const JSON_POST_ROUTES = new Set([
   "/api/login", "/api/settings", "/api/tasks", "/api/message", "/api/turn/interrupt",
   "/api/message/queue", "/api/thread/settings", "/api/thread/cwd", "/api/thread/access", "/api/approval",
-  "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake", "/api/goal",
+  "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake", "/api/goal", "/api/runtime/update",
 ]);
 
 function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
@@ -5566,6 +5674,13 @@ export async function handleRequest(
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway);
     }
+    return;
+  }
+  if ((method === "GET" && url.pathname === "/api/runtime") || (method === "POST" && url.pathname === "/api/runtime/update")) {
+    try {
+      const machineId = method === "POST" ? (await readJsonBody(request)).machineId : url.searchParams.get("machineId");
+      sendJson(response, 200, await gateway.runtimeManagement(machineId, method === "POST", url.searchParams.get("refresh") !== "false"), gateway);
+    } catch (error) { sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway); }
     return;
   }
   if (method === "POST" && url.pathname === "/api/machines/wake") {

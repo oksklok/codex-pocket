@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 // Pocket's existing event vocabulary, projected from DSH's durable facts.
-export const DSH_VERSION = "0.1.6-alpha.2";
+export const DSH_VERSION = JSON.parse(readFileSync(new URL("./node_modules/@deepseek-ai/dsh/package.json", import.meta.url), "utf8")).version;
 // Bumped whenever the gateway and the execution-side adapter must be upgraded together. The gateway
 // refuses an adapter it does not understand so a partial rollout cannot activate a mismatch.
 export const DSH_ADAPTER_PROTOCOL = 2;

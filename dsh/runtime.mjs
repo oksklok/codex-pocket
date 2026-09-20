@@ -20,7 +20,7 @@ import {
   chmodSync,
   existsSync,
 } from "node:fs";
-import { DSH_VERSION, DSH_ADAPTER_PROTOCOL } from "./projection.mjs";
+import { DSH_ADAPTER_PROTOCOL } from "./projection.mjs";
 import { RequestRouter } from "./router.mjs";
 import {
   DSH_HOME as home,
@@ -58,12 +58,12 @@ function alive(pid) {
   }
 }
 
-// A complete, loadable installation: the pinned runtime, every adapter file, and both SDK packages
+// A complete, loadable installation: the installed runtime, every adapter file, and both SDK packages
 // the adapter imports. Used by `--probe` before and after an activation.
 function installationReady() {
   try {
     const version = JSON.parse(readFileSync(join(root, "node_modules/@deepseek-ai/dsh/package.json"), "utf8")).version;
-    if (version !== DSH_VERSION) return { ok: false, reason: `dsh-version-${version}` };
+    if (!version) return { ok: false, reason: "dsh-version-missing" };
     if (!existsSync(join(root, "node_modules/@deepseek-ai/dsh-sdk-protocol/package.json"))) return { ok: false, reason: "sdk-protocol-missing" };
   } catch {
     return { ok: false, reason: "dsh-missing" };

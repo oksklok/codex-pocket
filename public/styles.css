@@ -925,3 +925,9 @@ select:focus-visible { background-color: var(--selected-bg); }
 /* The image viewer stays dark in both themes, so its close control brightens to a still-dark shade
    that keeps the white icon readable. */
 .image-viewer button:focus-visible { background-color: #444444; }
+
+.machine-runtime-details { border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.machine-runtime-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.machine-runtime-row > div { min-width: 0; }
+.machine-runtime-row .machine-dialog-help { margin: 4px 0 0; overflow-wrap: anywhere; }
+.machine-runtime-row button { flex-shrink: 0; }

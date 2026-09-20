@@ -5,7 +5,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY gateway.ts dsh.ts ./
+COPY gateway.ts dsh.ts runtime-management.mjs ./
 # Remote DSH runs on the SSH execution machine; the image needs only the adapter.
 # No DSH runtime dependency or provider credential is installed on the gateway.
 COPY deepseek.ts deepseek-server.mjs deepseek-models.json ./
