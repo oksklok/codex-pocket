@@ -742,7 +742,8 @@ const sshBase = () => [
 function sshArgs(machine, script) {
   const base = sshBase();
   if (isWindowsPath(machine.dshPath)) return [...base, machine.ssh, powershellCommand(script)];
-  return [...base, machine.ssh, script];
+  // The generated POSIX scripts require sh word splitting (not the account's default zsh).
+  return [...base, machine.ssh, `sh -c ${posixQuote(script)}`];
 }
 
 const ssh = (machine, script, options) => run("ssh", sshArgs(machine, script), options);
