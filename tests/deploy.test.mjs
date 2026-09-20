@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ADAPTER_FILES, FEATURES, localManifest, planMachine,
+  ADAPTER_FILES, FEATURES, liveStatusFrom, localManifest, planMachine,
   posixActivateScript, posixRollbackScript, posixStageScript, windowsActivateScript, windowsRollbackScript, windowsStageScript,
 } from "../scripts/deploy.mjs";
 
@@ -102,6 +102,25 @@ test("planMachine keeps old, busy and protocol-mismatched installations pending"
   assert.equal(planMachine({ current: modern({ bundle: "new" }), manifest, liveStatus: "idle", confirmIdle: false, allowProtocolChange: false }).action, "current");
 });
 
+test("an unproven runtime status is never treated as idle", () => {
+  // Only an explicit boolean answer or a genuinely unreachable endpoint counts as idle.
+  assert.equal(liveStatusFrom('{"ok":true,"result":{"busy":true,"protocol":2}}'), "busy");
+  assert.equal(liveStatusFrom('{"ok":true,"result":{"busy":false,"protocol":2}}'), "idle");
+  assert.equal(liveStatusFrom('{"ok":false,"reason":"unreachable"}'), "idle");
+  assert.equal(liveStatusFrom('{"ok":false,"reason":"timeout"}'), "unknown");
+  assert.equal(liveStatusFrom('{"ok":false,"reason":"error"}'), "unknown");
+  assert.equal(liveStatusFrom("not json"), "unknown");
+  assert.equal(liveStatusFrom(""), "unknown");
+
+  const manifest = { bundle: "new", protocol: 2, lockHash: "lock" };
+  const current = { protocol: 2, bundle: "old", lockHash: "lock", features: [...FEATURES] };
+  const held = planMachine({ current, manifest, liveStatus: "unknown", confirmIdle: false, allowProtocolChange: false });
+  assert.equal(held.action, "hold");
+  const confirmed = planMachine({ current, manifest, liveStatus: "unknown", confirmIdle: true, allowProtocolChange: false });
+  assert.equal(confirmed.action, "update");
+  assert.equal(confirmed.stopLive, false, "an unproven status never authorizes stopping the runtime");
+});
+
 test("generated activation scripts verify before and after the swap and never mask failures", () => {
   const stage = posixStageScript({ bundleRoot: "/b", staging: "/b/.pocket-staging-x", installDeps: true });
   assert.match(stage, /set -eu/);
@@ -116,6 +135,7 @@ test("generated activation scripts verify before and after the swap and never ma
   assert.match(activate, /rolledBack/);
   assert.doesNotMatch(activate, /chmod 644 "\$DSH\/"\*/);
   assert.doesNotMatch(activate, /\|\| true/);
+  assert.doesNotMatch(activate, /reason==='timeout'/, "a timed-out stop is not accepted as idle");
   const windowsStage = windowsStageScript({ bundleRoot: "C:\\b", staging: "C:\\b\\stage", installDeps: true });
   assert.match(windowsStage, /\$LASTEXITCODE/);
   assert.match(windowsStage, /OpenStandardInput/);
@@ -124,6 +144,7 @@ test("generated activation scripts verify before and after the swap and never ma
   assert.match(windowsActivate, /\$LASTEXITCODE/);
   assert.match(windowsActivate, /Restore/);
   assert.match(windowsActivate, /\.pocket-deploying/);
+  assert.doesNotMatch(windowsActivate, /reason -eq 'timeout'/, "a timed-out stop is not accepted as idle");
 });
 
 test("the runtime verifies installed bytes against a manifest", () => {

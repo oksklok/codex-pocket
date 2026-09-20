@@ -46,7 +46,9 @@ export const FEATURES = ["control-socket", "integrity-verify", "idle-only-shutdo
 // the same text is safe inside a POSIX double-quoted string and a PowerShell double-quoted string.
 const JS_READ = "try{process.stdout.write(require('fs').readFileSync(process.argv[1],'utf8'))}catch(e){process.stdout.write('null')}";
 const JS_WRITE_MARKER = "require('fs').writeFileSync(process.argv[1],JSON.stringify({at:Date.now()}),{mode:384})";
-const JS_STOP_DECISION = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};if(v&&v.ok===true&&v.result&&v.result.accepted===true)process.stdout.write('stopped');else if(v&&v.reason==='busy')process.stdout.write('busy');else if(v&&(v.reason==='unreachable'||v.reason==='timeout'))process.stdout.write('stopped');else process.stdout.write('error')})";
+// Only an accepted stop or a genuinely unreachable endpoint permits the swap. A timeout or an
+// unparsable answer is an error, so activation never proceeds on an unproven idle state.
+const JS_STOP_DECISION = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};if(v&&v.ok===true&&v.result&&v.result.accepted===true)process.stdout.write('stopped');else if(v&&v.reason==='busy')process.stdout.write('busy');else if(v&&v.reason==='unreachable')process.stdout.write('stopped');else process.stdout.write('error')})";
 
 const log = (message) => process.stdout.write(`${message}\n`);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -80,8 +82,19 @@ export function localManifest() {
   return { protocol: protocolFrom(readFileSync(join(ROOT, "dsh/projection.mjs"), "utf8"), "dsh/projection.mjs"), bundle, lockHash: files["dsh/package-lock.json"], features: FEATURES, files };
 }
 
-// Decide what can happen on one machine without touching it. `liveStatus` is "busy" or "idle" only
-// when the installed adapter reported a capability that makes the reading trustworthy.
+// Turn a `runtime.mjs --status` result into a trust level. Only an explicit boolean negated answer
+// or a genuinely unreachable endpoint counts as idle; anything else (a malformed line, a timeout, a
+// refused control method) stays "unknown" and never authorizes stopping a live runtime.
+export function liveStatusFrom(stdout) {
+  const parsed = parseLastJson(stdout);
+  if (parsed?.result?.busy === true) return "busy";
+  if (parsed?.result && typeof parsed.result.busy === "boolean") return "idle";
+  if (parsed?.ok === false && parsed.reason === "unreachable") return "idle";
+  return "unknown";
+}
+
+// Decide what can happen on one machine without touching it. `liveStatus` is "busy", "idle" or
+// "unknown" only when the installed adapter reported a capability that makes the reading meaningful.
 export function planMachine({ current, manifest, liveStatus, confirmIdle, allowProtocolChange }) {
   const features = Array.isArray(current?.features) ? current.features : [];
   const upToDate = Boolean(
@@ -100,9 +113,11 @@ export function planMachine({ current, manifest, liveStatus, confirmIdle, allowP
     return { action: "update", stopLive: false, protocolChanged };
   }
   if (liveStatus === "busy") return { action: "hold", protocolChanged, reason: "runtime busy" };
-  // A trustworthy adapter with no reachable control socket has no running runtime, so no accepted
-  // work exists; a reachable idle one is safe to stop atomically inside activation.
-  return { action: "update", stopLive: liveStatus === "idle", protocolChanged };
+  if (liveStatus !== "idle") {
+    if (!confirmIdle) return { action: "hold", protocolChanged, reason: "runtime idle state could not be established; drain the machine, then pass --confirm-idle" };
+    return { action: "update", stopLive: false, protocolChanged };
+  }
+  return { action: "update", stopLive: true, protocolChanged };
 }
 
 // ── Remote script builders (exported for tests) ─────────────────────────────
@@ -190,7 +205,7 @@ export function posixActivateScript({ bundleRoot, dshDir, staging, stopLive }) {
     ...ADAPTER_NAMES.map((file) => `cp -f "$STAGE/dsh/${file}" "$DSH/${file}"`),
     'cp -f "$STAGE/deepseek.ts" "$BUNDLE/deepseek.ts"',
     'cp -f "$STAGE/pocket-manifest.json" "$DSH/.pocket-adapter.json"',
-    'chmod 755 "$DSH"',
+    'chmod 755 "$BUNDLE" "$DSH"',
     ...ADAPTER_NAMES.map((file) => `chmod 644 "$DSH/${file}"`),
     'chmod 644 "$DSH/.pocket-adapter.json"',
     'if [ -d "$STAGE/dsh/node_modules" ]; then rm -rf "$PREV/node_modules"; if [ -d "$DSH/node_modules" ]; then mv "$DSH/node_modules" "$PREV/node_modules"; fi; mv "$STAGE/dsh/node_modules" "$DSH/node_modules"; fi',
@@ -238,7 +253,7 @@ export function windowsActivateScript({ bundleRoot, dshDir, staging, stopLive })
     "    $stopResult = $null",
     "    try { $stopResult = (($stopJson | Select-Object -Last 1) | ConvertFrom-Json) } catch {}",
     "    if ($stopResult -and $stopResult.reason -eq 'busy') { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"busy\"}'; exit 3 }",
-    "    if ($stopCode -ne 0 -and -not ($stopResult -and ($stopResult.reason -eq 'unreachable' -or $stopResult.reason -eq 'timeout'))) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
+    "    if ($stopCode -ne 0 -and -not ($stopResult -and ($stopResult.reason -eq 'unreachable'))) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
     "  }",
     "  if (Test-Path -LiteralPath $PREV) { Remove-Item -LiteralPath $PREV -Recurse -Force }",
     "  New-Item -ItemType Directory -Force -Path (Join-Path $PREV 'dsh') | Out-Null",
@@ -296,7 +311,7 @@ export function posixRollbackScript({ bundleRoot, dshDir, stopLive }) {
     `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
     ...posixStopBlock(),
     ...posixRestore(bundleRoot, dshDir, previous),
-    'chmod 755 "$DSH"',
+    'chmod 755 "$BUNDLE" "$DSH"',
     ...ADAPTER_NAMES.map((file) => `chmod 644 "$DSH/${file}"`),
     'if ! node "$DSH/runtime.mjs" --probe >/dev/null 2>&1; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"rollback-verify-failed"}\'; exit 6; fi',
     'rm -f "$MARKER"',
@@ -324,7 +339,7 @@ export function windowsRollbackScript({ bundleRoot, dshDir, stopLive }) {
     "    $stopResult = $null",
     "    try { $stopResult = (($stopJson | Select-Object -Last 1) | ConvertFrom-Json) } catch {}",
     "    if ($stopResult -and $stopResult.reason -eq 'busy') { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"busy\"}'; exit 3 }",
-    "    if ($stopCode -ne 0 -and -not ($stopResult -and ($stopResult.reason -eq 'unreachable' -or $stopResult.reason -eq 'timeout'))) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
+    "    if ($stopCode -ne 0 -and -not ($stopResult -and ($stopResult.reason -eq 'unreachable'))) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
     "  }",
     ...windowsRestore(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
     "  & node (Join-Path $DSH 'runtime.mjs') --probe",
@@ -438,9 +453,7 @@ async function inspectMachine(machine, manifest, options) {
     const statusCommand = windows
       ? `& node ${psQuote(runtimePath(windows, dshDir))} --status`
       : `node ${posixQuote(runtimePath(windows, dshDir))} --status`;
-    const parsed = parseLastJson((await ssh(machine, statusCommand)).stdout);
-    // An unreachable control socket on a capable install means no runtime is running: idle.
-    liveStatus = parsed?.result?.busy === true ? "busy" : "idle";
+    liveStatus = liveStatusFrom((await ssh(machine, statusCommand)).stdout);
   }
   return { ...entry, current, liveStatus, verifiable, ...planMachine({ current, manifest, liveStatus, ...options }) };
 }

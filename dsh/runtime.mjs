@@ -431,7 +431,9 @@ function startRuntime() {
     socket.on("error", () => {});
     socket.on("close", () => {
       if (client === socket) client = null;
-      for (const [id, entry] of startingRequests) if (entry === socket) startingRequests.delete(id);
+      // A turn/start or turn/steer already forwarded to DSH is kept in startingRequests even though
+      // its connection is gone: DSH still answers it, so the runtime must stay busy until then. An
+      // idle-only deployment therefore cannot stop a turn that was accepted just before a detach.
     });
     for (const entry of pending.values()) socket.write(`${redact(entry.line)}\n`);
   });
