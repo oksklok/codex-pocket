@@ -516,7 +516,7 @@ function windowsLegacyStopLines(legacyStop) {
   ];
 }
 
-export function windowsStageScript({ bundleRoot, dshDir, staging, installDeps }) {
+export function windowsStageScript({ bundleRoot, dshDir, staging, installDeps, archiveBytes }) {
   const link = joinPath(true, staging, "dsh", "node_modules");
   return [
     "$ErrorActionPreference='Stop'",
@@ -526,15 +526,17 @@ export function windowsStageScript({ bundleRoot, dshDir, staging, installDeps })
     `$LINK = ${psQuote(link)}`,
     `$INSTALL_DEPS = ${installDeps ? 1 : 0}`,
     "if (Test-Path -LiteralPath $STAGE) {",
-    "  if (Test-Path -LiteralPath $LINK) { $existing = Get-Item -Force -LiteralPath $LINK; if ($existing.LinkType -eq 'Junction') { & cmd /c rmdir $LINK } }",
+    "  if (Test-Path -LiteralPath $LINK) { $existing = Get-Item -Force -LiteralPath $LINK; if ($existing.LinkType -eq 'Junction') { [IO.Directory]::Delete($LINK) } }",
     "  Remove-Item -LiteralPath $STAGE -Recurse -Force",
     "}",
     "New-Item -ItemType Directory -Force -Path $STAGE | Out-Null",
     "$tmp = Join-Path $env:TEMP ('pocket-adapter-' + [guid]::NewGuid().ToString('N') + '.tgz')",
     "$stdinStream = [Console]::OpenStandardInput()",
     "$output = [IO.File]::Create($tmp)",
-    "try { $stdinStream.CopyTo($output) } finally { $output.Dispose() }",
-    "& tar -xzf $tmp -C $STAGE",
+    // Windows OpenSSH may keep stdin open after delivering the archive. Read its known size.
+    `try { $remaining = ${archiveBytes}; $buffer = New-Object byte[] 65536; while ($remaining -gt 0) { $n = $stdinStream.Read($buffer, 0, [Math]::Min($buffer.Length, $remaining)); if ($n -le 0) { throw 'incomplete adapter archive' }; $output.Write($buffer, 0, $n); $remaining -= $n } } finally { $output.Dispose() }`,
+    // Git for Windows tar treats a drive-letter archive path as a remote host.
+    "& (Join-Path $env:SystemRoot 'System32/tar.exe') -xzf $tmp -C $STAGE",
     "if ($LASTEXITCODE -ne 0) { throw 'adapter archive could not be extracted' }",
     "Remove-Item -LiteralPath $tmp -Force",
     "if ($INSTALL_DEPS -eq 1) {",
@@ -549,7 +551,7 @@ export function windowsStageScript({ bundleRoot, dshDir, staging, installDeps })
     "  & node (Join-Path $STAGE 'dsh/runtime.mjs') --probe",
     "  if ($LASTEXITCODE -ne 0) { throw 'staged adapter failed its load probe' }",
     "} finally {",
-    "  if (Test-Path -LiteralPath $LINK) { $item = Get-Item -Force -LiteralPath $LINK; if ($item.LinkType -eq 'Junction') { & cmd /c rmdir $LINK } }",
+    "  if (Test-Path -LiteralPath $LINK) { $item = Get-Item -Force -LiteralPath $LINK; if ($item.LinkType -eq 'Junction') { [IO.Directory]::Delete($LINK) } }",
     "}",
     "Write-Output '{\"ok\":true}'",
   ].join("\n");
@@ -903,14 +905,14 @@ async function stageMachine(entry, manifest, archive) {
   let result;
   if (windows) {
     const scriptPath = joinPath(true, bundleRoot, remoteScriptName(manifest.bundle, "stage"));
-    const script = windowsStageScript(options);
+    const script = windowsStageScript({ ...options, archiveBytes: archive.length });
     if (!(await writeRemoteScript(machine, scriptPath, script))) return { ...entry, action: "hold", reason: "staging failed (script-transfer)" };
     result = await runRemoteScript(machine, scriptPath, { input: archive, timeout: 900_000 });
     await removeRemoteScript(machine, scriptPath);
   } else {
     result = await ssh(machine, posixStageScript(options), { input: archive, timeout: 900_000 });
   }
-  if (result.code !== 0) return { ...entry, action: "hold", reason: `staging failed (${parseLastJson(result.stdout)?.reason ?? result.code})` };
+  if (result.code !== 0) return { ...entry, action: "hold", reason: `staging failed (${parseLastJson(result.stdout)?.reason ?? result.code}): ${(result.stderr || result.stdout).trim().slice(-1600)}` };
   return { ...entry, staging, installDeps, stopLive: entry.stopLive, legacyStop: entry.legacyStop };
 }
 

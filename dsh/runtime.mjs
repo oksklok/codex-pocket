@@ -151,12 +151,18 @@ function processTable() {
   }
 }
 
+function commandIncludesPath(command, path) {
+  // Windows accepts either separator in launcher arguments, and paths are case-insensitive.
+  const normalize = (value) => process.platform === "win32" ? value.replaceAll("\\", "/").toLowerCase() : value;
+  return normalize(command).includes(normalize(path));
+}
+
 function dshChildProcesses(installedDir) {
   const table = processTable();
   if (!table) return null;
   const dshBin = join(installedDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
   const patch = join(home, "pocket.patch.yml");
-  return table.filter((row) => row.command.includes(dshBin) && row.command.includes(patch)).map((row) => ({ pid: row.pid, command: row.command }));
+  return table.filter((row) => commandIncludesPath(row.command, dshBin) && commandIncludesPath(row.command, patch)).map((row) => ({ pid: row.pid, command: row.command }));
 }
 
 function runOwner(installedDirArg) {
@@ -177,7 +183,7 @@ function runOwner(installedDirArg) {
   const command = processCommandLine(pid);
   const expectedLauncher = join(installedDir, "launch.mjs");
   const expectedRuntime = join(installedDir, "runtime.mjs");
-  const belongs = Boolean(command) && (command.includes(expectedLauncher) || command.includes(expectedRuntime));
+  const belongs = Boolean(command) && (commandIncludesPath(command, expectedLauncher) || commandIncludesPath(command, expectedRuntime));
   process.stdout.write(`${JSON.stringify({ ...base, state: command && belongs ? "owned" : "unverified", pid, command })}\n`);
   process.exit(0);
 }
