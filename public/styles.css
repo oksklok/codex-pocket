@@ -414,13 +414,15 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .async-answer { margin: 12px 0; }
 .async-question { min-width: 0; }
 .async-title { margin: 0 0 8px; font-weight: 600; }
-.async-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.async-answer button { min-height: 40px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: var(--text-label); text-align: left; }
-.async-answer button.selected { border-color: var(--blue); }
-.async-answer textarea { display: block; width: 100%; height: 62px; min-height: 62px; margin-bottom: 6px; padding: 8px; line-height: 1.58; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: var(--text-heading); }
+.async-options { margin-bottom: 5px; }
+/* Async option cards and Other keep the DSH row shape but stack full width inside the message. */
+.async-answer .async-options button, .async-answer .other-answer {
+  display: block; width: 100%; min-height: 0; text-align: left; cursor: pointer;
+  font-size: var(--text-label); line-height: 1.35; overflow-wrap: anywhere;
+}
+.async-answer textarea { display: block; margin-bottom: 6px; }
 .async-free-text { margin-top: 8px; }
-.async-free-text > button { display: block; margin-left: auto; border-color: rgba(69,200,138,.35); border-radius: var(--control-radius); background: rgba(69,200,138,.16); color: var(--accent); font-weight: 750; cursor: pointer; }
-.async-answer .other-answer { min-height: 32px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); }
+.async-free-text > button { display: block; min-height: 40px; padding: 7px 10px; margin-left: auto; text-align: left; border: 1px solid rgba(69,200,138,.35); border-radius: var(--control-radius); background: rgba(69,200,138,.16); color: var(--accent); font-size: var(--text-label); font-weight: 750; cursor: pointer; }
 .timeline-activity {
   --activity-color: var(--activity-neutral);
   width: min(94%, 720px); margin: 0 auto 12px; padding: 8px 10px;
@@ -555,19 +557,25 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .input-question { min-width: 0; margin: 0; padding: 0; border: 0; }
 .input-question legend { padding: 0; color: var(--muted); font-size: var(--text-label); font-weight: 600; }
 .input-prompt { margin-bottom: 7px; color: var(--text); font-size: var(--text-secondary); line-height: 1.4; overflow-wrap: anywhere; }
-.input-choices { display: grid; gap: 5px; }
-/* Option rows use the same flat filled-card treatment as the async option buttons. */
-.input-choice { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 7px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); cursor: pointer; }
-.input-choice:has(> :is(input[type="radio"], input[type="checkbox"]):checked) { border-color: var(--blue); }
+.input-choices, .async-options { display: grid; gap: 5px; }
+/* Option rows share one flat filled-card treatment: the DSH picker and the GPT async cards. */
+.input-choice, .async-answer .async-options button, .async-answer .other-answer {
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface-strong); color: var(--text);
+}
+.input-choice { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 7px; cursor: pointer; }
+.input-choice:has(> :is(input[type="radio"], input[type="checkbox"]):checked),
+.async-answer .async-options button.selected,
+.async-answer .other-answer[aria-expanded="true"] { border-color: var(--blue); }
 .input-choice > :is(input[type="radio"], input[type="checkbox"]) { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent-strong); }
 .input-choice > span { min-width: 0; display: grid; gap: 1px; }
 .input-choice strong { font-size: var(--text-label); line-height: 1.35; overflow-wrap: anywhere; }
 .input-choice small { color: var(--muted); font-size: var(--text-secondary); line-height: 1.35; overflow-wrap: anywhere; }
-.input-other input, .input-free-text {
+.input-other input, .input-free-text, .async-answer textarea {
   width: 100%; min-width: 0; margin-top: 4px; padding: 7px 8px; border: 1px solid var(--line);
   border-radius: 7px; background: var(--surface-strong); color: var(--text); font-size: var(--text-ui);
 }
-textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4; }
+textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: vertical; line-height: 1.4; }
 .queue-banner { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "status objective actions"; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
 .queue-copy { display: contents; }
 .queue-copy strong { grid-area: status; }
