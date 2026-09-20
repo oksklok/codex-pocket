@@ -41,7 +41,8 @@ One small rem scale, referenced by token everywhere except the two hero headings
   420px and the PIN field caps at 280px.
 - Standalone `.secondary-button` (34px) and `.primary-button`/`.danger-button` (36px) keep smaller
   defaults and are normalized to 40px only inside the action rows above.
-- `--radius: 12px` for panels, cards and dialogs; `--control-radius: 8px` for controls and buttons.
+- `--radius: 12px` is the default for main panels, cards and dialogs; compact cards and notices may
+  use 9–11px; controls and buttons use `--control-radius: 8px`.
 
 ## Spacing and alignment
 
@@ -257,7 +258,8 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
   <1100px makes both sidebars drawers with the boxed destination selector (see Navigation).
 - ≤860px: the shell stops being a fixed-height grid — the page scrolls, the topbar and composer
   become sticky, the conversation takes 12px inline padding, and the composer adds safe-area bottom
-  padding. The transcript and composer hide their scrollbars; desktop keeps them thin (`--line`).
+  padding. The transcript hides its scrollbar on mobile while desktop keeps it thin (`--line`); the
+  composer textarea never shows a scrollbar at any width.
 - ≤620px: the topbar becomes a two-column layout; ≤520px: the elapsed timer hides, phase chips
   shrink/ellipsize and composer actions go compact.
 - ≤380px: New Task's two-column settings grid collapses to one column.

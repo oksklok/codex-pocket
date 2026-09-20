@@ -1210,10 +1210,12 @@ function renderDestinationSwitcher(force = false) {
       wake.setAttribute("aria-label", `Wake ${machine.name}`);
       wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
       wake.disabled = wakePending.has(machine.id);
-      // The note is derived entirely from state: while pending it keeps the last success (or an empty
-      // note on a first click), a failure wins over a success, and success lasts its two seconds.
+      // The note is derived entirely from state: a failure wins over a success, and while a repeat
+      // request is pending a previous success stays up for the whole request even past its old two
+      // seconds (the pending state, not the clock, owns it until completion).
       const failure = wakeFailure.get(machine.id);
-      const noteText = failure || (wakeFeedbackActive(machine.id) ? "Wake packet sent" : wakePending.has(machine.id) ? "" : null);
+      const showSuccess = wakeFeedbackActive(machine.id) || (wakePending.has(machine.id) && wakeSuccessAt.has(machine.id));
+      const noteText = failure || (showSuccess ? "Wake packet sent" : wakePending.has(machine.id) ? "" : null);
       if (noteText !== null) {
         const note = Object.assign(document.createElement("span"), { className: "wake-feedback", textContent: noteText });
         note.setAttribute("role", "status");
