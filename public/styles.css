@@ -586,7 +586,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 /* With no task selected the details pane shows one message instead of stale task controls. */
 .inspector.no-task .metadata, .inspector.no-task .runtime-panel, .inspector.no-task #plan-panel, .inspector.no-task .display-panel { display: none; }
 .shell.no-task .phase-row { display: none; }
-.destination-list, .inspector-scroll { overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.destination-list, .inspector-scroll, .settings-card, .structured-input-form { overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .metadata { display: grid; gap: 8px; margin: 0 0 12px; }
 .metadata div { min-width: 0; padding: 8px; border-radius: var(--control-radius); background: var(--surface-strong); }
 .metadata dt { color: var(--subtle); font-size: var(--text-meta); font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
