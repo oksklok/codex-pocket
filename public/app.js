@@ -1130,20 +1130,19 @@ function renderDestinationSwitcher(force = false) {
       [...elements.destinationList.querySelectorAll(".machine-toggle")].find(button => button.dataset.machineId === machine.id)?.focus();
     });
     const controls = Object.assign(document.createElement("div"), { className: "machine-header-controls" });
-    // Chevron + name, then Info, then the inline status; Wake/New Task stay at the far right.
+    // Chevron + name, then Info, then the inline status; Wake/New Task stay at the far right. The
+    // Machine Details control is always present, in Archived view too; the setup preference only
+    // governs Add Machine and reordering.
     const nameBlock = Object.assign(document.createElement("div"), { className: "machine-name-block" });
     nameBlock.append(toggle);
-    // Archived view is a task-management surface: no setup controls, but Wake still applies.
-    if (machineControlsVisible && !archived) {
-      const info = document.createElement("button");
-      info.type = "button";
-      info.className = "icon-button machine-info";
-      info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
-      info.title = "Machine details";
-      info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
-      info.addEventListener("click", () => openMachineDetails(machine, info));
-      nameBlock.append(info);
-    }
+    const info = document.createElement("button");
+    info.type = "button";
+    info.className = "icon-button machine-info";
+    info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
+    info.title = "Machine details";
+    info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
+    info.addEventListener("click", () => openMachineDetails(machine, info));
+    nameBlock.append(info);
     if (availability) {
       const availabilityStatus = document.createElement("span");
       availabilityStatus.className = "machine-status";
@@ -2841,6 +2840,10 @@ function observeTranscriptSelection() {
     bounds.selectNodeContents(elements.conversation);
     const above = bounds.comparePoint(selection.focusNode, selection.focusOffset) < 0;
     selection.extend(elements.conversation, above ? 0 : elements.conversation.childNodes.length);
+    // Clamping stops the native auto-scroll at the boundary; move the transcript itself so a drag
+    // past either edge ends at the true top/bottom of the selected content.
+    const scroller = transcriptScroller();
+    scroller.scrollTop = above ? 0 : scroller.scrollHeight;
   }
   const selected = transcriptSelectionActive();
   if (selected) markSendNavigationOverride();
@@ -4235,7 +4238,11 @@ function machineRuntimeRow(detail, machineOffline, target) {
   if (!machineOffline) {
     const versions = document.createElement("p");
     versions.className = "machine-runtime-versions";
-    versions.textContent = `Installed ${detail.installed || "Unavailable"} · Latest ${detail.latest || "Unavailable"}${detail.channel && detail.channel !== "latest" ? ` (${detail.channel})` : ""}`;
+    // A prerelease's version already carries its channel, so no separate "(alpha)" suffix. When the
+    // installed and latest versions match there is nothing new to name.
+    const installed = detail.installed || "Unavailable";
+    const latest = detail.latest || "Unavailable";
+    versions.textContent = installed === latest ? `Installed ${installed} · Latest` : `Installed ${installed} · Latest ${latest}`;
     info.append(versions);
     if (detail.error) info.append(Object.assign(document.createElement("p"), { className: "machine-runtime-note machine-runtime-error", textContent: detail.error }));
     else if (detail.busy && detail.status === "Running") info.append(Object.assign(document.createElement("p"), { className: "machine-runtime-note", textContent: "Executing a turn" }));
@@ -4287,7 +4294,7 @@ async function renderMachineRuntimes(target, refresh = false) {
     const checking = document.createElement("p");
     checking.className = "machine-runtime-checking";
     checking.setAttribute("role", "status");
-    checking.textContent = "Checking runtimes…";
+    checking.textContent = "Checking…";
     list.replaceChildren(checking);
   }
   const results = await Promise.all(entries.map(async machine => {
