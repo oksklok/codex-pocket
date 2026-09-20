@@ -957,6 +957,27 @@ async function refreshMachines() {
 
 let archivedTasks = false;
 const collapsedMachines = new Set();
+// Wake success feedback must outlive Tasks-sidebar rerenders, so its two-second lifetime lives here
+// rather than on the transient note element the render rebuilds.
+const wakeSuccessAt = new Map();
+const wakeExpiryTimers = new Map();
+function wakeFeedbackActive(machineId) {
+  const at = wakeSuccessAt.get(machineId);
+  return typeof at === "number" && Date.now() - at < 2000;
+}
+function scheduleWakeExpiry(machineId) {
+  clearTimeout(wakeExpiryTimers.get(machineId));
+  const at = wakeSuccessAt.get(machineId) ?? Date.now();
+  wakeExpiryTimers.set(machineId, setTimeout(() => {
+    wakeExpiryTimers.delete(machineId);
+    wakeSuccessAt.delete(machineId);
+    // Remove the live note directly: a rerender may be skipped as unchanged, and it would then leave
+    // the note on screen past its two seconds.
+    for (const note of document.querySelectorAll(".wake-feedback")) {
+      if (note.dataset.wakeMachine === machineId) note.remove();
+    }
+  }, Math.max(0, 2000 - (Date.now() - at))));
+}
 try {
   const saved = JSON.parse(localStorage.getItem("codex-pocket-collapsed-machines") || "[]");
   if (Array.isArray(saved) && saved.every(id => typeof id === "string")) for (const id of saved) collapsedMachines.add(id);
@@ -1149,18 +1170,28 @@ function renderDestinationSwitcher(force = false) {
       const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
       wake.setAttribute("aria-label", `Wake ${machine.name}`);
       wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
+      // Re-add the note on every rerender while the success is still inside its two-second lifetime.
+      if (wakeFeedbackActive(machine.id)) {
+        const note = Object.assign(document.createElement("span"), { className: "wake-feedback", textContent: "Wake packet sent" });
+        note.setAttribute("role", "status");
+        note.dataset.wakeMachine = machine.id;
+        wakeAction.append(note);
+      }
       wake.addEventListener("click", async () => {
         wake.disabled = true;
         wakeAction.querySelector(".wake-feedback")?.remove();
         const feedback = Object.assign(document.createElement("span"), { className: "wake-feedback" });
         feedback.setAttribute("role", "status");
+        feedback.dataset.wakeMachine = machine.id;
         wakeAction.append(feedback);
         try {
           const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
           feedback.textContent = "Wake packet sent";
-          setTimeout(() => feedback.remove(), 2000);
+          // Re-arm from this success, so a repeated Wake restarts the full two seconds.
+          wakeSuccessAt.set(machine.id, Date.now());
+          scheduleWakeExpiry(machine.id);
         } catch (error) { feedback.textContent = error instanceof Error ? error.message : String(error); }
         finally { wake.disabled = false; }
       });
@@ -2269,7 +2300,7 @@ function messageNode(message, displayCreatedAt) {
     reference.className = "question-reply-reference";
     for (const reply of message.questionReplies) {
       const title = String(reply.question || "Question").replace(/\s+/gu, " ").trim();
-      reference.append(Object.assign(document.createElement("p"), { className: "question-reply-question", textContent: `In response to: ${title}` }));
+      reference.append(Object.assign(document.createElement("p"), { className: "question-reply-question", textContent: title }));
     }
     body.prepend(reference);
   }
