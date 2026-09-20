@@ -15,7 +15,7 @@ One small rem scale, referenced by token everywhere except the two hero headings
 
 | Role | Token | Size | Typical use |
 | --- | --- | --- | --- |
-| Heading | `--text-heading` | 14px (`.875rem`) | message/transcript prose and the surfaces that compose conversational text (main and fullscreen composer, queued-message editor, async free-text answer); settings section titles |
+| Heading | `--text-heading` | 14px (`.875rem`) | message/transcript prose and the surfaces that compose it (main and fullscreen composer, async free-text answer); settings section titles |
 | UI | `--text-ui` | 13px (`.8125rem`) | controls, rows, ordinary form fields and pickers (Tasks search, Settings, New Task, Machine Details, Project Folder, Task Details selects, buttons) |
 | Label | `--text-label` | 12px (`.75rem`) | most labels, secondary buttons, list rows |
 | Secondary | `--text-secondary` | 11px (`.6875rem`) | status lines, hints, meta |
@@ -56,6 +56,8 @@ One small rem scale, referenced by token everywhere except the two hero headings
 - Trailing text in a row ellipsizes (`min-width: 0` + `text-overflow: ellipsis`) rather than
   wrapping; destructive/secondary actions in dialogs stay right-aligned, with `margin-right: auto`
   pushing a lone destructive action (Remove Machine) to the left edge.
+- Sent user images are 72×72 `object-fit: cover` thumbnails above the user bubble, not inline
+  previews; an image-only message keeps the thumbnails and drops the empty text bubble.
 
 ## Surfaces, borders, radius
 
@@ -67,11 +69,12 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
   by hover, selection and sidebar toggles.
 - Panels are a 1px `--line-soft` border over `--soft-surface`; metadata tiles are filled
   `--surface-strong` with no border.
-- Borders are 1px everywhere; there are no heavy outlines or nested borders.
+- Borders are 1px hairlines; there are no heavy outlines or nested borders, and chromeless controls
+  simply omit one.
 - Topbar and composer are opaque at every width (`--topbar`/`--composer-bg` resolve to `--bg`); they
   never float over the transcript.
-- Light theme re-maps the same token names; components never hard-code dark values (the image
-  viewer is the deliberate exception).
+- Light theme re-maps the same token names, so components read tokens rather than fixed colours; the
+  image viewer and the tinted accent/danger control fills are the deliberate exceptions.
 
 ## Icons
 
@@ -126,23 +129,27 @@ non-assistant Markdown never carry a Copy control.
   `--selected-bg`; checkbox/radio rows do the same as a group. Text fields deliberately have no
   focus cue — the caret and selection are the cue. `forced-colors` restores the system outline.
 - Active: only task-menu items define `:active` (`--selected-bg`).
-- Busy: fast local UI operations are disabled in place and keep their normal label. The UI never
-  swaps in transient prose (`Saving…`, `Checking…`, `Opening…`, `Loading…`); layout stays stable
-  across the operation.
-- A long remote or maintenance operation may keep persistent progress feedback while it runs, rather
-  than relying on a silent disabled control. This is the only busy copy.
+- Busy: fast local UI operations are disabled in place and keep their normal label — no transient
+  prose (`Saving…`, `Checking…`, `Opening…`, `Loading…`) and no layout shift. Only a long remote or
+  maintenance operation may add stable progress feedback.
 - Persistent status is always shown and is never treated as busy chrome: Working / Waiting / Failed /
   Offline, validation, errors, warnings, confirmations and "Restart required".
 - Text-field caret/selection: the login PIN is focused programmatically with the caret at the end of
   an entered value. The reveal/hide toggle re-asserts the exact caret or selection only when the PIN
   field was already focused; clicked from elsewhere it must not focus the field or summon the keyboard.
-- The login PIN offsets its trailing `letter-spacing` with an equal `text-indent`, so the entered
-  digits sit on the field's true centre. The input's empty placeholder gates that indent on
-  `:placeholder-shown`, so an empty field keeps its caret centred too. Its reveal control changes
-  glyph with its state — open eye to show, slashed eye to hide — alongside `aria-pressed` and the
-  matching label.
+- The login PIN's trailing `letter-spacing` is offset by an equal `text-indent` (gated on
+  `:placeholder-shown`), so digits and an empty caret both stay centred. Its reveal control swaps an
+  open/slashed eye with `aria-pressed` and a matching label.
 - `prefers-reduced-motion: reduce` disables the drawer/chevron transitions and the spin/pulse
   animations.
+
+## Selection
+
+Ordinary app, dialog and sidebar chrome is not selectable. The only selectable text is transcript
+content, editable form fields, and the deliberately copyable read-only values (Task Details metadata,
+approval detail, input prompts, queued-message copy) listed as `user-select` opt-ins in `styles.css`.
+Dialogs restate `user-select: none` because Chromium's UA stylesheet makes dialog content selectable
+by default.
 
 ## Navigation: sidebar and drawers
 
@@ -168,7 +175,7 @@ non-assistant Markdown never carry a Copy control.
   confirmLabel, danger })`; focus starts on Cancel and the submit switches to `.danger-button` when
   `danger` is set.
 - Destructive-but-rich flows use their own dialog on the same shell: Rename/Delete Task
-  (`#task-dialog`), the Project Folder editor, queued-message Edit/Discard, and Clear goal.
+  (`#task-dialog`), the Project Folder editor, queued-message Discard, and Clear goal.
 - Escape is stopped from propagating out of a dialog, and `cancel` is prevented while a request is
   busy so a mutation can't be abandoned mid-flight.
 - A backdrop click behaves like Cancel: it closes the dialog without ever submitting its form and is
@@ -213,10 +220,8 @@ status paragraph is hidden. Copy rules already settled on:
 - Do not surface implementation limits unless the user needs to know them. The 180-character name
   and 12000-character message limits are never advertised; attachment size caps appear only when an
   attachment violates them; token counts live in the context meter's tooltip, not the chrome.
-- Transient operations add no copy: a disabled control with its unchanged label is the whole state.
-  A status line is reserved for a persistent state, an error, or a restart/confirmation notice. The
-  one exception is a remote or maintenance operation that can take seconds or minutes, which may keep
-  stable progress feedback (see States).
+- Transient operations add no copy; a status line is reserved for a persistent state, an error, or a
+  restart/confirmation notice (see States).
 - Errors say what happened and what to do next; they do not blame the user or expose internals.
 
 ## Empty and no-task states
@@ -234,12 +239,10 @@ status paragraph is hidden. Copy rules already settled on:
 
 ## Display categories
 
-Task Details → Display exposes exactly seven shared filters, in this order: Command, Tool, Search,
-File Changes, Subagents, Image, Context Compaction. Each filters its own activity kind, and a control
-is hidden only when the runtime positively disables the feature and the task has no activity of that
-kind; unknown capability never hides a control. Reasoning and Review stay parsed for compatibility
-but are not user-facing filters and always render. "Show All"/"Hide All" act only on the visible
-categories.
+Task Details → Display exposes seven shared filters in this order: Command, Tool, Search, File
+Changes, Subagents, Image, Context Compaction. Each filters its own activity kind; a control is
+hidden only when the runtime disables the feature and the task has no such activity, so unknown
+capability never hides one. "Show All"/"Hide All" act only on the visible categories.
 
 Each category owns its activity color token in both themes, and distinct categories stay distinct:
 Command (`--activity-command`, amber) and Tool (`--activity-tool`, steel blue) are deliberately
@@ -249,10 +252,8 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 
 ## Mobile vs desktop
 
-- ≥1100px is "wide": docked Tasks pane and Task Details, unboxed machine/task/provider text, the
-  Tasks toggle icon visible, and the destination control no longer advertised as a dialog.
-- <1100px: both sidebars become drawers and the boxed destination selector becomes the Tasks entry
-  point (`aria-haspopup="dialog"`).
+- ≥1100px is "wide" (docked panes, unboxed machine/task/provider text, Tasks toggle icon);
+  <1100px makes both sidebars drawers with the boxed destination selector (see Navigation).
 - ≤860px: the shell stops being a fixed-height grid — the page scrolls, the topbar and composer
   become sticky, the conversation takes 12px inline padding, and the composer adds safe-area bottom
   padding.
@@ -278,16 +279,11 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 - Wide layouts dock the sidebars (no backdrop, no close button, no `aria-haspopup`) — the same
   component intentionally presents as navigation rather than a dialog.
 - Archived task rows are `disabled` but keep full opacity so they still read as real content.
-- Text fields intentionally have no focus ring; keyboard users get the caret and selection.
-- `--control-height` (40px) governs action rows; standalone secondary/primary buttons keep smaller
-  defaults until a container normalizes them.
-- The login PIN field (`.login-card input`) is 56px tall, not `--control-height`, because it renders
-  1.55rem centred digits with a reserved reveal control. Every other ordinary single-line text input
-  uses 40px.
+- The login PIN field (`.login-card input`) is 56px tall, not `--control-height`, to render 1.55rem
+  centred digits with a reserved reveal control; every other single-line text input uses 40px.
 - The image viewer and its close button stay dark in both themes, with their own focus/hover colours.
-- The assistant-message Copy control is a 28px outline icon button, smaller than the 36px `--icon-size`,
-  so its reserved gutter can stay narrow on phones without covering code. It uses the same stroke,
-  caps and hover language as every other icon button.
+- The assistant-message Copy control is 28px, smaller than `--icon-size`, so its reserved gutter
+  stays narrow on phones without covering code; it shares the other icon buttons' stroke and caps.
 - Markdown code blocks, command/output detail blocks and file diffs soft-wrap at every viewport
   (`white-space: pre-wrap` with `overflow-wrap: anywhere`) instead of scrolling horizontally.
   Indentation and real line breaks are preserved, and the copied text is taken from the DOM, so it is
