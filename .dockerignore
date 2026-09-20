@@ -4,6 +4,7 @@
 !package-lock.json
 !gateway.ts
 !dsh.ts
+!runtime-management.mjs
 !deepseek.ts
 !deepseek-server.mjs
 !deepseek-models.json
