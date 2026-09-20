@@ -51,6 +51,7 @@ const elements = {
   destinationSwitcher: document.querySelector("#destination-switcher"),
   destinationBackdrop: document.querySelector("#destination-backdrop"),
   destinationSearch: document.querySelector("#destination-search"),
+  destinationSearchClear: document.querySelector("#destination-search-clear"),
   destinationClose: document.querySelector("#destination-close"),
   showArchived: document.querySelector("#show-archived"),
   destinationList: document.querySelector("#destination-list"),
@@ -728,15 +729,19 @@ function historyErrorMessage(error) {
   return "Could not load history. Try again.";
 }
 
-// Replace raw RPC/method failures with concise, actionable copy. Pocket-authored messages pass
-// through unchanged; the technical detail stays in the gateway logs.
+// Replace raw RPC/method failures with concise, actionable copy. Only clearly Pocket-authored,
+// sentence-like messages pass through; any other technical detail becomes the caller's fallback and
+// stays in the gateway logs.
 function uiErrorMessage(error, fallback = "Something went wrong. Try again.") {
   const message = String(error?.message || error || "").trim();
   if (!message) return fallback;
   if (/is not supported yet|-32601|method[^\n]*not found|unsupported[^\n]*method/i.test(message)) return "This action isn't supported by the connected runtime.";
   if (/timed out|timeout/i.test(message)) return "The runtime didn't respond in time. Try again.";
   if (/disconnected|connection closed|connection lost|EPIPE|ECONNRESET|socket/i.test(message)) return "The connection was lost. Check the runtime and try again.";
-  return message;
+  // A single capitalised sentence of plain words: Pocket copy. Code punctuation, newlines, path or
+  // error markers, and numeric codes are runtime detail, so they fall back instead.
+  const pocketCopy = /^[A-Z][A-Za-z0-9 .,!?'’"…-]*$/.test(message) && message.length <= 160 && !/\d{3,}/.test(message);
+  return pocketCopy ? message : fallback;
 }
 
 function formatElapsed(milliseconds) {
@@ -997,6 +1002,7 @@ function renderDestinationSwitcher(force = false) {
   // The saved configuration and the running connections are distinct: surface a restart hint here
   // rather than restarting on the user's behalf.
   elements.machinesRestart.hidden = !machineConfig.restartRequired;
+  elements.destinationSearchClear.hidden = !elements.destinationSearch.value;
   syncMachineFooterVisibility();
   const query = elements.destinationSearch.value.trim().toLowerCase();
   const catalogMachines = Array.isArray(navigationCatalog?.machines) ? navigationCatalog.machines : [];
@@ -1926,6 +1932,12 @@ function renderGoal() {
   const labels = { active: "Pursuing Goal", paused: "Goal Paused", blocked: "Goal Blocked", usageLimited: "Goal Usage Limited", budgetLimited: "Goal Budget Limited", complete: "Goal Complete" };
   document.querySelector("#goal-status").textContent = labels[goal.status] || `Goal ${goal.status}`;
   const objective = document.querySelector("#goal-objective");
+  // A newly shown objective starts truncated; the click toggle owns the wrapped state after that.
+  if (objective.dataset.objective !== goal.objective) {
+    objective.dataset.objective = goal.objective;
+    objective.classList.remove("wrapped");
+    objective.setAttribute("aria-expanded", "false");
+  }
   objective.textContent = goal.objective;
   objective.title = goal.objective;
   goalStrip.title = [
@@ -1939,6 +1951,18 @@ function renderGoal() {
   goalToggle.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${pursuing ? "M8 5v14M16 5v14" : "m8 5 11 7-11 7Z"}"/></svg>`;
   goalToggle.disabled = goalClear.disabled = Boolean(goalActionBusy) || !state.connected;
 }
+// Tapping the objective toggles its one-line ellipsis against fully wrapped text in the same card.
+const goalObjective = document.querySelector("#goal-objective");
+const toggleGoalObjective = () => {
+  const wrapped = goalObjective.classList.toggle("wrapped");
+  goalObjective.setAttribute("aria-expanded", String(wrapped));
+};
+goalObjective.addEventListener("click", toggleGoalObjective);
+goalObjective.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  toggleGoalObjective();
+});
 async function performGoalAction(body) {
   if (goalActionBusy) return;
   goalActionBusy = body;
@@ -4520,9 +4544,10 @@ function syncMachineReorderUi() {
 }
 
 // Hide the whole footer only when it has nothing left: no controls, no restart hint, no error.
-// Add Machine and reorder are always available in the normal Tasks view, never in Archived.
+// Add Machine and reorder are available in the normal Tasks view, but not in Archived or while a
+// search query is active. Restart-required and error notices stay visible regardless.
 function syncMachineFooterVisibility() {
-  const setupHidden = archivedTasks;
+  const setupHidden = archivedTasks || Boolean(elements.destinationSearch.value.trim());
   elements.machinesFooterActions.hidden = machineReorderMode || setupHidden;
   elements.machineReorderActions.hidden = !machineReorderMode;
   elements.machinesFooter.hidden = !machineReorderMode && setupHidden
@@ -4677,6 +4702,11 @@ elements.destinationRefresh.addEventListener("click", () => refreshNavigationCat
 elements.destinationClose.addEventListener("click", closeDestinationSwitcher);
 elements.destinationBackdrop.addEventListener("click", closeDestinationSwitcher);
 elements.destinationSearch.addEventListener("input", () => renderDestinationSwitcher());
+elements.destinationSearchClear.addEventListener("click", () => {
+  elements.destinationSearch.value = "";
+  renderDestinationSwitcher();
+  elements.destinationSearch.focus();
+});
 elements.showArchived.addEventListener("change", () => {
   archivedTasks = elements.showArchived.checked;
   renderDestinationSwitcher();

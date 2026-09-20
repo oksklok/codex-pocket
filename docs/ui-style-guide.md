@@ -50,7 +50,8 @@ One small rem scale, referenced by token everywhere except the two hero headings
   `max(16px, calc((100% - 1050px) / 2))` — a percentage of the chat column, so the track centres on
   the real remaining space once the wide-layout sidebars reserve their width — the composer/cards
   are `min(100%, 780px)` and messages are `min(100%, 760px)`.
-- Grids use 8px gaps; dialog field stacks use 12px vertical gaps; panel and metadata padding is 12px.
+- Gaps are 8px by default, tightening to 4–7px in dense chrome; dialog field stacks use 12px
+  vertical gaps and panel/metadata padding is 12px.
 - Shared action-row rhythm: `--action-row-gap: 8px`, `--action-row-inset: 10px`, separated from
   content by `--action-row-border` (1px `--line-soft`).
 - Trailing text in a row ellipsizes (`min-width: 0` + `text-overflow: ellipsis`) rather than
@@ -70,7 +71,7 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
 - Panels are a 1px `--line-soft` border over `--soft-surface`; metadata tiles are filled
   `--surface-strong` with no border.
 - Borders are 1px hairlines; there are no heavy outlines or nested borders, and chromeless controls
-  simply omit one.
+  simply omit one. The Markdown blockquote's 2px left accent is the one deliberate exception.
 - Topbar and composer are opaque at every width (`--topbar`/`--composer-bg` resolve to `--bg`); they
   never float over the transcript.
 - Light theme re-maps the same token names, so components read tokens rather than fixed colours; the
@@ -129,9 +130,9 @@ non-assistant Markdown never carry a Copy control.
   `--selected-bg`; checkbox/radio rows do the same as a group. Text fields deliberately have no
   focus cue — the caret and selection are the cue. `forced-colors` restores the system outline.
 - Active: only task-menu items define `:active` (`--selected-bg`).
-- Busy: fast local UI operations are disabled in place and keep their normal label — no transient
-  prose (`Saving…`, `Checking…`, `Opening…`, `Loading…`) and no layout shift. Only a long remote or
-  maintenance operation may add stable progress feedback.
+- Busy: fast local UI operations are disabled in place and keep their normal label, with no layout
+  shift. Only long remote or maintenance work may show stable progress such as `Checking…` /
+  `Updating…`.
 - Persistent status is always shown and is never treated as busy chrome: Working / Waiting / Failed /
   Offline, validation, errors, warnings, confirmations and "Restart required".
 - Text-field caret/selection: the login PIN is focused programmatically with the caret at the end of
@@ -233,7 +234,7 @@ status paragraph is hidden. Copy rules already settled on:
 - Empty panes do not render a shared placeholder: the Plan panel hides itself when it has no items,
   and the transcript's no-history / no-task message is the centred `.empty-state`.
 - Sidebar list empties are left-aligned at `--subtle` `--text-secondary` inside the list padding
-  ("No saved tasks", "No archived tasks", "No matching tasks").
+  (e.g. "No saved tasks", "No archived tasks", "No matching tasks", "No matching saved tasks").
 - With no task selected, Task Details hides metadata, Runtime, Plan and Display and shows a single
   plain message; the header phase row is hidden too.
 

@@ -121,7 +121,7 @@ h3 { margin: 0; font-size: var(--text-ui); }
 .stopped-card p:last-child { margin-bottom: 18px; color: var(--muted); font-size: var(--text-ui); line-height: 1.5; }
 .login-card label { display: block; margin-bottom: 7px; color: var(--muted); font-size: var(--text-label); font-weight: 700; }
 .login-card input, .settings-card input, .composer textarea, select {
-  width: 100%; border: 1px solid var(--line); border-radius: 9px;
+  width: 100%; border: 1px solid var(--line); border-radius: var(--control-radius);
   background: var(--surface-strong); color: var(--text);
 }
 .login-card input { min-height: 56px; padding: 9px 14px; font-size: 1.55rem; letter-spacing: .42em; text-align: center; }
@@ -146,7 +146,7 @@ h3 { margin: 0; font-size: var(--text-ui); }
 .login-pin input::-ms-reveal { display: none; }
 .login-pin input::-ms-clear { display: none; }
 .login-card button, .composer button {
-  min-height: 40px; border: 1px solid rgba(69,200,138,.35); border-radius: 9px;
+  min-height: 40px; border: 1px solid rgba(69,200,138,.35); border-radius: var(--control-radius);
   background: rgba(69,200,138,.16); color: var(--accent); font-weight: 750; cursor: pointer;
 }
 .login-card button { width: 100%; margin-top: 12px; }
@@ -185,11 +185,16 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   border: 1px solid var(--line); border-radius: 0; background: var(--surface); box-shadow: 0 18px 55px rgba(0,0,0,.42);
 }
 .destination-switcher-head { display: flex; align-items: center; gap: 8px; }
-.destination-search { display: block; padding: 12px 12px 0; }
+.destination-search { position: relative; display: block; padding: 12px 12px 0; }
 .destination-search input {
-  min-width: 0; width: 100%; height: var(--control-height); min-height: var(--control-height); padding: 7px 10px;
-  border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font-size: var(--text-ui);
+  min-width: 0; width: 100%; height: var(--control-height); min-height: var(--control-height); padding: 7px 40px 7px 10px;
+  border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-strong); color: var(--text); font-size: var(--text-ui);
 }
+/* The native search clear control is replaced by a Pocket icon button inside the field. */
+.destination-search input::-webkit-search-cancel-button, .destination-search input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+.destination-search input::-ms-clear { display: none; }
+#destination-search-clear { position: absolute; top: 14px; right: 14px; border: 0; background: transparent; color: var(--muted); }
+#destination-search-clear:hover:not(:disabled) { color: var(--text); }
 .destination-switcher-head .destination-close { width: var(--icon-size); height: var(--icon-size); min-height: var(--icon-size); display: grid; place-items: center; padding: 0; font-size: 1.2rem; }
 #destination-refresh { display: grid; place-items: center; flex: none; }
 #destination-refresh svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -412,7 +417,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .async-answer button.selected { border-color: var(--blue); }
 .async-answer textarea { display: block; width: 100%; height: 62px; min-height: 62px; margin-bottom: 6px; padding: 8px; line-height: 1.58; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); font-size: var(--text-heading); }
 .async-free-text { margin-top: 8px; }
-.async-free-text > button { display: block; margin-left: auto; border-color: rgba(69,200,138,.35); border-radius: 9px; background: rgba(69,200,138,.16); color: var(--accent); font-weight: 750; cursor: pointer; }
+.async-free-text > button { display: block; margin-left: auto; border-color: rgba(69,200,138,.35); border-radius: var(--control-radius); background: rgba(69,200,138,.16); color: var(--accent); font-weight: 750; cursor: pointer; }
 .async-answer .other-answer { min-height: 32px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); }
 .timeline-activity {
   --activity-color: var(--activity-neutral);
@@ -596,7 +601,7 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
 }
 
 .settings-screen { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 12px; background: var(--backdrop); }
-.settings-card { width: min(100%, 420px); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+.settings-card { width: min(100%, 420px); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
 .settings-heading { justify-content: space-between; margin-bottom: 12px; }
 .settings-section { display: grid; gap: 8px; padding: 13px 0; border-top: 1px solid var(--line-soft); }
 .settings-section:first-of-type { border-top: 0; padding-top: 2px; }
@@ -831,7 +836,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .new-task-dialog::backdrop { background: rgba(0,0,0,.55); }
 .new-task-dialog h2 { margin: 0 0 16px; font-size: 1rem; }
 .new-task-dialog .confirm-message { margin: 0; color: var(--muted); font-size: var(--text-ui); line-height: 1.45; overflow-wrap: anywhere; }
-.new-task-dialog input { width: 100%; height: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-inset); border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
+.new-task-dialog input { width: 100%; height: var(--control-height); min-height: var(--control-height); padding: 0 var(--control-inset); border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-strong); color: var(--text); font: inherit; font-size: var(--text-ui); }
 .new-task-dialog .form-field + .form-field { margin-top: 12px; }
 
 .new-task-dialog label { color: var(--muted); font-size: var(--text-label); font-weight: 500; }
@@ -887,7 +892,9 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .goal-strip { grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "status objective time actions"; border-color: var(--line-soft); background: var(--soft-surface); color: var(--muted); }
 #goal-status { grid-area: status; color: var(--text); }
 #goal-time { grid-area: time; white-space: nowrap; font-size: var(--text-secondary); }
-#goal-objective { grid-area: objective; }
+#goal-objective { grid-area: objective; cursor: pointer; }
+/* The default stays a one-line ellipsis; the toggle wraps the full objective in the same card. */
+#goal-objective.wrapped { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 860px) {
   .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "status time actions" "objective objective actions"; }
   .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective actions"; }
