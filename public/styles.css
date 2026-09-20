@@ -637,8 +637,10 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .shell .chat-panel { flex: 1; height: auto; display: flex; flex-direction: column; }
   .shell .conversation { flex: 1; overflow: visible; overscroll-behavior: auto; }
   .shell .topbar { position: sticky; top: 0; flex-shrink: 0; }
-  /* Keep the sticky header out of Android selection-handle hit-testing during the hold. */
-  .shell.transcript-selection-held .topbar { pointer-events: none; }
+  /* Keep the sticky header and composer out of Android selection-handle hit-testing during the
+     hold; both edges otherwise stop the drag where they overlay the transcript. */
+  .shell.transcript-selection-held .topbar,
+  .shell.transcript-selection-held .composer-zone:not(.expanded-composer) { pointer-events: none; }
   .composer-zone:not(.expanded-composer) { position: sticky; bottom: 0; z-index: 3; }
   .destination-list { padding-bottom: 12px; }
   .workspace { display: block; position: relative; }
