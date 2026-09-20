@@ -38,7 +38,7 @@ One small rem scale, referenced by token everywhere except the two hero headings
 - `--sidebar-header-height: 56px` for Tasks/Task Details headers; the topbar is `min-height: 58px`.
 - `--control-inset: 12px` is the standard horizontal text inset for fields and selects.
 - Fields take a sensible width instead of stretching to the container: the desktop Settings card is
-  500px and the PIN field caps at 280px. Full-bleed mobile keeps a single full-width column.
+  420px and the PIN field caps at 280px.
 - Standalone `.secondary-button` (34px) and `.primary-button`/`.danger-button` (36px) keep smaller
   defaults and are normalized to 40px only inside the action rows above.
 - `--radius: 12px` for panels, cards and dialogs; `--control-radius: 8px` for controls and buttons.
@@ -171,9 +171,9 @@ non-assistant Markdown never carry a Copy control.
   (`#task-dialog`), the Project Folder editor, queued-message Edit/Discard, and Clear goal.
 - Escape is stopped from propagating out of a dialog, and `cancel` is prevented while a request is
   busy so a mutation can't be abandoned mid-flight.
-- Settings is a full-screen `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a 500px
-  desktop card (`width: min(100%, 500px)`) and a sticky action footer; at ≤520px it becomes
-  full-bleed.
+- Settings is a `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a centered,
+  rounded 420px card (`width: min(100%, 420px)`), a 12px screen inset, and a sticky action footer.
+  It stays a card at every width and scrolls internally only when the viewport is too short.
 
 ## Machine Details runtimes
 
@@ -254,8 +254,8 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 - ≤860px: the shell stops being a fixed-height grid — the page scrolls, the topbar and composer
   become sticky, the conversation takes 12px inline padding, and the composer adds safe-area bottom
   padding.
-- ≤620px: the topbar becomes a two-column layout; ≤520px: settings go full-bleed, the elapsed timer
-  hides, phase chips shrink/ellipsize and composer actions go compact.
+- ≤620px: the topbar becomes a two-column layout; ≤520px: the elapsed timer hides, phase chips
+  shrink/ellipsize and composer actions go compact.
 - ≤380px: New Task's two-column settings grid collapses to one column.
 - `env(safe-area-inset-*)` is applied to drawers, the composer and the settings action footer.
 
