@@ -34,7 +34,7 @@ Real Pocket UI with synthetic demo data only, including all tasks, machines, con
 
 Settings changes take effect only on **Save**, including browser-local appearance and input preferences. Save is enabled only while values differ from those loaded; **Cancel**, **X**, and **Escape** discard unsaved edits. A successful save closes Settings unless a restart is required, when **Restart Pocket** is brought into view. Display controls in the inspector still apply immediately when Settings is closed.
 
-**Enter Sends Message** defaults on for desktop and off for mobile on first use; an existing saved choice takes precedence and does not change on resize.
+**Enter Sends Message** defaults on for a fine pointer (mouse/trackpad) and off for a coarse, hover-less pointer (touch) on first use; an existing saved choice takes precedence and does not change on resize.
 
 The image viewer supports double-tap zoom/reset, pinch zoom, panning while zoomed, and desktop wheel zoom. Close it with **X**, **Escape**, or a tap outside the image. Dragging at 1× neither moves nor dismisses the image.
 

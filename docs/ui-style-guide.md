@@ -171,6 +171,8 @@ non-assistant Markdown never carry a Copy control.
   (`#task-dialog`), the Project Folder editor, queued-message Edit/Discard, and Clear goal.
 - Escape is stopped from propagating out of a dialog, and `cancel` is prevented while a request is
   busy so a mutation can't be abandoned mid-flight.
+- A backdrop click behaves like Cancel: it closes the dialog without ever submitting its form and is
+  ignored while a mutation is in flight. The image viewer keeps its own backdrop handling.
 - Settings is a `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a centered,
   rounded 420px card (`width: min(100%, 420px)`), a 12px screen inset, and a sticky action footer.
   It stays a card at every width and scrolls internally only when the viewport is too short.

@@ -364,7 +364,11 @@ const composerDrafts = new Map();
 const draftKey = (machineId, threadId) => threadId ? JSON.stringify([machineId, threadId]) : null;
 let readingAttachments = false;
 let attachmentDeliveryUnknown = false;
-let enterSends = !matchMedia("(max-width: 860px)").matches;
+// First-use default follows input capability, not viewport width: a coarse, hover-less pointer
+// (touch) defaults Enter Sends off while an ordinary mouse/trackpad defaults it on. A saved value
+// always wins, and the default is resolved once so a resize never changes an established value.
+const touchInput = matchMedia("(pointer: coarse)").matches && matchMedia("(hover: none)").matches;
+let enterSends = !touchInput;
 try { const saved = localStorage.getItem("codex-pocket-enter-sends"); if (saved !== null) enterSends = saved !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
 let composerExpanded = false;
@@ -2259,8 +2263,9 @@ function messageNode(message, displayCreatedAt) {
     }
     body.prepend(reference);
   }
+  let images = null;
   if (message.role === "user" && message.imageCount) {
-    const images = document.createElement("div");
+    images = document.createElement("div");
     images.className = "message-images";
     for (let index = 0; index < Math.min(message.imageCount, 10); index++) {
       const img = document.createElement("img");
@@ -2269,13 +2274,16 @@ function messageNode(message, displayCreatedAt) {
       enableImageViewer(img);
       images.append(img);
     }
-    body.append(images);
   }
   if (message.delivery === "async" && message.questions?.length) {
     suppressAsyncQuestionMarkdown(body, message.questions);
     for (const [index, question] of message.questions.entries()) body.append(asyncQuestionNode(message, question, index));
   }
-  article.append(meta, body);
+  article.append(meta);
+  // Attachments sit directly above the bubble; an image-only message keeps its thumbnails and skips
+  // the otherwise empty text bubble.
+  if (images) article.append(images);
+  if (!images || body.childElementCount) article.append(body);
   return article;
 }
 
@@ -4433,6 +4441,24 @@ elements.machineDialogRemove.addEventListener("click", async () => {
   void runMachineDialogAction(() => saveMachineConfig({ machines: savedMachines().filter((_, index) => index !== target.index) }));
 });
 elements.machineDialogCancel.addEventListener("click", () => elements.machineDialog.close());
+// A modal app dialog closes when its backdrop is clicked, exactly like Cancel. A busy mutation
+// ignores the click, and the backdrop never reaches the form's submit. The image viewer keeps its
+// own handling.
+function closeDialogOnBackdrop(dialog, isBusy, cancel) {
+  dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog || isBusy()) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) return;
+    (cancel || (() => dialog.close()))();
+  });
+}
+closeDialogOnBackdrop(elements.confirmDialog, () => false, () => settleConfirm(false));
+closeDialogOnBackdrop(goalClearDialog, () => Boolean(goalActionBusy));
+closeDialogOnBackdrop(cwdDialog, () => cwdBusy);
+closeDialogOnBackdrop(newTaskDialog, () => taskActionBusy);
+closeDialogOnBackdrop(taskDialog, () => taskActionBusy);
+closeDialogOnBackdrop(queueDialog, () => cancellingQueue || sendingQueuedMessage || submittingMessage);
+closeDialogOnBackdrop(elements.machineDialog, () => machineDialogBusy);
 for (const field of [elements.machineDialogName, elements.machineDialogSsh, elements.machineDialogMac]) {
   field.addEventListener("input", () => {
     field.setCustomValidity("");

@@ -695,8 +695,8 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .timeline-activity.running .activity-status::before, .phase-pill.working::before, #destination-refresh:disabled svg { animation: none; }
 }
 
-.message-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.message-images:first-child { margin-top: 0; }
+/* Thumbnails sit above the user bubble as attachments, with a small gap to the bubble below. */
+.message-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 /* Sent images read as compact attachment thumbnails; clicking still opens the full viewer. */
 .message-images img { width: 72px; height: 72px; object-fit: cover; border: 1px solid var(--line); border-radius: 7px; cursor: zoom-in; }
 .composer-thumbnail img { cursor: zoom-in; }
