@@ -1491,11 +1491,10 @@ function activityFromItem(
   }
   if (item.type === "fileChange") {
     const paths = Array.isArray(item.changes) ? item.changes.length : 0;
-    const label = item.unchanged === true
-      ? "No file changes"
-      : paths
-        ? `Edited ${paths} file${paths === 1 ? "" : "s"}`
-        : status === "failed" ? "Edit failed" : "File change requested";
+    const label = status === "failed" ? "Edit failed"
+      : item.unchanged === true ? "No file changes"
+      : paths ? `${status === "running" ? "Editing" : "Edited"} ${paths} file${paths === 1 ? "" : "s"}`
+      : "File change requested";
     return { ...base, kind: "files", label, expandable: true };
   }
   if (item.type === "reasoning") {
