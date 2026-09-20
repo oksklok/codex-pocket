@@ -4207,6 +4207,7 @@ function updateMachineDialogActions() {
 
 let machineRuntimeTimer = null;
 let machineRuntimeRender = 0;
+let machineRuntimeInspecting = null;
 const machineRuntimeUpdates = new Set();
 
 function machineRuntimeProviderName(detail) {
@@ -4270,6 +4271,12 @@ function machineRuntimeRow(detail, machineOffline, target) {
 async function renderMachineRuntimes(target, refresh = false) {
   const section = document.querySelector("#machine-runtime-details");
   if (machineDialogTarget !== target || target.mode === "add") return;
+  // A slow offline probe can outlast the 5s poll. Without this guard each poll would supersede the
+  // in-flight request's render token, so a completed inspection is discarded every time and the
+  // dialog stays on "Checking runtimes…". The token still discards genuinely stale results after a
+  // dialog switch or close, and a different dialog is never blocked by this one.
+  if (machineRuntimeInspecting === target) return;
+  machineRuntimeInspecting = target;
   const list = section.querySelector("#machine-runtime-list");
   const group = target.mode === "host" ? "local" : `ssh:${savedMachines()[target.index]?.ssh}`;
   const entries = machines.filter(machine => (machine.group || machine.id) === group);
@@ -4292,7 +4299,9 @@ async function renderMachineRuntimes(target, refresh = false) {
     } catch (error) {
       return { machineId: machine.id, provider: machine.provider, status: "Offline", error: error instanceof Error ? error.message : String(error) };
     }
-  }));
+  })).finally(() => {
+    if (machineRuntimeInspecting === target) machineRuntimeInspecting = null;
+  });
   if (machineDialogTarget !== target || token !== machineRuntimeRender) return;
   list.replaceChildren();
   // A machine whose every runtime is Offline is itself unreachable: show compact provider rows and
