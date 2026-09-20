@@ -2832,12 +2832,22 @@ function transcriptSelectionActive() {
   return selection && !selection.isCollapsed && (elements.conversation.contains(selection.anchorNode) || elements.conversation.contains(selection.focusNode));
 }
 
-// The first/last content position a transcript drag can reach. It can sit inside a nested text node
-// rather than on the conversation element's own boundary.
+// The first/last rendered content position a transcript drag can reach. It can sit inside a nested
+// text node rather than on the conversation element's own boundary, and the browser's selection
+// stops at the last visible text, not at the empty whitespace nodes between blocks.
 function conversationEdgePoint(edge) {
+  const forward = edge === "end";
   let node = elements.conversation;
-  while (edge === "end" ? node.lastChild : node.firstChild) node = edge === "end" ? node.lastChild : node.firstChild;
-  return { node, offset: edge === "end" && node.nodeType === Node.TEXT_NODE ? node.length : 0 };
+  while (forward ? node.lastChild : node.firstChild) {
+    let child = forward ? node.lastChild : node.firstChild;
+    while (child && child.nodeType === Node.TEXT_NODE && !child.textContent.trim()
+      && (forward ? child.previousSibling : child.nextSibling)) {
+      child = forward ? child.previousSibling : child.nextSibling;
+    }
+    if (!child) break;
+    node = child;
+  }
+  return { node, offset: forward && node.nodeType === Node.TEXT_NODE ? node.length : 0 };
 }
 
 // True when the selection focus already sits on that content edge even though it is still inside the
