@@ -2,15 +2,15 @@
 // fake installs: no SSH, no Docker, no production state, no DSH credentials.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ADAPTER_FILES, FEATURES, effectiveProtocol, liveStatusFrom, localManifest, markerName, planFleet, planMachine,
-  posixActivateScript, posixRollbackScript, posixStageScript, powershellCommand, previousName, rollbackDecision,
-  windowsActivateScript, windowsRollbackScript, windowsStageScript,
+  ADAPTER_FILES, FEATURES, effectiveProtocol, gatewayLifecycle, liveReasonFrom, liveStatusFrom, localManifest, markerName,
+  planFleet, planMachine, posixActivateScript, posixRollbackScript, posixStageScript, posixLegacyStopLines, posixQuote, powershellCommand, previousName,
+  rollbackDecision, windowsActivateScript, windowsRollbackScript, windowsStageScript,
 } from "../scripts/deploy.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -86,7 +86,8 @@ test("planMachine keeps old, busy and protocol-mismatched installations pending"
   assert.equal(planMachine({ current: null, manifest: m, liveStatus: null, confirmIdle: true, allowProtocolChange: false }).action, "update");
   assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "busy", confirmIdle: true, allowProtocolChange: false }).action, "hold");
   assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "unknown", confirmIdle: false, allowProtocolChange: false }).action, "hold");
-  assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "unknown", confirmIdle: true, allowProtocolChange: false }).stopLive, false);
+  assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "unknown", confirmIdle: true, allowProtocolChange: false }).action, "hold", "--confirm-idle cannot bypass a modern runtime that cannot be verified");
+  assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "idle", absentProven: true, confirmIdle: false, allowProtocolChange: false }).stopLive, false, "a proven-absent runtime needs no stop");
   const legacy = { protocol: 1, bundle: "old", lockHash: "lock", features: [] };
   assert.equal(planMachine({ current: legacy, manifest: m, liveStatus: null, confirmIdle: true, allowProtocolChange: false }).action, "hold");
   const cutover = planMachine({ current: legacy, manifest: m, liveStatus: null, confirmIdle: true, allowProtocolChange: true });
@@ -98,9 +99,23 @@ test("planMachine keeps old, busy and protocol-mismatched installations pending"
 test("an unproven runtime status is never treated as idle", () => {
   assert.equal(liveStatusFrom('{"ok":true,"result":{"busy":true,"protocol":2}}'), "busy");
   assert.equal(liveStatusFrom('{"ok":true,"result":{"busy":false,"protocol":2}}'), "idle");
-  assert.equal(liveStatusFrom('{"ok":false,"reason":"unreachable"}'), "idle");
+  assert.equal(liveStatusFrom('{"ok":false,"reason":"refused","detail":"ENOENT"}'), "unknown", "a refused endpoint is not idle");
+  assert.equal(liveStatusFrom('{"ok":false,"reason":"no-reply"}'), "unknown");
   assert.equal(liveStatusFrom('{"ok":false,"reason":"timeout"}'), "unknown");
   assert.equal(liveStatusFrom("not json"), "unknown");
+  assert.equal(liveReasonFrom('{"ok":false,"reason":"no-reply"}'), "no-reply");
+});
+
+test("the gateway restart decision uses the machineId contract, not a name suffix", () => {
+  const value = {
+    machineId: "ssh:mac:dsh",
+    provider: "deepseek",
+    machines: [{ id: "ssh:mac:dsh", deepseek: true, dshPath: "/x/dsh/launch.mjs" }],
+    turn: { id: "t", status: "inProgress" },
+  };
+  assert.deepEqual(gatewayLifecycle(value), { machineId: "ssh:mac:dsh", durable: true, busy: true });
+  assert.equal(gatewayLifecycle({ ...value, provider: "openai", machines: [{ id: "ssh:mac:dsh", deepseek: false }] }).durable, false);
+  assert.equal(gatewayLifecycle({ machineId: "ssh:mac:dsh", provider: "deepseek", machines: [], turn: null }).busy, false);
 });
 
 test("the running protocol wins over the installed manifest for compatibility", () => {
@@ -282,4 +297,75 @@ test("a rollback without a retained install changes nothing", { skip: !hasPosixT
   assert.equal(rolled.status, 4);
   assert.equal(payloadOf(rolled).reason, "no-previous");
   assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /LIVE/);
+});
+
+// A temp adapter tree with the real runtime so the ownership probe sees the same code as production.
+function ownerFixture() {
+  const root = temp("pocket-owner-");
+  const bundle = join(root, "bundle");
+  const dsh = join(bundle, "dsh");
+  mkdirSync(join(dsh, "node_modules", "@deepseek-ai", "dsh", "lib"), { recursive: true });
+  writeFileSync(join(dsh, "node_modules/@deepseek-ai/dsh/lib/bin.js"), "// dsh bin\n");
+  for (const file of ["runtime.mjs", "endpoint.mjs", "projection.mjs", "router.mjs", "launch.mjs", "bridge.mjs", "pocket.patch.yml", "package.json"]) {
+    copyFileSync(join(ROOT, "dsh", file), join(dsh, file));
+  }
+  const home = join(root, "home");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "pocket.patch.yml"), "# patch\n");
+  return { root, bundle, dsh, home, lock: join(home, "pocket-owner") };
+}
+
+const ownerProbe = (fixture) => spawnSync(process.execPath, [join(fixture.dsh, "runtime.mjs"), "--owner", fixture.dsh], {
+  env: { ...process.env, POCKET_DSH_HOME: fixture.home },
+  encoding: "utf8",
+  timeout: 20000,
+});
+const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; } };
+
+test("an owner lock pointing at an unrelated process is never treated as the carrier", () => {
+  const fixture = ownerFixture();
+  const unrelated = spawn(process.execPath, ["-e", "setTimeout(()=>{},30000)"], { stdio: "ignore" });
+  const pid = unrelated.pid;
+  writeFileSync(fixture.lock, `${pid}\n`);
+  try {
+    const value = JSON.parse(ownerProbe(fixture).stdout.trim().split("\n").pop());
+    assert.equal(value.state, "unverified", "an unrelated process is not proof of ownership");
+    assert.equal(isAlive(pid), true, "the unrelated process is left untouched");
+  } finally {
+    try { process.kill(pid, "SIGKILL"); } catch {}
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a verified legacy carrier and its DSH child are both stopped before files change", async () => {
+  const fixture = ownerFixture();
+  const lull = "setTimeout(()=>{},60000)";
+  const carrier = spawn(process.execPath, ["-e", lull, join(fixture.dsh, "launch.mjs")], { stdio: "ignore" });
+  const child = spawn(process.execPath, ["-e", lull, join(fixture.dsh, "node_modules/@deepseek-ai/dsh/lib/bin.js"), "--patch", join(fixture.home, "pocket.patch.yml")], { stdio: "ignore" });
+  writeFileSync(fixture.lock, `${carrier.pid}\n`);
+  const script = [
+    "set -eu",
+    `STAGE=${posixQuote(fixture.bundle)}`,
+    `DSH=${posixQuote(fixture.dsh)}`,
+    `DSH_HOME_DIR=${posixQuote(fixture.home)}`,
+    "LOCK_CLAIMED=0",
+    'fail() { printf \'FAIL:%s\\n\' "$1"; exit 6; }',
+    ...posixLegacyStopLines(true),
+    "printf 'OK\\n'",
+  ].join("\n");
+  try {
+    const probe = JSON.parse(ownerProbe(fixture).stdout.trim().split("\n").pop());
+    assert.equal(probe.state, "owned", "the expected launcher is recognized");
+    assert.ok(Array.isArray(probe.dshChildren) && probe.dshChildren.length >= 1, "the DSH child is identified");
+    const result = spawnSync("bash", ["-c", script], { env: { ...process.env, POCKET_DSH_HOME: fixture.home }, encoding: "utf8", timeout: 30000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /OK/);
+    // Let this process reap the children it killed before checking they are gone.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(isAlive(carrier.pid), false, "the carrier is stopped");
+    assert.equal(isAlive(child.pid), false, "the DSH child is stopped");
+  } finally {
+    for (const pid of [carrier.pid, child.pid]) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });

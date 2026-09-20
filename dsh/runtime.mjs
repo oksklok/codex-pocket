@@ -2,7 +2,7 @@
 // connection. The gateway attaches over a private socket (Unix domain socket, or a named pipe on
 // Windows) and detaching does not stop accepted DSH work. A separate control endpoint serves
 // deployment inspection and idle-only shutdown without touching the attached gateway.
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, connect as connectSocket } from "node:net";
 import { homedir } from "node:os";
@@ -78,6 +78,110 @@ function installationReady() {
   return { ok: true };
 }
 
+// ── Ownership probe ─────────────────────────────────────────────────────────
+// A lock file PID is a hint, not proof. `--owner` verifies the recorded process is the expected
+// Pocket launcher/runtime for an installation and reports any DSH child still running, so a caller
+// can establish absence or refuse to terminate an unrelated process.
+function parseOwnerPid(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return NaN;
+  try {
+    const value = JSON.parse(text);
+    if (Number.isInteger(value?.pid) && value.pid > 0) return value.pid;
+  } catch {}
+  const first = text.replace(/[^0-9]+/g, " ").trim().split(/\s+/)[0];
+  const parsed = Number(first);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : NaN;
+}
+
+// A zombie has exited and only awaits reaping; it must not count as a live owner or child.
+function processZombie(pid) {
+  if (isWindows) return false;
+  try {
+    if (execFileSync("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8", timeout: 5000 }).trim().startsWith("Z")) return true;
+  } catch {}
+  try {
+    return readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2] === "Z";
+  } catch {
+    return false;
+  }
+}
+
+function processCommandLine(pid) {
+  if (!isWindows) {
+    try {
+      const raw = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      const joined = raw.split("\0").filter(Boolean).join(" ").trim();
+      if (joined) return joined;
+    } catch {}
+    try {
+      const line = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 5000 }).trim();
+      if (line) return line;
+    } catch {}
+    return null;
+  }
+  try {
+    const line = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: "utf8", timeout: 15000 }).trim();
+    return line || null;
+  } catch {
+    return null;
+  }
+}
+
+function processTable() {
+  if (!isWindows) {
+    try {
+      const out = execFileSync("ps", ["-eo", "pid=,command="], { encoding: "utf8", timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
+      return out.split("\n").map((line) => {
+        const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+        return match ? { pid: Number(match[1]), command: match[2] } : null;
+      }).filter(Boolean);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const out = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"], { encoding: "utf8", timeout: 20000, maxBuffer: 16 * 1024 * 1024 });
+    const parsed = JSON.parse(out.trim() || "[]");
+    return (Array.isArray(parsed) ? parsed : [parsed])
+      .map((row) => ({ pid: Number(row?.ProcessId), command: String(row?.CommandLine ?? "") }))
+      .filter((row) => Number.isInteger(row.pid) && row.pid > 0);
+  } catch {
+    return null;
+  }
+}
+
+function dshChildProcesses(installedDir) {
+  const table = processTable();
+  if (!table) return null;
+  const dshBin = join(installedDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+  const patch = join(home, "pocket.patch.yml");
+  return table.filter((row) => row.command.includes(dshBin) && row.command.includes(patch)).map((row) => ({ pid: row.pid, command: row.command }));
+}
+
+function runOwner(installedDirArg) {
+  const installedDir = installedDirArg || root;
+  // Enumerate the DSH children first: a launcher that already died can still leave its child running,
+  // and that child must never be missed.
+  const children = dshChildProcesses(installedDir);
+  const base = { ok: true, home, installedDir, dshChildren: children, dshChildrenKnown: children !== null };
+  let raw = "";
+  try {
+    raw = readFileSync(lockPath, "utf8");
+  } catch {}
+  const pid = parseOwnerPid(raw);
+  if (!Number.isInteger(pid) || pid <= 0 || !alive(pid) || processZombie(pid)) {
+    process.stdout.write(`${JSON.stringify({ ...base, state: "absent", pid: Number.isInteger(pid) ? pid : undefined })}\n`);
+    process.exit(0);
+  }
+  const command = processCommandLine(pid);
+  const expectedLauncher = join(installedDir, "launch.mjs");
+  const expectedRuntime = join(installedDir, "runtime.mjs");
+  const belongs = Boolean(command) && (command.includes(expectedLauncher) || command.includes(expectedRuntime));
+  process.stdout.write(`${JSON.stringify({ ...base, state: command && belongs ? "owned" : "unverified", pid, command })}\n`);
+  process.exit(0);
+}
+
 // ── Control client ──────────────────────────────────────────────────────────
 // A short-lived process that talks only to the control endpoint, so it never evicts the attached
 // gateway and never receives that gateway's pending requests.
@@ -104,7 +208,9 @@ function runControl(mode) {
     }
   };
   socket.setEncoding("utf8");
+  let connected = false;
   socket.on("connect", () => {
+    connected = true;
     try {
       socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method })}\n`);
     } catch {
@@ -141,11 +247,13 @@ function runControl(mode) {
       return;
     }
   });
-  socket.on("error", () => {
-    if (!handedOff) finish(1, { ok: false, reason: "unreachable" });
+  socket.on("error", (error) => {
+    if (handedOff) return;
+    const refused = !connected && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED");
+    finish(1, { ok: false, reason: refused ? "refused" : "no-reply", detail: String(error?.code ?? error?.message ?? "error") });
   });
   socket.on("close", () => {
-    if (!handedOff) finish(1, { ok: false, reason: "unreachable" });
+    if (!handedOff) finish(1, { ok: false, reason: connected ? "no-reply" : "refused" });
   });
   const timer = setTimeout(() => {
     if (!handedOff) finish(1, { ok: false, reason: "timeout" });
@@ -208,6 +316,7 @@ function runVerify(manifestPath) {
 const mode = process.argv[2];
 if (mode === "--probe") runProbe();
 else if (mode === "--verify") runVerify(process.argv[3]);
+else if (mode === "--owner") runOwner(process.argv[3]);
 else if (mode === "--status" || mode === "--stop") runControl(mode);
 else startRuntime();
 
