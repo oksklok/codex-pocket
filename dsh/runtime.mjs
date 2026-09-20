@@ -21,6 +21,7 @@ import {
   existsSync,
 } from "node:fs";
 import { DSH_VERSION, DSH_ADAPTER_PROTOCOL } from "./projection.mjs";
+import { RequestRouter } from "./router.mjs";
 import {
   DSH_HOME as home,
   isWindows,
@@ -31,7 +32,7 @@ import {
 } from "./endpoint.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const REQUIRED_FILES = ["bridge.mjs", "projection.mjs", "launch.mjs", "runtime.mjs", "endpoint.mjs", "pocket.patch.yml"];
+const REQUIRED_FILES = ["bridge.mjs", "projection.mjs", "launch.mjs", "runtime.mjs", "endpoint.mjs", "router.mjs", "pocket.patch.yml"];
 
 function log(message) {
   try {
@@ -85,6 +86,7 @@ function runControl(mode) {
   const requestId = 1;
   const method = mode === "--stop" ? "pocket/runtimeShutdown" : "pocket/runtimeStatus";
   let settled = false;
+  let handedOff = false;
   const finish = (code, payload) => {
     if (settled) return;
     settled = true;
@@ -93,6 +95,13 @@ function runControl(mode) {
       socket.destroy();
     } catch {}
     process.exit(code);
+  };
+  const ownerPid = () => {
+    try {
+      return Number(readFileSync(lockPath, "utf8"));
+    } catch {
+      return NaN;
+    }
   };
   socket.setEncoding("utf8");
   socket.on("connect", () => {
@@ -119,12 +128,29 @@ function runControl(mode) {
         return finish(0, { ok: true, result });
       }
       if (result.accepted !== true) return finish(1, { ok: false, reason: String(result.reason ?? "refused"), result });
-      return finish(0, { ok: true, result });
+      // An acknowledgment is not proof of exit. Wait until this owner and its DSH child are actually
+      // gone before reporting a stopped runtime, so a caller may safely replace the installation.
+      handedOff = true;
+      const deadline = Date.now() + 20_000;
+      const poll = () => {
+        if (!alive(ownerPid())) return finish(0, { ok: true, result });
+        if (Date.now() >= deadline) return finish(1, { ok: false, reason: "shutdown-timeout" });
+        setTimeout(poll, 100);
+      };
+      poll();
+      return;
     }
   });
-  socket.on("error", () => finish(1, { ok: false, reason: "unreachable" }));
-  socket.on("close", () => finish(1, { ok: false, reason: "unreachable" }));
-  setTimeout(() => finish(1, { ok: false, reason: "timeout" }), 4000).unref();
+  socket.on("error", () => {
+    if (!handedOff) finish(1, { ok: false, reason: "unreachable" });
+  });
+  socket.on("close", () => {
+    if (!handedOff) finish(1, { ok: false, reason: "unreachable" });
+  });
+  const timer = setTimeout(() => {
+    if (!handedOff) finish(1, { ok: false, reason: "timeout" });
+  }, 4000);
+  timer.unref();
 }
 
 // ── Probe ───────────────────────────────────────────────────────────────────
@@ -136,8 +162,10 @@ async function runProbe() {
   }
   try {
     const projection = await import("./projection.mjs");
-    // Importing the bridge verifies its SDK dependency resolves without starting any runtime.
+    // Importing the bridge verifies its SDK dependency resolves without starting any runtime; the
+    // router is loaded too so a half-installed adapter can never pass the probe.
     await import("./bridge.mjs");
+    await import("./router.mjs");
     process.stdout.write(`${JSON.stringify({ ok: true, protocol: projection.DSH_ADAPTER_PROTOCOL })}\n`);
     process.exit(0);
   } catch {
@@ -330,14 +358,14 @@ function startRuntime() {
       .split(key)
       .join("[REDACTED]");
 
-  // The carrier tracks every starting/active turn across all sessions, not one boolean. Unanswered
-  // server requests are remembered with the connection that owns them and replayed on attach.
-  let client = null;
-  const pending = new Map();
-  const pocketPending = new Map();
+  // ── Connection-safe routing ────────────────────────────────────────────────
+  // The router owns request correlation: each client request gets a private child id, the child's
+  // reply is restored to the client id and delivered only to the connection that sent it, and a
+  // superseded or draining connection may no longer submit work.
+  const router = new RequestRouter();
   const activeTurns = new Set();
-  const startingRequests = new Map();
-  const busy = () => activeTurns.size > 0 || startingRequests.size > 0;
+  const controlSockets = new Set();
+  const busy = () => router.busy(activeTurns.size);
 
   const turnKey = (params) => {
     const threadId = params?.threadId;
@@ -345,10 +373,10 @@ function startRuntime() {
     return threadId ? `${threadId}:${turnId ?? "active"}` : null;
   };
 
-  const writeClient = (line) => {
-    if (!client || client.destroyed) return false;
+  const writeTo = (socket, line) => {
+    if (!socket || socket.destroyed) return false;
     try {
-      client.write(`${line}\n`);
+      socket.write(`${line}\n`);
       return true;
     } catch {
       return false;
@@ -368,19 +396,15 @@ function startRuntime() {
     if (!line.trim()) return;
     const frame = safeParse(line);
     if (frame?.method === "pocket/requestResolved" && typeof frame.params?.pocketRequestId === "string") {
-      const id = pocketPending.get(frame.params.pocketRequestId);
-      if (id !== undefined) {
-        pending.delete(id);
-        pocketPending.delete(frame.params.pocketRequestId);
-      }
+      router.resolvePocket(frame.params.pocketRequestId);
     }
-    if (frame && frame.method !== undefined && frame.id !== undefined) {
-      const id = String(frame.id);
-      const pocketRequestId = typeof frame.params?.pocketRequestId === "string" ? frame.params.pocketRequestId : null;
-      pending.set(id, { line, connection: client, pocketRequestId });
-      if (pocketRequestId) pocketPending.set(pocketRequestId, id);
+    if (frame && frame.method !== undefined && frame.id !== undefined) router.serverRequest(frame, line);
+    if (frame && frame.method === undefined && frame.id !== undefined) {
+      // A reply to a client request: restore the client's own id and route it to its owner only.
+      const decision = router.reply(frame, line);
+      if (decision.deliver) writeTo(decision.deliver.socket, redact(decision.deliver.line));
+      return;
     }
-    if (frame && frame.method === undefined && frame.id !== undefined) startingRequests.delete(String(frame.id));
     if (frame?.method === "turn/started") {
       const id = turnKey(frame.params);
       if (id) activeTurns.add(id);
@@ -389,34 +413,29 @@ function startRuntime() {
       const id = turnKey(frame.params);
       if (id) activeTurns.delete(id);
     }
-    writeClient(redact(line));
+    writeTo(router.client, redact(line));
   };
 
   const onClientLine = (line, connection) => {
     if (!line.trim()) return;
     const frame = safeParse(line);
-    if (frame && frame.method === undefined && frame.id !== undefined) {
-      const id = String(frame.id);
-      const entry = pending.get(id);
-      // Only the connection the request was delivered to may answer it. A late response from an
-      // old connection whose numeric id was reused by a new one is dropped, never forwarded.
-      if (!entry || entry.connection !== connection) return;
-      pending.delete(id);
-      if (entry.pocketRequestId) pocketPending.delete(entry.pocketRequestId);
-      forwardToChild(line);
-      return;
-    }
-    if (frame && (frame.method === "turn/start" || frame.method === "turn/steer") && frame.id !== undefined) {
-      startingRequests.set(String(frame.id), connection);
-    }
-    forwardToChild(line);
+    if (!frame) return;
+    const decision = router.fromClient(frame, line, connection);
+    if (decision.action === "forward") forwardToChild(decision.line);
   };
 
   const server = createServer((socket) => {
-    client = socket;
-    // The new connection takes over every genuinely pending request, so a late answer from the
-    // previous one can no longer resolve it.
-    for (const entry of pending.values()) entry.connection = socket;
+    const attached = router.attach(socket);
+    if (!attached.accepted) {
+      socket.destroy();
+      return;
+    }
+    // A new connection supersedes the previous writer: retire it so it cannot keep submitting work.
+    if (attached.previous && attached.previous !== socket && !attached.previous.destroyed) {
+      try {
+        attached.previous.destroy();
+      } catch {}
+    }
     socket.setEncoding("utf8");
     let buffer = "";
     socket.on("data", (chunk) => {
@@ -430,12 +449,11 @@ function startRuntime() {
     });
     socket.on("error", () => {});
     socket.on("close", () => {
-      if (client === socket) client = null;
-      // A turn/start or turn/steer already forwarded to DSH is kept in startingRequests even though
-      // its connection is gone: DSH still answers it, so the runtime must stay busy until then. An
-      // idle-only deployment therefore cannot stop a turn that was accepted just before a detach.
+      router.detach(socket);
+      // starting is keyed by the private child id and cleared by the child's own reply, so a turn
+      // accepted just before a detach keeps the runtime busy and cannot be stopped.
     });
-    for (const entry of pending.values()) socket.write(`${redact(entry.line)}\n`);
+    for (const line of attached.replay) socket.write(`${redact(line)}\n`);
   });
   server.on("error", (error) => {
     log(`attach listener failed (${error?.code ?? "error"})`);
@@ -444,6 +462,8 @@ function startRuntime() {
 
   // Control never touches the attach connection or its pending requests.
   const controlServer = createServer((socket) => {
+    controlSockets.add(socket);
+    socket.on("close", () => controlSockets.delete(socket));
     socket.setEncoding("utf8");
     let buffer = "";
     socket.on("data", (chunk) => {
@@ -456,14 +476,16 @@ function startRuntime() {
         if (!frame || frame.id === undefined) continue;
         if (frame.method === "pocket/runtimeStatus") {
           socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: {
-            busy: busy(), protocol: DSH_ADAPTER_PROTOCOL, pid: process.pid,
-            attached: Boolean(client && !client.destroyed), turns: activeTurns.size, starting: startingRequests.size,
+            busy: busy(), draining: router.draining, protocol: DSH_ADAPTER_PROTOCOL, pid: process.pid,
+            attached: Boolean(router.client && !router.client.destroyed), turns: activeTurns.size, starting: router.starting.size,
           } })}\n`);
         } else if (frame.method === "pocket/runtimeShutdown") {
-          // Idle-only: an accepted shutdown refuses new work and never races a running turn.
+          // Idle-only: accepting immediately enters a draining state that rejects new work, new
+          // attaches and competing shutdowns, then stops the child and only then exits.
           if (busy()) {
-            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { accepted: false, reason: "busy" } })}\n`);
+            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { accepted: false, reason: router.draining ? "draining" : "busy" } })}\n`);
           } else {
+            router.startDraining();
             socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { accepted: true } })}\n`);
             setTimeout(() => shutdown(0), 50);
           }
@@ -483,21 +505,50 @@ function startRuntime() {
   const shutdown = (code) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Stop accepting anything at once, then wait for the DSH child to actually exit before
+    // releasing the home. A caller that waits for the owner to disappear has proof of shutdown.
+    router.startDraining();
     try {
       server.close();
     } catch {}
     try {
       controlServer.close();
     } catch {}
+    for (const socket of controlSockets) {
+      try {
+        socket.destroy();
+      } catch {}
+    }
+    controlSockets.clear();
+    const previous = router.client;
+    router.client = null;
     try {
-      client?.destroy();
+      previous?.destroy();
     } catch {}
+    const finish = () => {
+      release();
+      process.exit(code);
+    };
+    if (!child || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+      finish();
+      return;
+    }
+    child.once("exit", finish);
+    let grace;
     try {
-      child?.stdin?.end();
-      child?.kill("SIGTERM");
-    } catch {}
-    release();
-    setTimeout(() => process.exit(code), 250).unref();
+      child.stdin.end();
+      child.kill("SIGTERM");
+    } catch {
+      finish();
+      return;
+    }
+    // If DSH does not stop on its own, force it, but never exit before it is gone.
+    grace = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }, 8000);
+    child.once("exit", () => clearTimeout(grace));
   };
 
   child.stdout.setEncoding("utf8");

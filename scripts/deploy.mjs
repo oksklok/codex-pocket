@@ -9,12 +9,11 @@
 //   node scripts/deploy.mjs --rollback
 //   node scripts/deploy.mjs --settings path/to/.codex-pocket.local.json
 //
-// Machines, aliases and dshPath values come from the existing Pocket settings; SSH uses the
-// deployment's own ./ssh/config. Every update is staged completely and verified by hash and by a
-// load probe before any live file is touched, activated only while the durable runtime reports
-// idle, verified again afterwards, and rolled back from .pocket-previous if that verification
-// fails. A maintenance marker makes attach clients refuse to launch from a half-swapped install.
-// Busy, offline or unverifiable machines are reported as pending and a rerun finishes them.
+// Every update is inspected read-only, staged completely beside the install, verified by hash and by
+// a real dependency/import probe while reusing the existing locked dependencies when the lock did not
+// change, activated only while the durable runtime proves idle behind a maintenance marker, verified
+// again, and restored from .pocket-previous on any failure once mutation begins. Windows receives its
+// scripts as files so no script text or archive ever travels on a command line.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -29,6 +28,7 @@ export const ADAPTER_FILES = [
   "dsh/endpoint.mjs",
   "dsh/launch.mjs",
   "dsh/runtime.mjs",
+  "dsh/router.mjs",
   "dsh/bridge.mjs",
   "dsh/projection.mjs",
   "dsh/package.json",
@@ -37,17 +37,15 @@ export const ADAPTER_FILES = [
   "deepseek.ts",
 ];
 export const ADAPTER_NAMES = ADAPTER_FILES.filter((file) => file.startsWith("dsh/")).map((file) => file.slice(4));
-// Capabilities an installed adapter must report before this script treats its live runtime as
-// safely inspectable. An install without them may predate the durable runtime or may have used the
-// earlier `--status` that evicted the attached gateway, so its idle state is never trusted.
+// Capabilities an installed adapter must report before its live runtime is treated as inspectable.
 export const FEATURES = ["control-socket", "integrity-verify", "idle-only-shutdown"];
 
-// JS one-liners passed to `node -e`. They deliberately avoid double quotes, backticks and `$` so
-// the same text is safe inside a POSIX double-quoted string and a PowerShell double-quoted string.
+// Node one-liners. The POSIX ones avoid double quotes, backticks and `$` so they are safe inside a
+// double-quoted shell string; the Windows script is a file, so it can quote normally.
 const JS_READ = "try{process.stdout.write(require('fs').readFileSync(process.argv[1],'utf8'))}catch(e){process.stdout.write('null')}";
 const JS_WRITE_MARKER = "require('fs').writeFileSync(process.argv[1],JSON.stringify({at:Date.now()}),{mode:384})";
-// Only an accepted stop or a genuinely unreachable endpoint permits the swap. A timeout or an
-// unparsable answer is an error, so activation never proceeds on an unproven idle state.
+const JS_STUCK_MARKER = "require('fs').writeFileSync(process.argv[1],JSON.stringify({stuck:true,at:Date.now()}))";
+const JS_WAS_STUCK = "const fs=require('fs');try{const v=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(v&&v.stuck?'stuck':'ok')}catch(e){process.stdout.write('ok')}";
 const JS_STOP_DECISION = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};if(v&&v.ok===true&&v.result&&v.result.accepted===true)process.stdout.write('stopped');else if(v&&v.reason==='busy')process.stdout.write('busy');else if(v&&v.reason==='unreachable')process.stdout.write('stopped');else process.stdout.write('error')})";
 
 const log = (message) => process.stdout.write(`${message}\n`);
@@ -59,6 +57,11 @@ export const parentDir = (value) => String(value).replace(/[\\/][^\\/]*$/, "");
 export const posixQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
 export const psQuote = (value) => `'${String(value).replace(/'/g, "''")}'`;
 export const joinPath = (windows, ...parts) => parts.join(windows ? "\\" : "/");
+export const stagingName = (bundle) => `.pocket-staging-${bundle.slice(0, 12)}`;
+export const previousName = ".pocket-previous";
+export const markerName = ".pocket-deploying";
+export const remoteScriptName = (bundle, phase) => `.pocket-deploy-${bundle.slice(0, 12)}-${phase}.ps1`;
+export const powershellCommand = (script) => `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
 
 export function parseLastJson(stdout) {
   const lines = String(stdout ?? "").trim().split("\n").filter(Boolean);
@@ -82,9 +85,8 @@ export function localManifest() {
   return { protocol: protocolFrom(readFileSync(join(ROOT, "dsh/projection.mjs"), "utf8"), "dsh/projection.mjs"), bundle, lockHash: files["dsh/package-lock.json"], features: FEATURES, files };
 }
 
-// Turn a `runtime.mjs --status` result into a trust level. Only an explicit boolean negated answer
-// or a genuinely unreachable endpoint counts as idle; anything else (a malformed line, a timeout, a
-// refused control method) stays "unknown" and never authorizes stopping a live runtime.
+// Turn a `--status` result into a trust level. Only an explicit boolean answer or a genuinely
+// unreachable endpoint counts as idle; a timeout, malformed line or refused method is "unknown".
 export function liveStatusFrom(stdout) {
   const parsed = parseLastJson(stdout);
   if (parsed?.result?.busy === true) return "busy";
@@ -93,8 +95,14 @@ export function liveStatusFrom(stdout) {
   return "unknown";
 }
 
-// Decide what can happen on one machine without touching it. `liveStatus` is "busy", "idle" or
-// "unknown" only when the installed adapter reported a capability that makes the reading meaningful.
+// The protocol a machine will speak after this deployment. A running runtime's control response is
+// authoritative; otherwise the installed manifest counts only when the installed bytes verify.
+export function effectiveProtocol(entry) {
+  if (typeof entry.statusProtocol === "number") return entry.statusProtocol;
+  if (entry.installedVerified === true && typeof entry.current?.protocol === "number") return entry.current.protocol;
+  return null;
+}
+
 export function planMachine({ current, manifest, liveStatus, confirmIdle, allowProtocolChange }) {
   const features = Array.isArray(current?.features) ? current.features : [];
   const upToDate = Boolean(
@@ -110,128 +118,342 @@ export function planMachine({ current, manifest, liveStatus, confirmIdle, allowP
   const verifiable = features.includes("control-socket");
   if (!verifiable) {
     if (!confirmIdle) return { action: "hold", protocolChanged, reason: "runtime idle state unknown on the old install; drain the machine, then pass --confirm-idle" };
-    return { action: "update", stopLive: false, protocolChanged };
+    return { action: "update", stopLive: false, legacyStop: true, protocolChanged };
   }
   if (liveStatus === "busy") return { action: "hold", protocolChanged, reason: "runtime busy" };
   if (liveStatus !== "idle") {
     if (!confirmIdle) return { action: "hold", protocolChanged, reason: "runtime idle state could not be established; drain the machine, then pass --confirm-idle" };
-    return { action: "update", stopLive: false, protocolChanged };
+    return { action: "update", stopLive: false, legacyStop: false, protocolChanged };
   }
-  return { action: "update", stopLive: true, protocolChanged };
+  return { action: "update", stopLive: true, legacyStop: false, protocolChanged };
 }
 
-// ── Remote script builders (exported for tests) ─────────────────────────────
-export function posixStageScript({ bundleRoot, staging, installDeps }) {
-  const chmodFiles = ADAPTER_FILES.map((file) => posixQuote(`${staging}/${file}`)).join(" ");
+// Decide the whole-fleet protocol arrangement before anything is mutated. Adapter work is limited
+// to the selected targets, but staying compatible is judged across every machine the gateway uses.
+export function planFleet({ entries, targetKeys, manifest, allowProtocolChange }) {
+  const isTarget = (entry) => targetKeys.has(entry.key);
+  const protocolChanged = entries.some((entry) => entry.protocolChanged);
+  const blockers = entries.filter((entry) => isTarget(entry) && entry.action === "hold");
+  const staysBehind = entries.filter((entry) => !(isTarget(entry) && entry.action === "update") && effectiveProtocol(entry) !== manifest.protocol);
+  return {
+    isTarget,
+    protocolChanged,
+    blockers,
+    staysBehind,
+    reject: (protocolChanged || allowProtocolChange) && staysBehind.length > 0,
+    blocked: (protocolChanged || allowProtocolChange) && blockers.length > 0,
+  };
+}
+
+// Idle-state decision for a rollback, matching activation: an unproven state never authorizes
+// stopping the runtime, and a busy runtime is never touched.
+export function rollbackDecision(entry, confirmIdle) {
+  if (entry.liveStatus === "busy") return { ok: false, reason: "runtime busy" };
+  if (entry.liveStatus !== "idle" && !confirmIdle) return { ok: false, reason: "runtime idle state could not be established; pass --confirm-idle" };
+  return { ok: true, stopLive: entry.verifiable && entry.liveStatus === "idle" };
+}
+
+// ── Shared script fragments ─────────────────────────────────────────────────
+function posixInstallOkLines() {
+  return [
+    'if [ -f "$DSH/runtime.mjs" ]; then',
+    '  if [ -f "$DSH/.pocket-adapter.json" ]; then node "$DSH/runtime.mjs" --verify "$DSH/.pocket-adapter.json" >/dev/null 2>&1 || return 1; fi',
+    '  node "$DSH/runtime.mjs" --probe >/dev/null 2>&1 || return 1',
+    "else",
+    '  for f in launch.mjs bridge.mjs projection.mjs; do [ -f "$DSH/$f" ] || return 1; node --check "$DSH/$f" >/dev/null 2>&1 || return 1; done',
+    "fi",
+    "return 0",
+  ];
+}
+
+function posixRestoreLines(bundleRoot, dshDir, previous) {
+  const q = posixQuote;
+  return [
+    `if [ -f ${q(`${previous}/.pocket-adapter.json`)} ]; then cp -f ${q(`${previous}/.pocket-adapter.json`)} ${q(`${dshDir}/.pocket-adapter.json`)}; else rm -f ${q(`${dshDir}/.pocket-adapter.json`)}; fi`,
+    ...ADAPTER_NAMES.map((file) => `if [ -f ${q(`${previous}/dsh/${file}`)} ]; then cp -f ${q(`${previous}/dsh/${file}`)} ${q(`${dshDir}/${file}`)}; else rm -f ${q(`${dshDir}/${file}`)}; fi`),
+    `if [ -f ${q(`${previous}/deepseek.ts`)} ]; then cp -f ${q(`${previous}/deepseek.ts`)} ${q(`${bundleRoot}/deepseek.ts`)}; else rm -f ${q(`${bundleRoot}/deepseek.ts`)}; fi`,
+    `if [ -d ${q(`${previous}/node_modules`)} ]; then rm -rf ${q(`${dshDir}/node_modules`)}; cp -a ${q(`${previous}/node_modules`)} ${q(`${dshDir}/node_modules`)}; fi`,
+  ];
+}
+
+function posixStopLines(stopLive) {
+  if (!stopLive) return [];
+  return [
+    "set +e",
+    'STOP_JSON=$(node "$DSH/runtime.mjs" --stop 2>/dev/null)',
+    "set -e",
+    `DECISION=$(printf '%s' "$STOP_JSON" | node -e "${JS_STOP_DECISION}")`,
+    'if [ "$DECISION" = "busy" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"busy"}\'; exit 3; fi',
+    'if [ "$DECISION" = "error" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"stop-failed"}\'; exit 5; fi',
+  ];
+}
+
+function posixLegacyStopLines(legacyStop) {
+  if (!legacyStop) return [];
+  return [
+    'LOCK="$DSH_HOME_DIR/pocket-owner"',
+    'if [ -f "$LOCK" ]; then',
+    '  PID=$(tr -dc "0-9" < "$LOCK")',
+    '  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then',
+    '    for CHILD in $(pgrep -P "$PID" 2>/dev/null || true); do kill -TERM "$CHILD" 2>/dev/null || true; done',
+    '    kill -TERM "$PID" 2>/dev/null || true',
+    '    WAIT=0; while kill -0 "$PID" 2>/dev/null && [ "$WAIT" -lt 100 ]; do sleep 0.1; WAIT=$((WAIT+1)); done',
+    '    if kill -0 "$PID" 2>/dev/null; then kill -KILL "$PID" 2>/dev/null || true; WAIT=0; while kill -0 "$PID" 2>/dev/null && [ "$WAIT" -lt 50 ]; do sleep 0.1; WAIT=$((WAIT+1)); done; fi',
+    '    if kill -0 "$PID" 2>/dev/null; then fail "legacy-carrier-still-running"; fi',
+    "  fi",
+    "fi",
+  ];
+}
+
+export function posixStageScript({ bundleRoot, dshDir, staging, installDeps }) {
+  const q = posixQuote;
+  const chmodFiles = ADAPTER_FILES.map((file) => q(`${staging}/${file}`)).join(" ");
   return [
     "set -eu",
-    `STAGE=${posixQuote(staging)}`,
-    `BUNDLE=${posixQuote(bundleRoot)}`,
+    `STAGE=${q(staging)}`,
+    `BUNDLE=${q(bundleRoot)}`,
+    `DSH=${q(dshDir)}`,
+    `INSTALL_DEPS=${installDeps ? 1 : 0}`,
     'rm -rf "$STAGE"',
     'mkdir -p "$STAGE"',
     'tar -xzf - -C "$STAGE"',
     'chmod 755 "$BUNDLE" "$STAGE" "$STAGE/dsh"',
-    `chmod 644 ${chmodFiles} ${posixQuote(`${staging}/pocket-manifest.json`)}`,
-    ...(installDeps ? ['cd "$STAGE/dsh"', "npm ci --omit=dev --no-audit --no-fund"] : []),
+    `chmod 644 ${chmodFiles} ${q(`${staging}/pocket-manifest.json`)}`,
+    'if [ "$INSTALL_DEPS" = "1" ]; then',
+    '  cd "$STAGE/dsh" && npm ci --omit=dev --no-audit --no-fund',
+    "else",
+    // Reuse the locked live dependencies for the probe without mutating them; the link is removed
+    // before the staged tree is ever activated.
+    '  ln -s "$DSH/node_modules" "$STAGE/dsh/node_modules"',
+    "fi",
     'node "$STAGE/dsh/runtime.mjs" --verify "$STAGE/pocket-manifest.json"',
     'node "$STAGE/dsh/runtime.mjs" --probe',
+    'if [ -L "$STAGE/dsh/node_modules" ]; then rm -f "$STAGE/dsh/node_modules"; fi',
     "printf '%s' '{\"ok\":true}'",
   ].join("\n");
 }
 
-export function windowsStageScript({ bundleRoot, staging, installDeps }) {
-  const lines = [
-    "$ErrorActionPreference='Stop'",
-    `$BUNDLE = ${psQuote(bundleRoot)}`,
-    `$STAGE = ${psQuote(staging)}`,
-    'if (Test-Path -LiteralPath $STAGE) { Remove-Item -LiteralPath $STAGE -Recurse -Force }',
-    'New-Item -ItemType Directory -Force -Path $STAGE | Out-Null',
-    "$tmp = Join-Path $env:TEMP ('pocket-adapter-' + [guid]::NewGuid().ToString('N') + '.tgz')",
-    '$stdinStream = [Console]::OpenStandardInput()',
-    '$output = [IO.File]::Create($tmp)',
-    'try { $stdinStream.CopyTo($output) } finally { $output.Dispose() }',
-    '& tar -xzf $tmp -C $STAGE',
-    "if ($LASTEXITCODE -ne 0) { throw 'adapter archive could not be extracted' }",
-    'Remove-Item -LiteralPath $tmp -Force',
-  ];
-  if (installDeps) {
-    lines.push("Push-Location (Join-Path $STAGE 'dsh')");
-    lines.push('try { & npm ci --omit=dev --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { throw \'dependency install failed\' } } finally { Pop-Location }');
-  }
-  lines.push("& node (Join-Path $STAGE 'dsh/runtime.mjs') --verify (Join-Path $STAGE 'pocket-manifest.json')");
-  lines.push("if ($LASTEXITCODE -ne 0) { throw 'staged adapter failed verification' }");
-  lines.push("& node (Join-Path $STAGE 'dsh/runtime.mjs') --probe");
-  lines.push("if ($LASTEXITCODE -ne 0) { throw 'staged adapter failed its load probe' }");
-  lines.push("Write-Output '{\"ok\":true}'");
-  return lines.join("\n");
-}
-
-function posixRestore(bundleRootPath, dshDirPath, previous) {
-  return [
-    `if [ -f ${posixQuote(`${previous}/.pocket-adapter.json`)} ]; then cp -f ${posixQuote(`${previous}/.pocket-adapter.json`)} ${posixQuote(`${dshDirPath}/.pocket-adapter.json`)}; else rm -f ${posixQuote(`${dshDirPath}/.pocket-adapter.json`)}; fi`,
-    ...ADAPTER_NAMES.map((file) => `if [ -f ${posixQuote(`${previous}/dsh/${file}`)} ]; then cp -f ${posixQuote(`${previous}/dsh/${file}`)} ${posixQuote(`${dshDirPath}/${file}`)}; fi`),
-    `if [ -f ${posixQuote(`${previous}/deepseek.ts`)} ]; then cp -f ${posixQuote(`${previous}/deepseek.ts`)} ${posixQuote(`${bundleRootPath}/deepseek.ts`)}; fi`,
-    `if [ -d ${posixQuote(`${previous}/node_modules`)} ]; then rm -rf ${posixQuote(`${dshDirPath}/node_modules`)}; mv ${posixQuote(`${previous}/node_modules`)} ${posixQuote(`${dshDirPath}/node_modules`)}; fi`,
-  ];
-}
-
-export function posixActivateScript({ bundleRoot, dshDir, staging, stopLive }) {
-  const previous = joinPath(false, bundleRoot, ".pocket-previous");
-  const marker = joinPath(false, bundleRoot, ".pocket-deploying");
+export function posixActivateScript({ bundleRoot, dshDir, staging, installDeps, stopLive, legacyStop }) {
+  const previous = joinPath(false, bundleRoot, previousName);
+  const marker = joinPath(false, bundleRoot, markerName);
+  const q = posixQuote;
   return [
     "set -eu",
-    `BUNDLE=${posixQuote(bundleRoot)}`,
-    `DSH=${posixQuote(dshDir)}`,
-    `STAGE=${posixQuote(staging)}`,
-    `PREV=${posixQuote(previous)}`,
-    `MARKER=${posixQuote(marker)}`,
+    `BUNDLE=${q(bundleRoot)}`,
+    `DSH=${q(dshDir)}`,
+    `STAGE=${q(staging)}`,
+    `PREV=${q(previous)}`,
+    `MARKER=${q(marker)}`,
     `STOP_LIVE=${stopLive ? 1 : 0}`,
-    `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
-    'if [ "$STOP_LIVE" = "1" ]; then',
-    // The refusal itself (busy) is a normal outcome carried in the JSON, so its nonzero exit must
-    // not be treated as a script failure nor clobber the captured status.
-    "  set +e",
-    '  STOP_JSON=$(node "$DSH/runtime.mjs" --stop 2>/dev/null)',
-    "  set -e",
-    `  DECISION=$(printf '%s' "$STOP_JSON" | node -e "${JS_STOP_DECISION}")`,
-    '  if [ "$DECISION" = "busy" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"busy"}\'; exit 3; fi',
-    '  if [ "$DECISION" = "error" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"stop-failed"}\'; exit 5; fi',
-    "fi",
-    'rm -rf "$PREV"',
-    'mkdir -p "$PREV/dsh"',
-    'if [ -f "$DSH/.pocket-adapter.json" ]; then cp -f "$DSH/.pocket-adapter.json" "$PREV/.pocket-adapter.json"; fi',
-    ...ADAPTER_NAMES.map((file) => `if [ -f "$DSH/${file}" ]; then cp -f "$DSH/${file}" "$PREV/dsh/${file}"; fi`),
-    'if [ -f "$BUNDLE/deepseek.ts" ]; then cp -f "$BUNDLE/deepseek.ts" "$PREV/deepseek.ts"; fi',
-    ...ADAPTER_NAMES.map((file) => `cp -f "$STAGE/dsh/${file}" "$DSH/${file}"`),
-    'cp -f "$STAGE/deepseek.ts" "$BUNDLE/deepseek.ts"',
-    'cp -f "$STAGE/pocket-manifest.json" "$DSH/.pocket-adapter.json"',
-    'chmod 755 "$BUNDLE" "$DSH"',
-    ...ADAPTER_NAMES.map((file) => `chmod 644 "$DSH/${file}"`),
-    'chmod 644 "$DSH/.pocket-adapter.json"',
-    'if [ -d "$STAGE/dsh/node_modules" ]; then rm -rf "$PREV/node_modules"; if [ -d "$DSH/node_modules" ]; then mv "$DSH/node_modules" "$PREV/node_modules"; fi; mv "$STAGE/dsh/node_modules" "$DSH/node_modules"; fi',
-    'if ! node "$DSH/runtime.mjs" --verify "$DSH/.pocket-adapter.json" >/dev/null 2>&1 || ! node "$DSH/runtime.mjs" --probe >/dev/null 2>&1; then',
-    ...posixRestore(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
+    `LEGACY_STOP=${legacyStop ? 1 : 0}`,
+    `INSTALL_DEPS=${installDeps ? 1 : 0}`,
+    'DSH_HOME_DIR="${POCKET_DSH_HOME:-$HOME/.codex-pocket/dsh}"',
+    "MUTATED=0",
+    "marker_stuck() {",
+    `  node -e "${JS_STUCK_MARKER}" "$MARKER"`,
+    "}",
+    "install_ok() {",
+    ...posixInstallOkLines().map((line) => `  ${line}`),
+    "}",
+    "restore() {",
+    ...posixRestoreLines(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
+    "}",
+    "fail() {",
+    '  reason="$1"',
+    "  rolled=0",
+    '  if [ "$MUTATED" = "1" ]; then',
+    '    if restore && install_ok; then',
+    "      rolled=1",
+    "    else",
+    "      marker_stuck",
+    `      printf '%s' '{"ok":false,"reason":"'"$reason"'","rolledBack":false,"stuck":true}'`,
+    "      exit 7",
+    "    fi",
+    "  fi",
     '  rm -f "$MARKER"',
-    "  printf '%s' '{\"ok\":false,\"reason\":\"activation-verify-failed\",\"rolledBack\":true}'",
+    `  if [ "$rolled" = "1" ]; then printf '%s' '{"ok":false,"reason":"'"$reason"'","rolledBack":true}'; else printf '%s' '{"ok":false,"reason":"'"$reason"'","rolledBack":false}'; fi`,
     "  exit 6",
+    "}",
+    `if [ -f "$MARKER" ] && [ "$(node -e "${JS_WAS_STUCK}" "$MARKER")" = "stuck" ]; then printf '%s' '{"ok":false,"reason":"stuck-marker"}'; exit 8; fi`,
+    `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
+    ...posixStopLines(stopLive),
+    ...posixLegacyStopLines(legacyStop),
+    // Never overwrite the last good backup with an install that is not itself loadable.
+    'if [ -d "$PREV" ] && ! install_ok; then',
+    "  if restore && install_ok; then :; else marker_stuck; printf '%s' '{\"ok\":false,\"reason\":\"previous-restore-failed\",\"stuck\":true}'; exit 7; fi",
+    "fi",
+    "set +e",
+    "(",
+    "  set -e",
+    '  rm -rf "$PREV"',
+    '  mkdir -p "$PREV/dsh"',
+    '  if [ -f "$DSH/.pocket-adapter.json" ]; then cp -f "$DSH/.pocket-adapter.json" "$PREV/.pocket-adapter.json"; fi',
+    ...ADAPTER_NAMES.map((file) => `  if [ -f "$DSH/${file}" ]; then cp -f "$DSH/${file}" "$PREV/dsh/${file}"; fi`),
+    '  if [ -f "$BUNDLE/deepseek.ts" ]; then cp -f "$BUNDLE/deepseek.ts" "$PREV/deepseek.ts"; fi',
+    ")",
+    "SNAP=$?",
+    "set -e",
+    'if [ "$SNAP" -ne 0 ]; then fail "snapshot-failed"; fi',
+    "MUTATED=1",
+    "set +e",
+    "(",
+    "  set -e",
+    ...ADAPTER_NAMES.map((file) => `  cp -f "$STAGE/dsh/${file}" "$DSH/${file}"`),
+    '  cp -f "$STAGE/deepseek.ts" "$BUNDLE/deepseek.ts"',
+    '  cp -f "$STAGE/pocket-manifest.json" "$DSH/.pocket-adapter.json"',
+    '  chmod 755 "$BUNDLE" "$DSH"',
+    ...ADAPTER_NAMES.map((file) => `  chmod 644 "$DSH/${file}"`),
+    '  chmod 644 "$DSH/.pocket-adapter.json"',
+    '  if [ "$INSTALL_DEPS" = "1" ]; then rm -rf "$PREV/node_modules"; if [ -d "$DSH/node_modules" ]; then mv "$DSH/node_modules" "$PREV/node_modules"; fi; mv "$STAGE/dsh/node_modules" "$DSH/node_modules"; fi',
+    ")",
+    "MUTATE=$?",
+    "set -e",
+    'if [ "$MUTATE" -ne 0 ]; then fail "activation-failed"; fi',
+    'if ! install_ok; then fail "activation-verify-failed"; fi',
+    'rm -f "$MARKER"',
+    "printf '%s' '{\"ok\":true}'",
+  ].join("\n");
+}
+
+export function posixRollbackScript({ bundleRoot, dshDir, stopLive }) {
+  const previous = joinPath(false, bundleRoot, previousName);
+  const marker = joinPath(false, bundleRoot, markerName);
+  const q = posixQuote;
+  return [
+    "set -eu",
+    `BUNDLE=${q(bundleRoot)}`,
+    `DSH=${q(dshDir)}`,
+    `PREV=${q(previous)}`,
+    `MARKER=${q(marker)}`,
+    `STOP_LIVE=${stopLive ? 1 : 0}`,
+    'if [ ! -f "$PREV/.pocket-adapter.json" ] && [ ! -f "$PREV/dsh/launch.mjs" ]; then printf \'%s\' \'{"ok":false,"reason":"no-previous"}\'; exit 4; fi',
+    "marker_stuck() {",
+    `  node -e "${JS_STUCK_MARKER}" "$MARKER"`,
+    "}",
+    "install_ok() {",
+    ...posixInstallOkLines().map((line) => `  ${line}`),
+    "}",
+    "restore() {",
+    ...posixRestoreLines(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
+    "}",
+    `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
+    ...posixStopLines(stopLive),
+    "if ! restore || ! install_ok; then",
+    "  marker_stuck",
+    "  printf '%s' '{\"ok\":false,\"reason\":\"rollback-verify-failed\",\"stuck\":true}'",
+    "  exit 7",
     "fi",
     'rm -f "$MARKER"',
     "printf '%s' '{\"ok\":true}'",
   ].join("\n");
 }
 
-function windowsRestore(bundleRootPath, dshDirPath, previous) {
+function windowsInstallOkLines() {
   return [
-    `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} '.pocket-adapter.json')) { Copy-Item -Force (Join-Path ${psQuote(previous)} '.pocket-adapter.json') (Join-Path ${psQuote(dshDirPath)} '.pocket-adapter.json') } else { Remove-Item -LiteralPath (Join-Path ${psQuote(dshDirPath)} '.pocket-adapter.json') -Force -ErrorAction SilentlyContinue }`,
-    ...ADAPTER_NAMES.map((file) => `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'dsh/${file}')) { Copy-Item -Force (Join-Path ${psQuote(previous)} 'dsh/${file}') (Join-Path ${psQuote(dshDirPath)} '${file}') }`),
-    `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'deepseek.ts')) { Copy-Item -Force (Join-Path ${psQuote(previous)} 'deepseek.ts') (Join-Path ${psQuote(bundleRootPath)} 'deepseek.ts') }`,
-    `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'node_modules')) { Remove-Item -LiteralPath (Join-Path ${psQuote(dshDirPath)} 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue; Move-Item -LiteralPath (Join-Path ${psQuote(previous)} 'node_modules') -Destination (Join-Path ${psQuote(dshDirPath)} 'node_modules') }`,
+    "$runtime = Join-Path $DSH 'runtime.mjs'",
+    "if (Test-Path -LiteralPath $runtime) {",
+    "  $manifest = Join-Path $DSH '.pocket-adapter.json'",
+    "  if (Test-Path -LiteralPath $manifest) { & node $runtime --verify $manifest | Out-Null; if ($LASTEXITCODE -ne 0) { return $false } }",
+    "  & node $runtime --probe | Out-Null",
+    "  if ($LASTEXITCODE -ne 0) { return $false }",
+    "} else {",
+    "  foreach ($f in @('launch.mjs','bridge.mjs','projection.mjs')) {",
+    "    $p = Join-Path $DSH $f",
+    "    if (-not (Test-Path -LiteralPath $p)) { return $false }",
+    "    & node --check $p | Out-Null",
+    "    if ($LASTEXITCODE -ne 0) { return $false }",
+    "  }",
+    "}",
+    "return $true",
   ];
 }
 
-export function windowsActivateScript({ bundleRoot, dshDir, staging, stopLive }) {
-  const previous = joinPath(true, bundleRoot, ".pocket-previous");
-  const marker = joinPath(true, bundleRoot, ".pocket-deploying");
+function windowsRestoreLines(bundleRoot, dshDir, previous) {
+  return [
+    `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} '.pocket-adapter.json')) { Copy-Item -Force (Join-Path ${psQuote(previous)} '.pocket-adapter.json') (Join-Path ${psQuote(dshDir)} '.pocket-adapter.json') } else { Remove-Item -LiteralPath (Join-Path ${psQuote(dshDir)} '.pocket-adapter.json') -Force -ErrorAction SilentlyContinue }`,
+    ...ADAPTER_NAMES.map((file) => `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'dsh/${file}')) { Copy-Item -Force (Join-Path ${psQuote(previous)} 'dsh/${file}') (Join-Path ${psQuote(dshDir)} '${file}') } else { Remove-Item -LiteralPath (Join-Path ${psQuote(dshDir)} '${file}') -Force -ErrorAction SilentlyContinue }`),
+    `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'deepseek.ts')) { Copy-Item -Force (Join-Path ${psQuote(previous)} 'deepseek.ts') (Join-Path ${psQuote(bundleRoot)} 'deepseek.ts') } else { Remove-Item -LiteralPath (Join-Path ${psQuote(bundleRoot)} 'deepseek.ts') -Force -ErrorAction SilentlyContinue }`,
+    `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'node_modules')) { Remove-Item -LiteralPath (Join-Path ${psQuote(dshDir)} 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue; Copy-Item -Recurse -Force (Join-Path ${psQuote(previous)} 'node_modules') (Join-Path ${psQuote(dshDir)} 'node_modules') }`,
+  ];
+}
+
+function windowsStopLines(stopLive) {
+  if (!stopLive) return [];
+  return [
+    "if ($STOP_LIVE -eq 1) {",
+    "  $stopJson = & node (Join-Path $DSH 'runtime.mjs') --stop 2>$null",
+    "  $stopCode = $LASTEXITCODE",
+    "  $stopResult = $null",
+    "  try { $stopResult = (($stopJson | Select-Object -Last 1) | ConvertFrom-Json) } catch {}",
+    "  if ($stopResult -and $stopResult.reason -eq 'busy') { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"busy\"}'; exit 3 }",
+    "  if ($stopCode -ne 0 -and -not ($stopResult -and ($stopResult.reason -eq 'unreachable'))) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
+    "}",
+  ];
+}
+
+function windowsLegacyStopLines(legacyStop) {
+  if (!legacyStop) return [];
+  return [
+    "if ($LEGACY_STOP -eq 1) {",
+    "  $homeDir = if ($env:POCKET_DSH_HOME) { $env:POCKET_DSH_HOME } else { Join-Path $env:USERPROFILE '.codex-pocket/dsh' }",
+    "  $lock = Join-Path $homeDir 'pocket-owner'",
+    "  if (Test-Path -LiteralPath $lock) {",
+    "    $target = 0",
+    "    if ([int]::TryParse((Get-Content -LiteralPath $lock -Raw).Trim(), [ref]$target) -and $target -gt 0) {",
+    "      if (Get-Process -Id $target -ErrorAction SilentlyContinue) {",
+    "        Get-CimInstance Win32_Process -Filter \"ParentProcessId=$target\" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+    "        Stop-Process -Id $target -Force -ErrorAction SilentlyContinue",
+    "        for ($i = 0; $i -lt 100; $i++) { if (-not (Get-Process -Id $target -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 100 }",
+    "        if (Get-Process -Id $target -ErrorAction SilentlyContinue) { throw 'legacy carrier still running' }",
+    "      }",
+    "    }",
+    "  }",
+    "}",
+  ];
+}
+
+export function windowsStageScript({ bundleRoot, dshDir, staging, installDeps }) {
+  const link = joinPath(true, staging, "dsh", "node_modules");
+  return [
+    "$ErrorActionPreference='Stop'",
+    `$BUNDLE = ${psQuote(bundleRoot)}`,
+    `$DSH = ${psQuote(dshDir)}`,
+    `$STAGE = ${psQuote(staging)}`,
+    `$LINK = ${psQuote(link)}`,
+    `$INSTALL_DEPS = ${installDeps ? 1 : 0}`,
+    "if (Test-Path -LiteralPath $STAGE) {",
+    "  if (Test-Path -LiteralPath $LINK) { $existing = Get-Item -Force -LiteralPath $LINK; if ($existing.LinkType -eq 'Junction') { & cmd /c rmdir $LINK } }",
+    "  Remove-Item -LiteralPath $STAGE -Recurse -Force",
+    "}",
+    "New-Item -ItemType Directory -Force -Path $STAGE | Out-Null",
+    "$tmp = Join-Path $env:TEMP ('pocket-adapter-' + [guid]::NewGuid().ToString('N') + '.tgz')",
+    "$stdinStream = [Console]::OpenStandardInput()",
+    "$output = [IO.File]::Create($tmp)",
+    "try { $stdinStream.CopyTo($output) } finally { $output.Dispose() }",
+    "& tar -xzf $tmp -C $STAGE",
+    "if ($LASTEXITCODE -ne 0) { throw 'adapter archive could not be extracted' }",
+    "Remove-Item -LiteralPath $tmp -Force",
+    "if ($INSTALL_DEPS -eq 1) {",
+    "  Push-Location (Join-Path $STAGE 'dsh')",
+    "  try { & npm ci --omit=dev --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { throw 'dependency install failed' } } finally { Pop-Location }",
+    "} else {",
+    "  New-Item -ItemType Junction -Path $LINK -Target (Join-Path $DSH 'node_modules') | Out-Null",
+    "}",
+    "try {",
+    "  & node (Join-Path $STAGE 'dsh/runtime.mjs') --verify (Join-Path $STAGE 'pocket-manifest.json')",
+    "  if ($LASTEXITCODE -ne 0) { throw 'staged adapter failed verification' }",
+    "  & node (Join-Path $STAGE 'dsh/runtime.mjs') --probe",
+    "  if ($LASTEXITCODE -ne 0) { throw 'staged adapter failed its load probe' }",
+    "} finally {",
+    "  if (Test-Path -LiteralPath $LINK) { $item = Get-Item -Force -LiteralPath $LINK; if ($item.LinkType -eq 'Junction') { & cmd /c rmdir $LINK } }",
+    "}",
+    "Write-Output '{\"ok\":true}'",
+  ].join("\n");
+}
+
+export function windowsActivateScript({ bundleRoot, dshDir, staging, installDeps, stopLive, legacyStop }) {
+  const previous = joinPath(true, bundleRoot, previousName);
+  const marker = joinPath(true, bundleRoot, markerName);
   const lines = [
     "$ErrorActionPreference='Stop'",
     `$BUNDLE = ${psQuote(bundleRoot)}`,
@@ -240,118 +462,96 @@ export function windowsActivateScript({ bundleRoot, dshDir, staging, stopLive })
     `$PREV = ${psQuote(previous)}`,
     `$MARKER = ${psQuote(marker)}`,
     `$STOP_LIVE = ${stopLive ? 1 : 0}`,
-    "$mutated = $false",
+    `$LEGACY_STOP = ${legacyStop ? 1 : 0}`,
+    `$INSTALL_DEPS = ${installDeps ? 1 : 0}`,
+    "$MUTATED = $false",
+    `function MarkerStuck { & node -e "${JS_STUCK_MARKER}" $MARKER }`,
+    "function InstallOk {",
+    ...windowsInstallOkLines().map((line) => `  ${line}`),
+    "}",
     "function Restore {",
-    ...windowsRestore(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
+    ...windowsRestoreLines(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
+    "}",
+    "function Fail([string]$reason) {",
+    "  if ($MUTATED) {",
+    "    try {",
+    "      Restore",
+    "      if (-not (InstallOk)) { throw 'restore-verify-failed' }",
+    "    } catch {",
+    "      MarkerStuck",
+    "      Write-Output ('{\"ok\":false,\"reason\":\"' + $reason + '\",\"rolledBack\":false,\"stuck\":true}')",
+    "      exit 7",
+    "    }",
+    "  }",
+    "  Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue",
+    "  Write-Output ('{\"ok\":false,\"reason\":\"' + $reason + '\",\"rolledBack\":' + $(if ($MUTATED) { 'true' } else { 'false' }) + '}')",
+    "  exit 6",
     "}",
     "try {",
+    `  if ((Test-Path -LiteralPath $MARKER) -and ((& node -e "${JS_WAS_STUCK}" $MARKER) -eq 'stuck')) { Write-Output '{"ok":false,"reason":"stuck-marker"}'; exit 8 }`,
     `  & node -e "${JS_WRITE_MARKER}" $MARKER`,
     "  if ($LASTEXITCODE -ne 0) { throw 'maintenance marker could not be written' }",
-    "  if ($STOP_LIVE -eq 1) {",
-    "    $stopJson = & node (Join-Path $DSH 'runtime.mjs') --stop 2>$null",
-    "    $stopCode = $LASTEXITCODE",
-    "    $stopResult = $null",
-    "    try { $stopResult = (($stopJson | Select-Object -Last 1) | ConvertFrom-Json) } catch {}",
-    "    if ($stopResult -and $stopResult.reason -eq 'busy') { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"busy\"}'; exit 3 }",
-    "    if ($stopCode -ne 0 -and -not ($stopResult -and ($stopResult.reason -eq 'unreachable'))) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
+    ...windowsStopLines(stopLive).map((line) => `  ${line}`),
+    ...windowsLegacyStopLines(legacyStop).map((line) => `  ${line}`),
+    "  if ((Test-Path -LiteralPath $PREV) -and -not (InstallOk)) {",
+    "    try { Restore; if (-not (InstallOk)) { throw 'restore-verify-failed' } } catch { MarkerStuck; Write-Output '{\"ok\":false,\"reason\":\"previous-restore-failed\",\"stuck\":true}'; exit 7 }",
     "  }",
     "  if (Test-Path -LiteralPath $PREV) { Remove-Item -LiteralPath $PREV -Recurse -Force }",
     "  New-Item -ItemType Directory -Force -Path (Join-Path $PREV 'dsh') | Out-Null",
     "  if (Test-Path -LiteralPath (Join-Path $DSH '.pocket-adapter.json')) { Copy-Item -Force (Join-Path $DSH '.pocket-adapter.json') (Join-Path $PREV '.pocket-adapter.json') }",
     ...ADAPTER_NAMES.map((file) => `  if (Test-Path -LiteralPath (Join-Path $DSH '${file}')) { Copy-Item -Force (Join-Path $DSH '${file}') (Join-Path $PREV 'dsh/${file}') }`),
     "  if (Test-Path -LiteralPath (Join-Path $BUNDLE 'deepseek.ts')) { Copy-Item -Force (Join-Path $BUNDLE 'deepseek.ts') (Join-Path $PREV 'deepseek.ts') }",
-    "  $mutated = $true",
+    "  $MUTATED = $true",
     ...ADAPTER_NAMES.map((file) => `  Copy-Item -Force (Join-Path $STAGE 'dsh/${file}') (Join-Path $DSH '${file}')`),
     "  Copy-Item -Force (Join-Path $STAGE 'deepseek.ts') (Join-Path $BUNDLE 'deepseek.ts')",
     "  Copy-Item -Force (Join-Path $STAGE 'pocket-manifest.json') (Join-Path $DSH '.pocket-adapter.json')",
-    "  if (Test-Path -LiteralPath (Join-Path $STAGE 'dsh/node_modules')) { Remove-Item -LiteralPath (Join-Path $PREV 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath (Join-Path $DSH 'node_modules')) { Move-Item -LiteralPath (Join-Path $DSH 'node_modules') -Destination (Join-Path $PREV 'node_modules') }; Move-Item -LiteralPath (Join-Path $STAGE 'dsh/node_modules') -Destination (Join-Path $DSH 'node_modules') }",
-    "  & node (Join-Path $DSH 'runtime.mjs') --verify (Join-Path $DSH '.pocket-adapter.json')",
-    "  if ($LASTEXITCODE -ne 0) { throw 'activated adapter failed verification' }",
-    "  & node (Join-Path $DSH 'runtime.mjs') --probe",
-    "  if ($LASTEXITCODE -ne 0) { throw 'activated adapter failed its load probe' }",
+    "  if ($INSTALL_DEPS -eq 1) { Remove-Item -LiteralPath (Join-Path $PREV 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath (Join-Path $DSH 'node_modules')) { Move-Item -LiteralPath (Join-Path $DSH 'node_modules') -Destination (Join-Path $PREV 'node_modules') }; Move-Item -LiteralPath (Join-Path $STAGE 'dsh/node_modules') -Destination (Join-Path $DSH 'node_modules') }",
+    "  if (-not (InstallOk)) { Fail 'activation-verify-failed' }",
     "  Remove-Item -LiteralPath $MARKER -Force",
     "  Write-Output '{\"ok\":true}'",
     "} catch {",
-    "  if ($mutated) { Restore }",
-    "  Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue",
-    "  Write-Output '{\"ok\":false,\"reason\":\"activation-verify-failed\",\"rolledBack\":true}'",
-    "  exit 6",
+    "  if (-not $MUTATED) { Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue; Write-Output '{\"ok\":false,\"reason\":\"activation-failed\"}'; exit 6 }",
+    "  Fail 'activation-failed'",
     "}",
   ];
   return lines.join("\n");
 }
 
-// ── Rollback ────────────────────────────────────────────────────────────────
-// A rollback restores from .pocket-previous in place. It never takes a snapshot of the install it
-// is replacing, so it can never delete the very copy it is restoring from.
-function posixStopBlock() {
-  return [
-    'if [ "$STOP_LIVE" = "1" ]; then',
-    "  set +e",
-    '  STOP_JSON=$(node "$DSH/runtime.mjs" --stop 2>/dev/null)',
-    "  set -e",
-    `  DECISION=$(printf '%s' "$STOP_JSON" | node -e "${JS_STOP_DECISION}")`,
-    '  if [ "$DECISION" = "busy" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"busy"}\'; exit 3; fi',
-    '  if [ "$DECISION" = "error" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"stop-failed"}\'; exit 5; fi',
-    "fi",
-  ];
-}
-
-export function posixRollbackScript({ bundleRoot, dshDir, stopLive }) {
-  const previous = joinPath(false, bundleRoot, ".pocket-previous");
-  const marker = joinPath(false, bundleRoot, ".pocket-deploying");
-  return [
-    "set -eu",
-    `BUNDLE=${posixQuote(bundleRoot)}`,
-    `DSH=${posixQuote(dshDir)}`,
-    `PREV=${posixQuote(previous)}`,
-    `MARKER=${posixQuote(marker)}`,
-    `STOP_LIVE=${stopLive ? 1 : 0}`,
-    'if [ ! -f "$PREV/.pocket-adapter.json" ]; then printf \'%s\' \'{"ok":false,"reason":"no-previous"}\'; exit 4; fi',
-    `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
-    ...posixStopBlock(),
-    ...posixRestore(bundleRoot, dshDir, previous),
-    'chmod 755 "$BUNDLE" "$DSH"',
-    ...ADAPTER_NAMES.map((file) => `chmod 644 "$DSH/${file}"`),
-    'if ! node "$DSH/runtime.mjs" --probe >/dev/null 2>&1; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"rollback-verify-failed"}\'; exit 6; fi',
-    'rm -f "$MARKER"',
-    "printf '%s' '{\"ok\":true}'",
-  ].join("\n");
-}
-
 export function windowsRollbackScript({ bundleRoot, dshDir, stopLive }) {
-  const previous = joinPath(true, bundleRoot, ".pocket-previous");
-  const marker = joinPath(true, bundleRoot, ".pocket-deploying");
-  return [
+  const previous = joinPath(true, bundleRoot, previousName);
+  const marker = joinPath(true, bundleRoot, markerName);
+  const lines = [
     "$ErrorActionPreference='Stop'",
     `$BUNDLE = ${psQuote(bundleRoot)}`,
     `$DSH = ${psQuote(dshDir)}`,
     `$PREV = ${psQuote(previous)}`,
     `$MARKER = ${psQuote(marker)}`,
     `$STOP_LIVE = ${stopLive ? 1 : 0}`,
-    `if (-not (Test-Path -LiteralPath (Join-Path $PREV '.pocket-adapter.json'))) { Write-Output '{"ok":false,"reason":"no-previous"}'; exit 4 }`,
+    "$LEGACY_STOP = 0",
+    "$MUTATED = $true",
+    `if (-not (Test-Path -LiteralPath (Join-Path $PREV '.pocket-adapter.json')) -and -not (Test-Path -LiteralPath (Join-Path $PREV 'dsh/launch.mjs'))) { Write-Output '{"ok":false,"reason":"no-previous"}'; exit 4 }`,
+    `function MarkerStuck { & node -e "${JS_STUCK_MARKER}" $MARKER }`,
+    "function InstallOk {",
+    ...windowsInstallOkLines().map((line) => `  ${line}`),
+    "}",
+    "function Restore {",
+    ...windowsRestoreLines(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
+    "}",
     "try {",
     `  & node -e "${JS_WRITE_MARKER}" $MARKER`,
     "  if ($LASTEXITCODE -ne 0) { throw 'maintenance marker could not be written' }",
-    "  if ($STOP_LIVE -eq 1) {",
-    "    $stopJson = & node (Join-Path $DSH 'runtime.mjs') --stop 2>$null",
-    "    $stopCode = $LASTEXITCODE",
-    "    $stopResult = $null",
-    "    try { $stopResult = (($stopJson | Select-Object -Last 1) | ConvertFrom-Json) } catch {}",
-    "    if ($stopResult -and $stopResult.reason -eq 'busy') { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"busy\"}'; exit 3 }",
-    "    if ($stopCode -ne 0 -and -not ($stopResult -and ($stopResult.reason -eq 'unreachable'))) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
-    "  }",
-    ...windowsRestore(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
-    "  & node (Join-Path $DSH 'runtime.mjs') --probe",
-    "  if ($LASTEXITCODE -ne 0) { throw 'rolled-back adapter failed its load probe' }",
+    ...windowsStopLines(stopLive).map((line) => `  ${line}`),
+    "  Restore",
+    "  if (-not (InstallOk)) { throw 'rollback-verify-failed' }",
     "  Remove-Item -LiteralPath $MARKER -Force",
     "  Write-Output '{\"ok\":true}'",
     "} catch {",
-    "  Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue",
-    "  Write-Output '{\"ok\":false,\"reason\":\"rollback-verify-failed\"}'",
-    "  exit 6",
+    "  MarkerStuck",
+    "  Write-Output '{\"ok\":false,\"reason\":\"rollback-verify-failed\",\"stuck\":true}'",
+    "  exit 7",
     "}",
-  ].join("\n");
+  ];
+  return lines.join("\n");
 }
 
 // ── Process plumbing ────────────────────────────────────────────────────────
@@ -379,19 +579,30 @@ const sshBase = () => [
   "-o", "ServerAliveCountMax=2",
 ];
 
-// Run a shell script on a machine; Windows hosts get an encoded PowerShell command because their
-// default SSH shell is cmd. Only logic travels this way; the archive always travels on stdin, so a
-// large payload can never overflow a Windows command line.
+// POSIX keeps the script on the command line (no length limit in practice). Windows always writes
+// the script to a file first, so neither the script text nor the archive is a large command argument.
 function sshArgs(machine, script) {
   const base = sshBase();
-  if (isWindowsPath(machine.dshPath)) {
-    const encoded = Buffer.from(script, "utf16le").toString("base64");
-    return [...base, machine.ssh, `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`];
-  }
+  if (isWindowsPath(machine.dshPath)) return [...base, machine.ssh, powershellCommand(script)];
   return [...base, machine.ssh, script];
 }
 
 const ssh = (machine, script, options) => run("ssh", sshArgs(machine, script), options);
+
+async function writeRemoteScript(machine, remotePath, text) {
+  const command = powershellCommand(`$stdinStream = [Console]::OpenStandardInput(); $output = [IO.File]::Create(${psQuote(remotePath)}); try { $stdinStream.CopyTo($output) } finally { $output.Dispose() }`);
+  const result = await run("ssh", [...sshBase(), machine.ssh, command], { input: Buffer.from(`\ufeff${text}`, "utf8"), timeout: 60_000 });
+  return result.code === 0;
+}
+
+async function runRemoteScript(machine, remotePath, { input = null, timeout = 300_000 } = {}) {
+  const command = powershellCommand(`& ${psQuote(remotePath)}; exit $LASTEXITCODE`);
+  return run("ssh", [...sshBase(), machine.ssh, command], { input, timeout });
+}
+
+async function removeRemoteScript(machine, remotePath) {
+  await run("ssh", [...sshBase(), machine.ssh, powershellCommand(`Remove-Item -LiteralPath ${psQuote(remotePath)} -Force -ErrorAction SilentlyContinue`)], { timeout: 60_000 });
+}
 
 async function buildArchive(manifest) {
   const dir = mkdtempSync(join(tmpdir(), "pocket-deploy-"));
@@ -418,9 +629,9 @@ async function buildArchive(manifest) {
 }
 
 // ── Machine inspection / staging / activation ───────────────────────────────
-function settingsPath() {
-  const index = process.argv.indexOf("--settings");
-  const explicit = index >= 0 ? process.argv[index + 1] : null;
+function settingsPath(argv = process.argv) {
+  const index = argv.indexOf("--settings");
+  const explicit = index >= 0 ? argv[index + 1] : null;
   if (explicit) return resolve(explicit);
   const dataDir = process.env.CODEX_POCKET_DATA_DIR || join(ROOT, "data");
   return join(dataDir, ".codex-pocket.local.json");
@@ -433,110 +644,142 @@ function readMachines() {
   return Array.isArray(config.machines) ? config.machines : [];
 }
 
-const manifestPath = (windows, dshDir) => joinPath(windows, dshDir, ".pocket-adapter.json");
-const runtimePath = (windows, dshDir) => joinPath(windows, dshDir, "runtime.mjs");
+const pathFor = (windows, ...parts) => joinPath(windows, ...parts);
+const manifestPath = (windows, dshDir) => pathFor(windows, dshDir, ".pocket-adapter.json");
+const runtimePath = (windows, dshDir) => pathFor(windows, dshDir, "runtime.mjs");
+const quoteFor = (windows, value) => (windows ? psQuote(value) : posixQuote(value));
+const readJsonCommand = (windows, path) => (windows
+  ? `& node -e "${JS_READ}" ${psQuote(path)}`
+  : `node -e "${JS_READ}" ${posixQuote(path)}`);
+const nodeCommand = (windows, ...args) => (windows ? `& node ${args.join(" ")}` : `node ${args.join(" ")}`);
 
 async function inspectMachine(machine, manifest, options) {
   const name = machine.name || machine.ssh;
   const dshDir = parentDir(machine.dshPath);
   const windows = isWindowsPath(machine.dshPath);
-  const entry = { name, machine, dshDir, windows };
+  const entry = { key: name, name, machine, dshDir, windows };
   const reachable = await ssh(machine, "echo pocket-deploy-ok");
-  if (reachable.code !== 0) return { ...entry, current: null, liveStatus: null, verifiable: false, action: "hold", reason: "offline" };
-  const readCommand = windows
-    ? `& node -e "${JS_READ}" ${psQuote(manifestPath(windows, dshDir))}`
-    : `node -e "${JS_READ}" ${posixQuote(manifestPath(windows, dshDir))}`;
-  const current = parseLastJson((await ssh(machine, readCommand)).stdout);
+  if (reachable.code !== 0) return { ...entry, current: null, liveStatus: null, verifiable: false, statusProtocol: null, installedVerified: false, action: "hold", reason: "offline" };
+  const current = parseLastJson((await ssh(machine, readJsonCommand(windows, manifestPath(windows, dshDir)))).stdout);
   const verifiable = Boolean(current && Array.isArray(current.features) && current.features.includes("control-socket"));
-  let liveStatus = null;
-  if (verifiable) {
-    const statusCommand = windows
-      ? `& node ${psQuote(runtimePath(windows, dshDir))} --status`
-      : `node ${posixQuote(runtimePath(windows, dshDir))} --status`;
-    liveStatus = liveStatusFrom((await ssh(machine, statusCommand)).stdout);
+  let installedVerified = false;
+  if (current && current.files && Object.keys(current.files).length) {
+    const verify = await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--verify", quoteFor(windows, manifestPath(windows, dshDir))));
+    installedVerified = verify.code === 0;
   }
-  return { ...entry, current, liveStatus, verifiable, ...planMachine({ current, manifest, liveStatus, ...options }) };
+  let liveStatus = null;
+  let statusProtocol = null;
+  if (verifiable) {
+    const statusOut = (await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--status"))).stdout;
+    liveStatus = liveStatusFrom(statusOut);
+    const parsed = parseLastJson(statusOut);
+    if (parsed?.result && typeof parsed.result.protocol === "number") statusProtocol = parsed.result.protocol;
+  }
+  return { ...entry, current, liveStatus, verifiable, statusProtocol, installedVerified, ...planMachine({ current, manifest, liveStatus, ...options }) };
 }
 
 async function stageMachine(entry, manifest, archive) {
   const { machine, dshDir, windows, current } = entry;
   const bundleRoot = parentDir(dshDir);
-  const staging = joinPath(windows, bundleRoot, `.pocket-staging-${manifest.bundle.slice(0, 12)}`);
+  const staging = joinPath(windows, bundleRoot, stagingName(manifest.bundle));
   const installDeps = current?.lockHash !== manifest.lockHash;
-  const script = windows
-    ? windowsStageScript({ bundleRoot, staging, installDeps })
-    : posixStageScript({ bundleRoot, staging, installDeps });
-  const result = await ssh(machine, script, { input: archive, timeout: 900_000 });
-  if (result.code !== 0) {
-    return { ...entry, action: "hold", reason: `staging failed (${parseLastJson(result.stdout)?.reason ?? result.code})` };
+  const options = { bundleRoot, dshDir, staging, installDeps };
+  let result;
+  if (windows) {
+    const scriptPath = joinPath(true, bundleRoot, remoteScriptName(manifest.bundle, "stage"));
+    const script = windowsStageScript(options);
+    if (!(await writeRemoteScript(machine, scriptPath, script))) return { ...entry, action: "hold", reason: "staging failed (script-transfer)" };
+    result = await runRemoteScript(machine, scriptPath, { input: archive, timeout: 900_000 });
+    await removeRemoteScript(machine, scriptPath);
+  } else {
+    result = await ssh(machine, posixStageScript(options), { input: archive, timeout: 900_000 });
   }
-  return { ...entry, staging, installDeps };
+  if (result.code !== 0) return { ...entry, action: "hold", reason: `staging failed (${parseLastJson(result.stdout)?.reason ?? result.code})` };
+  return { ...entry, staging, installDeps, stopLive: entry.stopLive, legacyStop: entry.legacyStop };
 }
 
-async function activateMachine(entry) {
-  const { machine, dshDir, windows, staging, stopLive } = entry;
+async function activateMachine(entry, manifest) {
+  const { machine, dshDir, windows, staging, installDeps, stopLive, legacyStop } = entry;
   const bundleRoot = parentDir(dshDir);
-  const script = windows
-    ? windowsActivateScript({ bundleRoot, dshDir, staging, stopLive })
-    : posixActivateScript({ bundleRoot, dshDir, staging, stopLive });
-  const result = await ssh(machine, script, { timeout: 300_000 });
+  const options = { bundleRoot, dshDir, staging, installDeps, stopLive, legacyStop };
+  let result;
+  if (windows) {
+    const scriptPath = joinPath(true, bundleRoot, remoteScriptName(manifest.bundle, "activate"));
+    const script = windowsActivateScript(options);
+    if (!(await writeRemoteScript(machine, scriptPath, script))) return { ...entry, action: "hold", reason: "activation failed (script-transfer)" };
+    result = await runRemoteScript(machine, scriptPath, { timeout: 300_000 });
+    await removeRemoteScript(machine, scriptPath);
+  } else {
+    result = await ssh(machine, posixActivateScript(options), { timeout: 300_000 });
+  }
   const payload = parseLastJson(result.stdout);
   if (result.code === 0 && payload?.ok === true) {
     const cleanup = windows ? `Remove-Item -LiteralPath ${psQuote(staging)} -Recurse -Force -ErrorAction SilentlyContinue` : `rm -rf ${posixQuote(staging)}`;
     await ssh(machine, cleanup, { timeout: 120_000 });
     return { ...entry, action: "updated" };
   }
-  return { ...entry, action: "hold", reason: `activation failed (${payload?.reason ?? result.code})`, rolledBack: payload?.rolledBack === true };
+  return { ...entry, action: "hold", reason: `activation failed (${payload?.reason ?? result.code})`, rolledBack: payload?.rolledBack === true, stuck: payload?.stuck === true };
 }
 
 async function rollbackMachine(entry, confirmIdle) {
   const { machine, dshDir, windows, verifiable, liveStatus } = entry;
   const bundleRoot = parentDir(dshDir);
-  if (!verifiable && !confirmIdle) return { ...entry, action: "hold", reason: "rollback needs a drained machine; pass --confirm-idle" };
-  if (verifiable && liveStatus === "busy") return { ...entry, action: "hold", reason: "runtime busy" };
-  const script = windows
-    ? windowsRollbackScript({ bundleRoot, dshDir, stopLive: verifiable && liveStatus === "idle" })
-    : posixRollbackScript({ bundleRoot, dshDir, stopLive: verifiable && liveStatus === "idle" });
-  const result = await ssh(machine, script, { timeout: 300_000 });
+  const decision = rollbackDecision(entry, confirmIdle);
+  if (!decision.ok) return { ...entry, action: "hold", reason: decision.reason };
+  const options = { bundleRoot, dshDir, stopLive: decision.stopLive };
+  let result;
+  if (windows) {
+    const scriptPath = joinPath(true, bundleRoot, remoteScriptName("rollback", "rollback"));
+    const script = windowsRollbackScript(options);
+    if (!(await writeRemoteScript(machine, scriptPath, script))) return { ...entry, action: "hold", reason: "rollback failed (script-transfer)" };
+    result = await runRemoteScript(machine, scriptPath, { timeout: 300_000 });
+    await removeRemoteScript(machine, scriptPath);
+  } else {
+    result = await ssh(machine, posixRollbackScript(options), { timeout: 300_000 });
+  }
   const payload = parseLastJson(result.stdout);
   if (result.code === 0 && payload?.ok === true) return { ...entry, action: "rolled back" };
-  return { ...entry, action: "hold", reason: `rollback failed (${payload?.reason ?? result.code})` };
+  return { ...entry, action: "hold", reason: `rollback failed (${payload?.reason ?? result.code})`, stuck: payload?.stuck === true };
 }
 
-// Read the protocol an installed adapter currently declares. A machine that cannot be reached, or
-// that has no deployment manifest, is not compatible with the gateway.
-async function liveProtocol(entry) {
+// Re-read the protocol a machine will actually serve: the running runtime's control response when it
+// answers, otherwise the installed manifest only after its bytes verify.
+async function machineProtocol(entry) {
   const { machine, dshDir, windows } = entry;
-  const readCommand = windows
-    ? `& node -e "${JS_READ}" ${psQuote(manifestPath(windows, dshDir))}`
-    : `node -e "${JS_READ}" ${posixQuote(manifestPath(windows, dshDir))}`;
-  const value = parseLastJson((await ssh(machine, readCommand)).stdout);
-  return typeof value?.protocol === "number" ? value.protocol : null;
+  if (entry.verifiable) {
+    const parsed = parseLastJson((await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--status"))).stdout);
+    if (parsed?.result && typeof parsed.result.protocol === "number") return parsed.result.protocol;
+  }
+  const current = parseLastJson((await ssh(machine, readJsonCommand(windows, manifestPath(windows, dshDir)))).stdout);
+  if (typeof current?.protocol !== "number") return null;
+  const verify = await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--verify", quoteFor(windows, manifestPath(windows, dshDir))));
+  return verify.code === 0 ? current.protocol : null;
 }
 
 async function incompatibleMachines(entries, manifest) {
   const incompatible = [];
   for (const entry of entries) {
-    const protocol = await liveProtocol(entry);
-    if (protocol !== manifest.protocol) incompatible.push({ ...entry, liveProtocol: protocol });
+    const protocol = await machineProtocol(entry);
+    if (protocol !== manifest.protocol) incompatible.push({ ...entry, machineProtocol: protocol });
   }
   return incompatible;
 }
 
 // ── Gateway ─────────────────────────────────────────────────────────────────
-async function composeImageRef() {
+async function runningGatewayImage() {
   const list = await run("docker", ["compose", "ps", "-q", "pocket"], { cwd: ROOT });
   const container = list.stdout.trim().split("\n").filter(Boolean).at(-1);
   if (!container) return null;
-  const inspect = await run("docker", ["inspect", "--format", "{{.Config.Image}}", container], { cwd: ROOT });
-  return inspect.code === 0 ? inspect.stdout.trim() || null : null;
+  const inspect = await run("docker", ["inspect", "--format", "{{.Image}}", container], { cwd: ROOT });
+  const id = inspect.stdout.trim();
+  return /^sha256:[0-9a-f]{64}$/.test(id) ? id : null;
 }
 
 async function retainGatewayImage() {
-  const ref = await composeImageRef();
-  if (!ref) return null;
-  const tag = `codex-pocket-gateway:previous`;
-  return (await run("docker", ["tag", ref, tag], { cwd: ROOT })).code === 0 ? { ref, tag } : null;
+  const id = await runningGatewayImage();
+  if (!id) return null;
+  const tag = "codex-pocket-gateway:previous";
+  return (await run("docker", ["tag", id, tag], { cwd: ROOT })).code === 0 ? { id, tag } : null;
 }
 
 async function imageProtocol() {
@@ -549,16 +792,17 @@ async function gatewayState() {
   const path = settingsPath();
   let pin = null;
   try { pin = JSON.parse(readFileSync(path, "utf8")).pin; } catch {}
-  if (!/^\d{4}$/.test(pin ?? "")) return { state: "unknown", reason: "no access PIN is configured" };
+  if (!/^\d{4}$/.test(pin ?? "")) return { state: "unknown", reason: "no access PIN is configured", durable: false };
   const base = "http://127.0.0.1:4173";
   const jar = join(tmpdir(), "pocket-deploy.jar");
   const login = await run("curl", ["-s", "-c", jar, "-X", "POST", "-H", "Content-Type: application/json", "-H", `Origin: ${base}`, "--data", JSON.stringify({ pin }), "--max-time", "4", `${base}/api/login`]);
-  if (login.code !== 0) return { state: "unknown", reason: "the gateway did not answer" };
+  if (login.code !== 0) return { state: "unknown", reason: "the gateway did not answer", durable: false };
   const state = await run("curl", ["-s", "-b", jar, "--max-time", "4", `${base}/api/state`]);
   const value = parseLastJson(state.stdout);
-  if (!value || typeof value !== "object") return { state: "unknown", reason: "the gateway state could not be read" };
+  if (!value || typeof value !== "object") return { state: "unknown", reason: "the gateway state could not be read", durable: false };
+  const durable = String(value.selectedMachineId ?? "").endsWith(":dsh");
   const busy = value.turn?.status === "inProgress" || String(value.threadStatus ?? "").startsWith("active") || value.phase === "working";
-  return busy ? { state: "busy" } : { state: "idle" };
+  return busy ? { state: "busy", durable } : { state: "idle", durable };
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -577,37 +821,46 @@ export async function main(argv = process.argv.slice(2)) {
   const manifest = localManifest();
   log(`adapter protocol ${manifest.protocol}, bundle ${manifest.bundle.slice(0, 12)}`);
 
-  const machines = readMachines().filter((machine) => machine.ssh && machine.dshPath && (!only || machine.name === only || machine.ssh === only));
-  if (!gatewayOnly && !machines.length) log("no matching execution machines with dshPath configured");
+  const all = readMachines().filter((machine) => machine.ssh && machine.dshPath);
+  const targets = all.filter((machine) => !only || machine.name === only || machine.ssh === only);
+  if (!targets.length && !gatewayOnly) log("no matching execution machines with dshPath configured");
 
-  if (rollback) {
-    if (!machines.length) log("nothing to roll back");
-    for (const machine of machines) {
-      const entry = await inspectMachine(machine, manifest, { confirmIdle: true, allowProtocolChange: true });
-      if (entry.action === "hold" && entry.reason === "offline") { log(`${entry.name}: pending (offline)`); continue; }
-      const result = await rollbackMachine(entry, confirmIdle);
-      log(result.action === "rolled back" ? `${result.name}: rolled back` : `${result.name}: pending (${result.reason})`);
-    }
-    return;
-  }
-
-  // Pass 1: read-only inspection of every machine, so a protocol transition can be refused before
-  // anything on any host or in the image cache is modified.
+  // Pass 1: inspect every configured machine read-only. Adapter work is limited to targets; the
+  // gateway compatibility decision always covers the whole fleet.
   const inspected = [];
-  for (const machine of machines) inspected.push(await inspectMachine(machine, manifest, { confirmIdle, allowProtocolChange }));
-  for (const entry of inspected) {
+  for (const machine of all) inspected.push(await inspectMachine(machine, manifest, { confirmIdle, allowProtocolChange }));
+  const targetKeys = new Set(targets.map((machine) => machine.name || machine.ssh));
+  const fleet = planFleet({ entries: inspected, targetKeys, manifest, allowProtocolChange });
+  const { isTarget, protocolChanged, blockers } = fleet;
+  for (const entry of inspected.filter(isTarget)) {
     if (entry.action === "current") log(`${entry.name}: up to date`);
     else if (entry.action === "update") log(`${entry.name}: ${dryRun ? "would update" : "ready to update"} (live ${entry.verifiable ? entry.liveStatus : "idle state unknown"})`);
     else log(`${entry.name}: pending (${entry.reason})`);
   }
-  const protocolTransition = inspected.some((entry) => entry.protocolChanged);
-  const blockers = inspected.filter((entry) => entry.action === "hold");
-  // A protocol change must move the whole fleet or none of it: an offline machine has an unknown
-  // protocol, and updating only part of the fleet would leave the other half unusable either way.
-  if ((protocolTransition || allowProtocolChange) && blockers.length) {
-    for (const entry of blockers) log(`${entry.name}: blocks the protocol update (${entry.reason})`);
-    log("a protocol change is pending and not every machine can be updated; nothing was activated");
+  for (const entry of inspected.filter((entry) => !isTarget(entry))) log(`${entry.name}: untouched (not selected by --machine; protocol ${effectiveProtocol(entry) ?? "unknown"})`);
+
+  // A protocol upgrade must leave a compatible fleet. Any machine that will not move and does not
+  // already speak the new protocol blocks the whole request before anything is mutated.
+  if (fleet.reject) {
+    for (const entry of fleet.staysBehind) log(`${entry.name}: cannot join the protocol update (protocol ${effectiveProtocol(entry) ?? "unknown"})`);
+    log("this machine selection cannot leave a compatible fleet; nothing was activated");
     process.exitCode = 1;
+    return;
+  }
+  if (fleet.blocked) {
+    for (const entry of blockers) log(`${entry.name}: blocks the protocol update (${entry.reason})`);
+    log("a protocol change is pending and not every selected machine can be updated; nothing was activated");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (rollback) {
+    if (!targets.length) log("nothing to roll back");
+    for (const entry of inspected.filter(isTarget)) {
+      if (entry.action === "hold" && entry.reason === "offline") { log(`${entry.name}: pending (offline)`); continue; }
+      const result = await rollbackMachine(entry, confirmIdle);
+      log(result.action === "rolled back" ? `${result.name}: rolled back` : `${result.name}: pending (${result.reason})`);
+    }
     return;
   }
 
@@ -617,11 +870,9 @@ export async function main(argv = process.argv.slice(2)) {
       process.exitCode = 1;
       return;
     }
-    // A gateway-only update must never create a fleet it cannot talk to. Every machine that the
-    // gateway would attach to must already declare the new protocol.
     const incompatible = await incompatibleMachines(inspected, manifest);
     if (incompatible.length) {
-      for (const entry of incompatible) log(`${entry.name}: blocking gateway-only update (adapter protocol ${entry.liveProtocol ?? "unknown"})`);
+      for (const entry of incompatible) log(`${entry.name}: blocking gateway-only update (adapter protocol ${entry.machineProtocol ?? "unknown"})`);
       log("run the full deploy so the execution adapters are updated with the gateway");
       process.exitCode = 1;
       return;
@@ -654,29 +905,41 @@ export async function main(argv = process.argv.slice(2)) {
     }
   }
 
-  // Pass 2: stage and self-verify on every machine before anything is activated.
-  const archive = inspected.some((entry) => entry.action === "update") && !dryRun ? await buildArchive(manifest) : null;
+  // Pass 2: stage and self-verify on every selected machine before anything is activated.
+  const archive = inspected.some((entry) => isTarget(entry) && entry.action === "update") && !dryRun ? await buildArchive(manifest) : null;
   const staged = [];
   for (const entry of inspected) {
-    if (entry.action !== "update" || dryRun) { staged.push(entry); continue; }
-    const result = await stageMachine(entry, manifest, archive);
+    if (!isTarget(entry) || entry.action !== "update" || dryRun) { staged.push(entry); continue; }
+    const result = await stageMachine(entry, manifest, archive, dryRun);
     if (result.action === "hold") log(`${result.name}: pending (${result.reason})`);
     staged.push(result);
   }
-  const stageFailure = staged.some((entry) => entry.reason?.startsWith("staging failed"));
-  if (protocolTransition && stageFailure) {
+  const stageFailure = staged.some((entry) => isTarget(entry) && entry.reason?.startsWith("staging failed"));
+  if (protocolChanged && stageFailure) {
     log("a protocol change is pending and staging failed; nothing was activated");
     process.exitCode = 1;
     return;
   }
 
-  // Pass 3: idle-only activation, each machine verified after the swap.
+  // Pass 3: idle-only activation, each machine verified after the swap. A protocol change that
+  // fails midway restores the machines already switched so none are stranded on the new protocol.
   const activated = [];
+  const switched = [];
   for (const entry of staged) {
-    if (entry.action !== "update" || dryRun) { activated.push(entry); continue; }
-    const result = await activateMachine(entry);
+    if (!isTarget(entry) || entry.action !== "update" || dryRun) { activated.push(entry); continue; }
+    const result = await activateMachine(entry, manifest);
     log(result.action === "updated" ? `${result.name}: updated` : `${result.name}: pending (${result.reason}${result.rolledBack ? ", restored the previous install" : ""})`);
     activated.push(result);
+    if (result.action === "updated") switched.push(result);
+    else if (protocolChanged) {
+      log("a protocol target failed; returning the machines already switched to the previous protocol");
+      for (const done of switched) {
+        const back = await rollbackMachine(await inspectMachine(done.machine, manifest, { confirmIdle: true, allowProtocolChange: true }), true);
+        log(back.action === "rolled back" ? `${back.name}: restored to the previous protocol` : `${back.name}: restore pending (${back.reason})`);
+      }
+      process.exitCode = 1;
+      return;
+    }
   }
   if (dryRun) {
     log("dry run: no files, images or containers were changed");
@@ -684,17 +947,16 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (!adaptersOnly) {
-    // Re-read every machine after activation: the gateway may only move once the whole fleet it
-    // attaches to declares the protocol the built image speaks. This also covers a machine that
-    // was already current, was offline, or had its activation rolled back.
-    const incompatible = await incompatibleMachines(activated, manifest);
+    // The gateway may only move once the whole fleet it attaches to serves the built protocol.
+    const incompatible = await incompatibleMachines(inspected, manifest);
     if (incompatible.length) {
-      for (const entry of incompatible) log(`${entry.name}: gateway waits on adapter protocol ${entry.liveProtocol ?? "unknown"}`);
+      for (const entry of incompatible) log(`${entry.name}: gateway waits on adapter protocol ${entry.machineProtocol ?? "unknown"}`);
       log("gateway: pending (an execution adapter is not on the built protocol; rerun once the blocked machines are idle)");
     } else {
       const state = await gatewayState();
-      if (state.state === "busy") {
-        log("gateway: pending (an active task is running; rerun once it finishes)");
+      const durableBusy = state.state === "busy" && state.durable && !protocolChanged;
+      if (state.state === "busy" && !durableBusy) {
+        log("gateway: pending (a non-durable active task is running; rerun once it finishes)");
       } else if (state.state === "unknown" && !confirmIdle) {
         log(`gateway: pending (${state.reason}; drain the gateway and pass --confirm-idle)`);
       } else {
@@ -704,10 +966,10 @@ export async function main(argv = process.argv.slice(2)) {
         else { log(`gateway: pending (activation failed: ${up.stderr.slice(-300)})`); process.exitCode = 1; }
       }
     }
-  } else if (protocolTransition) {
+  } else if (protocolChanged) {
     log("execution adapters are on the new protocol; run the full deploy (or restart the gateway with the new image) before DSH is usable again");
   }
-  if (inspected.some((entry) => entry.action === "update" && !entry.verifiable)) log("note: a machine without a trustworthy runtime skipped its automatic idle check; the deployment marker expires on its own if a run is interrupted");
+  if (inspected.some((entry) => isTarget(entry) && entry.action === "update" && !entry.verifiable)) log("note: a machine without a trustworthy runtime skipped its automatic idle check; the deployment marker expires on its own if a run is interrupted");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

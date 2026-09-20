@@ -413,3 +413,37 @@ test("a pending structured question stays pending and is replayed after reattach
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("an accepted idle shutdown returns only after the owner and child exit", { skip: !installed && "install dsh/node_modules with npm ci --prefix dsh" }, async () => {
+  const home = mkdtempSync(join(tmpdir(), "pocket-dsh-stopwait-"));
+  const fake = await startHeldEndpoint();
+  writeFileSync(join(home, "settings.yaml"), `llm-deepseek:\n  baseURL: http://127.0.0.1:${fake.port}\n`, { mode: 0o600 });
+  let connection;
+  try {
+    connection = new Connection(home);
+    await connection.start();
+    const daemonPid = ownerPid(home);
+    assert.equal(alive(daemonPid), true, "the runtime owns the home");
+    // Detach the gateway; the durable runtime keeps the home until it is asked to stop.
+    connection.kill();
+    connection = null;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(alive(daemonPid), true, "detaching does not stop the runtime");
+    const stopped = spawnSync(process.execPath, [join(ROOT, "dsh/runtime.mjs"), "--stop"], {
+      env: { ...process.env, POCKET_DSH_HOME: home },
+      encoding: "utf8",
+      timeout: 40000,
+    });
+    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+    // Success is proof of exit, not an acknowledgment: the owner and its child are gone.
+    assert.equal(alive(daemonPid), false, "the owner exited before --stop returned");
+    assert.equal(alive(ownerPid(home)), false, "the lock is released");
+    assert.equal(existsSync(join(home, "pocket-runtime.sock")), false, "the attach socket is removed");
+  } finally {
+    await connection?.stop();
+    const pid = ownerPid(home);
+    if (alive(pid)) { try { process.kill(pid, "SIGTERM"); } catch {} }
+    fake.server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});

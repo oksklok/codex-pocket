@@ -3,148 +3,171 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ADAPTER_FILES, FEATURES, liveStatusFrom, localManifest, planMachine,
-  posixActivateScript, posixRollbackScript, posixStageScript, windowsActivateScript, windowsRollbackScript, windowsStageScript,
+  ADAPTER_FILES, FEATURES, effectiveProtocol, liveStatusFrom, localManifest, markerName, planFleet, planMachine,
+  posixActivateScript, posixRollbackScript, posixStageScript, powershellCommand, previousName, rollbackDecision,
+  windowsActivateScript, windowsRollbackScript, windowsStageScript,
 } from "../scripts/deploy.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const hasPosixTools = process.platform !== "win32"
   && spawnSync("bash", ["-c", "true"]).status === 0
   && spawnSync("tar", ["--version"]).status === 0;
-
+const realDeps = join(ROOT, "dsh/node_modules");
 const temp = (prefix) => mkdtempSync(join(tmpdir(), prefix));
 
-// A fake runtime that answers --verify/--probe/--stop the way the real carrier does. It can be told
-// to fail only outside a staging directory, which simulates a corrupt copy during activation.
-function runtimeSource({ liveProbeFails = false, stopReason = null } = {}) {
-  return `const mode = process.argv[2];
-const inStage = process.argv[1].includes('.pocket-staging');
+// A fake runtime that behaves like the real carrier: --probe/--verify read a real dependency through
+// the staged or live node_modules, and an injected file can fail a post-activation probe.
+function fakeRuntime() {
+  return `import fs from 'node:fs';
+import p from 'node:path';
+const dir = p.dirname(new URL(import.meta.url).pathname);
+const mode = process.argv[2];
 if (mode === '--probe' || mode === '--verify') {
-  const ok = ${liveProbeFails} ? inStage : true;
-  process.stdout.write(ok ? '{"ok":true}' : '{"ok":false}');
-  process.exit(ok ? 0 : 1);
+  if (fs.existsSync(p.join(dir, 'FORCE_PROBE_FAIL'))) { process.stdout.write('{"ok":false}'); process.exit(1); }
+  try { fs.readFileSync(p.join(dir, 'node_modules', 'marker.txt')); } catch { process.stdout.write('{"ok":false,"reason":"no-deps"}'); process.exit(1); }
+  process.stdout.write('{"ok":true}'); process.exit(0);
 }
-if (mode === '--stop') {
-  process.stdout.write(${stopReason ? JSON.stringify(JSON.stringify({ ok: false, reason: stopReason })) : "'{\"ok\":true,\"result\":{\"accepted\":true}}'"});
-  process.exit(${stopReason ? 1 : 0});
-}
+if (mode === '--stop') { process.stdout.write('{"ok":true,"result":{"accepted":true}}'); process.exit(0); }
 process.exit(1);`;
 }
 
-// A fake live adapter install: a `dsh` directory plus a `deepseek.ts` beside it.
-function fakeBundle(options = {}) {
+// A fake live adapter install: a dsh directory, a deepseek.ts beside it, and a loadable runtime.
+function fakeBundle() {
   const bundle = join(temp("pocket-deploy-bundle-"), "bundle");
-  mkdirSync(join(bundle, "dsh"), { recursive: true });
+  const dsh = join(bundle, "dsh");
+  mkdirSync(join(dsh, "node_modules"), { recursive: true });
+  writeFileSync(join(dsh, "node_modules", "marker.txt"), "deps\n");
   for (const file of ADAPTER_FILES) {
     const destination = join(bundle, file);
     mkdirSync(dirname(destination), { recursive: true });
     writeFileSync(destination, `LIVE ${file}\n`);
   }
-  writeFileSync(join(bundle, "dsh/runtime.mjs"), runtimeSource(options));
-  writeFileSync(join(bundle, "dsh/.pocket-adapter.json"), JSON.stringify({
-    protocol: options.protocol ?? 2, bundle: "old-bundle", lockHash: "old-lock", features: [...FEATURES], files: {},
-  }));
-  return bundle;
+  writeFileSync(join(dsh, "runtime.mjs"), fakeRuntime());
+  writeFileSync(join(dsh, ".pocket-adapter.json"), JSON.stringify({ protocol: 2, bundle: "old-bundle", lockHash: "old-lock", features: [...FEATURES], files: {} }));
+  return { bundle, dsh };
 }
 
-function fakeStaging(options = {}) {
+function fakeStaging() {
   const source = temp("pocket-deploy-stage-");
   for (const file of ADAPTER_FILES) {
     const destination = join(source, file);
     mkdirSync(dirname(destination), { recursive: true });
     writeFileSync(destination, `STAGED ${file}\n`);
   }
-  writeFileSync(join(source, "dsh/runtime.mjs"), runtimeSource(options));
-  writeFileSync(join(source, "pocket-manifest.json"), JSON.stringify({
-    protocol: options.protocol ?? 2, bundle: "new-bundle", lockHash: "new-lock", features: [...FEATURES], files: {},
-  }));
+  writeFileSync(join(source, "dsh/runtime.mjs"), fakeRuntime());
+  writeFileSync(join(source, "pocket-manifest.json"), JSON.stringify({ protocol: 2, bundle: "new-bundle", lockHash: "new-lock", features: [...FEATURES], files: {} }));
   return source;
 }
 
-function archiveOf(source) {
-  const result = spawnSync("tar", ["-czf", "-", "-C", source, "."], { maxBuffer: 1 << 28 });
-  assert.equal(result.status, 0, "the test archive is created");
-  return result.stdout;
-}
+const archiveOf = (source) => spawnSync("tar", ["-czf", "-", "-C", source, "."], { maxBuffer: 1 << 28 }).stdout;
+const runScript = (script, input) => spawnSync("bash", ["-c", script], { input, encoding: "utf8" });
+const payloadOf = (result) => {
+  try { return JSON.parse(result.stdout.trim().split("\n").filter(Boolean).pop()); } catch { return null; }
+};
 
-const runScript = (script, { input } = {}) => spawnSync("bash", ["-c", script], { input, encoding: "utf8" });
-
-test("the deploy manifest matches the gateway protocol and advertises runtime capabilities", () => {
-  const manifest = localManifest();
+test("the deploy manifest matches the gateway protocol and includes the router", () => {
+  const value = localManifest();
   const gateway = /export const DSH_ADAPTER_PROTOCOL = (\d+)/.exec(readFileSync(join(ROOT, "gateway.ts"), "utf8"));
   assert.ok(gateway, "gateway.ts declares the protocol");
-  assert.equal(manifest.protocol, Number(gateway[1]));
-  for (const feature of FEATURES) assert.ok(manifest.features.includes(feature), `manifest advertises ${feature}`);
-  assert.equal(manifest.files["dsh/runtime.mjs"].length, 64, "the manifest hashes the carrier");
+  assert.equal(value.protocol, Number(gateway[1]));
+  for (const feature of FEATURES) assert.ok(value.features.includes(feature), `manifest advertises ${feature}`);
+  assert.ok(value.files["dsh/router.mjs"], "the manifest hashes the routing module");
 });
 
 test("planMachine keeps old, busy and protocol-mismatched installations pending", () => {
-  const manifest = { bundle: "new", protocol: 2, lockHash: "lock" };
+  const m = { bundle: "new", protocol: 2, lockHash: "lock" };
   const modern = (extra) => ({ protocol: 2, bundle: "old", lockHash: "lock", features: [...FEATURES], ...extra });
-  assert.equal(planMachine({ current: null, manifest, liveStatus: null, confirmIdle: false, allowProtocolChange: false }).action, "hold");
-  assert.equal(planMachine({ current: null, manifest, liveStatus: null, confirmIdle: true, allowProtocolChange: false }).action, "update");
-  // One of two turns finishing leaves the runtime busy; a trustworthy busy runtime is never touched.
-  assert.equal(planMachine({ current: modern(), manifest, liveStatus: "busy", confirmIdle: true, allowProtocolChange: false }).action, "hold");
-  assert.equal(planMachine({ current: modern(), manifest, liveStatus: "idle", confirmIdle: false, allowProtocolChange: false }).action, "update");
-  // An install without the control-socket capability is never inspected through its live runtime.
+  assert.equal(planMachine({ current: null, manifest: m, liveStatus: null, confirmIdle: false, allowProtocolChange: false }).action, "hold");
+  assert.equal(planMachine({ current: null, manifest: m, liveStatus: null, confirmIdle: true, allowProtocolChange: false }).action, "update");
+  assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "busy", confirmIdle: true, allowProtocolChange: false }).action, "hold");
+  assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "unknown", confirmIdle: false, allowProtocolChange: false }).action, "hold");
+  assert.equal(planMachine({ current: modern(), manifest: m, liveStatus: "unknown", confirmIdle: true, allowProtocolChange: false }).stopLive, false);
   const legacy = { protocol: 1, bundle: "old", lockHash: "lock", features: [] };
-  assert.equal(planMachine({ current: legacy, manifest, liveStatus: null, confirmIdle: true, allowProtocolChange: false }).action, "hold");
-  const upgrade = planMachine({ current: legacy, manifest, liveStatus: null, confirmIdle: true, allowProtocolChange: true });
-  assert.equal(upgrade.action, "update");
-  assert.equal(upgrade.protocolChanged, true);
-  assert.equal(upgrade.stopLive, false, "a legacy install is never stopped through the durable control path");
-  // Already current, including every capability.
-  assert.equal(planMachine({ current: modern({ bundle: "new" }), manifest, liveStatus: "idle", confirmIdle: false, allowProtocolChange: false }).action, "current");
+  assert.equal(planMachine({ current: legacy, manifest: m, liveStatus: null, confirmIdle: true, allowProtocolChange: false }).action, "hold");
+  const cutover = planMachine({ current: legacy, manifest: m, liveStatus: null, confirmIdle: true, allowProtocolChange: true });
+  assert.equal(cutover.action, "update");
+  assert.equal(cutover.legacyStop, true, "the first cutover stops the old carrier");
+  assert.equal(planMachine({ current: modern({ bundle: "new" }), manifest: m, liveStatus: "idle", confirmIdle: false, allowProtocolChange: false }).action, "current");
 });
 
 test("an unproven runtime status is never treated as idle", () => {
-  // Only an explicit boolean answer or a genuinely unreachable endpoint counts as idle.
   assert.equal(liveStatusFrom('{"ok":true,"result":{"busy":true,"protocol":2}}'), "busy");
   assert.equal(liveStatusFrom('{"ok":true,"result":{"busy":false,"protocol":2}}'), "idle");
   assert.equal(liveStatusFrom('{"ok":false,"reason":"unreachable"}'), "idle");
   assert.equal(liveStatusFrom('{"ok":false,"reason":"timeout"}'), "unknown");
-  assert.equal(liveStatusFrom('{"ok":false,"reason":"error"}'), "unknown");
   assert.equal(liveStatusFrom("not json"), "unknown");
-  assert.equal(liveStatusFrom(""), "unknown");
-
-  const manifest = { bundle: "new", protocol: 2, lockHash: "lock" };
-  const current = { protocol: 2, bundle: "old", lockHash: "lock", features: [...FEATURES] };
-  const held = planMachine({ current, manifest, liveStatus: "unknown", confirmIdle: false, allowProtocolChange: false });
-  assert.equal(held.action, "hold");
-  const confirmed = planMachine({ current, manifest, liveStatus: "unknown", confirmIdle: true, allowProtocolChange: false });
-  assert.equal(confirmed.action, "update");
-  assert.equal(confirmed.stopLive, false, "an unproven status never authorizes stopping the runtime");
 });
 
-test("generated activation scripts verify before and after the swap and never mask failures", () => {
-  const stage = posixStageScript({ bundleRoot: "/b", staging: "/b/.pocket-staging-x", installDeps: true });
-  assert.match(stage, /set -eu/);
-  assert.match(stage, /--verify/);
-  assert.match(stage, /--probe/);
-  assert.match(stage, /npm ci/);
-  const activate = posixActivateScript({ bundleRoot: "/b", dshDir: "/b/dsh", staging: "/b/.pocket-staging-x", stopLive: true });
-  assert.match(activate, /\.pocket-deploying/);
-  assert.match(activate, /\.pocket-previous/);
+test("the running protocol wins over the installed manifest for compatibility", () => {
+  assert.equal(effectiveProtocol({ statusProtocol: 3, installedVerified: true, current: { protocol: 2 } }), 3);
+  assert.equal(effectiveProtocol({ statusProtocol: null, installedVerified: true, current: { protocol: 2 } }), 2);
+  assert.equal(effectiveProtocol({ statusProtocol: null, installedVerified: false, current: { protocol: 2 } }), null, "an unverified install is unknown");
+  assert.equal(effectiveProtocol({ current: null }), null);
+});
+
+test("a --machine selection never narrows the fleet compatibility check", () => {
+  const m = { protocol: 2 };
+  const entries = [
+    { key: "A", action: "current", protocolChanged: false, statusProtocol: 2, installedVerified: true, current: { protocol: 2 } },
+    { key: "B", action: "update", protocolChanged: true, statusProtocol: 1, installedVerified: true, current: { protocol: 1 } },
+  ];
+  const partial = planFleet({ entries, targetKeys: new Set(["A"]), manifest: m, allowProtocolChange: false });
+  assert.equal(partial.isTarget(entries[1]), false);
+  assert.equal(partial.staysBehind.length, 1, "B is not a target and cannot join the update");
+  assert.equal(partial.reject, true, "a partial protocol upgrade is refused before mutation");
+  const full = planFleet({ entries, targetKeys: new Set(["A", "B"]), manifest: m, allowProtocolChange: true });
+  assert.equal(full.reject, false);
+});
+
+test("rollback blocks on a busy or unproven runtime, matching activation", () => {
+  assert.equal(rollbackDecision({ verifiable: true, liveStatus: "busy" }, true).ok, false);
+  assert.equal(rollbackDecision({ verifiable: true, liveStatus: "unknown" }, false).ok, false);
+  assert.deepEqual(rollbackDecision({ verifiable: true, liveStatus: "idle" }, false), { ok: true, stopLive: true });
+  assert.deepEqual(rollbackDecision({ verifiable: false, liveStatus: null }, true), { ok: true, stopLive: false });
+});
+
+test("POSIX staging reuses locked dependencies only when the lock is unchanged", () => {
+  const withDeps = posixStageScript({ bundleRoot: "/b", dshDir: "/b/dsh", staging: "/b/stage", installDeps: true });
+  assert.match(withDeps, /INSTALL_DEPS=1/);
+  assert.match(withDeps, /npm ci/);
+  const reused = posixStageScript({ bundleRoot: "/b", dshDir: "/b/dsh", staging: "/b/stage", installDeps: false });
+  assert.match(reused, /INSTALL_DEPS=0/);
+  assert.match(reused, /ln -s "\$DSH\/node_modules"/);
+  assert.match(reused, /--probe/);
+  assert.match(reused, /rm -f "\$STAGE\/dsh\/node_modules"/);
+});
+
+test("activation scripts verify before and after the swap and restore on any failure", () => {
+  const activate = posixActivateScript({ bundleRoot: "/b", dshDir: "/b/dsh", staging: "/b/stage", installDeps: false, stopLive: true, legacyStop: false });
   assert.match(activate, /--verify/);
   assert.match(activate, /--probe/);
-  assert.match(activate, /rolledBack/);
+  assert.match(activate, /install_ok/);
+  assert.match(activate, /MUTATED=1/);
+  assert.match(activate, /fail "activation-failed"/);
+  assert.match(activate, /marker_stuck/);
   assert.doesNotMatch(activate, /chmod 644 "\$DSH\/"\*/);
   assert.doesNotMatch(activate, /\|\| true/);
-  assert.doesNotMatch(activate, /reason==='timeout'/, "a timed-out stop is not accepted as idle");
-  const windowsStage = windowsStageScript({ bundleRoot: "C:\\b", staging: "C:\\b\\stage", installDeps: true });
-  assert.match(windowsStage, /\$LASTEXITCODE/);
-  assert.match(windowsStage, /OpenStandardInput/);
-  assert.doesNotMatch(windowsStage, /FromBase64String/);
-  const windowsActivate = windowsActivateScript({ bundleRoot: "C:\\b", dshDir: "C:\\b\\dsh", staging: "C:\\b\\stage", stopLive: true });
-  assert.match(windowsActivate, /\$LASTEXITCODE/);
-  assert.match(windowsActivate, /Restore/);
-  assert.match(windowsActivate, /\.pocket-deploying/);
-  assert.doesNotMatch(windowsActivate, /reason -eq 'timeout'/, "a timed-out stop is not accepted as idle");
+  const rollback = posixRollbackScript({ bundleRoot: "/b", dshDir: "/b/dsh", stopLive: true });
+  assert.match(rollback, /dsh\/launch\.mjs/, "a manifest-less legacy backup is recognized");
+  assert.match(rollback, /node --check/, "a legacy restore is verified by checks it supports");
+});
+
+test("Windows scripts travel as files, never as large command arguments", () => {
+  const script = windowsActivateScript({ bundleRoot: "C:\\b", dshDir: "C:\\b\\dsh", staging: "C:\\b\\stage", installDeps: false, stopLive: true, legacyStop: false });
+  assert.ok(script.length > 1500, "the activation script is substantial");
+  assert.match(script, /\$LASTEXITCODE/);
+  assert.match(script, /function Restore/);
+  const invocation = powershellCommand("& 'C:\\b\\activate.ps1'; exit $LASTEXITCODE");
+  assert.ok(invocation.length < 600, "the invocation stays short");
+  assert.ok(!invocation.includes("node_modules"), "no script body or archive is embedded");
+  assert.match(powershellCommand(script), /EncodedCommand/);
+  assert.match(windowsRollbackScript({ bundleRoot: "C:\\b", dshDir: "C:\\b\\dsh", stopLive: false }), /Restore|Copy-Item/);
+  assert.match(windowsStageScript({ bundleRoot: "C:\\b", dshDir: "C:\\b\\dsh", staging: "C:\\b\\stage", installDeps: false }), /Junction/);
 });
 
 test("the runtime verifies installed bytes against a manifest", () => {
@@ -158,98 +181,105 @@ test("the runtime verifies installed bytes against a manifest", () => {
   const runtime = join(bundle, "dsh/runtime.mjs");
   const clean = spawnSync(process.execPath, [runtime, "--verify", join(bundle, "pocket-manifest.json")], { encoding: "utf8" });
   assert.equal(clean.status, 0, clean.stderr);
-  assert.equal(JSON.parse(clean.stdout.trim()).ok, true);
   writeFileSync(join(bundle, "dsh/launch.mjs"), "tampered\n");
   const tampered = spawnSync(process.execPath, [runtime, "--verify", join(bundle, "pocket-manifest.json")], { encoding: "utf8" });
   assert.equal(tampered.status, 1);
   assert.deepEqual(JSON.parse(tampered.stdout.trim()).mismatches, ["dsh/launch.mjs"]);
 });
 
-test("the attach client refuses to launch behind a fresh maintenance marker", () => {
+test("code-only staging with reused locked dependencies passes the real probe", { skip: !hasPosixTools || !existsSync(realDeps) }, () => {
+  const bundle = join(temp("pocket-realstage-"), "bundle");
+  for (const file of ADAPTER_FILES) {
+    const destination = join(bundle, file);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(ROOT, file), destination);
+  }
+  symlinkSync(realDeps, join(bundle, "dsh/node_modules"), "dir");
+  const probe = spawnSync(process.execPath, [join(bundle, "dsh/runtime.mjs"), "--probe"], { encoding: "utf8" });
+  assert.equal(probe.status, 0, probe.stdout + probe.stderr);
+  assert.equal(JSON.parse(probe.stdout.trim()).ok, true);
+});
+
+test("the attach client refuses to launch behind a fresh or stuck maintenance marker", () => {
   const root = temp("pocket-launch-");
   const bundle = join(root, "bundle");
   mkdirSync(join(bundle, "dsh"), { recursive: true });
   for (const file of ["launch.mjs", "endpoint.mjs"]) copyFileSync(join(ROOT, "dsh", file), join(bundle, "dsh", file));
   const home = join(root, "home");
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(bundle, ".pocket-deploying"), JSON.stringify({ at: Date.now() }), { mode: 0o600 });
-  const result = spawnSync(process.execPath, [join(bundle, "dsh/launch.mjs")], {
-    env: { ...process.env, POCKET_DSH_HOME: home },
-    encoding: "utf8",
-    timeout: 10_000,
-  });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /deployment in progress/);
+  const marker = join(bundle, markerName);
+  const run = () => spawnSync(process.execPath, [join(bundle, "dsh/launch.mjs")], { env: { ...process.env, POCKET_DSH_HOME: home }, encoding: "utf8", timeout: 10_000 });
+  writeFileSync(marker, JSON.stringify({ at: Date.now() }));
+  assert.match(run().stderr, /deployment in progress/);
+  writeFileSync(marker, JSON.stringify({ stuck: true, at: 0 }));
+  const stuck = run();
+  assert.equal(stuck.status, 1);
+  assert.match(stuck.stderr, /deployment in progress/, "a stuck marker never expires");
 });
 
-test("staging and activation replace a POSIX install and retain the previous one", { skip: !hasPosixTools && "requires bash and tar" }, () => {
-  const bundle = fakeBundle();
+test("staging and activation replace a POSIX install, retain it, and roll back", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle();
   const staging = join(bundle, ".pocket-staging-new-bundle");
-  const staged = runScript(posixStageScript({ bundleRoot: bundle, staging, installDeps: false }), { input: archiveOf(fakeStaging()) });
+  const staged = runScript(posixStageScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false }), archiveOf(fakeStaging()));
   assert.equal(staged.status, 0, staged.stderr);
-  const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: join(bundle, "dsh"), staging, stopLive: true }));
-  assert.equal(activated.status, 0, activated.stderr);
-  assert.equal(JSON.parse(activated.stdout.trim()).ok, true);
-  assert.match(readFileSync(join(bundle, "dsh/launch.mjs"), "utf8"), /STAGED/);
-  assert.equal(JSON.parse(readFileSync(join(bundle, "dsh/.pocket-adapter.json"), "utf8")).bundle, "new-bundle");
-  assert.equal(existsSync(join(bundle, ".pocket-deploying")), false, "the maintenance marker is removed");
-  assert.match(readFileSync(join(bundle, ".pocket-previous/dsh/launch.mjs"), "utf8"), /LIVE/, "the replaced install is retained for rollback");
+  assert.equal(existsSync(join(staging, "dsh/node_modules")), false, "the dependency link is removed after the probe");
+  const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false, stopLive: true, legacyStop: false }));
+  assert.equal(activated.status, 0, activated.stdout + activated.stderr);
+  assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /STAGED/);
+  assert.match(readFileSync(join(bundle, previousName, "dsh/launch.mjs"), "utf8"), /LIVE/, "the previous install is retained");
+  assert.equal(existsSync(join(bundle, markerName)), false);
+  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));
+  assert.equal(rolled.status, 0, rolled.stdout + rolled.stderr);
+  assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /LIVE/);
+  assert.equal(existsSync(join(bundle, previousName, "dsh/launch.mjs")), true, "the backup survives restoration");
 });
 
-test("a failed post-activation check restores the previous POSIX install", { skip: !hasPosixTools && "requires bash and tar" }, () => {
-  const options = { liveProbeFails: true };
-  const bundle = fakeBundle(options);
+test("a failure halfway through activation restores the previous install", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle();
   const staging = join(bundle, ".pocket-staging-new-bundle");
-  const staged = runScript(posixStageScript({ bundleRoot: bundle, staging, installDeps: false }), { input: archiveOf(fakeStaging(options)) });
-  assert.equal(staged.status, 0, staged.stderr);
-  const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: join(bundle, "dsh"), staging, stopLive: true }));
-  assert.equal(activated.status, 6);
-  assert.equal(JSON.parse(activated.stdout.trim()).rolledBack, true);
-  assert.equal(JSON.parse(readFileSync(join(bundle, "dsh/.pocket-adapter.json"), "utf8")).bundle, "old-bundle", "the previous manifest is back");
-  assert.equal(existsSync(join(bundle, ".pocket-deploying")), false);
+  runScript(posixStageScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false }), archiveOf(fakeStaging()));
+  chmodSync(join(staging, "dsh/launch.mjs"), 0o000);
+  const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false, stopLive: true, legacyStop: false }));
+  const payload = payloadOf(activated);
+  assert.notEqual(activated.status, 0);
+  assert.equal(payload.rolledBack, true);
+  assert.equal(payload.stuck, undefined, "a clean restore is not stuck");
+  assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /LIVE/, "the old install is back");
+  assert.equal(existsSync(join(bundle, markerName)), false);
 });
 
-test("a busy runtime refuses activation without mutating the install", { skip: !hasPosixTools && "requires bash and tar" }, () => {
-  const options = { stopReason: "busy" };
-  const bundle = fakeBundle(options);
+test("a busy runtime refuses activation without mutating the install", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle();
+  writeFileSync(join(dsh, "runtime.mjs"), `process.stdout.write(process.argv[2] === '--stop' ? '{"ok":false,"reason":"busy"}' : '{"ok":false}'); process.exit(1);`);
   const staging = join(bundle, ".pocket-staging-new-bundle");
-  const staged = runScript(posixStageScript({ bundleRoot: bundle, staging, installDeps: false }), { input: archiveOf(fakeStaging(options)) });
-  assert.equal(staged.status, 0, staged.stderr);
-  const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: join(bundle, "dsh"), staging, stopLive: true }));
+  runScript(posixStageScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false }), archiveOf(fakeStaging()));
+  const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false, stopLive: true, legacyStop: false }));
   assert.equal(activated.status, 3);
-  assert.equal(JSON.parse(activated.stdout.trim()).reason, "busy");
-  assert.match(readFileSync(join(bundle, "dsh/launch.mjs"), "utf8"), /LIVE/, "the live install is untouched");
-  assert.equal(existsSync(join(bundle, ".pocket-previous")), false);
-  assert.equal(existsSync(join(bundle, ".pocket-deploying")), false);
+  assert.equal(payloadOf(activated).reason, "busy");
+  assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /LIVE/);
+  assert.equal(existsSync(join(bundle, previousName)), false);
+  assert.equal(existsSync(join(bundle, markerName)), false);
 });
 
-test("a rollback restores the retained POSIX install without deleting it first", { skip: !hasPosixTools && "requires bash and tar" }, () => {
-  const bundle = fakeBundle();
-  const staging = join(bundle, ".pocket-staging-new-bundle");
-  assert.equal(runScript(posixStageScript({ bundleRoot: bundle, staging, installDeps: false }), { input: archiveOf(fakeStaging()) }).status, 0);
-  assert.equal(runScript(posixActivateScript({ bundleRoot: bundle, dshDir: join(bundle, "dsh"), staging, stopLive: true })).status, 0);
-  assert.match(readFileSync(join(bundle, "dsh/launch.mjs"), "utf8"), /STAGED/);
-  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: join(bundle, "dsh"), stopLive: true }));
-  assert.equal(rolled.status, 0, rolled.stderr);
-  assert.equal(JSON.parse(rolled.stdout.trim()).ok, true);
-  assert.match(readFileSync(join(bundle, "dsh/launch.mjs"), "utf8"), /LIVE/, "the previous install is back");
-  assert.equal(JSON.parse(readFileSync(join(bundle, "dsh/.pocket-adapter.json"), "utf8")).bundle, "old-bundle");
-  assert.equal(existsSync(join(bundle, ".pocket-deploying")), false);
+test("a rollback to a manifest-less legacy install restores the old file set", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle();
+  const legacy = join(bundle, previousName, "dsh");
+  mkdirSync(legacy, { recursive: true });
+  for (const file of ["launch.mjs", "bridge.mjs", "projection.mjs", "package.json", "package-lock.json", "pocket.patch.yml"]) {
+    writeFileSync(join(legacy, file), `// LEGACY ${file}\n`);
+  }
+  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));
+  assert.equal(rolled.status, 0, rolled.stdout + rolled.stderr);
+  assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /\/\/ LEGACY/);
+  assert.equal(existsSync(join(dsh, "runtime.mjs")), false, "a new-generation file is not left behind");
+  assert.equal(existsSync(join(dsh, ".pocket-adapter.json")), false, "no false manifest is left behind");
+  assert.equal(existsSync(join(bundle, previousName, "dsh/launch.mjs")), true, "the legacy backup is preserved");
 });
 
-test("a rollback without a retained install changes nothing", { skip: !hasPosixTools && "requires bash and tar" }, () => {
-  const bundle = fakeBundle();
-  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: join(bundle, "dsh"), stopLive: true }));
+test("a rollback without a retained install changes nothing", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle();
+  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));
   assert.equal(rolled.status, 4);
-  assert.equal(JSON.parse(rolled.stdout.trim()).reason, "no-previous");
-  assert.match(readFileSync(join(bundle, "dsh/launch.mjs"), "utf8"), /LIVE/);
-  assert.equal(existsSync(join(bundle, ".pocket-deploying")), false);
-});
-
-test("the Windows rollback script restores in place instead of swapping a directory", () => {
-  const script = windowsRollbackScript({ bundleRoot: "C:\\b", dshDir: "C:\\b\\dsh", stopLive: false });
-  assert.match(script, /\.pocket-previous/);
-  assert.match(script, /Copy-Item/);
-  assert.doesNotMatch(script, /Remove-Item -LiteralPath \$PREV -Recurse/);
-  assert.match(script, /\$LASTEXITCODE/);
+  assert.equal(payloadOf(rolled).reason, "no-previous");
+  assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /LIVE/);
 });

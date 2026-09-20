@@ -13,10 +13,12 @@ const DEADLINE_MS = 20_000;
 const MARKER_TTL_MS = 15 * 60_000;
 
 // A fresh deployment marker means the adapter directory may be mid-swap: refuse to launch rather
-// than start a runtime from a partially updated installation. A stale marker is ignored.
+// than start a runtime from a partially updated installation. A stale marker is ignored, but a
+// marker written after an unrecoverable failure never expires until an operator clears it.
 function maintenanceActive() {
   try {
     const value = JSON.parse(readFileSync(MAINTENANCE_MARKER, "utf8"));
+    if (value?.stuck === true) return true;
     if (Number.isFinite(value?.at) && Date.now() - value.at < MARKER_TTL_MS) return true;
     try {
       unlinkSync(MAINTENANCE_MARKER);
