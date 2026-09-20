@@ -1511,7 +1511,7 @@ function dshQuestionAnswers(item: any): Map<string, string[]> {
   return new Map();
 }
 
-function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string; detail: string; qa: { question: string; answer: string }[] } | null {
+function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string; detail: string; qa?: { question: string; answer: string }[] } | null {
   const questions = Array.isArray(item?.arguments?.questions) ? item.arguments.questions : [];
   if (!questions.length) return null;
   const answers = dshQuestionAnswers(item);
@@ -1534,7 +1534,9 @@ function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string;
     qa.push({ question: boundedDetail(text, MAX_QUESTION_TEXT).text, answer: boundedDetail(answer, MAX_QUESTION_ANSWER).text });
   }
   if (!lines.length) return null;
-  return { label: compact(questions[0]?.header || questions[0]?.question, 200) || "Question", detail: lines.join("\n"), qa };
+  // Only a resolved record carries pairs. A running one must omit the key entirely, or a stale running
+  // update would wipe the completed pairs through the projection merge's spread.
+  return { label: compact(questions[0]?.header || questions[0]?.question, 200) || "Question", detail: lines.join("\n"), ...(phase === "done" ? { qa } : {}) };
 }
 
 function activityFromItem(
@@ -1570,7 +1572,7 @@ function activityFromItem(
     if (item.tool === "ask_user_question") {
       const record = dshQuestionRecord(item, phase);
       if (record) {
-        return { ...base, kind: "question", label: record.label, detail: boundedDetail(record.detail, 8_000).text, qa: record.qa, expandable: false };
+        return { ...base, kind: "question", label: record.label, detail: boundedDetail(record.detail, 8_000).text, ...(record.qa ? { qa: record.qa } : {}), expandable: false };
       }
     }
     return { ...base, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`), expandable: true };
