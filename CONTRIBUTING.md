@@ -8,7 +8,7 @@ npm ci
 
 A read-only smoke check is `npm run probe -- --list-only --monitor-seconds 0`; it initializes and lists tasks without attaching to one. Record the app-server version from initialization as well as `codex --version`. Update compatibility claims only for the checks actually performed. Keep `SPIKE_REPORT.md` historical.
 
-Run `npm test` for logic or runtime changes. The critical suite is intentionally small and uses no browser, network, SSH, or credentials.
+Do not add automated tests or test harnesses. Validate changed behavior directly: run the gateway or CLI, exercise the affected flow (including `scripts/deploy.mjs` in a disposable environment when deployment changes), and record exactly what you ran and observed. The read-only smoke check above is an example of that direct validation. Preserve operational safeguards such as health checks, ownership checks and rollback verification.
 
 Only rebuild the native app with `zsh macos/build-app.sh` when its source changes.
 

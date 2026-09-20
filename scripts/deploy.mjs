@@ -60,7 +60,7 @@ const JS_STOP_DECISION = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=
 const log = (message) => process.stdout.write(`${message}\n`);
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
-// ── Pure helpers (exported for tests) ───────────────────────────────────────
+// ── Pure helpers ────────────────────────────────────────────────────────────
 export const isWindowsPath = (value) => /^[a-z]:[\\/]/i.test(value);
 export const parentDir = (value) => String(value).replace(/[\\/][^\\/]*$/, "");
 export const posixQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
@@ -715,9 +715,9 @@ async function defaultRun(command, commandArgs, { input = null, timeout = 120_00
   });
 }
 
-// All external commands go through this seam; tests replace processRunner.run with controlled fakes.
+// All external commands go through this seam so a caller can observe or replace them.
 export const processRunner = { run: defaultRun };
-// Readiness polling is time-based in production; tests shorten it without changing the logic.
+// Readiness polling window; keep it long enough for a real container to become healthy.
 export const deployTiming = { readinessAttempts: 90, readinessDelayMs: 1000 };
 const run = (command, commandArgs, options) => processRunner.run(command, commandArgs, options);
 

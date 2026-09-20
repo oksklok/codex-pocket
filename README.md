@@ -151,7 +151,7 @@ npm start
 
 `npm start` runs the gateway directly without the menu-bar host and uses the same saved settings. With no saved LAN configuration it listens on localhost. `CODEX_BIN` can select a local Codex executable; `--host`, `--port`, and `CODEX_POCKET_PIN` override saved network settings. Non-loopback listening requires a four-digit PIN and the network precautions above.
 
-Run `npm test` as the normal critical regression check for logic or runtime changes; the suite is intentionally small and uses no browser, network, SSH, or credentials.
+Validate logic or runtime changes directly — run the gateway or CLI and exercise the affected flow — instead of adding automated tests. Deployment changes are exercised with `node scripts/deploy.mjs` in a disposable environment.
 
 The optional [DeepSeek Harness backend](docs/deepseek.md) runs locally or on a configured execution machine over SSH, alongside the unchanged OpenAI/Codex backend. DeepSeek shares its physical machine's task group and keeps separate DSH state. An SSH gateway needs no DeepSeek key: credentials and balance requests stay on the execution machine. The guide covers the pinned installation, remote configuration, legacy-session limitations and verified behavior.
 
