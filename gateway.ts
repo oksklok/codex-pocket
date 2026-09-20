@@ -1517,8 +1517,12 @@ function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string;
     if (!text) continue;
     lines.push(text);
     if (phase === "done") {
-      const values = answers.get(String(question?.id ?? "")) ?? [];
-      lines.push(`Answer: ${values.length ? values.join("; ") : "(not recorded)"}`);
+      // A secret answer is never echoed into browser-facing detail; its question still is.
+      if (question?.isSecret === true) lines.push("Answer: Hidden");
+      else {
+        const values = answers.get(String(question?.id ?? "")) ?? [];
+        lines.push(`Answer: ${values.length ? values.join("; ") : "(not recorded)"}`);
+      }
     }
   }
   if (!lines.length) return null;
