@@ -243,21 +243,33 @@ async function writeClipboard(text) {
   }
 }
 
-// One shared Copy control for code and command/output blocks.
+// One shared Copy control for code and command/output blocks. The outline glyph keeps the control
+// compact; the accessible label carries the action and reports a brief success or failure.
+const COPY_GLYPH = '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const COPIED_GLYPH = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></svg>';
 function copyButton(getText, label = "Copy code") {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "copy-button text-button";
-  button.textContent = "Copy";
+  button.innerHTML = `<span class="copy-glyph copy-glyph-copy">${COPY_GLYPH}</span><span class="copy-glyph copy-glyph-done">${COPIED_GLYPH}</span><span class="sr-only"></span>`;
+  const status = button.querySelector(".sr-only");
+  status.textContent = label;
   button.setAttribute("aria-label", label);
+  button.title = label;
   button.addEventListener("click", async () => {
     const copied = await writeClipboard(getText());
-    button.textContent = copied ? "Copied" : "Copy failed";
+    const message = copied ? "Copied" : "Copy failed";
+    button.classList.toggle("copied", copied);
     button.classList.toggle("error-text", !copied);
+    status.textContent = message;
+    button.setAttribute("aria-label", message);
+    button.title = message;
     clearTimeout(button.copyReset);
     button.copyReset = setTimeout(() => {
-      button.textContent = "Copy";
-      button.classList.remove("error-text");
+      button.classList.remove("copied", "error-text");
+      status.textContent = label;
+      button.setAttribute("aria-label", label);
+      button.title = label;
     }, 1600);
   });
   return button;
@@ -2478,8 +2490,8 @@ function detailField(label, value, className = "detail-code") {
 
 function diffNode(value) {
   const wrapper = document.createElement("div");
-  // File changes are always wrapped.
-  wrapper.className = "detail-diff wrap";
+  // File diffs always soft-wrap so a changed line is readable on any viewport.
+  wrapper.className = "detail-diff";
   for (const text of String(value || "").split("\n")) {
     const line = document.createElement("span");
     line.className = `diff-line ${text.startsWith("+") && !text.startsWith("+++") ? "add" : text.startsWith("-") && !text.startsWith("---") ? "remove" : "context"}`;
@@ -4480,7 +4492,8 @@ async function openSettings() {
   clearSelectionForOverlay();
   elements.settingsScreen.hidden = false;
   document.body.classList.add("settings-open");
-  elements.settingsStatus.textContent = "Loading settings…";
+  // No loading flash: the status line only ever carries a genuine error or a save/lifecycle notice.
+  elements.settingsStatus.textContent = "";
   elements.settingsStatus.classList.remove("error-text");
   elements.settingsRestart.hidden = true;
   // Focus the heading's Close control without scrolling or summoning the phone keyboard; the

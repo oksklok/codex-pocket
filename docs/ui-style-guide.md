@@ -226,6 +226,13 @@ status paragraph is hidden. Copy rules already settled on:
   1.55rem centred digits with a reserved reveal control. Every other ordinary single-line text input
   uses 40px.
 - The image viewer and its close button stay dark in both themes, with their own focus/hover colours.
+- The transcript's code/command Copy control is a 28px outline icon button, smaller than the 36px
+  `--icon-size`, so its reserved gutter can stay narrow on phones without covering code. It uses the
+  same stroke, caps and hover language as every other icon button.
+- Markdown code blocks, command/output detail blocks and file diffs soft-wrap at every viewport
+  (`white-space: pre-wrap` with `overflow-wrap: anywhere`) instead of scrolling horizontally.
+  Indentation and real line breaks are preserved, and the copied text is taken from the DOM, so it is
+  unchanged by wrapping.
 - `full access` in the Access select and the `working`/`waiting`/`failed` phase pills reuse semantic
   colours as persistent state, not as decoration.
 - The translucent-UI preference is hidden at ≥861px because desktop always renders translucent, so
