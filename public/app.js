@@ -373,6 +373,9 @@ let enterSends = !touchInput;
 try { const saved = localStorage.getItem("codex-pocket-enter-sends"); if (saved !== null) enterSends = saved !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
 let composerExpanded = false;
+// Set while a composer expand/collapse is settling: the toggle's own refocus and box resize must not
+// pull the transcript to the latest turn.
+let composerToggleHold = false;
 let composing = false;
 let deferredTranscript = false;
 const viewer = setupImageViewer(elements.imageViewer, elements.viewerImage, elements.closeImage);
@@ -401,6 +404,13 @@ function openImage(img) {
 function toggleComposer({ refocus = true } = {}) {
   const textarea = elements.messageText;
   const { selectionStart, selectionEnd, selectionDirection, scrollTop } = textarea;
+  // The toggle refocuses the draft and changes the composer's box, either of which would normally pull
+  // the transcript to the latest turn (on phones the document itself is the scroller). Hold the
+  // reading position across both, then re-pin only if the view was already following the bottom.
+  const scroller = transcriptScroller();
+  const heldScrollTop = scroller.scrollTop;
+  const wasFollowing = shouldFollowConversation;
+  composerToggleHold = true;
   composerExpanded = !composerExpanded;
   elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
   elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Collapse Composer" : "Expand Composer");
@@ -408,10 +418,20 @@ function toggleComposer({ refocus = true } = {}) {
   fitExpandedComposer();
   resizeComposer();
   // A programmatic collapse must not steal focus (and its mobile jump) from a reader who navigated away.
-  if (!refocus) return;
-  textarea.focus({ preventScroll: true });
-  textarea.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
-  textarea.scrollTop = scrollTop;
+  if (refocus) {
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+    textarea.scrollTop = scrollTop;
+  }
+  // Restore once the new composer box has been laid out.
+  requestAnimationFrame(() => {
+    composerToggleHold = false;
+    const next = transcriptScroller();
+    next.scrollTop = wasFollowing ? next.scrollHeight : heldScrollTop;
+    shouldFollowConversation = wasFollowing;
+    rememberTranscriptScroll();
+    updateJumpLatest();
+  });
 }
 
 function fitExpandedComposer() {
@@ -4791,6 +4811,8 @@ elements.messageText.addEventListener("paste", (event) => {
 elements.expandComposer.addEventListener("click", toggleComposer);
 elements.expandComposer.addEventListener("pointerdown", (event) => event.preventDefault());
 elements.messageText.addEventListener("focus", () => {
+  // A focus the composer toggle triggered is not a deliberate focus, so it must not move the transcript.
+  if (composerToggleHold) return;
   if (matchMedia("(max-width: 860px)").matches) jumpToLatest(true);
 });
 let previousViewportHeight = window.visualViewport?.height ?? innerHeight;
@@ -4852,11 +4874,12 @@ let composerResizeScrollTop = 0;
 new ResizeObserver(([entry]) => {
   if (entry.contentRect.height === composerZoneHeight) return;
   composerZoneHeight = entry.contentRect.height;
-  if (composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest || composerResizeFrame !== null) return;
+  // A height change the expand toggle caused is reconciled by toggleComposer itself.
+  if (composerToggleHold || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest || composerResizeFrame !== null) return;
   composerResizeScrollTop = transcriptScroller().scrollTop;
   composerResizeFrame = requestAnimationFrame(() => {
     composerResizeFrame = null;
-    if (composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest) return;
+    if (composerToggleHold || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest) return;
     const scroller = transcriptScroller();
     scroller.scrollTop = scroller.scrollHeight;
     shouldFollowConversation = true;

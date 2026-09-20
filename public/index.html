@@ -258,7 +258,7 @@
     <dialog class="new-task-dialog" id="cwd-dialog" aria-labelledby="cwd-title">
       <form id="cwd-form" novalidate>
         <h2 id="cwd-title">Project Folder</h2>
-        <input id="cwd-input" aria-label="Project Folder" maxlength="4096" autocomplete="off" spellcheck="false">
+        <div class="form-field"><label for="cwd-input">Path</label><input id="cwd-input" maxlength="4096" autocomplete="off" spellcheck="false"></div>
         <p id="cwd-error" class="form-status error-text" role="alert"></p>
         <div class="new-task-actions"><button id="cwd-cancel" class="secondary-button" type="button">Cancel</button><button id="cwd-save" class="primary-button" type="submit">Save</button></div>
       </form>
