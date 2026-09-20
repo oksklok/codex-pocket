@@ -16,6 +16,7 @@
   --blue: #8bb8ff;
   --activity-reasoning: #8bb8ff;
   --activity-command: #e2b765;
+  --activity-tool: #9db3c7;
   --activity-files: #64cc99;
   --activity-collaboration: #b79af2;
   --activity-search: #5fc9d7;
@@ -55,7 +56,7 @@
   --bg: #f7f7f7; --surface: #ffffff; --surface-strong: #efefef;
   --line: #d4d4d4; --line-soft: #e4e4e4; --text: #1c1c1c; --muted: #5c5c5c; --subtle: #767676;
   --accent: #087f4f; --accent-strong: #0a9a61; --warning: #8a5a00; --danger: #b3261e; --blue: #1f5fb0;
-  --activity-reasoning: #3274b8; --activity-command: #996400; --activity-files: #168455;
+  --activity-reasoning: #3274b8; --activity-command: #996400; --activity-tool: #45657d; --activity-files: #168455;
   --activity-collaboration: #7652b8; --activity-search: #087f8f; --activity-image: #ad3e88; --activity-neutral: #6e6e6e;
   --topbar: rgba(247,247,247,.96); --composer-bg: rgba(247,247,247,.98); --soft-surface: rgba(239,239,239,.72);
   --activity-bg: rgba(239,239,239,.72); --backdrop: rgba(20,20,20,.38);
@@ -68,7 +69,7 @@
     --bg: #f7f7f7; --surface: #ffffff; --surface-strong: #efefef;
     --line: #d4d4d4; --line-soft: #e4e4e4; --text: #1c1c1c; --muted: #5c5c5c; --subtle: #767676;
     --accent: #087f4f; --accent-strong: #0a9a61; --warning: #8a5a00; --danger: #b3261e; --blue: #1f5fb0;
-    --activity-reasoning: #3274b8; --activity-command: #996400; --activity-files: #168455;
+    --activity-reasoning: #3274b8; --activity-command: #996400; --activity-tool: #45657d; --activity-files: #168455;
     --activity-collaboration: #7652b8; --activity-search: #087f8f; --activity-image: #ad3e88; --activity-neutral: #6e6e6e;
     --topbar: rgba(247,247,247,.96); --composer-bg: rgba(247,247,247,.98); --soft-surface: rgba(239,239,239,.72);
     --activity-bg: rgba(239,239,239,.72); --backdrop: rgba(20,20,20,.38);
@@ -408,7 +409,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   border-left: 2px solid var(--activity-color); border-radius: 0 8px 8px 0; background: var(--activity-bg);
 }
 .timeline-activity.reasoning { --activity-color: var(--activity-reasoning); }
-.timeline-activity.command, .timeline-activity.tool { --activity-color: var(--activity-command); }
+.timeline-activity.command { --activity-color: var(--activity-command); }
+.timeline-activity.tool { --activity-color: var(--activity-tool); }
 .timeline-activity.files { --activity-color: var(--activity-files); }
 .timeline-activity.collaboration { --activity-color: var(--activity-collaboration); }
 .timeline-activity.search { --activity-color: var(--activity-search); }
@@ -932,8 +934,21 @@ select:focus-visible { background-color: var(--selected-bg); }
    that keeps the white icon readable. */
 .image-viewer button:focus-visible { background-color: #444444; }
 
-.machine-runtime-details { border-top: 1px solid var(--line-soft); padding-top: 12px; }
-.machine-runtime-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.machine-runtime-row > div { min-width: 0; }
-.machine-runtime-row .machine-dialog-help { margin: 4px 0 0; overflow-wrap: anywhere; }
+/* Runtime management is its own Machine Details section: a full-width separator and a normal dialog
+   section title, with compact provider rows instead of generic strong + help text. */
+.machine-runtime-details { margin: 16px -20px 0; padding: 14px 20px 0; border-top: 1px solid var(--line-soft); }
+.machine-runtime-details h3 { margin: 0 0 10px; color: var(--text); font-size: var(--text-heading); font-weight: 650; }
+.machine-runtime-list { display: grid; gap: 12px; }
+.machine-runtime-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.machine-runtime-info { min-width: 0; }
+.machine-runtime-heading { display: flex; align-items: baseline; gap: 7px; margin: 0; }
+.machine-runtime-name { color: var(--text); font-size: var(--text-ui); font-weight: 600; }
+.machine-runtime-status { color: var(--muted); font-size: var(--text-meta); font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.machine-runtime-status.running { color: var(--accent); }
+.machine-runtime-status.offline { color: var(--subtle); }
+.machine-runtime-versions, .machine-runtime-note, .machine-runtime-error { margin: 3px 0 0; font-size: var(--text-secondary); line-height: 1.4; overflow-wrap: anywhere; }
+.machine-runtime-versions, .machine-runtime-note { color: var(--muted); }
+.machine-runtime-error { color: var(--danger); }
+.machine-runtime-list > .machine-runtime-error { margin-top: 10px; }
+.machine-runtime-checking { margin: 0; color: var(--subtle); font-size: var(--text-secondary); }
 .machine-runtime-row button { flex-shrink: 0; }

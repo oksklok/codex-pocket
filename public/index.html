@@ -256,7 +256,10 @@
           <input id="machine-dialog-mac" maxlength="17" autocomplete="off" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF" aria-describedby="machine-dialog-mac-help">
         </div>
         <p class="machine-dialog-help" id="machine-dialog-mac-help">For Wake-on-LAN.</p>
-        <div id="machine-runtime-details" class="machine-runtime-details" hidden></div>
+        <section id="machine-runtime-details" class="machine-runtime-details" aria-labelledby="machine-runtime-title" hidden>
+          <h3 id="machine-runtime-title">Runtimes</h3>
+          <div class="machine-runtime-list" id="machine-runtime-list"></div>
+        </section>
         <p id="machine-dialog-error" class="form-status error-text" role="alert"></p>
         <div class="machine-dialog-actions">
           <button id="machine-dialog-remove" class="danger-button" type="button" hidden>Remove Machine</button>

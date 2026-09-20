@@ -519,6 +519,14 @@ const ACCESS_MODES = [
 const accessModeLabel = (mode) => ACCESS_MODES.find((entry) => entry.value === mode)?.label
   || (mode === "custom" ? "Custom Access" : "Unavailable");
 
+// Programmatic focus lands at the end of an already-entered PIN; an empty field is unchanged.
+function focusLoginPinAtEnd() {
+  const pin = elements.loginPin;
+  pin.focus();
+  const end = pin.value.length;
+  try { pin.setSelectionRange(end, end); } catch { /* unsupported type */ }
+}
+
 function showLogin(message = "") {
   source?.close();
   source = null;
@@ -527,7 +535,7 @@ function showLogin(message = "") {
   elements.stoppedScreen.hidden = true;
   elements.loginScreen.hidden = false;
   elements.loginError.textContent = message;
-  elements.loginPin.focus();
+  focusLoginPinAtEnd();
 }
 
 function showStopped() {
@@ -1332,9 +1340,12 @@ async function refreshLoadedThreads() {
   }
 }
 
-function invalidateNavigationCatalogs() {
+// `keepTasks` drops the cached connection/catalog metadata but keeps the last-known task rows on
+// screen, so a reconnect or an offline transition cannot blank the task list before the forced read
+// answers. A settings change keeps the default and clears the catalogs wholesale.
+function invalidateNavigationCatalogs({ keepTasks = false } = {}) {
   navigationEpoch += 1;
-  navigationCatalogs.fill(null);
+  if (!keepTasks) navigationCatalogs.fill(null);
   navigationRequests.fill(null);
   navigationErrors.fill("");
   // Drop in-flight catalog-adjacent reads too: their epoch guard now discards the response, and
@@ -1348,13 +1359,25 @@ function invalidateNavigationCatalogs() {
 // machines stay offline because only a successful /api/navigation read for a connected runtime
 // can report availability.
 function refreshTaskSurface() {
-  invalidateNavigationCatalogs();
+  invalidateNavigationCatalogs({ keepTasks: true });
   void Promise.allSettled([
     refreshMachines(),
     refreshLoadedThreads(),
     refreshNavigationCatalog(false, true),
     refreshNavigationCatalog(true, true),
   ]);
+}
+
+// An offline or unavailable runtime cannot list its tasks, so a catalog read must not erase the rows
+// the browser last saw. A later authoritative read (connected and catalogAvailable) replaces them.
+function preserveUnavailableTasks(previous, value) {
+  if (!previous || !Array.isArray(value?.machines)) return;
+  for (const machine of value.machines) {
+    if (machine.connected && machine.catalogAvailable !== false) continue;
+    if (Array.isArray(machine.tasks) && machine.tasks.length) continue;
+    const lastKnown = previous.machines?.find(candidate => candidate.id === machine.id);
+    if (Array.isArray(lastKnown?.tasks) && lastKnown.tasks.length) machine.tasks = lastKnown.tasks;
+  }
 }
 
 // A confirmed mutation updates the cached lists immediately so the sidebar keeps rendering the row
@@ -1411,6 +1434,7 @@ async function refreshNavigationCatalog(archived = archivedTasks, force = false)
       if (machines === machineStateAtStart && Array.isArray(value.machines)) {
         machines = value.machines.map(machine => ({ ...machines.find(current => current.id === machine.id), ...machine }));
       }
+      preserveUnavailableTasks(navigationCatalogs[slot], value);
       for (const status of request.taskStatuses) updateCatalogTaskStatus(value, status);
       for (const machine of value.machines || []) for (const task of machine.tasks || []) {
         if (task.status?.startsWith("active")) taskTerminalResults.delete(draftKey(machine.id, task.id));
@@ -4182,63 +4206,102 @@ function updateMachineDialogActions() {
 }
 
 let machineRuntimeTimer = null;
+let machineRuntimeRender = 0;
 const machineRuntimeUpdates = new Set();
+
+function machineRuntimeProviderName(detail) {
+  return detail.provider === "deepseek" ? "DSH" : "Codex";
+}
+
+// One provider row. A reachable runtime shows its version line and any provider-specific error; on
+// an unreachable machine the provider is only named and marked Offline, never given repeated filler.
+function machineRuntimeRow(detail, machineOffline, target) {
+  const row = document.createElement("div");
+  row.className = "machine-runtime-row";
+  const info = document.createElement("div");
+  info.className = "machine-runtime-info";
+  const heading = document.createElement("p");
+  heading.className = "machine-runtime-heading";
+  const name = document.createElement("span");
+  name.className = "machine-runtime-name";
+  name.textContent = machineRuntimeProviderName(detail);
+  const status = document.createElement("span");
+  status.className = `machine-runtime-status ${detail.status === "Running" ? "running" : "offline"}`;
+  status.textContent = detail.status || "Offline";
+  heading.append(name, status);
+  info.append(heading);
+  const updating = machineRuntimeUpdates.has(detail.machineId) || detail.updating;
+  if (!machineOffline) {
+    const versions = document.createElement("p");
+    versions.className = "machine-runtime-versions";
+    versions.textContent = `Installed ${detail.installed || "Unavailable"} · Latest ${detail.latest || "Unavailable"}${detail.channel && detail.channel !== "latest" ? ` (${detail.channel})` : ""}`;
+    info.append(versions);
+    if (detail.error) info.append(Object.assign(document.createElement("p"), { className: "machine-runtime-note machine-runtime-error", textContent: detail.error }));
+    else if (detail.busy && detail.status === "Running") info.append(Object.assign(document.createElement("p"), { className: "machine-runtime-note", textContent: "Executing a turn" }));
+  }
+  row.append(info);
+  if (!machineOffline && (detail.updateAvailable || updating)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-button";
+    // A package update can take minutes, so this one control keeps visible progress.
+    button.textContent = updating ? "Updating…" : "Update";
+    button.disabled = updating || detail.busy;
+    button.addEventListener("click", async () => {
+      machineRuntimeUpdates.add(detail.machineId);
+      button.disabled = true;
+      button.textContent = "Updating…";
+      try {
+        const response = await apiFetch("/api/runtime/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: detail.machineId }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Runtime update failed");
+      } catch (error) {
+        if (machineDialogTarget === target) elements.machineDialogError.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        machineRuntimeUpdates.delete(detail.machineId);
+        if (machineDialogTarget === target) await renderMachineRuntimes(target, true);
+      }
+    });
+    row.append(button);
+  }
+  return row;
+}
+
 async function renderMachineRuntimes(target, refresh = false) {
   const section = document.querySelector("#machine-runtime-details");
   if (machineDialogTarget !== target || target.mode === "add") return;
+  const list = section.querySelector("#machine-runtime-list");
   const group = target.mode === "host" ? "local" : `ssh:${savedMachines()[target.index]?.ssh}`;
   const entries = machines.filter(machine => (machine.group || machine.id) === group);
   section.hidden = false;
+  const token = ++machineRuntimeRender;
+  // Stable inspection state before the first rows; later polls refresh in place and keep them.
+  if (!list.querySelector(".machine-runtime-row")) {
+    const checking = document.createElement("p");
+    checking.className = "machine-runtime-checking";
+    checking.setAttribute("role", "status");
+    checking.textContent = "Checking runtimes…";
+    list.replaceChildren(checking);
+  }
   const results = await Promise.all(entries.map(async machine => {
     try {
       const response = await apiFetch(`/api/runtime?machineId=${encodeURIComponent(machine.id)}&refresh=${refresh}`);
       const detail = await response.json();
+      if (!response.ok) throw new Error(detail.error || "Runtime inspection failed");
       return { ...detail, machineId: machine.id, provider: machine.provider };
-    } catch (error) { return { machineId: machine.id, provider: machine.provider, error: error.message, status: "Offline" }; }
+    } catch (error) {
+      return { machineId: machine.id, provider: machine.provider, status: "Offline", error: error instanceof Error ? error.message : String(error) };
+    }
   }));
-  if (machineDialogTarget !== target) return;
-  section.replaceChildren();
-  for (const detail of results) {
-    const row = document.createElement("div");
-    row.className = "machine-runtime-row";
-    const info = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = `${detail.provider === "deepseek" ? "DSH" : "Codex"} · ${detail.status || "Offline"}`;
-    const versions = document.createElement("p");
-    versions.className = "machine-dialog-help";
-    versions.textContent = `Installed ${detail.installed || "Unavailable"} · Latest ${detail.latest || "Unavailable"}${detail.channel && detail.channel !== "latest" ? ` (${detail.channel})` : ""}`;
-    info.append(title, versions);
-    const updating = machineRuntimeUpdates.has(detail.machineId) || detail.updating;
-    if (detail.error || detail.busy && detail.status === "Running") {
-      const note = document.createElement("p");
-      note.className = "machine-dialog-help";
-      note.textContent = detail.error || "Executing a turn";
-      info.append(note);
-    }
-    row.append(info);
-    if (detail.updateAvailable || updating) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "secondary-button";
-      button.textContent = "Update";
-      button.disabled = updating || detail.busy;
-      button.addEventListener("click", async () => {
-        machineRuntimeUpdates.add(detail.machineId);
-        button.disabled = true;
-        try {
-          const response = await apiFetch("/api/runtime/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: detail.machineId }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Runtime update failed");
-        } catch (error) {
-          if (machineDialogTarget === target) elements.machineDialogError.textContent = error.message;
-        } finally {
-          machineRuntimeUpdates.delete(detail.machineId);
-          if (machineDialogTarget === target) await renderMachineRuntimes(target, true);
-        }
-      });
-      row.append(button);
-    }
-    section.append(row);
+  if (machineDialogTarget !== target || token !== machineRuntimeRender) return;
+  list.replaceChildren();
+  // A machine whose every runtime is Offline is itself unreachable: show compact provider rows and
+  // one machine-level connection error instead of repeating the same timeout under Codex and DSH.
+  const machineOffline = results.length > 0 && results.every(detail => detail.status === "Offline");
+  for (const detail of results) list.append(machineRuntimeRow(detail, machineOffline, target));
+  if (machineOffline) {
+    const errors = [...new Set(results.map(detail => detail.error).filter(Boolean))];
+    if (errors.length) list.append(Object.assign(document.createElement("p"), { className: "machine-runtime-error", textContent: errors.join(" · ") }));
   }
 }
 
@@ -4246,8 +4309,9 @@ function openMachineDialog(target) {
   machineDialogTarget = target;
   clearInterval(machineRuntimeTimer);
   const runtimeSection = document.querySelector("#machine-runtime-details");
-  runtimeSection.replaceChildren();
+  runtimeSection.querySelector("#machine-runtime-list").replaceChildren();
   runtimeSection.hidden = target.mode === "add";
+  machineRuntimeRender += 1;
   if (target.mode !== "add") {
     void renderMachineRuntimes(target, true);
     machineRuntimeTimer = setInterval(() => { void renderMachineRuntimes(target); }, 5000);
@@ -4837,15 +4901,27 @@ elements.loginPin.addEventListener("input", () => {
 elements.loginPinReveal.addEventListener("pointerdown", (event) => event.preventDefault());
 elements.loginPinReveal.addEventListener("click", () => {
   const pin = elements.loginPin;
-  const { selectionStart, selectionEnd, selectionDirection } = pin;
+  const start = pin.selectionStart ?? pin.value.length;
+  const end = pin.selectionEnd ?? start;
+  const direction = pin.selectionDirection;
   const revealed = pin.type === "text";
   pin.type = revealed ? "password" : "text";
   const label = revealed ? "Show PIN" : "Hide PIN";
   elements.loginPinReveal.setAttribute("aria-label", label);
   elements.loginPinReveal.title = label;
   elements.loginPinReveal.setAttribute("aria-pressed", String(!revealed));
-  if (document.activeElement !== pin) pin.focus({ preventScroll: true });
-  try { pin.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch { /* unsupported type */ }
+  const restore = () => {
+    if (document.activeElement !== pin) pin.focus({ preventScroll: true });
+    try { pin.setSelectionRange(start, end, direction); } catch { /* unsupported type */ }
+  };
+  restore();
+  // The password/text swap (and any focus change) can reset the caret after this handler returns;
+  // re-assert the exact captured selection once the browser has settled it.
+  requestAnimationFrame(() => {
+    if (document.activeElement !== pin) return;
+    if (pin.selectionStart === start && pin.selectionEnd === end) return;
+    try { pin.setSelectionRange(start, end, direction); } catch { /* unsupported type */ }
+  });
 });
 
 elements.settingsButton.addEventListener("click", openSettings);

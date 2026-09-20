@@ -127,11 +127,17 @@ never carry a Copy control.
   `--selected-bg`; checkbox/radio rows do the same as a group. Text fields deliberately have no
   focus cue — the caret and selection are the cue. `forced-colors` restores the system outline.
 - Active: only task-menu items define `:active` (`--selected-bg`).
-- Busy: controls are disabled in place and keep their normal label. The UI never swaps in transient
-  prose (`Saving…`, `Checking…`, `Opening…`, `Loading…`); layout stays stable across a fast
-  operation.
+- Busy: fast local UI operations are disabled in place and keep their normal label. The UI never
+  swaps in transient prose (`Saving…`, `Checking…`, `Opening…`, `Loading…`); layout stays stable
+  across the operation.
+- A remote or maintenance operation that can take seconds or minutes may keep stable progress
+  feedback instead: "Checking runtimes…" while a runtime inspection is in flight, and "Updating…" on
+  that runtime's own control for the duration of a package update. This is the only busy copy.
 - Persistent status is always shown and is never treated as busy chrome: Working / Waiting / Failed /
   Offline, validation, errors, warnings, confirmations and "Restart required".
+- Text-field caret/selection: the login PIN is focused programmatically with the caret at the end of
+  an entered value, and the reveal/hide toggle re-asserts the exact caret or selection after the
+  password/text swap and focus transition have settled.
 - `prefers-reduced-motion: reduce` disables the drawer/chevron transitions and the spin/pulse
   animations.
 
@@ -147,6 +153,9 @@ never carry a Copy control.
 - Only one narrow drawer is open at a time: opening Task Details closes Tasks.
 - Concealed drawers get `inert` and translate off-screen; the toggle exposes `aria-expanded`
   together with a "Show/Hide" label.
+- Going offline or unavailable never erases the last-known task list: cached rows stay rendered but
+  disabled, and only a later authoritative catalog read (runtime connected and catalog available)
+  replaces them. This is browser-session state only; there is no persistence layer.
 
 ## Dialogs and confirmation dialogs
 
@@ -163,6 +172,18 @@ never carry a Copy control.
 - Settings is a full-screen `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a 500px
   desktop card (`width: min(100%, 500px)`) and a sticky action footer; at ≤520px it becomes
   full-bleed.
+
+## Machine Details runtimes
+
+Machine Details ends with a "Runtimes" section: a full-width `--line-soft` separator, an `h3` at
+`--text-heading`, and one row per provider. A row reads the runtime name (`--text-ui`, weight 600)
+and its status (uppercase `--text-meta`; Running in `--accent`, Offline in `--subtle`), then the
+Installed/Latest line beneath at `--text-secondary`; a provider-specific error sits under that in
+`--danger`. Update is a right-aligned `.secondary-button` that reads "Updating…" for the duration of
+a package update. The list shows a single "Checking runtimes…" line while the first inspection is in
+flight. A machine whose every runtime is Offline is presented compactly — provider name and Offline
+only, with no repeated "Unavailable" version filler — followed by one machine-level connection error;
+provider-specific errors appear only when the machine is reachable.
 
 ## Copy and capitalization
 
@@ -195,7 +216,9 @@ status paragraph is hidden. Copy rules already settled on:
   and 12000-character message limits are never advertised; attachment size caps appear only when an
   attachment violates them; token counts live in the context meter's tooltip, not the chrome.
 - Transient operations add no copy: a disabled control with its unchanged label is the whole state.
-  A status line is reserved for a persistent state, an error, or a restart/confirmation notice.
+  A status line is reserved for a persistent state, an error, or a restart/confirmation notice. The
+  one exception is a remote or maintenance operation that can take seconds or minutes, which may keep
+  stable progress feedback (see States).
 - Errors say what happened and what to do next; they do not blame the user or expose internals.
 
 ## Empty and no-task states
@@ -219,6 +242,12 @@ is hidden only when the runtime positively disables the feature and the task has
 kind; unknown capability never hides a control. Reasoning and Review stay parsed for compatibility
 but are not user-facing filters and always render. "Show All"/"Hide All" act only on the visible
 categories.
+
+Each category owns its activity color token in both themes, and distinct categories stay distinct:
+Command (`--activity-command`, amber) and Tool (`--activity-tool`, steel blue) are deliberately
+different, alongside Search (`--activity-search`), File Changes (`--activity-files`), Subagents
+(`--activity-collaboration`), Image (`--activity-image`) and Context Compaction
+(`--activity-neutral`). A failed or interrupted activity keeps the `--danger` override.
 
 ## Mobile vs desktop
 
