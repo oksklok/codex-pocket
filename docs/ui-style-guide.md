@@ -283,8 +283,9 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 - Custom clickable controls must offer keyboard-equivalent activation (Enter/Space where appropriate).
 - Escape cancels or closes a dialog unless a busy mutation prevents it.
 - Opening and closing modal UI uses deliberate focus placement and return rather than losing focus;
-  the narrow drawers take focus on open and hand it back to their toggle on close, while the wide
-  docked sidebars never take focus.
+  the narrow drawers hand focus back to their toggle on close and the wide docked sidebars never take
+  focus. Opening on touch never moves focus into a text field, so it cannot summon the keyboard
+  before the user picks one.
 - DOM order is the normal Tab order; add custom keyboard navigation only when a component requires it.
 
 ## Intentional exceptions

@@ -1577,8 +1577,10 @@ function openDestinationSwitcher(animate = true) {
   saveSidebarPreference("tasks", true);
   refreshNavigationCatalog(archivedTasks, true);
   renderDestinationSwitcher();
-  // The narrow drawer is modal, so it takes focus; the wide docked pane never steals it.
-  if (!isWideLayout()) elements.destinationSearch.focus({ preventScroll: true });
+  // The narrow drawer is modal, so it takes focus; the wide docked pane never steals it. A touch
+  // opener must not summon the phone keyboard, so Search only takes focus for a fine, hover-capable
+  // pointer (the touchInput capability check) and focus stays on the Tasks toggle until a field is tapped.
+  if (!isWideLayout() && !touchInput) elements.destinationSearch.focus({ preventScroll: true });
 }
 
 function currentCatalogModel(modelName = state?.model) {
