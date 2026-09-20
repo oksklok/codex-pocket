@@ -93,9 +93,10 @@ export function messageInputs(text, images = []) {
 export function normalizeAsyncQuestions(questions) {
   if (!Array.isArray(questions)) return [];
   // The protocol uses string titles and nullable arrays of string options.
-  return questions.slice(0, 10).filter((question) => typeof question?.title === "string" && question.title.trim()).map((question) => ({
-    title: question.title.slice(0, 2000),
-    options: Array.isArray(question.options) ? question.options.filter((option) => typeof option === "string").slice(0, 20).map((option) => option.slice(0, 500)) : [],
+  return questions.map((question) => ({
+    ...question,
+    title: typeof question?.title === "string" ? question.title : "",
+    options: Array.isArray(question?.options) ? question.options.filter((option) => typeof option === "string") : [],
   }));
 }
 

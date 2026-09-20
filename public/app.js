@@ -325,6 +325,9 @@ let historyRequest = null;
 // The transcript's own load state, separate from any live event: the empty-history message may only
 // follow a successful (possibly empty) history result.
 let historyPhase = "loading";
+let historyNeedsRecovery = false;
+let historyRecoveryTimer = null;
+let historyRecoveryAttempts = 0;
 let threadsRequest = null;
 let machinesRequest = null;
 // Active and archived catalogs are independent; mutations invalidate both.
@@ -692,9 +695,16 @@ function platformLabel(value) {
   return first ? first.replace(/\b\w/g, (letter) => letter.toUpperCase()) : "";
 }
 
-function setHistoryStatus(message = "") {
+function setHistoryStatus(message = "", retryCursor = undefined) {
   elements.historyStatus.textContent = message;
   elements.historyStatus.hidden = !message;
+  if (retryCursor !== undefined) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => { historyRecoveryAttempts = 0; void loadHistory(retryCursor); });
+    elements.historyStatus.append(" ", retry);
+  }
 }
 
 // Concise, actionable history copy. The raw RPC/method detail stays in diagnostics.
@@ -2224,8 +2234,31 @@ function messageNode(message, displayCreatedAt) {
   if (message.role === "user" && message.questionReplies?.length) {
     const reference = document.createElement("div");
     reference.className = "question-reply-reference";
-    const titles = message.questionReplies.map((reply) => reply.question).filter(Boolean);
-    reference.textContent = titles.length ? `In response to: ${titles.join(" · ")}` : "Answer to a question";
+    for (const reply of message.questionReplies) {
+      const link = document.createElement("a");
+      const title = String(reply.question || "Question").replace(/\s+/gu, " ").trim();
+      link.textContent = `In response to: ${title.length > 100 ? `${title.slice(0, 99)}…` : title}`;
+      link.title = reply.question || "Question";
+      try {
+        const identity = JSON.parse(reply.questionItemId.replace(/\\"/g, '"'));
+        if (Array.isArray(identity) && identity[0] === "request_user_input_async" && Number.isInteger(identity[2])) {
+          link.href = `#${asyncQuestionAnchor(identity[1], identity[2])}`;
+        }
+      } catch { /* Older replies may carry only the message id. */ }
+      if (!link.hasAttribute("href")) link.href = `#${asyncQuestionAnchor(reply.questionItemId, 0)}`;
+      link.addEventListener("click", async event => {
+        event.preventDefault();
+        shouldFollowConversation = false;
+        const anchor = link.getAttribute("href").slice(1);
+        while (!document.getElementById(anchor) && nextCursor && !historyRequest) {
+          const cursor = nextCursor;
+          await loadHistory(cursor);
+          if (nextCursor === cursor) break;
+        }
+        document.getElementById(anchor)?.scrollIntoView({ block: "center" });
+      });
+      reference.append(link, document.createElement("br"));
+    }
     body.prepend(reference);
   }
   if (message.role === "user" && message.imageCount) {
@@ -2248,21 +2281,39 @@ function messageNode(message, displayCreatedAt) {
   return article;
 }
 
-// Match rendered blocks within this message only. Options belong to the immediately
-// preceding matched question; identical words in unrelated lists are left alone.
+function asyncQuestionAnchor(messageId, index) {
+  return `question-${encodeURIComponent(messageId)}-${index}`;
+}
+
+// Only remove complete, contiguous copies of a structured title. Matching the whole
+// title across rendered blocks also handles multi-paragraph questions; partial matches
+// and intervening assistant prose are never discarded.
 function suppressAsyncQuestionMarkdown(body, questions) {
   const normalize = text => text.replace(/\s+/gu, " ").trim();
+  const plainText = node => {
+    const copy = node.cloneNode(true);
+    for (const action of copy.querySelectorAll(".code-block-actions")) action.remove();
+    for (const block of copy.querySelectorAll("br, p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, tr")) block.after(document.createTextNode(" "));
+    return normalize(copy.textContent);
+  };
   const renderedText = value => {
     const node = document.createElement("div");
     renderMarkdownInto(node, value);
-    return normalize(node.textContent);
+    return plainText(node);
   };
   const canonical = questions.map(question => ({ title: renderedText(question.title), options: new Set(question.options.map(renderedText)) }));
   const blocks = [];
   for (const node of body.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, table, hr")) {
-    if (node.matches("blockquote, pre, table, hr")) { blocks.push({ text: null }); continue; }
-    if (node.closest("blockquote, pre, table") || node.querySelector("p, ul, ol")) continue;
-    const whole = normalize(node.textContent);
+    if (node.querySelector("img") || node.matches("hr")) { blocks.push({ text: null }); continue; }
+    if (node.parentElement.closest("blockquote, pre, table")) continue;
+    if (node.matches("blockquote, pre, table")) {
+      const range = document.createRange();
+      range.selectNode(node.closest(".code-block, .table-scroll") || node);
+      blocks.push({ range, text: plainText(node) });
+      continue;
+    }
+    if (node.querySelector("p, ul, ol")) continue;
+    const whole = plainText(node);
     if (canonical.some(question => question.title === whole || question.options.has(whole))) {
       const range = document.createRange();
       range.selectNodeContents(node);
@@ -2279,13 +2330,21 @@ function suppressAsyncQuestionMarkdown(body, questions) {
       if (text) blocks.push({ range, text });
     }
   }
-  let question = null;
   const remove = [];
-  for (const block of blocks) {
-    const match = canonical.find(candidate => candidate.title === block.text);
-    if (match) { question = match; remove.push(block.range); }
-    else if (question?.options.has(block.text)) remove.push(block.range);
-    else question = null;
+  for (let start = 0; start < blocks.length; start++) {
+    if (blocks[start].text === null) continue;
+    let text = "";
+    for (let end = start; end < blocks.length && blocks[end].text !== null; end++) {
+      text = normalize(`${text} ${blocks[end].text}`);
+      const match = canonical.find(candidate => candidate.title === text);
+      if (match) {
+        for (let index = start; index <= end; index++) remove.push(blocks[index].range);
+        while (end + 1 < blocks.length && match.options.has(blocks[end + 1].text)) remove.push(blocks[++end].range);
+        start = end;
+        break;
+      }
+      if (!canonical.some(candidate => candidate.title.startsWith(text))) break;
+    }
   }
   for (const range of remove.reverse()) range.deleteContents();
   for (const node of [...body.querySelectorAll("p, li, ul, ol, h1, h2, h3, h4, h5, h6")].reverse()) {
@@ -2301,6 +2360,7 @@ function asyncQuestionNode(message, question, index) {
   const answer = resolvedAsyncAnswer(message, index, [...all.values()], state?.asyncAnswers);
   const title = document.createElement("div");
   title.className = "async-title";
+  title.id = asyncQuestionAnchor(message.id, index);
   renderMarkdownInto(title, question.title);
   if (answer !== null) {
     draft.error = "";
@@ -2463,6 +2523,9 @@ function renderRichActivityDetail(container, activity, value) {
       field.append(heading, diffNode(change.diff));
       container.append(field);
     }
+    append(detailField("Result", detail.result));
+    append(detailField("Result Metadata", detail.resultMeta));
+    append(detailField("Error", detail.error));
     if (detail.unchanged) append(detailField("", "No changes were applied", "detail-note"));
     else if (detail.applied === false) append(detailField("", "Requested; the runtime reported a failure", "detail-note"));
     if (detail.truncated) append(detailField("", "Output truncated", "detail-note"));
@@ -2481,6 +2544,10 @@ function renderRichActivityDetail(container, activity, value) {
   } else if (detail.type === "collabAgentToolCall") {
     append(detailField("Action", detail.tool));
     append(detailField("Prompt", detail.prompt));
+    append(detailField("Arguments", detail.arguments));
+    append(detailField("Result", detail.result));
+    append(detailField("Result Metadata", detail.resultMeta));
+    append(detailField("Error", detail.error));
     append(detailField("Runtime", [detail.model, detail.reasoningEffort].filter(Boolean).join(" · "), "detail-note"));
     append(detailField("Subagents", detail.subagents?.length ? `${detail.subagents.length}` : "", "detail-note"));
   } else if (detail.type === "imageView" || detail.type === "imageGeneration") {
@@ -2879,6 +2946,10 @@ function resetConversationState() {
   nextCursor = null;
   historyRequest = null;
   historyPhase = "loading";
+  historyNeedsRecovery = false;
+  historyRecoveryAttempts = 0;
+  clearTimeout(historyRecoveryTimer);
+  historyRecoveryTimer = null;
   shouldFollowConversation = true;
   transcriptUpwardScroll = 0;
   submittingInputRequestId = null;
@@ -2920,6 +2991,18 @@ function applySnapshot(next, loadChangedHistory = true) {
   mergeState(next, true);
   if (taskChanged && unresolvedSubmission) void recoverUnresolvedSubmission();
   if (taskChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
+  else if (!taskChanged) recoverInitialHistory();
+}
+
+function recoverInitialHistory() {
+  if (!historyNeedsRecovery || historyRecoveryTimer || historyRequest || !state?.connected || historyRecoveryAttempts >= 3) return;
+  const epoch = historyEpoch;
+  historyRecoveryTimer = setTimeout(() => {
+    historyRecoveryTimer = null;
+    if (epoch !== historyEpoch) return;
+    historyRecoveryAttempts += 1;
+    void loadHistory(null, epoch);
+  }, 1000);
 }
 
 async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = false) {
@@ -2954,6 +3037,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     }
     nextCursor = page.nextCursor;
     historyPhase = "ready";
+    if (!cursor) historyNeedsRecovery = Boolean(page.pendingMaterialization);
     setHistoryStatus();
     renderConversation({ preserveScroll, forceBottom });
     void recoverUnresolvedSubmission();
@@ -2963,11 +3047,14 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     if (epoch !== historyEpoch || requestedMachineId !== state?.machineId || requestedThreadId !== state?.thread?.id) return;
     // An earlier-page failure keeps the history already on screen; only the initial read can leave
     // the transcript without a resolved history state.
-    if (!cursor) historyPhase = "error";
-    setHistoryStatus(historyErrorMessage(error));
+    if (!cursor) { historyPhase = "error"; historyNeedsRecovery = true; }
+    setHistoryStatus(historyErrorMessage(error), cursor);
     if (!cursor) renderConversation();
   } finally {
-    if (historyRequest === token) historyRequest = null;
+    if (historyRequest === token) {
+      historyRequest = null;
+      if (state?.turn && historyNeedsRecovery) recoverInitialHistory();
+    }
   }
   if (automaticCursor && epoch === historyEpoch && requestedMachineId === state?.machineId && requestedThreadId === state?.thread?.id) {
     await loadHistory(automaticCursor, epoch, forceBottom);
@@ -3781,6 +3868,8 @@ function connectEvents() {
   });
   on("open", () => {
     setConnection(true);
+    historyRecoveryAttempts = 0;
+    recoverInitialHistory();
     void recoverUnresolvedSubmission();
     // A reconnect may have changed which machines are reachable; reconcile every catalog.
     refreshTaskSurface();
@@ -3840,6 +3929,8 @@ function connectEvents() {
       machineId: state?.machineId, threadId: state?.thread?.id, status: status === "inProgress" ? "active" : "idle",
     });
     mergeState(value);
+    historyRecoveryAttempts = 0;
+    recoverInitialHistory();
   });
   on("plan", (event) => { mergeState({ plan: parseEvent(event) }); });
   on("request", (event) => { mergeState(parseEvent(event)); });
@@ -3855,6 +3946,7 @@ function connectEvents() {
     const message = parseEvent(event);
     const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
     liveMessages.set(message.id, preserveMessageCreatedAt(existing, message));
+    recoverInitialHistory();
     renderConversation();
   });
   on("assistant_delta", (event) => {
@@ -4660,7 +4752,15 @@ elements.loginForm.addEventListener("submit", async (event) => {
   }
 });
 elements.loginPin.addEventListener("input", () => {
-  elements.loginPin.value = elements.loginPin.value.replace(/\D/g, "").slice(0, 4);
+  const pin = elements.loginPin;
+  const value = pin.value.replace(/\D/g, "").slice(0, 4);
+  if (pin.value !== value) {
+    const start = pin.value.slice(0, pin.selectionStart).replace(/\D/g, "").length;
+    const end = pin.value.slice(0, pin.selectionEnd).replace(/\D/g, "").length;
+    const direction = pin.selectionDirection;
+    pin.value = value;
+    pin.setSelectionRange(Math.min(start, 4), Math.min(end, 4), direction);
+  }
   elements.loginError.textContent = "";
 });
 // Keep focus (and the mobile keyboard) on the PIN field while toggling the revealed type.
@@ -4670,12 +4770,12 @@ elements.loginPinReveal.addEventListener("click", () => {
   const { selectionStart, selectionEnd, selectionDirection } = pin;
   const revealed = pin.type === "text";
   pin.type = revealed ? "password" : "text";
-  try { pin.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch { /* unsupported type */ }
   const label = revealed ? "Show PIN" : "Hide PIN";
   elements.loginPinReveal.setAttribute("aria-label", label);
   elements.loginPinReveal.title = label;
   elements.loginPinReveal.setAttribute("aria-pressed", String(!revealed));
   if (document.activeElement !== pin) pin.focus({ preventScroll: true });
+  try { pin.setSelectionRange(selectionStart, selectionEnd, selectionDirection); } catch { /* unsupported type */ }
 });
 
 elements.settingsButton.addEventListener("click", openSettings);
@@ -4743,11 +4843,20 @@ elements.settingsForm.addEventListener("submit", async (event) => {
 });
 elements.restartPocket.addEventListener("click", async () => {
   if (restartingPocket) return;
-  const hostName = settingsValue?.hostName || state?.hostName || "this Mac";
+  let queueCount;
+  try {
+    const response = await apiFetch("/api/state");
+    if (!response.ok) throw new Error("Could not check queued messages");
+    queueCount = (await response.json()).queuedMessageCount;
+  } catch (error) {
+    elements.settingsStatus.textContent = uiErrorMessage(error, "Could not check queued messages. Try again.");
+    return;
+  }
   // Restart uses the configuration already saved on the host; unsaved Settings edits are not committed.
   const confirmed = await pocketConfirm({
-    title: `Restart Pocket on ${hostName}?`,
-    message: "Active Pocket work may be interrupted while the gateway restarts.",
+    title: "Restart Pocket?",
+    message: "Pocket will disconnect briefly while it restarts. Accepted runtime work continues."
+      + (queueCount ? ` ${queueCount} unsent queued message${queueCount === 1 ? "" : "s"} will be lost.` : ""),
     confirmLabel: "Restart",
   });
   if (!confirmed) return;

@@ -1365,7 +1365,7 @@ function normalizedUserReply(text: string): { text: string; questionReplies?: Ar
       return {
         text: replies.map((reply) => reply.answer).join("\n\n"),
         questionReplies: replies.filter(reply => typeof reply.questionItemId === "string" && reply.questionItemId.length > 0)
-          .map(reply => ({ questionItemId: reply.questionItemId, ...(typeof reply.question === "string" ? { question: reply.question } : {}), answer: reply.answer })),
+          .map(reply => ({ ...reply })),
       };
     }
   } catch {
@@ -1448,7 +1448,7 @@ function activityFromItem(
   const id = String(item.id);
   const doneStatus = item.status === "interrupted"
     ? "interrupted"
-    : item.status === "failed" || item.status === "declined"
+    : item.status === "failed" || item.status === "declined" || item.success === false
       ? "failed"
       : "completed";
   const status = phase === "start" ? "running" : doneStatus;
@@ -1513,7 +1513,7 @@ function activityFromItem(
     return { ...base, kind: "image", label: phase === "start" ? "Generating image" : "Generated image", expandable: true };
   }
   if (item.type === "contextCompaction") {
-    return { ...base, kind: "compaction", label: phase === "start" ? "Compacting context" : "Context compacted" };
+    return { ...base, kind: "compaction", label: phase === "start" ? "Compacting context" : status === "failed" ? "Context compaction failed" : status === "interrupted" ? "Context compaction interrupted" : "Context compacted", ...(item.error ? { detail: boundedJson(item.error, 1200).text } : {}) };
   }
   if (item.type === "enteredReviewMode") {
     return { ...base, kind: "review", label: `Entered review mode${item.review ? `: ${safeSummary(item.review, 220)}` : ""}` };
@@ -1614,6 +1614,9 @@ function activityDetailFromItem(item: any): JsonObject | null {
       // Applied (true), failed (false), or requested without authoritative metadata (null).
       applied: item.applied === true ? true : item.applied === false ? false : null,
       unchanged: item.unchanged === true,
+      result: boundedJson(item.contentItems).text,
+      resultMeta: boundedJson(item.resultMeta).text,
+      error: boundedJson(item.error, 8000).text,
     };
   }
   if (item.type === "mcpToolCall") {
@@ -1666,6 +1669,10 @@ function activityDetailFromItem(item: any): JsonObject | null {
       model: safeSummary(item.model, 240),
       reasoningEffort: safeSummary(item.reasoningEffort, 120),
       subagents: states,
+      arguments: boundedJson(item.arguments).text,
+      result: boundedJson(item.contentItems).text,
+      resultMeta: boundedJson(item.resultMeta).text,
+      error: boundedJson(item.error, 8000).text,
     };
   }
   if (item.type === "imageView" || item.type === "imageGeneration") {
@@ -1999,6 +2006,7 @@ export class MachineRuntime {
   private taskStatusObservations = new Map<string, object>();
   private terminalReads = new Map<string, object>();
   private onTaskStatus: (status: JsonObject) => void;
+  private emptyThreads = new Set<string>();
   private asyncAnswers: Record<string, Record<string, string>> = {};
 
   constructor(options: Options, definition: MachineDefinition, onQuotaChange: () => void, onTaskStatus: (status: JsonObject) => void = () => {}, submissions = new MessageSubmissions()) {
@@ -2111,6 +2119,12 @@ export class MachineRuntime {
     this.subscribers.delete(response);
   }
 
+  queuedMessageCount(): number {
+    const threads = new Set(this.taskQueues.keys());
+    if (this.state.queuedMessage) threads.add(this.state.queuedMessage.threadId);
+    return threads.size;
+  }
+
   snapshot(): JsonObject {
     const snapshot = JSON.parse(JSON.stringify(this.state));
     delete snapshot.metrics;
@@ -2152,14 +2166,20 @@ export class MachineRuntime {
         limit,
         sortDirection: "desc",
         itemsView: "summary",
-      }).catch(error => {
-        if (this.state.thread?.id === threadId && !this.state.turn && this.pendingTaskNames.get(threadId)?.firstMessageAccepted === false
-          && /not materialized yet[\s\S]*before (?:the )?first user message/i.test(String(error))) return { data: [], nextCursor: null };
-        throw error;
       });
     } catch (error) {
       if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw error;
       const message = error instanceof Error ? error.message : String(error);
+      if (this.emptyHistoryError(threadId, error)) {
+        return { ...this.finishHistoryPage(rpc, threadId, [], null), pendingMaterialization: true };
+      }
+      // Codex can expose a paginated zero-turn thread before its source rollout exists.
+      // Confirm that it is actually empty through the independent read surface; an older
+      // nonempty thread with broken lineage remains an error.
+      if (!this.deepseek && /invalid paginated history lineage[^\n]*missing source rollout/i.test(message)) {
+        const turns = await this.readLegacyHistory(rpc, threadId);
+        if (!turns.length) return { ...this.finishHistoryPage(rpc, threadId, [], null), pendingMaterialization: true };
+      }
       if (!isUnsupportedMethodError(message)) throw error;
       console.warn(`${this.definition.name}: paginated history unavailable for this task (${compact(message, 160)}); using the legacy thread read`);
       this.historyThreadModes.set(threadId, "legacy");
@@ -2186,9 +2206,20 @@ export class MachineRuntime {
     return { page: all.slice(start, end), nextCursor: start > 0 ? String(start) : null };
   }
 
+  private emptyHistoryError(threadId: string, error: unknown): boolean {
+    if (this.deepseek) return false;
+    const message = String(error);
+    return /not materialized yet[\s\S]*before (?:the )?first user message/i.test(message)
+      || (this.emptyThreads.has(threadId) && /invalid paginated history lineage[^\n]*missing source rollout/i.test(message));
+  }
+
   // The legacy interface: one full thread read, normalized to the same turn shape as a page.
   private async readLegacyHistory(rpc: RpcClient | DshRpcClient, threadId: string): Promise<JsonObject[]> {
-    const result = await rpc.request("thread/read", { threadId, includeTurns: true });
+    const result = await rpc.request("thread/read", { threadId, includeTurns: true }).catch(error => {
+      if (!this.emptyHistoryError(threadId, error)) throw error;
+      this.emptyThreads.add(threadId);
+      return { thread: { turns: [] } };
+    });
     if (this.rpc !== rpc || this.state.thread?.id !== threadId) throw new Error("The selected task changed");
     const rawTurns = Array.isArray(result?.thread?.turns) ? result.thread.turns : [];
     for (const turn of rawTurns) for (const item of turn.items ?? []) this.rememberItem(item, String(turn.id));
@@ -2208,7 +2239,8 @@ export class MachineRuntime {
         this.itemTurns.set(String(activity.id), String(turn.id));
       }
     }
-    return { machineId: this.definition.id, threadId, turns, nextCursor };
+    if (turns.length) this.emptyThreads.delete(threadId);
+    return { machineId: this.definition.id, threadId, turns, nextCursor, pendingMaterialization: this.emptyThreads.has(threadId) };
   }
 
   private async hydrateHistoryTurns(rpc: RpcClient | DshRpcClient, threadId: string, rawTurns: any[], deadline = Date.now() + 20_000): Promise<JsonObject[]> {
@@ -3017,6 +3049,7 @@ export class MachineRuntime {
       const id = String(started.thread?.id ?? "");
       if (!id) throw new Error("Codex did not return a new task");
       // Keep the live zero-turn thread; 0.153.4 may not have a resumable rollout yet.
+      this.emptyThreads.add(id);
       this.pendingTaskNames.set(id, { name, firstMessageAccepted: false });
       started.thread = { ...started.thread, name };
       this.loadedThreads.push(loadedThreadSummary(started.thread, id, true));
@@ -3506,6 +3539,7 @@ export class MachineRuntime {
     const previousTurn = this.state.turn;
     const input = messageWithFiles(text, images, files);
     const result = await rpc.request("turn/start", { threadId, input, ...(this.deepseek && typeof submissionId === "string" ? { requestId: submissionId } : {}) });
+    this.emptyThreads.delete(threadId);
     if (!current()) return { accepted: true, mode: "start", turnId: result?.turn?.id };
     const pendingName = this.pendingTaskNames.get(threadId);
     if (pendingName) pendingName.firstMessageAccepted = true;
@@ -4046,6 +4080,7 @@ export class MachineRuntime {
       }
     }
     if (method === "turn/started") {
+      this.emptyThreads.delete(String(params.threadId ?? ""));
       const pending = this.pendingTaskNames.get(String(params.threadId ?? ""));
       if (pending) pending.firstMessageAccepted = true;
     }
@@ -4585,7 +4620,7 @@ export class MachineRuntime {
   // the client must treat as "not unsupported" rather than hiding the filter.
   private activityCapabilities(): JsonObject {
     if (!this.deepseek) return { search: null, collaboration: null };
-    return { search: true, collaboration: true };
+    return { command: true, tool: true, files: true, search: true, collaboration: true, image: true, compaction: true, reasoning: false, review: false };
   }
 
   private messageCapability(): JsonObject {
@@ -4733,7 +4768,7 @@ export class PocketGateway {
   }
 
   snapshot(): JsonObject {
-    return { ...this.selected().snapshot(), hostName: localMachineName(), quota: this.quota, submissionEpoch: this.submissionStore().epoch, machines: this.listMachines() };
+    return { ...this.selected().snapshot(), queuedMessageCount: [...this.runtimes.values()].reduce((count, runtime) => count + runtime.queuedMessageCount(), 0), hostName: localMachineName(), quota: this.quota, submissionEpoch: this.submissionStore().epoch, machines: this.listMachines() };
   }
 
   hostStatus(options: Options): JsonObject {

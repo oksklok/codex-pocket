@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 // Pocket's existing event vocabulary, projected from DSH's durable facts.
 export const DSH_VERSION = "0.1.6-alpha.2";
 // Bumped whenever the gateway and the execution-side adapter must be upgraded together. The gateway
@@ -143,9 +144,10 @@ function intendedChanges(name, args) {
   return [];
 }
 
-export function projectEvents(events) {
+export function projectEvents(events, cwd) {
   const turns = [],
-    calls = new Map();
+    calls = new Map(),
+    compactions = new Map();
   let turn;
   for (const e of events) {
     const d = e.data;
@@ -207,6 +209,7 @@ export function projectEvents(events) {
           type: "commandExecution",
           command: args.command ?? args.script ?? d.arguments,
         });
+      if (d.name === "read_image") Object.assign(item, { type: "imageView" });
       const searchKey = SEARCH_TOOLS[d.name];
       if (searchKey)
         Object.assign(item, {
@@ -247,10 +250,19 @@ export function projectEvents(events) {
           contentItems: r.content,
           aggregatedOutput: textContent(r.content),
           results: r.content,
+          resultMeta: meta,
+          error: d.error,
         });
+        if (item.type === "imageView") {
+          if (!r.isError && r.content?.some(block => block.type === "image") && typeof item.arguments?.file_path === "string" && cwd) {
+            item.path = resolve(cwd, item.arguments.file_path);
+          } else if (r.isError) item.failure = d.error ?? textContent(r.content);
+        }
         if (item.type === "fileChange") {
           const applied = changesFromDiffs(Array.isArray(meta?.diffs) ? meta.diffs : []);
-          if (applied.length) {
+          if (r.isError) {
+            Object.assign(item, { applied: false });
+          } else if (applied.length) {
             // The durable result metadata is authoritative for the applied change.
             Object.assign(item, { changes: applied, applied: true, unchanged: false });
           } else if (meta?.operation === "create") {
@@ -259,26 +271,29 @@ export function projectEvents(events) {
           } else if (meta && typeof meta === "object" && "diffs" in meta) {
             // An update with no hunks: the file content did not change.
             Object.assign(item, { changes: [], applied: true, unchanged: true });
-          } else if (r.isError) {
-            Object.assign(item, { applied: false });
           }
           // No metadata and no error keeps the requested changes as unconfirmed.
         }
-        if (item.type === "collabAgentToolCall") item.kind = r.isError ? "interrupted" : "completed";
+        // A completed subagent tool call is not proof that its background agent finished.
       }
     }
-    if (e.type === "compaction/start")
-      turn.items.push({
+    if (e.type === "compaction/start") {
+      const item = {
         type: "contextCompaction",
         id: `compaction-${e.seq}`,
+        compactionId: d.compactionId,
         createdAt: e.time,
         status: "inProgress",
-      });
+      };
+      compactions.set(d.compactionId ?? e.seq, item);
+      turn.items.push(item);
+    }
     if (e.type === "compaction/end") {
-      const item = turn.items.findLast(
-        (i) => i.type === "contextCompaction" && i.status === "inProgress",
-      );
-      if (item) item.status = d.error ? "failed" : "completed";
+      const item = compactions.get(d.compactionId);
+      if (item) {
+        item.status = d.error ? "failed" : "completed";
+        item.error = d.error;
+      }
     }
   }
   return turns;

@@ -134,7 +134,7 @@ export function apply(ctx) {
   async function read(id, includeTurns = false) {
     sessionId(id);
     const { meta, events } = await api.inspect(id);
-    const turns = projectEvents(events);
+    const turns = projectEvents(events, meta.cwd);
     return {
       id,
       name:
@@ -618,18 +618,19 @@ export function apply(ctx) {
       void usage(session.id, session.snapshotEvents());
     const threadId = session.id,
       d = event.data;
-    const turns = projectEvents(session.snapshotEvents());
+    const turns = projectEvents(session.snapshotEvents(), session.header.cwd);
     const turn = turns.at(-1);
     if (event.type === "turn/start") active.set(threadId, String(d.turn));
     if (event.type === "turn/start") notify("turn/started", { threadId, turn });
     if (event.type === "turn/end") notify("turn/completed", { threadId, turn });
     if (event.type === "compaction/start" || event.type === "compaction/end") {
-      const item = turn?.items.findLast((i) => i.type === "contextCompaction");
+      const item = turns.flatMap(turn => turn.items).find((i) => i.type === "contextCompaction" && i.compactionId === d.compactionId);
       if (item)
         notify(
           event.type === "compaction/start" ? "item/started" : "item/completed",
-          { threadId, turnId: turn.id, item },
+          { threadId, turnId: turns.find(turn => turn.items.includes(item)).id, item },
         );
+      return;
     }
     if (
       [
@@ -637,8 +638,6 @@ export function apply(ctx) {
         "assistant/message",
         "tool/call",
         "tool/result",
-        "compaction/start",
-        "compaction/end",
       ].includes(event.type)
     ) {
       const items = turn?.items ?? [];
