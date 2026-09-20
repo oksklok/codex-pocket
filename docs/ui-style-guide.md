@@ -130,9 +130,8 @@ never carry a Copy control.
 - Busy: fast local UI operations are disabled in place and keep their normal label. The UI never
   swaps in transient prose (`Saving…`, `Checking…`, `Opening…`, `Loading…`); layout stays stable
   across the operation.
-- A remote or maintenance operation that can take seconds or minutes may keep stable progress
-  feedback instead: "Checking runtimes…" while a runtime inspection is in flight, and "Updating…" on
-  that runtime's own control for the duration of a package update. This is the only busy copy.
+- A long remote or maintenance operation may keep persistent progress feedback while it runs, rather
+  than relying on a silent disabled control. This is the only busy copy.
 - Persistent status is always shown and is never treated as busy chrome: Working / Waiting / Failed /
   Offline, validation, errors, warnings, confirmations and "Restart required".
 - Text-field caret/selection: the login PIN is focused programmatically with the caret at the end of
@@ -180,15 +179,8 @@ never carry a Copy control.
 
 ## Machine Details runtimes
 
-Machine Details ends with a "Runtimes" section: a full-width `--line-soft` separator, an `h3` at
-`--text-heading`, and one row per provider. A row reads the runtime name (`--text-ui`, weight 600)
-and its status (uppercase `--text-meta`; Running in `--accent`, Offline in `--subtle`), then the
-Installed/Latest line beneath at `--text-secondary`; a provider-specific error sits under that in
-`--danger`. Update is a right-aligned `.secondary-button` that reads "Updating…" for the duration of
-a package update. The list shows a single "Checking runtimes…" line while the first inspection is in
-flight. A machine whose every runtime is Offline is presented compactly — provider name and Offline
-only, with no repeated "Unavailable" version filler — followed by one machine-level connection error;
-provider-specific errors appear only when the machine is reachable.
+Machine Details shows runtime-management information when runtime state is available, and keeps the
+dialog free of redundant offline or diagnostic noise when it is not.
 
 ## Copy and capitalization
 
