@@ -318,6 +318,51 @@ test("a rollback to a manifest-less legacy install restores the old file set", {
   assert.equal(existsSync(join(bundle, previousName, "dsh/launch.mjs")), true, "the legacy backup is preserved");
 });
 
+test("a refused rollback preserves an existing stuck marker unchanged", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle({ ownerAbsent: false, stopBusy: true });
+  mkdirSync(join(bundle, previousName, "dsh"), { recursive: true });
+  writeFileSync(join(bundle, previousName, "dsh/launch.mjs"), "// previous\n");
+  const markerFile = join(bundle, markerName);
+  writeFileSync(markerFile, JSON.stringify({ stuck: true, at: 123 }));
+  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));
+  assert.equal(rolled.status, 5, rolled.stdout + rolled.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(markerFile, "utf8")), { stuck: true, at: 123 }, "stuck protection is neither downgraded nor removed");
+});
+
+test("a rollback whose restoration is unusable keeps protection and marks it stuck", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle();
+  const legacy = join(bundle, previousName, "dsh");
+  mkdirSync(legacy, { recursive: true });
+  writeFileSync(join(legacy, "launch.mjs"), "this is not valid javascript {\n");
+  writeFileSync(join(legacy, "bridge.mjs"), "// legacy bridge\n");
+  writeFileSync(join(legacy, "projection.mjs"), "// legacy projection\n");
+  const markerFile = join(bundle, markerName);
+  writeFileSync(markerFile, JSON.stringify({ at: 789 }));
+  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));
+  assert.equal(rolled.status, 7, rolled.stdout + rolled.stderr);
+  assert.equal(JSON.parse(readFileSync(markerFile, "utf8")).stuck, true, "an unusable restoration stays protected");
+});
+
+test("a refused rollback preserves an existing held marker unchanged", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle({ ownerAbsent: false, stopBusy: true });
+  mkdirSync(join(bundle, previousName, "dsh"), { recursive: true });
+  writeFileSync(join(bundle, previousName, "dsh/launch.mjs"), "// previous\n");
+  const markerFile = join(bundle, markerName);
+  writeFileSync(markerFile, JSON.stringify({ at: 456 }));
+  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));
+  assert.equal(rolled.status, 5);
+  assert.deepEqual(JSON.parse(readFileSync(markerFile, "utf8")), { at: 456 }, "held protection is preserved");
+});
+
+test("a refused rollback with no prior marker leaves no new protection behind", { skip: !hasPosixTools }, () => {
+  const { bundle, dsh } = fakeBundle({ ownerAbsent: false, stopBusy: true });
+  mkdirSync(join(bundle, previousName, "dsh"), { recursive: true });
+  writeFileSync(join(bundle, previousName, "dsh/launch.mjs"), "// previous\n");
+  const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));
+  assert.equal(rolled.status, 5);
+  assert.equal(existsSync(join(bundle, markerName)), false, "the temporary marker this run created is cleaned up");
+});
+
 test("a rollback without a retained install changes nothing", { skip: !hasPosixTools }, () => {
   const { bundle, dsh } = fakeBundle();
   const rolled = runScript(posixRollbackScript({ bundleRoot: bundle, dshDir: dsh, stopLive: true }));

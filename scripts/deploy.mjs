@@ -45,6 +45,9 @@ export const FEATURES = ["control-socket", "integrity-verify", "idle-only-shutdo
 const JS_READ = "try{process.stdout.write(require('fs').readFileSync(process.argv[1],'utf8'))}catch(e){process.stdout.write('null')}";
 const JS_WRITE_MARKER = "require('fs').writeFileSync(process.argv[1],JSON.stringify({at:Date.now()}),{mode:384})";
 const JS_STUCK_MARKER = "require('fs').writeFileSync(process.argv[1],JSON.stringify({stuck:true,at:Date.now()}))";
+// Explicit marker existence: only a confirmed ENOENT counts as absent; any other failure exits
+// nonzero so a reader can never mistake a filesystem error for absence.
+const JS_MARKER_CHECK = "const fs=require('fs');try{fs.readFileSync(process.argv[1],'utf8');process.stdout.write('exists')}catch(e){if(e&&e.code==='ENOENT'){process.stdout.write('absent')}else{process.stdout.write('unknown');process.exit(1)}}";
 const JS_WAS_STUCK = "const fs=require('fs');try{const v=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(v&&v.stuck?'stuck':'ok')}catch(e){process.stdout.write('ok')}";
 const JS_OWNER_DECISION = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};const st=v&&v.ok===true?v.state:null;process.stdout.write(st==='absent'||st==='owned'?st:'unverified')})";
 const JS_OWNER_PIDS = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};const p=[];if(v&&Number.isInteger(v.pid))p.push(v.pid);for(const c of (v&&Array.isArray(v.dshChildren)?v.dshChildren:[]))if(Number.isInteger(c.pid))p.push(c.pid);process.stdout.write([...new Set(p)].join(' '))})";
@@ -423,8 +426,18 @@ export function posixRollbackScript({ bundleRoot, dshDir, stopLive, holdMarker }
     // Use the previous runtime for ownership when the installed one is the broken generation.
     'if [ -f "$PREV/dsh/runtime.mjs" ]; then OWNER_BIN="$PREV/dsh/runtime.mjs"; else OWNER_BIN="$DSH/runtime.mjs"; fi',
     ...posixSafeIdleLines(),
-    `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
-    'if ! safe_idle; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"unsafe-state","detail":"%s"}\' "$REASON"; exit 5; fi',
+    // Preserve any existing protection. A pre-existing held or stuck marker is never overwritten or
+    // removed by a refused rollback; only a marker this run created is cleaned up.
+    "MARKER_PREEXISTING=0",
+    'if [ -f "$MARKER" ]; then',
+    "  MARKER_PREEXISTING=1",
+    "else",
+    `  node -e "${JS_WRITE_MARKER}" "$MARKER"`,
+    "fi",
+    "if ! safe_idle; then",
+    '  if [ "$MARKER_PREEXISTING" = "0" ]; then rm -f "$MARKER"; fi',
+    '  printf \'%s\' \'{"ok":false,"reason":"unsafe-state","detail":"%s"}\' "$REASON"; exit 5',
+    "fi",
     "if ! restore || ! install_ok; then",
     "  marker_stuck",
     "  printf '%s' '{\"ok\":false,\"reason\":\"rollback-verify-failed\",\"stuck\":true}'",
@@ -666,10 +679,13 @@ export function windowsRollbackScript({ bundleRoot, dshDir, stopLive, holdMarker
     ...windowsSafeIdleLines(),
     "try {",
     "  $OWNER_BIN = if (Test-Path -LiteralPath (Join-Path $PREV 'dsh/runtime.mjs')) { Join-Path $PREV 'dsh/runtime.mjs' } else { Join-Path $DSH 'runtime.mjs' }",
-    `  & node -e "${JS_WRITE_MARKER}" $MARKER`,
-    "  if ($LASTEXITCODE -ne 0) { throw 'maintenance marker could not be written' }",
+    "  $MARKER_PREEXISTING = Test-Path -LiteralPath $MARKER",
+    "  if (-not $MARKER_PREEXISTING) {",
+    `    & node -e "${JS_WRITE_MARKER}" $MARKER`,
+    "    if ($LASTEXITCODE -ne 0) { throw 'maintenance marker could not be written' }",
+    "  }",
     "  $safe = SafeIdle",
-    "  if (-not $safe.ok) { Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue; Write-Output ('{\"ok\":false,\"reason\":\"unsafe-state\",\"detail\":\"' + $safe.reason + '\"}'); exit 5 }",
+    "  if (-not $safe.ok) { if (-not $MARKER_PREEXISTING) { Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue }; Write-Output ('{\"ok\":false,\"reason\":\"unsafe-state\",\"detail\":\"' + $safe.reason + '\"}'); exit 5 }",
     "  Restore",
     "  if (-not (InstallOk)) { throw 'rollback-verify-failed' }",
     "  if ($HOLD_MARKER -eq 1) { Write-Output '{\"ok\":true,\"held\":true}' } else { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":true}' }",
@@ -802,9 +818,17 @@ async function inspectMachine(machine, manifest, options) {
     const verify = await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--verify", quoteFor(windows, manifestPath(windows, dshDir))));
     installedVerified = verify.code === 0;
   }
-  // A previous run's maintenance marker tells a rerun to finish that target after activation.
-  const markerValue = parseLastJson((await ssh(machine, readJsonCommand(windows, markerPath(windows, dshDir)))).stdout);
-  const markerState = markerValue && typeof markerValue === "object" ? (markerValue.stuck === true ? "stuck" : "held") : "none";
+  // A previous run's maintenance marker tells a rerun to finish that target after activation. Only an
+  // explicit check decides existence; a failed check is "unknown", never "none".
+  const marker = markerPath(windows, dshDir);
+  const markerCheck = await ssh(machine, nodeCommand(windows, `-e "${JS_MARKER_CHECK}"`, quoteFor(windows, marker)));
+  let markerState = "unknown";
+  const markerVerdict = String(markerCheck.stdout ?? "").trim().split("\n").filter(Boolean).pop() ?? "";
+  if (markerCheck.code === 0 && markerVerdict === "absent") markerState = "none";
+  else if (markerCheck.code === 0 && markerVerdict === "exists") {
+    const markerValue = parseLastJson((await ssh(machine, readJsonCommand(windows, marker))).stdout);
+    markerState = markerValue?.stuck === true ? "stuck" : "held";
+  }
   let liveStatus = null;
   let statusProtocol = null;
   let liveReason = null;
@@ -1034,10 +1058,17 @@ async function releaseMarker(entry) {
     : `rm -f ${posixQuote(marker)}`;
   const result = await ssh(machine, command, { timeout: 60_000 });
   if (result.code !== 0) return { ok: false, reason: `release command failed (${result.code})` };
-  // Confirm the intended marker is gone rather than trusting the command's exit alone.
-  const remaining = parseLastJson((await ssh(machine, readJsonCommand(windows, marker))).stdout);
-  if (remaining && typeof remaining === "object") return { ok: false, reason: "the maintenance marker is still present" };
-  return { ok: true };
+  // Only an explicit, successful absence check completes the release. A failed, refused or malformed
+  // check is unresolved, never proof of absence.
+  const check = await ssh(machine, nodeCommand(windows, `-e "${JS_MARKER_CHECK}"`, quoteFor(windows, marker)), { timeout: 30_000 });
+  const verdict = String(check.stdout ?? "").trim().split("\n").filter(Boolean).pop() ?? "";
+  if (check.code !== 0) {
+    const detail = String(check.stderr ?? "").trim().slice(0, 120) || verdict || "no output";
+    return { ok: false, reason: `marker absence could not be determined (${detail})` };
+  }
+  if (verdict === "absent") return { ok: true };
+  if (verdict === "exists") return { ok: false, reason: "the maintenance marker is still present" };
+  return { ok: false, reason: `marker absence check was inconclusive (${verdict || "no output"})` };
 }
 
 // Release only the markers this run owns or inherited, and report any that resist release.
@@ -1129,6 +1160,15 @@ export async function main(argv = process.argv.slice(2)) {
   for (const entry of stuckTargets) log(`${entry.name}: pending (a previous failure left a stuck maintenance marker; resolve it, then run --rollback)`);
   if (stuckTargets.length) process.exitCode = 1;
   if (heldTargets.length) for (const entry of heldTargets) log(`${entry.name}: finishing a held maintenance marker from a previous run`);
+  // A held marker only exists for a coordinated cutover (protocol change or legacy cutover), so
+  // finishing it needs the full command. Restricted modes stop before mutation and never release an
+  // inherited marker themselves.
+  if (!rollback && (adaptersOnly || gatewayOnly) && heldAll.length) {
+    for (const entry of heldAll) log(`${entry.name}: pending (an interrupted coordinated deployment left a held maintenance marker)`);
+    log("run the normal full deployment command to finish the coordinated cutover; restricted modes never release an inherited marker");
+    process.exitCode = 1;
+    return;
+  }
 
   // Rollback is adapter-only, never mutates under --dry-run, and never runs under --gateway-only.
   if (rollback) {
@@ -1275,7 +1315,10 @@ export async function main(argv = process.argv.slice(2)) {
       } else {
         const ready = await gatewayReadiness(builtImageId);
         if (!ready.ok) failure = `readiness failed (${ready.reason})`;
-        else {
+        else if (gatewayOnly) {
+          // --gateway-only never releases an inherited marker.
+          log(`gateway: updated${retained ? ` (previous image kept as ${retained.tag})` : ""}`);
+        } else {
           const release = await releaseMarkers(releaseSet([...switched, ...heldAll]));
           if (!release.ok) {
             log(`gateway: pending (deployment verified but marker release unresolved: ${release.reason})`);
@@ -1310,11 +1353,8 @@ export async function main(argv = process.argv.slice(2)) {
       process.exitCode = 1;
     }
   } else {
-    // Ordinary compatible adapter-only update: finish any markers inherited from an earlier run.
-    if (heldTargets.length) {
-      const release = await releaseMarkers(heldTargets);
-      if (!release.ok) { log(`adapter markers unresolved: ${release.reason}`); process.exitCode = 1; }
-    }
+    // An ordinary compatible adapter-only update removed its own marker during activation; a held
+    // coordinated marker would have been rejected above.
     if (!process.exitCode) log("adapter-only update complete");
   }
   if (inspected.some((entry) => isTarget(entry) && entry.action === "update" && !entry.verifiable)) log("note: the legacy cutover verified the old carrier at activation; a run interrupted mid-cutover expires its maintenance marker");

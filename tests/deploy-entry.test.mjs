@@ -15,7 +15,7 @@ const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
 
 // A stateful fake host: it answers the deploy's SSH scripts and Docker/curl calls, and tracks the
 // running image so readiness and gateway restore behave like a real container lifecycle.
-function harness({ manifest, status, owner, gatewayState, health = true, failFirstUp = false, marker = null, releaseFails = false, healthFailures = 0 } = {}) {
+function harness({ manifest, status, owner, gatewayState, health = true, failFirstUp = false, marker = null, releaseFails = false, checkFails = false, checkMalformed = false, healthFailures = 0 } = {}) {
   const calls = [];
   const state = { imageId: IMAGE_A, builtId: IMAGE_B, refTarget: IMAGE_B, upCalls: 0, healthChecks: 0, markerReleased: false };
   const currentManifest = manifest ?? { protocol: 2, bundle: "old-bundle", lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } };
@@ -43,6 +43,13 @@ function harness({ manifest, status, owner, gatewayState, health = true, failFir
           if (releaseFails) return { code: 1, stdout: "", stderr: "release failed" };
           state.markerReleased = true;
           return ok("");
+        }
+        if (script.includes("ENOENT")) {
+          // Inspection sees the inherited marker; the post-release verification applies the failures.
+          if (!state.markerReleased) return ok(marker ? "exists\n" : "absent\n");
+          if (checkFails) return { code: 1, stdout: "", stderr: "permission denied" };
+          if (checkMalformed) return ok("garbage\n");
+          return ok("absent\n");
         }
         return ok(marker && !state.markerReleased ? `${JSON.stringify(marker)}\n` : "null");
       }
@@ -222,22 +229,59 @@ test("--adapters-only rejects a coordinated cutover before any mutation", async 
   assert.equal(process.exitCode, 1);
 });
 
-test("a compatible rerun finishes an already-current held target", async () => {
+const currentHeld = () => {
   const current = localManifest();
-  const h = harness({ manifest: { protocol: current.protocol, bundle: current.bundle, lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, marker: { at: Date.now() } });
+  return { manifest: { protocol: current.protocol, bundle: current.bundle, lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, marker: { at: Date.now() } };
+};
+
+test("the normal full command finishes an already-current held target after readiness", async () => {
+  const h = harness(currentHeld());
   process.exitCode = 0;
-  await withSettings([MACHINE], () => main(["--gateway-only", "--settings", "ignored"]));
-  assert.equal(releaseCalls(h.calls).length, 1, "the held marker was released");
+  await withSettings([MACHINE], () => main(["--settings", "ignored"]));
+  assert.equal(releaseCalls(h.calls).length, 1, "the held marker was released after readiness");
   assert.equal(process.exitCode, 0);
 });
 
-test("a marker-release failure is reported as unresolved", async () => {
-  const current = localManifest();
-  const h = harness({ manifest: { protocol: current.protocol, bundle: current.bundle, lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, marker: { at: Date.now() }, releaseFails: true });
+test("--gateway-only stops before mutation on an inherited coordinated marker", async () => {
+  const h = harness(currentHeld());
   process.exitCode = 0;
   await withSettings([MACHINE], () => main(["--gateway-only", "--settings", "ignored"]));
+  assert.equal(h.calls.some((call) => call.command === "docker"), false, "no build or container work");
+  assert.equal(releaseCalls(h.calls).length, 0, "the inherited marker is not released");
+  assert.equal(process.exitCode, 1);
+});
+
+test("--adapters-only stops before mutation on an inherited coordinated marker", async () => {
+  const h = harness(currentHeld());
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--adapters-only", "--settings", "ignored"]));
+  assert.equal(mutation(h.calls).length, 0);
+  assert.equal(releaseCalls(h.calls).length, 0, "the inherited marker is not released");
+  assert.equal(process.exitCode, 1);
+});
+
+test("a marker-release failure is reported as unresolved", async () => {
+  const h = harness({ ...currentHeld(), releaseFails: true });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--settings", "ignored"]));
   assert.equal(releaseCalls(h.calls).length, 1);
   assert.equal(process.exitCode, 1, "a release failure is not success");
+});
+
+test("a failed absence check is unresolved, never success", async () => {
+  const h = harness({ ...currentHeld(), checkFails: true });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--settings", "ignored"]));
+  assert.equal(releaseCalls(h.calls).length, 1);
+  assert.equal(process.exitCode, 1, "an unreadable marker is not absent");
+});
+
+test("a malformed absence check is unresolved, never success", async () => {
+  const h = harness({ ...currentHeld(), checkMalformed: true });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--settings", "ignored"]));
+  assert.equal(releaseCalls(h.calls).length, 1);
+  assert.equal(process.exitCode, 1, "a malformed check is not absence");
 });
 
 test("a restored-but-unhealthy gateway is not reported as recovery", async () => {
