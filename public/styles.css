@@ -16,7 +16,7 @@
   --blue: #8bb8ff;
   --activity-reasoning: #8bb8ff;
   --activity-command: #e2b765;
-  --activity-tool: #9db3c7;
+  --activity-tool: #9fa6c9;
   --activity-files: #64cc99;
   --activity-collaboration: #b79af2;
   --activity-search: #5fc9d7;
@@ -56,7 +56,7 @@
   --bg: #f7f7f7; --surface: #ffffff; --surface-strong: #efefef;
   --line: #d4d4d4; --line-soft: #e4e4e4; --text: #1c1c1c; --muted: #5c5c5c; --subtle: #767676;
   --accent: #087f4f; --accent-strong: #0a9a61; --warning: #8a5a00; --danger: #b3261e; --blue: #1f5fb0;
-  --activity-reasoning: #3274b8; --activity-command: #996400; --activity-tool: #45657d; --activity-files: #168455;
+  --activity-reasoning: #3274b8; --activity-command: #996400; --activity-tool: #4d5680; --activity-files: #168455;
   --activity-collaboration: #7652b8; --activity-search: #087f8f; --activity-image: #ad3e88; --activity-neutral: #6e6e6e;
   --topbar: rgba(247,247,247,.96); --composer-bg: rgba(247,247,247,.98); --soft-surface: rgba(239,239,239,.72);
   --activity-bg: rgba(239,239,239,.72); --backdrop: rgba(20,20,20,.38);
@@ -69,7 +69,7 @@
     --bg: #f7f7f7; --surface: #ffffff; --surface-strong: #efefef;
     --line: #d4d4d4; --line-soft: #e4e4e4; --text: #1c1c1c; --muted: #5c5c5c; --subtle: #767676;
     --accent: #087f4f; --accent-strong: #0a9a61; --warning: #8a5a00; --danger: #b3261e; --blue: #1f5fb0;
-    --activity-reasoning: #3274b8; --activity-command: #996400; --activity-tool: #45657d; --activity-files: #168455;
+    --activity-reasoning: #3274b8; --activity-command: #996400; --activity-tool: #4d5680; --activity-files: #168455;
     --activity-collaboration: #7652b8; --activity-search: #087f8f; --activity-image: #ad3e88; --activity-neutral: #6e6e6e;
     --topbar: rgba(247,247,247,.96); --composer-bg: rgba(247,247,247,.98); --soft-surface: rgba(239,239,239,.72);
     --activity-bg: rgba(239,239,239,.72); --backdrop: rgba(20,20,20,.38);
