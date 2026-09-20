@@ -20,10 +20,10 @@ function run(file, args = [], options = {}) {
     child.on('close', code => { clearTimeout(timer); code === 0 ? resolve(out.trim()) : reject(new Error((err || out || `${file} exited ${code}`).trim().slice(-1800))); });
   });
 }
-const powershell = (script, timeout = 60000) => run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; ${script}`, 'utf16le').toString('base64')], { timeout });
+const powershell = (script, timeout = 60000) => run('powershell', ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; ${script}`, 'utf16le').toString('base64')], { timeout });
 async function npm(args, cwd) {
   return windows
-    ? powershell(`Set-Location ${quotePS(cwd)}; & npm ${args.map(quotePS).join(' ')}; if ($LASTEXITCODE -ne 0) { throw 'npm failed' }`, 240000)
+    ? powershell(`Set-Location ${quotePS(cwd)}; & npm.cmd ${args.map(quotePS).join(' ')}; if ($LASTEXITCODE -ne 0) { throw 'npm failed' }`, 240000)
     : run('npm', args, { cwd, timeout: 240000 });
 }
 export function newer(candidate, installed) {
@@ -49,6 +49,18 @@ async function codexExecutable() {
 }
 const controlPath = () => join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'app-server-control', 'app-server-control.sock');
 async function socketRunning() {
+  // Node on Windows treats these paths as named pipes; Codex uses a native AF_UNIX socket.
+  if (windows) {
+    try {
+      const state = JSON.parse(await run(await codexExecutable(), ['app-server', 'daemon', 'version']));
+      if (state.status === 'running') return true;
+      if (state.status === 'stopped') return false;
+      throw new Error(`Unexpected Codex daemon status: ${state.status}`);
+    } catch (error) {
+      if (/failed to connect to .*app-server-control\.sock/is.test(error.message) && /os error (?:2|3|10061)\)/.test(error.message)) return false;
+      throw error;
+    }
+  }
   return new Promise((resolve, reject) => {
     const socket = connect(controlPath());
     socket.setTimeout(3000);
