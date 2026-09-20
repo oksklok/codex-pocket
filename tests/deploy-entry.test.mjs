@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deployTiming, main, processRunner } from "../scripts/deploy.mjs";
+import { deployTiming, localManifest, main, processRunner } from "../scripts/deploy.mjs";
 
 const originalRun = processRunner.run;
 const originalDataDir = process.env.CODEX_POCKET_DATA_DIR;
@@ -15,16 +15,17 @@ const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
 
 // A stateful fake host: it answers the deploy's SSH scripts and Docker/curl calls, and tracks the
 // running image so readiness and gateway restore behave like a real container lifecycle.
-function harness({ manifest, status, owner, gatewayState, health = true, failFirstUp = false } = {}) {
+function harness({ manifest, status, owner, gatewayState, health = true, failFirstUp = false, marker = null, releaseFails = false, healthFailures = 0 } = {}) {
   const calls = [];
-  const state = { imageId: IMAGE_A, builtId: IMAGE_B, refTarget: IMAGE_B, upCalls: 0 };
+  const state = { imageId: IMAGE_A, builtId: IMAGE_B, refTarget: IMAGE_B, upCalls: 0, healthChecks: 0, markerReleased: false };
   const currentManifest = manifest ?? { protocol: 2, bundle: "old-bundle", lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } };
   const statusValue = status ?? { ok: true, result: { busy: false, protocol: 2 } };
   const ownerValue = owner ?? { ok: true, state: "absent" };
   const gateway = gatewayState ?? {
     machineId: "ssh:mac:dsh",
     provider: "deepseek",
-    machines: [{ id: "ssh:mac:dsh", deepseek: true, dshPath: "/opt/pocket/dsh/launch.mjs" }],
+    connected: true,
+    machines: [{ id: "ssh:mac:dsh", provider: "deepseek", connected: true }],
     turn: null,
     threadStatus: "idle",
     phase: "done",
@@ -37,11 +38,18 @@ function harness({ manifest, status, owner, gatewayState, health = true, failFir
       if (script.includes("tar -xzf - -C")) return ok('{"ok":true}\n');
       if (script.includes("MUTATED=1")) return ok('{"ok":true,"held":true}\n');
       if (script.includes("no-previous")) return ok('{"ok":true}\n');
+      if (script.includes(".pocket-deploying")) {
+        if (script.includes("rm -f") || script.includes("Remove-Item")) {
+          if (releaseFails) return { code: 1, stdout: "", stderr: "release failed" };
+          state.markerReleased = true;
+          return ok("");
+        }
+        return ok(marker && !state.markerReleased ? `${JSON.stringify(marker)}\n` : "null");
+      }
       if (script.includes("--owner")) return ok(`${JSON.stringify(ownerValue)}\n`);
       if (script.includes("--status")) return ok(`${JSON.stringify(statusValue)}\n`);
       if (script.includes("--verify")) return ok("");
       if (script.includes(".pocket-adapter.json") && script.includes("node -e")) return ok(`${JSON.stringify(currentManifest)}\n`);
-      if (script.includes(".pocket-deploying") && script.includes("rm -f")) return ok("");
       return { code: 1, stdout: "", stderr: `unexpected ssh script: ${script.slice(0, 80)}` };
     }
     if (command === "docker") {
@@ -69,7 +77,7 @@ function harness({ manifest, status, owner, gatewayState, health = true, failFir
     if (command === "curl") {
       const line = args.join(" ");
       if (line.includes("/api/login")) return ok("{}");
-      if (line.includes("/healthz")) return ok(health ? '{"ok":true}' : '{"ok":false}');
+      if (line.includes("/healthz")) { state.healthChecks += 1; return ok(state.healthChecks <= healthFailures || health ? '{"ok":true}' : '{"ok":false}'); }
       if (line.includes("/api/state")) return ok(JSON.stringify(gateway));
       return { code: 0, stdout: "" };
     }
@@ -96,7 +104,7 @@ function withSettings(machines, run) {
 const MACHINE = { name: "Mac", ssh: "mac", dshPath: "/opt/pocket/dsh/launch.mjs" };
 const mutation = (calls) => calls.filter((call) => call.command === "ssh" && /tar -xzf|MUTATED=1|no-previous/.test(String(call.args.at(-1))));
 
-test.afterEach(() => { processRunner.run = originalRun; process.exitCode = 0; });
+test.afterEach(() => { processRunner.run = originalRun; process.exitCode = 0; deployTiming.readinessAttempts = 90; deployTiming.readinessDelayMs = 1000; });
 
 test("--gateway-only never stages, stops or updates execution adapters", async () => {
   const h = harness();
@@ -174,7 +182,8 @@ test("a compatible gateway-only redeploy proceeds while durable DSH work is runn
     gatewayState: {
       machineId: "ssh:mac:dsh",
       provider: "deepseek",
-      machines: [{ id: "ssh:mac:dsh", deepseek: true, dshPath: "/opt/pocket/dsh/launch.mjs" }],
+      connected: true,
+      machines: [{ id: "ssh:mac:dsh", provider: "deepseek", connected: true }],
       turn: { id: "turn-1", status: "inProgress" },
       threadStatus: "active",
       phase: "working",
@@ -186,4 +195,69 @@ test("a compatible gateway-only redeploy proceeds while durable DSH work is runn
   assert.equal(stops.length, 0, "no execution runtime was stopped");
   assert.ok(h.calls.some((call) => call.command === "docker" && call.args.join(" ").startsWith("compose up")), "the compatible gateway was activated");
   assert.equal(process.exitCode, 0);
+});
+
+const releaseCalls = (calls) => calls.filter((call) => call.command === "ssh" && /rm -f .*pocket-deploying|Remove-Item .*pocket-deploying/.test(String(call.args.at(-1))));
+
+test("an absent owner with a surviving DSH child is refused", async () => {
+  const h = harness({ status: { ok: false, reason: "no-reply" }, owner: { ok: true, state: "absent", dshChildren: [{ pid: 99 }], dshChildrenKnown: true } });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--adapters-only", "--settings", "ignored"]));
+  assert.equal(mutation(h.calls).length, 0, "a surviving child blocks replacement");
+  assert.equal(process.exitCode, 0);
+});
+
+test("failed DSH-child enumeration is refused", async () => {
+  const h = harness({ status: { ok: false, reason: "no-reply" }, owner: { ok: true, state: "absent", dshChildren: null, dshChildrenKnown: false } });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--adapters-only", "--settings", "ignored"]));
+  assert.equal(mutation(h.calls).length, 0, "incomplete ownership evidence blocks replacement");
+});
+
+test("--adapters-only rejects a coordinated cutover before any mutation", async () => {
+  const h = harness({ manifest: { protocol: 1, bundle: "old-bundle", lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, status: { ok: true, result: { busy: false, protocol: 1 } } });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--adapters-only", "--allow-protocol-change", "--settings", "ignored"]));
+  assert.equal(mutation(h.calls).length, 0);
+  assert.equal(process.exitCode, 1);
+});
+
+test("a compatible rerun finishes an already-current held target", async () => {
+  const current = localManifest();
+  const h = harness({ manifest: { protocol: current.protocol, bundle: current.bundle, lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, marker: { at: Date.now() } });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--gateway-only", "--settings", "ignored"]));
+  assert.equal(releaseCalls(h.calls).length, 1, "the held marker was released");
+  assert.equal(process.exitCode, 0);
+});
+
+test("a marker-release failure is reported as unresolved", async () => {
+  const current = localManifest();
+  const h = harness({ manifest: { protocol: current.protocol, bundle: current.bundle, lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, marker: { at: Date.now() }, releaseFails: true });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--gateway-only", "--settings", "ignored"]));
+  assert.equal(releaseCalls(h.calls).length, 1);
+  assert.equal(process.exitCode, 1, "a release failure is not success");
+});
+
+test("a restored-but-unhealthy gateway is not reported as recovery", async () => {
+  const h = harness({ manifest: { protocol: 1, bundle: "old-bundle", lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, status: { ok: true, result: { busy: false, protocol: 1 } }, health: false });
+  deployTiming.readinessAttempts = 1;
+  deployTiming.readinessDelayMs = 0;
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--allow-protocol-change", "--settings", "ignored"]));
+  assert.equal(releaseCalls(h.calls).length, 0, "transition protection stays in place");
+  assert.equal(process.exitCode, 1);
+});
+
+test("verified recovery releases protection only after the restored gateway is ready", async () => {
+  const h = harness({ manifest: { protocol: 1, bundle: "old-bundle", lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } }, status: { ok: true, result: { busy: false, protocol: 1 } }, healthFailures: 1 });
+  deployTiming.readinessAttempts = 1;
+  deployTiming.readinessDelayMs = 0;
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--allow-protocol-change", "--settings", "ignored"]));
+  const scripts = h.calls.filter((call) => call.command === "ssh").map((call) => String(call.args.at(-1)));
+  assert.ok(scripts.some((script) => script.includes("no-previous")), "the switched adapter was restored");
+  assert.ok(h.calls.some((call) => call.command === "docker" && call.args.join(" ").startsWith("tag ")), "the retained image was restored");
+  assert.equal(process.exitCode, 1, "the deployment still ends pending while recovery succeeded");
 });

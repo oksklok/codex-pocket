@@ -22,7 +22,11 @@ const temp = (prefix) => mkdtempSync(join(tmpdir(), prefix));
 
 // A fake runtime that behaves like the real carrier: --probe/--verify read a real dependency through
 // the staged or live node_modules, and an injected file can fail a post-activation probe.
-function fakeRuntime() {
+function fakeRuntime({ ownerAbsent = true, stopBusy = false } = {}) {
+  const owner = ownerAbsent
+    ? '{"ok":true,"state":"absent","dshChildren":[],"dshChildrenKnown":true}'
+    : '{"ok":true,"state":"owned","pid":1,"dshChildren":[],"dshChildrenKnown":true}';
+  const stop = stopBusy ? '{"ok":false,"reason":"busy"}' : '{"ok":true,"result":{"accepted":true}}';
   return `import fs from 'node:fs';
 import p from 'node:path';
 const dir = p.dirname(new URL(import.meta.url).pathname);
@@ -32,12 +36,13 @@ if (mode === '--probe' || mode === '--verify') {
   try { fs.readFileSync(p.join(dir, 'node_modules', 'marker.txt')); } catch { process.stdout.write('{"ok":false,"reason":"no-deps"}'); process.exit(1); }
   process.stdout.write('{"ok":true}'); process.exit(0);
 }
-if (mode === '--stop') { process.stdout.write('{"ok":true,"result":{"accepted":true}}'); process.exit(0); }
+if (mode === '--owner') { process.stdout.write('${owner}'); process.exit(0); }
+if (mode === '--stop') { process.stdout.write('${stop}'); process.exit(${stopBusy ? 1 : 0}); }
 process.exit(1);`;
 }
 
 // A fake live adapter install: a dsh directory, a deepseek.ts beside it, and a loadable runtime.
-function fakeBundle() {
+function fakeBundle(options = {}) {
   const bundle = join(temp("pocket-deploy-bundle-"), "bundle");
   const dsh = join(bundle, "dsh");
   mkdirSync(join(dsh, "node_modules"), { recursive: true });
@@ -47,19 +52,19 @@ function fakeBundle() {
     mkdirSync(dirname(destination), { recursive: true });
     writeFileSync(destination, `LIVE ${file}\n`);
   }
-  writeFileSync(join(dsh, "runtime.mjs"), fakeRuntime());
+  writeFileSync(join(dsh, "runtime.mjs"), fakeRuntime(options));
   writeFileSync(join(dsh, ".pocket-adapter.json"), JSON.stringify({ protocol: 2, bundle: "old-bundle", lockHash: "old-lock", features: [...FEATURES], files: {} }));
   return { bundle, dsh };
 }
 
-function fakeStaging() {
+function fakeStaging(options = {}) {
   const source = temp("pocket-deploy-stage-");
   for (const file of ADAPTER_FILES) {
     const destination = join(source, file);
     mkdirSync(dirname(destination), { recursive: true });
     writeFileSync(destination, `STAGED ${file}\n`);
   }
-  writeFileSync(join(source, "dsh/runtime.mjs"), fakeRuntime());
+  writeFileSync(join(source, "dsh/runtime.mjs"), fakeRuntime(options));
   writeFileSync(join(source, "pocket-manifest.json"), JSON.stringify({ protocol: 2, bundle: "new-bundle", lockHash: "new-lock", features: [...FEATURES], files: {} }));
   return source;
 }
@@ -107,15 +112,20 @@ test("an unproven runtime status is never treated as idle", () => {
 });
 
 test("the gateway restart decision uses the machineId contract, not a name suffix", () => {
+  // The shape matches MachineRuntime.snapshot() plus listMachines(): provider is a label, and only a
+  // connected runtime that passed the durable adapter handshake counts as durable.
   const value = {
     machineId: "ssh:mac:dsh",
     provider: "deepseek",
-    machines: [{ id: "ssh:mac:dsh", deepseek: true, dshPath: "/x/dsh/launch.mjs" }],
+    connected: true,
+    machines: [{ id: "ssh:mac:dsh", provider: "deepseek", connected: true }],
     turn: { id: "t", status: "inProgress" },
   };
   assert.deepEqual(gatewayLifecycle(value), { machineId: "ssh:mac:dsh", durable: true, busy: true });
-  assert.equal(gatewayLifecycle({ ...value, provider: "openai", machines: [{ id: "ssh:mac:dsh", deepseek: false }] }).durable, false);
-  assert.equal(gatewayLifecycle({ machineId: "ssh:mac:dsh", provider: "deepseek", machines: [], turn: null }).busy, false);
+  assert.equal(gatewayLifecycle({ ...value, provider: "openai" }).durable, false, "a provider label alone is not durability");
+  assert.equal(gatewayLifecycle({ ...value, connected: false }).durable, false, "a disconnected runtime is not durable");
+  assert.equal(gatewayLifecycle({ ...value, machines: [{ id: "ssh:mac:dsh", provider: "deepseek", connected: false }] }).durable, false);
+  assert.equal(gatewayLifecycle({ machineId: "ssh:mac:dsh", provider: "deepseek", connected: true, machines: [], turn: null }).busy, false);
 });
 
 test("the running protocol wins over the installed manifest for compatibility", () => {
@@ -166,10 +176,14 @@ test("activation scripts verify before and after the swap and restore on any fai
   assert.match(activate, /fail "activation-failed"/);
   assert.match(activate, /marker_stuck/);
   assert.doesNotMatch(activate, /chmod 644 "\$DSH\/"\*/);
+  assert.match(activate, /safe_idle/);
+  assert.match(activate, /unsafe-state/);
   assert.doesNotMatch(activate, /\|\| true/);
   const rollback = posixRollbackScript({ bundleRoot: "/b", dshDir: "/b/dsh", stopLive: true });
   assert.match(rollback, /dsh\/launch\.mjs/, "a manifest-less legacy backup is recognized");
   assert.match(rollback, /node --check/, "a legacy restore is verified by checks it supports");
+  assert.match(rollback, /safe_idle/);
+  assert.match(rollback, /HOLD_MARKER/);
 });
 
 test("Windows scripts travel as files, never as large command arguments", () => {
@@ -249,6 +263,19 @@ test("staging and activation replace a POSIX install, retain it, and roll back",
   assert.equal(existsSync(join(bundle, previousName, "dsh/launch.mjs")), true, "the backup survives restoration");
 });
 
+test("a runtime that starts during staging prevents replacement", { skip: !hasPosixTools }, () => {
+  // Inspection proved absence, but by activation a verified owner exists and its idle-only stop
+  // refuses: the activation must defer instead of overwriting a running runtime.
+  const { bundle, dsh } = fakeBundle({ ownerAbsent: true, stopBusy: true });
+  const staging = join(bundle, ".pocket-staging-new-bundle");
+  runScript(posixStageScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false }), archiveOf(fakeStaging({ ownerAbsent: false })));
+  const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false, stopLive: false, legacyStop: false, holdMarker: false }));
+  assert.equal(activated.status, 3, activated.stdout + activated.stderr);
+  assert.equal(payloadOf(activated).reason, "busy");
+  assert.match(readFileSync(join(dsh, "launch.mjs"), "utf8"), /LIVE/, "the running installation is untouched");
+  assert.equal(existsSync(join(bundle, previousName)), false);
+});
+
 test("a failure halfway through activation restores the previous install", { skip: !hasPosixTools }, () => {
   const { bundle, dsh } = fakeBundle();
   const staging = join(bundle, ".pocket-staging-new-bundle");
@@ -264,10 +291,10 @@ test("a failure halfway through activation restores the previous install", { ski
 });
 
 test("a busy runtime refuses activation without mutating the install", { skip: !hasPosixTools }, () => {
-  const { bundle, dsh } = fakeBundle();
-  writeFileSync(join(dsh, "runtime.mjs"), `process.stdout.write(process.argv[2] === '--stop' ? '{"ok":false,"reason":"busy"}' : '{"ok":false}'); process.exit(1);`);
+  const options = { ownerAbsent: false, stopBusy: true };
+  const { bundle, dsh } = fakeBundle(options);
   const staging = join(bundle, ".pocket-staging-new-bundle");
-  runScript(posixStageScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false }), archiveOf(fakeStaging()));
+  runScript(posixStageScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false }), archiveOf(fakeStaging(options)));
   const activated = runScript(posixActivateScript({ bundleRoot: bundle, dshDir: dsh, staging, installDeps: false, stopLive: true, legacyStop: false }));
   assert.equal(activated.status, 3);
   assert.equal(payloadOf(activated).reason, "busy");

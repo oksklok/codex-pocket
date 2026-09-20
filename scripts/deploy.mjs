@@ -48,6 +48,7 @@ const JS_STUCK_MARKER = "require('fs').writeFileSync(process.argv[1],JSON.string
 const JS_WAS_STUCK = "const fs=require('fs');try{const v=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(v&&v.stuck?'stuck':'ok')}catch(e){process.stdout.write('ok')}";
 const JS_OWNER_DECISION = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};const st=v&&v.ok===true?v.state:null;process.stdout.write(st==='absent'||st==='owned'?st:'unverified')})";
 const JS_OWNER_PIDS = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};const p=[];if(v&&Number.isInteger(v.pid))p.push(v.pid);for(const c of (v&&Array.isArray(v.dshChildren)?v.dshChildren:[]))if(Number.isInteger(c.pid))p.push(c.pid);process.stdout.write([...new Set(p)].join(' '))})";
+const JS_OWNER_CHILDREN = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};process.stdout.write(v&&v.ok===true&&v.dshChildrenKnown===true&&Array.isArray(v.dshChildren)?String(v.dshChildren.length):'-1')})";
 const JS_OWNER_CLEAR = "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{let v=null;try{v=JSON.parse(s.trim().split('\\n').filter(Boolean).pop())}catch{};const clear=v&&v.ok===true&&v.state==='absent'&&v.dshChildrenKnown===true&&(!Array.isArray(v.dshChildren)||v.dshChildren.length===0);process.stdout.write(clear?'clear':'busy')})";
 // Only a stop that confirmed the owner and child exited authorizes the swap; a refused endpoint or
 // any other failure is an error, never an assumed shutdown.
@@ -165,13 +166,16 @@ export function rollbackDecision(entry, confirmIdle) {
   return { ok: false, reason: "runtime state could not be verified; --confirm-idle applies only to the deliberate legacy cutover" };
 }
 
-// The selected runtime's own state is the restart-safety fact: a deepseek runtime is the durable DSH
-// carrier, so an accepted turn survives a gateway restart; any other provider does not.
+// The selected runtime's own state is the restart-safety fact. `listMachines()` reports
+// `provider: "deepseek"` (not a boolean), and a DSH runtime is durable only once the adapter
+// handshake succeeded — the gateway refuses an adapter that does not declare its protocol, so a
+// connected deepseek runtime is the durable carrier. The provider label alone is not proof.
 export function gatewayLifecycle(value) {
   const machineId = typeof value?.machineId === "string" ? value.machineId : "";
   const machines = Array.isArray(value?.machines) ? value.machines : [];
   const selected = machines.find((machine) => machine && machine.id === machineId) ?? null;
-  const durable = value?.provider === "deepseek" && selected?.deepseek === true;
+  const durable = value?.provider === "deepseek" && value?.connected === true
+    && selected?.provider === "deepseek" && selected?.connected === true;
   const busy = value?.turn?.status === "inProgress" || String(value?.threadStatus ?? "").startsWith("active") || value?.phase === "working";
   return { machineId, durable, busy };
 }
@@ -196,18 +200,6 @@ function posixRestoreLines(bundleRoot, dshDir, previous) {
     ...ADAPTER_NAMES.map((file) => `if [ -f ${q(`${previous}/dsh/${file}`)} ]; then cp -f ${q(`${previous}/dsh/${file}`)} ${q(`${dshDir}/${file}`)}; else rm -f ${q(`${dshDir}/${file}`)}; fi`),
     `if [ -f ${q(`${previous}/deepseek.ts`)} ]; then cp -f ${q(`${previous}/deepseek.ts`)} ${q(`${bundleRoot}/deepseek.ts`)}; else rm -f ${q(`${bundleRoot}/deepseek.ts`)}; fi`,
     `if [ -d ${q(`${previous}/node_modules`)} ]; then rm -rf ${q(`${dshDir}/node_modules`)}; cp -a ${q(`${previous}/node_modules`)} ${q(`${dshDir}/node_modules`)}; fi`,
-  ];
-}
-
-function posixStopLines(stopLive) {
-  if (!stopLive) return [];
-  return [
-    "set +e",
-    'STOP_JSON=$(node "$DSH/runtime.mjs" --stop 2>/dev/null)',
-    "set -e",
-    `DECISION=$(printf '%s' "$STOP_JSON" | node -e "${JS_STOP_DECISION}")`,
-    'if [ "$DECISION" = "busy" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"busy"}\'; exit 3; fi',
-    'if [ "$DECISION" = "error" ]; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"stop-failed"}\'; exit 5; fi',
   ];
 }
 
@@ -273,6 +265,37 @@ export function posixStageScript({ bundleRoot, dshDir, staging, installDeps }) {
   ].join("\n");
 }
 
+// Re-establish a safe state immediately before replacement, under the marker: no live owner,
+// successful child enumeration, and no matching live DSH child. A runtime that started during
+// staging is stopped through the verified idle-only path, or the run defers.
+function posixSafeIdleLines() {
+  return [
+    "safe_idle() {",
+    '  REASON=""',
+    "  ATTEMPT=0",
+    '  while [ "$ATTEMPT" -lt 3 ]; do',
+    "    ATTEMPT=$((ATTEMPT+1))",
+    '    OWNER_JSON=$(node "$OWNER_BIN" --owner "$DSH" 2>/dev/null) || OWNER_JSON=\'{"ok":false}\'',
+    `    OWNER_DECISION=$(printf '%s' "$OWNER_JSON" | node -e "${JS_OWNER_DECISION}")`,
+    `    OWNER_CHILDREN=$(printf '%s' "$OWNER_JSON" | node -e "${JS_OWNER_CHILDREN}")`,
+    '    if [ "$OWNER_DECISION" = "unverified" ] || [ "$OWNER_CHILDREN" = "-1" ]; then REASON="ownership could not be verified"; return 1; fi',
+    '    if [ "$OWNER_DECISION" = "absent" ]; then',
+    '      if [ "$OWNER_CHILDREN" = "0" ]; then return 0; fi',
+    '      REASON="a DSH child is still running"; return 1',
+    "    fi",
+    "    set +e",
+    '    STOP_JSON=$(node "$DSH/runtime.mjs" --stop 2>/dev/null)',
+    "    set -e",
+    `    STOP_DECISION=$(printf '%s' "$STOP_JSON" | node -e "${JS_STOP_DECISION}")`,
+    '    if [ "$STOP_DECISION" = "busy" ]; then REASON="runtime busy"; return 1; fi',
+    '    if [ "$STOP_DECISION" != "stopped" ]; then REASON="stop did not confirm exit"; return 1; fi',
+    "    return 0",
+    "  done",
+    '  REASON="ownership kept changing"; return 1',
+    "}",
+  ];
+}
+
 export function posixActivateScript({ bundleRoot, dshDir, staging, installDeps, stopLive, legacyStop, holdMarker }) {
   const previous = joinPath(false, bundleRoot, previousName);
   const marker = joinPath(false, bundleRoot, markerName);
@@ -306,6 +329,8 @@ export function posixActivateScript({ bundleRoot, dshDir, staging, installDeps, 
     "    LOCK_CLAIMED=0",
     "  fi",
     "}",
+    'OWNER_BIN="$STAGE/dsh/runtime.mjs"',
+    ...posixSafeIdleLines(),
     "fail() {",
     '  reason="$1"',
     "  rolled=0",
@@ -325,8 +350,12 @@ export function posixActivateScript({ bundleRoot, dshDir, staging, installDeps, 
     "}",
     `if [ -f "$MARKER" ] && [ "$(node -e "${JS_WAS_STUCK}" "$MARKER")" = "stuck" ]; then printf '%s' '{"ok":false,"reason":"stuck-marker"}'; exit 8; fi`,
     `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
-    ...posixStopLines(stopLive),
     ...posixLegacyStopLines(legacyStop),
+    // Re-establish the safe state now, not from the earlier inspection: a runtime that started during
+    // staging must be stopped through the idle-only path or the run must defer.
+    'if [ "$LEGACY_STOP" = "0" ]; then',
+    '  if ! safe_idle; then release_claim; rm -f "$MARKER"; if [ "$REASON" = "runtime busy" ]; then printf \'%s\' \'{"ok":false,"reason":"busy"}\'; exit 3; fi; printf \'%s\' \'{"ok":false,"reason":"unsafe-state","detail":"%s"}\' "$REASON"; exit 5; fi',
+    "fi",
     // Never overwrite the last good backup with an install that is not itself loadable.
     'if [ -d "$PREV" ] && ! install_ok; then',
     "  if restore && install_ok; then :; else marker_stuck; printf '%s' '{\"ok\":false,\"reason\":\"previous-restore-failed\",\"stuck\":true}'; exit 7; fi",
@@ -369,7 +398,7 @@ export function posixActivateScript({ bundleRoot, dshDir, staging, installDeps, 
   ].join("\n");
 }
 
-export function posixRollbackScript({ bundleRoot, dshDir, stopLive }) {
+export function posixRollbackScript({ bundleRoot, dshDir, stopLive, holdMarker }) {
   const previous = joinPath(false, bundleRoot, previousName);
   const marker = joinPath(false, bundleRoot, markerName);
   const q = posixQuote;
@@ -380,6 +409,7 @@ export function posixRollbackScript({ bundleRoot, dshDir, stopLive }) {
     `PREV=${q(previous)}`,
     `MARKER=${q(marker)}`,
     `STOP_LIVE=${stopLive ? 1 : 0}`,
+    `HOLD_MARKER=${holdMarker ? 1 : 0}`,
     'if [ ! -f "$PREV/.pocket-adapter.json" ] && [ ! -f "$PREV/dsh/launch.mjs" ]; then printf \'%s\' \'{"ok":false,"reason":"no-previous"}\'; exit 4; fi',
     "marker_stuck() {",
     `  node -e "${JS_STUCK_MARKER}" "$MARKER"`,
@@ -390,15 +420,17 @@ export function posixRollbackScript({ bundleRoot, dshDir, stopLive }) {
     "restore() {",
     ...posixRestoreLines(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
     "}",
+    // Use the previous runtime for ownership when the installed one is the broken generation.
+    'if [ -f "$PREV/dsh/runtime.mjs" ]; then OWNER_BIN="$PREV/dsh/runtime.mjs"; else OWNER_BIN="$DSH/runtime.mjs"; fi',
+    ...posixSafeIdleLines(),
     `node -e "${JS_WRITE_MARKER}" "$MARKER"`,
-    ...posixStopLines(stopLive),
+    'if ! safe_idle; then rm -f "$MARKER"; printf \'%s\' \'{"ok":false,"reason":"unsafe-state","detail":"%s"}\' "$REASON"; exit 5; fi',
     "if ! restore || ! install_ok; then",
     "  marker_stuck",
     "  printf '%s' '{\"ok\":false,\"reason\":\"rollback-verify-failed\",\"stuck\":true}'",
     "  exit 7",
     "fi",
-    'rm -f "$MARKER"',
-    "printf '%s' '{\"ok\":true}'",
+    'if [ "$HOLD_MARKER" = "1" ]; then printf \'%s\' \'{"ok":true,"held":true}\'; else rm -f "$MARKER"; printf \'%s\' \'{"ok":true}\'; fi',
   ].join("\n");
 }
 
@@ -428,21 +460,6 @@ function windowsRestoreLines(bundleRoot, dshDir, previous) {
     ...ADAPTER_NAMES.map((file) => `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'dsh/${file}')) { Copy-Item -Force (Join-Path ${psQuote(previous)} 'dsh/${file}') (Join-Path ${psQuote(dshDir)} '${file}') } else { Remove-Item -LiteralPath (Join-Path ${psQuote(dshDir)} '${file}') -Force -ErrorAction SilentlyContinue }`),
     `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'deepseek.ts')) { Copy-Item -Force (Join-Path ${psQuote(previous)} 'deepseek.ts') (Join-Path ${psQuote(bundleRoot)} 'deepseek.ts') } else { Remove-Item -LiteralPath (Join-Path ${psQuote(bundleRoot)} 'deepseek.ts') -Force -ErrorAction SilentlyContinue }`,
     `if (Test-Path -LiteralPath (Join-Path ${psQuote(previous)} 'node_modules')) { Remove-Item -LiteralPath (Join-Path ${psQuote(dshDir)} 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue; Copy-Item -Recurse -Force (Join-Path ${psQuote(previous)} 'node_modules') (Join-Path ${psQuote(dshDir)} 'node_modules') }`,
-  ];
-}
-
-function windowsStopLines(stopLive) {
-  if (!stopLive) return [];
-  return [
-    "if ($STOP_LIVE -eq 1) {",
-    "  $stopJson = & node (Join-Path $DSH 'runtime.mjs') --stop 2>$null",
-    "  $stopCode = $LASTEXITCODE",
-    "  $stopResult = $null",
-    "  try { $stopResult = (($stopJson | Select-Object -Last 1) | ConvertFrom-Json) } catch {}",
-    "  if ($stopResult -and $stopResult.reason -eq 'busy') { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"busy\"}'; exit 3 }",
-    "  if ($stopResult -and $stopResult.reason -eq 'draining') { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"busy\"}'; exit 3 }",
-    "  if ($stopCode -ne 0 -or -not ($stopResult -and $stopResult.ok -eq $true -and $stopResult.result -and $stopResult.result.accepted -eq $true)) { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":false,\"reason\":\"stop-failed\"}'; exit 5 }",
-    "}",
   ];
 }
 
@@ -519,6 +536,30 @@ export function windowsStageScript({ bundleRoot, dshDir, staging, installDeps })
   ].join("\n");
 }
 
+// Windows equivalent of safe_idle: complete ownership proof before replacement.
+function windowsSafeIdleLines() {
+  return [
+    "function SafeIdle {",
+    "  for ($attempt = 0; $attempt -lt 3; $attempt++) {",
+    "    $owner = $null",
+    "    try { $owner = (& node $OWNER_BIN --owner $DSH 2>$null | Select-Object -Last 1) | ConvertFrom-Json } catch {}",
+    "    if (-not $owner -or $owner.ok -ne $true -or $owner.state -eq 'unverified' -or $owner.dshChildrenKnown -ne $true) { return @{ ok = $false; reason = 'ownership could not be verified' } }",
+    "    if ($owner.state -eq 'absent') {",
+    "      if (@($owner.dshChildren).Count -eq 0) { return @{ ok = $true } }",
+    "      return @{ ok = $false; reason = 'a DSH child is still running' }",
+    "    }",
+    "    $stopJson = & node (Join-Path $DSH 'runtime.mjs') --stop 2>$null",
+    "    $stopResult = $null",
+    "    try { $stopResult = (($stopJson | Select-Object -Last 1) | ConvertFrom-Json) } catch {}",
+    "    if ($stopResult -and $stopResult.reason -eq 'busy') { return @{ ok = $false; reason = 'runtime busy' } }",
+    "    if (-not ($stopResult -and $stopResult.ok -eq $true -and $stopResult.result -and $stopResult.result.accepted -eq $true)) { return @{ ok = $false; reason = 'stop did not confirm exit' } }",
+    "    return @{ ok = $true }",
+    "  }",
+    "  return @{ ok = $false; reason = 'ownership kept changing' }",
+    "}",
+  ];
+}
+
 export function windowsActivateScript({ bundleRoot, dshDir, staging, installDeps, stopLive, legacyStop, holdMarker }) {
   const previous = joinPath(true, bundleRoot, previousName);
   const marker = joinPath(true, bundleRoot, markerName);
@@ -550,6 +591,7 @@ export function windowsActivateScript({ bundleRoot, dshDir, staging, installDeps
     "    $LOCK_CLAIMED = $false",
     "  }",
     "}",
+    ...windowsSafeIdleLines(),
     "function Fail([string]$reason) {",
     "  if ($MUTATED) {",
     "    try {",
@@ -570,8 +612,12 @@ export function windowsActivateScript({ bundleRoot, dshDir, staging, installDeps
     `  if ((Test-Path -LiteralPath $MARKER) -and ((& node -e "${JS_WAS_STUCK}" $MARKER) -eq 'stuck')) { Write-Output '{"ok":false,"reason":"stuck-marker"}'; exit 8 }`,
     `  & node -e "${JS_WRITE_MARKER}" $MARKER`,
     "  if ($LASTEXITCODE -ne 0) { throw 'maintenance marker could not be written' }",
-    ...windowsStopLines(stopLive).map((line) => `  ${line}`),
     ...windowsLegacyStopLines(legacyStop).map((line) => `  ${line}`),
+    "  if ($LEGACY_STOP -eq 0) {",
+    "    $OWNER_BIN = Join-Path $STAGE 'dsh/runtime.mjs'",
+    "    $safe = SafeIdle",
+    "    if (-not $safe.ok) { ReleaseClaim; Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue; Write-Output ('{\"ok\":false,\"reason\":\"unsafe-state\",\"detail\":\"' + $safe.reason + '\"}'); exit 5 }",
+    "  }",
     "  if ((Test-Path -LiteralPath $PREV) -and -not (InstallOk)) {",
     "    try { Restore; if (-not (InstallOk)) { throw 'restore-verify-failed' } } catch { MarkerStuck; Write-Output '{\"ok\":false,\"reason\":\"previous-restore-failed\",\"stuck\":true}'; exit 7 }",
     "  }",
@@ -596,7 +642,7 @@ export function windowsActivateScript({ bundleRoot, dshDir, staging, installDeps
   return lines.join("\n");
 }
 
-export function windowsRollbackScript({ bundleRoot, dshDir, stopLive }) {
+export function windowsRollbackScript({ bundleRoot, dshDir, stopLive, holdMarker }) {
   const previous = joinPath(true, bundleRoot, previousName);
   const marker = joinPath(true, bundleRoot, markerName);
   const lines = [
@@ -606,6 +652,7 @@ export function windowsRollbackScript({ bundleRoot, dshDir, stopLive }) {
     `$PREV = ${psQuote(previous)}`,
     `$MARKER = ${psQuote(marker)}`,
     `$STOP_LIVE = ${stopLive ? 1 : 0}`,
+    `$HOLD_MARKER = ${holdMarker ? 1 : 0}`,
     "$LEGACY_STOP = 0",
     "$MUTATED = $true",
     `if (-not (Test-Path -LiteralPath (Join-Path $PREV '.pocket-adapter.json')) -and -not (Test-Path -LiteralPath (Join-Path $PREV 'dsh/launch.mjs'))) { Write-Output '{"ok":false,"reason":"no-previous"}'; exit 4 }`,
@@ -616,14 +663,16 @@ export function windowsRollbackScript({ bundleRoot, dshDir, stopLive }) {
     "function Restore {",
     ...windowsRestoreLines(bundleRoot, dshDir, previous).map((line) => `  ${line}`),
     "}",
+    ...windowsSafeIdleLines(),
     "try {",
+    "  $OWNER_BIN = if (Test-Path -LiteralPath (Join-Path $PREV 'dsh/runtime.mjs')) { Join-Path $PREV 'dsh/runtime.mjs' } else { Join-Path $DSH 'runtime.mjs' }",
     `  & node -e "${JS_WRITE_MARKER}" $MARKER`,
     "  if ($LASTEXITCODE -ne 0) { throw 'maintenance marker could not be written' }",
-    ...windowsStopLines(stopLive).map((line) => `  ${line}`),
+    "  $safe = SafeIdle",
+    "  if (-not $safe.ok) { Remove-Item -LiteralPath $MARKER -Force -ErrorAction SilentlyContinue; Write-Output ('{\"ok\":false,\"reason\":\"unsafe-state\",\"detail\":\"' + $safe.reason + '\"}'); exit 5 }",
     "  Restore",
     "  if (-not (InstallOk)) { throw 'rollback-verify-failed' }",
-    "  Remove-Item -LiteralPath $MARKER -Force",
-    "  Write-Output '{\"ok\":true}'",
+    "  if ($HOLD_MARKER -eq 1) { Write-Output '{\"ok\":true,\"held\":true}' } else { Remove-Item -LiteralPath $MARKER -Force; Write-Output '{\"ok\":true}' }",
     "} catch {",
     "  MarkerStuck",
     "  Write-Output '{\"ok\":false,\"reason\":\"rollback-verify-failed\",\"stuck\":true}'",
@@ -732,6 +781,7 @@ function readMachines() {
 const pathFor = (windows, ...parts) => joinPath(windows, ...parts);
 const manifestPath = (windows, dshDir) => pathFor(windows, dshDir, ".pocket-adapter.json");
 const runtimePath = (windows, dshDir) => pathFor(windows, dshDir, "runtime.mjs");
+const markerPath = (windows, dshDir) => pathFor(windows, parentDir(dshDir), markerName);
 const quoteFor = (windows, value) => (windows ? psQuote(value) : posixQuote(value));
 const readJsonCommand = (windows, path) => (windows
   ? `& node -e "${JS_READ}" ${psQuote(path)}`
@@ -744,7 +794,7 @@ async function inspectMachine(machine, manifest, options) {
   const windows = isWindowsPath(machine.dshPath);
   const entry = { key: name, name, machine, dshDir, windows };
   const reachable = await ssh(machine, "echo pocket-deploy-ok");
-  if (reachable.code !== 0) return { ...entry, current: null, liveStatus: null, verifiable: false, statusProtocol: null, installedVerified: false, action: "hold", reason: "offline" };
+  if (reachable.code !== 0) return { ...entry, current: null, liveStatus: null, verifiable: false, statusProtocol: null, installedVerified: false, markerState: "unknown", action: "hold", reason: "offline" };
   const current = parseLastJson((await ssh(machine, readJsonCommand(windows, manifestPath(windows, dshDir)))).stdout);
   const verifiable = Boolean(current && Array.isArray(current.features) && current.features.includes("control-socket"));
   let installedVerified = false;
@@ -752,6 +802,9 @@ async function inspectMachine(machine, manifest, options) {
     const verify = await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--verify", quoteFor(windows, manifestPath(windows, dshDir))));
     installedVerified = verify.code === 0;
   }
+  // A previous run's maintenance marker tells a rerun to finish that target after activation.
+  const markerValue = parseLastJson((await ssh(machine, readJsonCommand(windows, markerPath(windows, dshDir)))).stdout);
+  const markerState = markerValue && typeof markerValue === "object" ? (markerValue.stuck === true ? "stuck" : "held") : "none";
   let liveStatus = null;
   let statusProtocol = null;
   let liveReason = null;
@@ -764,20 +817,25 @@ async function inspectMachine(machine, manifest, options) {
     const parsed = parseLastJson(statusOut);
     if (parsed?.result && typeof parsed.result.protocol === "number") statusProtocol = parsed.result.protocol;
     if (liveStatus === "unknown") {
-      // A missing endpoint is not proof of absence: verify the recorded owner instead.
+      // A missing endpoint is not proof of absence. Absence requires all three: no live owner,
+      // successful child enumeration, and no matching live DSH child.
       const ownerOut = (await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--owner", quoteFor(windows, dshDir)))).stdout;
       const owner = parseLastJson(ownerOut);
       ownerState = owner && owner.ok === true ? owner.state : "probe-failed";
-      if (ownerState === "absent") {
+      const children = Array.isArray(owner?.dshChildren) ? owner.dshChildren : null;
+      const childrenKnown = owner?.dshChildrenKnown === true && children !== null;
+      if (ownerState === "absent" && childrenKnown && children.length === 0) {
         liveStatus = "idle";
         absentProven = true;
         liveReason = null;
+      } else if (ownerState === "absent") {
+        liveReason = `${liveReason}/${childrenKnown ? `${children.length}-dsh-children-still-running` : "dsh-child-enumeration-failed"}`;
       } else {
         liveReason = `${liveReason}/owner-${ownerState}`;
       }
     }
   }
-  return { ...entry, current, liveStatus, verifiable, statusProtocol, installedVerified, liveReason, absentProven, ownerState, ...planMachine({ current, manifest, liveStatus, absentProven, ...options }) };
+  return { ...entry, current, liveStatus, verifiable, statusProtocol, installedVerified, liveReason, absentProven, ownerState, markerState, ...planMachine({ current, manifest, liveStatus, absentProven, ...options }) };
 }
 
 async function stageMachine(entry, manifest, archive) {
@@ -823,12 +881,12 @@ async function activateMachine(entry, manifest, { holdMarker = false } = {}) {
   return { ...entry, action: "hold", reason: `activation failed (${payload?.reason ?? result.code})`, rolledBack: payload?.rolledBack === true, stuck: payload?.stuck === true };
 }
 
-async function rollbackMachine(entry, confirmIdle) {
+async function rollbackMachine(entry, confirmIdle, { holdMarker = false } = {}) {
   const { machine, dshDir, windows, verifiable, liveStatus } = entry;
   const bundleRoot = parentDir(dshDir);
   const decision = rollbackDecision(entry, confirmIdle);
   if (!decision.ok) return { ...entry, action: "hold", reason: decision.reason };
-  const options = { bundleRoot, dshDir, stopLive: decision.stopLive };
+  const options = { bundleRoot, dshDir, stopLive: decision.stopLive, holdMarker };
   let result;
   if (windows) {
     const scriptPath = joinPath(true, bundleRoot, remoteScriptName("rollback", "rollback"));
@@ -840,7 +898,7 @@ async function rollbackMachine(entry, confirmIdle) {
     result = await ssh(machine, posixRollbackScript(options), { timeout: 300_000 });
   }
   const payload = parseLastJson(result.stdout);
-  if (result.code === 0 && payload?.ok === true) return { ...entry, action: "rolled back" };
+  if (result.code === 0 && payload?.ok === true) return { ...entry, action: "rolled back", held: payload?.held === true };
   return { ...entry, action: "hold", reason: `rollback failed (${payload?.reason ?? result.code})`, stuck: payload?.stuck === true };
 }
 
@@ -893,8 +951,8 @@ async function retainGatewayImage() {
   return (await run("docker", ["tag", running.id, tag], { cwd: ROOT })).code === 0 ? { id: running.id, ref: running.ref, tag } : null;
 }
 
-// Re-point the compose image at the retained immutable id and restart, so a failed upgrade does not
-// leave the new image paired with the old adapters.
+// Re-point the compose image at the retained immutable id, restart, and verify that the running
+// container is that image and that Pocket answers. A compose exit code alone is not restoration.
 async function restoreGatewayImage(retained) {
   if (!retained?.id) return { ok: false, reason: "no retained previous image" };
   const reference = retained.ref ?? await composeImageName();
@@ -902,7 +960,9 @@ async function restoreGatewayImage(retained) {
   const tagged = await run("docker", ["tag", retained.id, reference], { cwd: ROOT });
   if (tagged.code !== 0) return { ok: false, reason: "could not retag the previous image" };
   const up = await run("docker", ["compose", "up", "-d", "--no-build", "pocket"], { cwd: ROOT, timeout: 300_000 });
-  return up.code === 0 ? { ok: true } : { ok: false, reason: "the previous image did not start" };
+  if (up.code !== 0) return { ok: false, reason: "the previous image did not start" };
+  const ready = await gatewayReadiness(retained.id);
+  return ready.ok ? { ok: true } : { ok: false, reason: `the restored image is not ready (${ready.reason})` };
 }
 
 async function composeImageName() {
@@ -968,21 +1028,40 @@ export async function gatewayReadiness(expectedImageId) {
 
 async function releaseMarker(entry) {
   const { machine, dshDir, windows } = entry;
-  const marker = joinPath(windows, parentDir(dshDir), markerName);
+  const marker = markerPath(windows, dshDir);
   const command = windows
     ? powershellCommand(`Remove-Item -LiteralPath ${psQuote(marker)} -Force -ErrorAction SilentlyContinue`)
     : `rm -f ${posixQuote(marker)}`;
-  await ssh(machine, command, { timeout: 60_000 });
+  const result = await ssh(machine, command, { timeout: 60_000 });
+  if (result.code !== 0) return { ok: false, reason: `release command failed (${result.code})` };
+  // Confirm the intended marker is gone rather than trusting the command's exit alone.
+  const remaining = parseLastJson((await ssh(machine, readJsonCommand(windows, marker))).stdout);
+  if (remaining && typeof remaining === "object") return { ok: false, reason: "the maintenance marker is still present" };
+  return { ok: true };
 }
 
-// Restore every adapter already switched for a protocol change. If any restore cannot be verified,
-// the caller keeps the installations protected and reports the unresolved state.
+// Release only the markers this run owns or inherited, and report any that resist release.
+async function releaseMarkers(entries) {
+  const failures = [];
+  let released = 0;
+  for (const entry of entries) {
+    if (!(entry.held === true || entry.markerState === "held")) continue;
+    const result = await releaseMarker(entry);
+    if (result.ok) { released += 1; log(`${entry.name}: maintenance marker released`); }
+    else failures.push(`${entry.name}: ${result.reason}`);
+  }
+  return failures.length ? { ok: false, reason: failures.join("; "), released } : { ok: true, released };
+}
+
+// Restore every adapter already switched for a protocol change, keeping its protection marker until
+// the combined arrangement is verified. If any restore cannot be verified, the caller keeps the
+// installations protected and reports the unresolved state.
 async function restoreSwitched(switched, manifest) {
   const failures = [];
   for (const done of switched) {
     const refreshed = await inspectMachine(done.machine, manifest, { confirmIdle: true, allowProtocolChange: true });
-    const back = await rollbackMachine(refreshed, true);
-    if (back.action === "rolled back") log(`${back.name}: restored to the previous protocol`);
+    const back = await rollbackMachine(refreshed, true, { holdMarker: true });
+    if (back.action === "rolled back") log(`${back.name}: restored to the previous protocol (still protected)`);
     else failures.push(`${back.name}: ${back.reason}`);
   }
   return failures.length ? { ok: false, reason: failures.join("; ") } : { ok: true };
@@ -1019,7 +1098,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { isTarget, protocolChanged, blockers } = fleet;
   for (const entry of inspected.filter(isTarget)) {
     const live = entry.verifiable ? (entry.absentProven ? "verified absent" : entry.liveStatus) : "legacy carrier, verified at activation";
-    if (entry.action === "current") log(`${entry.name}: up to date`);
+    if (entry.action === "current") log(`${entry.name}: ${entry.markerState === "held" ? "up to date; finishing a held deployment" : "up to date"}`);
     else if (entry.action === "update") log(`${entry.name}: ${dryRun ? "would update" : "ready to update"} (live ${live})`);
     else log(`${entry.name}: pending (${entry.reason}${entry.liveReason ? `; ${entry.liveReason}` : ""})`);
   }
@@ -1037,6 +1116,19 @@ export async function main(argv = process.argv.slice(2)) {
     process.exitCode = 1;
     return;
   }
+
+  const heldTargets = inspected.filter((entry) => isTarget(entry) && entry.markerState === "held");
+  const heldAll = inspected.filter((entry) => entry.markerState === "held");
+  const stuckTargets = inspected.filter((entry) => isTarget(entry) && entry.markerState === "stuck");
+  const plannedLegacyCutover = inspected.some((entry) => isTarget(entry) && entry.action === "update" && entry.legacyStop);
+  if (!rollback && adaptersOnly && (protocolChanged || plannedLegacyCutover)) {
+    log("--adapters-only cannot perform a protocol transition or the initial legacy cutover; run the full deploy so the gateway is activated with the adapters");
+    process.exitCode = 1;
+    return;
+  }
+  for (const entry of stuckTargets) log(`${entry.name}: pending (a previous failure left a stuck maintenance marker; resolve it, then run --rollback)`);
+  if (stuckTargets.length) process.exitCode = 1;
+  if (heldTargets.length) for (const entry of heldTargets) log(`${entry.name}: finishing a held maintenance marker from a previous run`);
 
   // Rollback is adapter-only, never mutates under --dry-run, and never runs under --gateway-only.
   if (rollback) {
@@ -1109,6 +1201,12 @@ export async function main(argv = process.argv.slice(2)) {
     if (state.state === "unknown" && !confirmIdle) { log(`gateway: pending (${state.reason}; drain the gateway and pass --confirm-idle); nothing was activated`); process.exitCode = 1; return; }
   }
 
+  const releaseSet = (entries) => {
+    const byKey = new Map();
+    for (const entry of entries) byKey.set(entry.key, entry);
+    return [...byKey.values()];
+  };
+
   let switched = [];
   let protocolSensitive = protocolChanged;
   if (adapterMode) {
@@ -1141,7 +1239,12 @@ export async function main(argv = process.argv.slice(2)) {
       if (protocolSensitive) {
         log("an adapter target failed; returning the machines already switched to the previous arrangement");
         const restored = await restoreSwitched(switched, manifest);
-        if (!restored.ok) log(`adapter restore unresolved: ${restored.reason}; affected installations stay protected`);
+        if (!restored.ok) {
+          log(`adapter restore unresolved: ${restored.reason}; affected installations stay protected and backups retained`);
+        } else {
+          const release = await releaseMarkers(switched);
+          if (!release.ok) log(`adapter restore verified but marker release unresolved: ${release.reason}`);
+        }
         process.exitCode = 1;
         return;
       }
@@ -1173,35 +1276,46 @@ export async function main(argv = process.argv.slice(2)) {
         const ready = await gatewayReadiness(builtImageId);
         if (!ready.ok) failure = `readiness failed (${ready.reason})`;
         else {
-          for (const done of switched) if (done.held) await releaseMarker(done);
-          log(`gateway: updated${retained ? ` (previous image kept as ${retained.tag})` : ""}`);
+          const release = await releaseMarkers(releaseSet([...switched, ...heldAll]));
+          if (!release.ok) {
+            log(`gateway: pending (deployment verified but marker release unresolved: ${release.reason})`);
+            process.exitCode = 1;
+          } else {
+            log(`gateway: updated${retained ? ` (previous image kept as ${retained.tag})` : ""}`);
+          }
         }
       }
     }
     if (failure) {
       log(`gateway: pending (${failure})`);
-      const gatewayRestore = await restoreGatewayImage(retained);
+      let adaptersOk = true;
+      let adapterReason = null;
       if (protocolSensitive) {
-        // The switched adapters cannot pair with the old gateway: return them to the retained
-        // generation, and keep them protected if that restore cannot be verified.
+        // The switched adapters cannot pair with the old gateway, so return them to the retained
+        // generation first and keep their markers until the whole arrangement is verified.
         const adapterRestore = await restoreSwitched(switched, manifest);
-        if (!adapterRestore.ok) {
-          log(`adapter restore unresolved: ${adapterRestore.reason}`);
-          log("affected installations stay protected; run --rollback after an operator drains the machine");
-        } else if (gatewayRestore.ok) {
-          log("restored the previous compatible gateway and adapter arrangement");
-        } else {
-          log(`gateway restore unresolved: ${gatewayRestore.reason}`);
-        }
-      } else if (!gatewayRestore.ok) {
-        log(`gateway restore unresolved: ${gatewayRestore.reason}`);
+        adaptersOk = adapterRestore.ok;
+        adapterReason = adapterRestore.reason;
+      }
+      const gatewayRestore = await restoreGatewayImage(retained);
+      if (adaptersOk && gatewayRestore.ok) {
+        const release = await releaseMarkers(releaseSet([...switched, ...heldAll]));
+        if (release.ok) log("restored and verified the previous compatible gateway and adapter arrangement");
+        else log(`recovery verified but marker release unresolved: ${release.reason}; resolve it before the next run`);
       } else {
-        log("restored the previous gateway image; the adapters remain compatible");
+        if (!adaptersOk) log(`adapter restore unresolved: ${adapterReason}`);
+        if (!gatewayRestore.ok) log(`gateway restore unresolved: ${gatewayRestore.reason}`);
+        log("installations stay protected and the known-good backups are retained; resolve the reported state and rerun");
       }
       process.exitCode = 1;
     }
-  } else if (protocolChanged) {
-    log("execution adapters are on the new protocol; run the full deploy (or restart the gateway with the new image) before DSH is usable again");
+  } else {
+    // Ordinary compatible adapter-only update: finish any markers inherited from an earlier run.
+    if (heldTargets.length) {
+      const release = await releaseMarkers(heldTargets);
+      if (!release.ok) { log(`adapter markers unresolved: ${release.reason}`); process.exitCode = 1; }
+    }
+    if (!process.exitCode) log("adapter-only update complete");
   }
   if (inspected.some((entry) => isTarget(entry) && entry.action === "update" && !entry.verifiable)) log("note: the legacy cutover verified the old carrier at activation; a run interrupted mid-cutover expires its maintenance marker");
 }
