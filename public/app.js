@@ -500,7 +500,9 @@ function saveDisplayPreferences() {
 
 function activityVisible(activity) {
   // Reasoning, Review and Question are parsed and rendered but are not part of the Display controls.
-  if (activity.kind === "reasoning" || activity.kind === "review" || activity.kind === "question") return true;
+  // A Question that is still running stays out of the transcript: the picker is its pending UI.
+  if (activity.kind === "question") return activity.status !== "running";
+  if (activity.kind === "reasoning" || activity.kind === "review") return true;
   if (activity.kind === "files") return displayPreferences.files;
   if (activity.kind === "collaboration") return displayPreferences.collaboration;
   if (activity.kind === "image") return displayPreferences.images;
@@ -2781,7 +2783,57 @@ function refreshExpandedDetailOnTerminal(previous, activity) {
   loadActivityDetail(activity, true);
 }
 
+// A completed DSH question reads as conversation, not as a tool activity: the muted question with the
+// recorded answer beneath it, one block per pair. The detail keeps the gateway's shape (question lines,
+// then an `Answer: …` line), so multiple pairs and a secret `Answer: Hidden` render unchanged.
+const ANSWER_LINE_PREFIX = "Answer: ";
+
+function questionPairs(detail) {
+  const pairs = [];
+  let question = [];
+  for (const line of String(detail || "").split("\n")) {
+    if (!line.startsWith(ANSWER_LINE_PREFIX)) {
+      question.push(line);
+      continue;
+    }
+    pairs.push({ question: question.join("\n").trim(), answer: line.slice(ANSWER_LINE_PREFIX.length) });
+    question = [];
+  }
+  const trailing = question.join("\n").trim();
+  if (trailing) pairs.push({ question: trailing, answer: "" });
+  return pairs;
+}
+
+function questionRecordNode(activity) {
+  const article = document.createElement("article");
+  article.className = "question-record";
+  article.dataset.activityId = activity.id;
+  for (const pair of questionPairs(activity.detail)) {
+    const block = document.createElement("div");
+    block.className = "question-record-pair";
+    const question = document.createElement("p");
+    question.className = "question-record-question";
+    question.textContent = pair.question;
+    block.append(question);
+    if (pair.answer) {
+      const answer = document.createElement("p");
+      answer.className = "question-record-answer";
+      const label = document.createElement("span");
+      label.className = "question-record-answer-label";
+      label.textContent = "Answer:";
+      const value = document.createElement("span");
+      value.className = "question-record-answer-value";
+      value.textContent = pair.answer;
+      answer.append(label, " ", value);
+      block.append(answer);
+    }
+    article.append(block);
+  }
+  return article;
+}
+
 function activityNode(activity) {
+  if (activity.kind === "question") return questionRecordNode(activity);
   const article = document.createElement("article");
   const detailState = activityDetails.get(activity.id);
   article.className = `timeline-activity ${activity.kind} ${activity.status} ${activity.expandable ? "expandable" : ""} ${detailState?.expanded ? "expanded" : ""}`;

@@ -358,7 +358,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
 }
 .conversation { -webkit-user-select: text; user-select: text; }
-.message-body, .activity-label, .activity-detail, .activity-rich-detail { -webkit-user-select: text; user-select: text; }
+.message-body, .activity-label, .activity-detail, .activity-rich-detail, .question-record-question, .question-record-answer { -webkit-user-select: text; user-select: text; }
 .message-meta, .activity-heading, .activity-status, .activity-kind, .async-options { -webkit-user-select: none; user-select: none; }
 .conversation button, .conversation button *, .conversation [role="button"] { -webkit-user-select: none; user-select: none; }
 .empty-state { margin: 18px 0; color: var(--subtle); font-size: var(--text-label); text-align: center; }
@@ -373,6 +373,12 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .question-reply-reference { margin-bottom: 6px; color: var(--muted); font-size: var(--text-secondary); line-height: 1.35; }
 .question-reply-question { margin: 0; overflow-wrap: anywhere; }
 .question-reply-question + .question-reply-question { margin-top: 4px; }
+/* A resolved DSH question is conversation, not a tool activity: muted question, plain answer, no chrome. */
+.question-record { width: min(100%, 760px); margin: 0 auto 16px; display: grid; gap: 10px; }
+.question-record-pair { display: grid; gap: 2px; }
+.question-record-question { margin: 0; color: var(--muted); font-size: var(--text-secondary); line-height: 1.35; overflow-wrap: anywhere; white-space: pre-wrap; }
+.question-record-answer { margin: 0; color: var(--text); font-size: var(--text-ui); line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
+.question-record-answer-label { color: var(--subtle); }
 .message.streaming .message-body::after { content: ""; display: inline-block; width: 5px; height: 1em; margin-left: 3px; background: var(--accent); vertical-align: -.15em; animation: blink 1s infinite; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
