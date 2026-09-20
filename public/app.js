@@ -213,10 +213,11 @@ function renderMarkdownInto(element, value, message = null) {
     table.replaceWith(scroll);
     scroll.append(table);
   }
-  // Only conversation messages carry the Copy action; runtime Command/Output and activity detail
-  // cards never do. The copied text is the original code without the fence, wrapping or button
-  // label, and a control is never nested inside another button.
-  if (element.classList.contains("message-body")) {
+  // Only assistant-authored conversation messages carry the Copy action. User messages, runtime
+  // Command/Output and activity detail cards, and question surfaces never do. The copied text is the
+  // original code without the fence, wrapping or button label, and a control is never nested inside
+  // another button.
+  if (element.classList.contains("message-body") && message?.role === "assistant") {
     for (const pre of element.querySelectorAll("pre")) if (!pre.closest("button")) wrapCodeBlock(pre);
   }
   for (const img of element.querySelectorAll("img")) enableImageViewer(img);

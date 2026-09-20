@@ -102,13 +102,13 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
 
 ## Copy control
 
-Fenced code blocks in conversation messages — assistant output and user instructions — carry exactly
-one Copy control. It is a 28px outline icon button with the conventional Copy glyph at 18px, optically
-centred, `aria-label`/`title` "Copy code", and a brief "Copied" or "Copy failed" state that resets
-after about 1.6 s. The button sits in a reserved right gutter so it never covers code, and the copied
-text is the original fenced code without the fence, wrapping or button. Command/Output and every
-other activity detail card, structured question titles and options, and any non-message Markdown never
-carry a Copy control.
+Fenced code blocks in assistant-authored conversation messages carry exactly one Copy control. It is a
+28px outline icon button with the conventional Copy glyph at 18px, optically centred,
+`aria-label`/`title` "Copy code", and a brief "Copied" or "Copy failed" state that resets after about
+1.6 s. The button sits in a reserved right gutter so it never covers code, and the copied text is the
+original fenced code without the fence, wrapping or button. User messages, Command/Output and every
+other activity detail card, structured question titles and options, and any non-assistant Markdown
+never carry a Copy control.
 
 ## States
 
@@ -258,7 +258,7 @@ categories.
   1.55rem centred digits with a reserved reveal control. Every other ordinary single-line text input
   uses 40px.
 - The image viewer and its close button stay dark in both themes, with their own focus/hover colours.
-- The conversation Copy control is a 28px outline icon button, smaller than the 36px `--icon-size`,
+- The assistant-message Copy control is a 28px outline icon button, smaller than the 36px `--icon-size`,
   so its reserved gutter can stay narrow on phones without covering code. It uses the same stroke,
   caps and hover language as every other icon button.
 - Markdown code blocks, command/output detail blocks and file diffs soft-wrap at every viewport
