@@ -1512,7 +1512,8 @@ function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string;
   const answers = dshQuestionAnswers(item);
   const lines: string[] = [];
   for (const question of questions) {
-    const text = compact(question?.question, 600) || compact(question?.header, 160);
+    // The full question stays in the record; the overall boundedDetail cap is the only limit.
+    const text = String(question?.question ?? "").trim() || compact(question?.header, 160);
     if (!text) continue;
     lines.push(text);
     if (phase === "done") {

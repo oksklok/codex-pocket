@@ -1792,9 +1792,9 @@ function inputDraft(requestId, questionId) {
 }
 
 // One question's draft is a single value: { type: "option", optionIndex } or { type: "other", value }
-// for a single choice, { type: "options", optionIndices, value } for a multi-select (value carries the
-// optional Other text), and { type: "text", value } for free text. This turns a complete draft into
-// the submission payload, or null while the answer is still incomplete.
+// for a single choice, { type: "options", optionIndices, other, value } for a multi-select (other is
+// tracked apart from the text, which only counts while Other is selected), and { type: "text", value }
+// for free text. This turns a complete draft into the submission payload, or null while it is incomplete.
 function structuredInputAnswer(question, value) {
   if (Array.isArray(question.options)) {
     if (question.multiSelect) {
@@ -1802,9 +1802,13 @@ function structuredInputAnswer(question, value) {
       const optionIndices = [...new Set(Array.isArray(value.optionIndices) ? value.optionIndices : [])]
         .filter((index) => Number.isInteger(index) && index >= 0 && index < question.options.length)
         .sort((a, b) => a - b);
-      const other = question.isOther ? String(value.value || "").trim() : "";
+      // Other selected but still empty is incomplete even when normal options are chosen; unchecked
+      // Other never counts, so its text is ignored.
+      const other = Boolean(question.isOther && value.other === true);
+      const text = other ? String(value.value || "").trim() : "";
+      if (other && !text) return null;
       if (!optionIndices.length && !other) return null;
-      return { questionId: question.id, type: "options", optionIndices, ...(other ? { value: String(value.value).replace(/\r\n/g, "\n") } : {}) };
+      return { questionId: question.id, type: "options", optionIndices, ...(text ? { value: String(value.value).replace(/\r\n/g, "\n") } : {}) };
     }
     if (value?.type === "option" && Number.isInteger(value.optionIndex)
       && value.optionIndex >= 0 && value.optionIndex < question.options.length) {
@@ -1887,7 +1891,7 @@ function renderStructuredInput(pending) {
           if (multi) {
             const next = new Set(chosen());
             if (input.checked) next.add(optionIndex); else next.delete(optionIndex);
-            draft.set({ type: "options", optionIndices: [...next].sort((a, b) => a - b), value: draft.get()?.value || "" });
+            draft.set({ type: "options", optionIndices: [...next].sort((a, b) => a - b), other: draft.get()?.other === true, value: draft.get()?.value || "" });
           } else if (input.checked) {
             draft.set({ type: "option", optionIndex });
           }
@@ -1912,7 +1916,7 @@ function renderStructuredInput(pending) {
         toggle.type = multi ? "checkbox" : "radio";
         toggle.name = `input-${questionIndex}`;
         toggle.checked = multi
-          ? Boolean(draft.get()?.type === "options" && String(draft.get()?.value || "").trim())
+          ? Boolean(draft.get()?.type === "options" && draft.get()?.other === true)
           : draft.get()?.type === "other";
         toggle.disabled = requestDisabled;
         const copy = document.createElement("span");
@@ -1929,14 +1933,14 @@ function renderStructuredInput(pending) {
         other.disabled = requestDisabled;
         const selectOther = () => {
           toggle.checked = true;
-          if (multi) draft.set({ type: "options", optionIndices: chosen(), value: other.value });
+          if (multi) draft.set({ type: "options", optionIndices: chosen(), other: true, value: other.value });
           else draft.set({ type: "other", value: other.value });
           updateSubmit();
         };
         toggle.addEventListener("change", () => {
           if (multi && !toggle.checked) {
             other.value = "";
-            draft.set({ type: "options", optionIndices: chosen(), value: "" });
+            draft.set({ type: "options", optionIndices: chosen(), other: false, value: "" });
             updateSubmit();
             return;
           }

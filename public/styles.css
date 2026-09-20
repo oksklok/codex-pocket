@@ -558,8 +558,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .input-choices { display: grid; gap: 5px; }
 /* Option rows use the same flat filled-card treatment as the async option buttons. */
 .input-choice { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 7px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--text); cursor: pointer; }
-.input-choice:has(> input[type="radio"]:checked) { border-color: var(--blue); }
-.input-choice > input[type="radio"] { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent-strong); }
+.input-choice:has(> :is(input[type="radio"], input[type="checkbox"]):checked) { border-color: var(--blue); }
+.input-choice > :is(input[type="radio"], input[type="checkbox"]) { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--accent-strong); }
 .input-choice > span { min-width: 0; display: grid; gap: 1px; }
 .input-choice strong { font-size: var(--text-label); line-height: 1.35; overflow-wrap: anywhere; }
 .input-choice small { color: var(--muted); font-size: var(--text-secondary); line-height: 1.35; overflow-wrap: anywhere; }
