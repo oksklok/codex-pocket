@@ -403,7 +403,7 @@ function toggleComposer({ refocus = true } = {}) {
   const { selectionStart, selectionEnd, selectionDirection, scrollTop } = textarea;
   composerExpanded = !composerExpanded;
   elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
-  elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Exit Fullscreen Composer" : "Expand Composer");
+  elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Collapse Composer" : "Expand Composer");
   elements.expandComposer.setAttribute("aria-expanded", String(composerExpanded));
   fitExpandedComposer();
   resizeComposer();
@@ -729,19 +729,16 @@ function historyErrorMessage(error) {
   return "Could not load history. Try again.";
 }
 
-// Replace raw RPC/method failures with concise, actionable copy. Only clearly Pocket-authored,
-// sentence-like messages pass through; any other technical detail becomes the caller's fallback and
-// stays in the gateway logs.
+// Map the few known transport/RPC failures to concise, actionable copy; every other unknown runtime
+// error becomes the caller's fallback so raw technical text never reaches the UI. Callsites that
+// surface intentional Pocket-authored copy do so directly instead of relying on this helper.
 function uiErrorMessage(error, fallback = "Something went wrong. Try again.") {
   const message = String(error?.message || error || "").trim();
   if (!message) return fallback;
   if (/is not supported yet|-32601|method[^\n]*not found|unsupported[^\n]*method/i.test(message)) return "This action isn't supported by the connected runtime.";
   if (/timed out|timeout/i.test(message)) return "The runtime didn't respond in time. Try again.";
   if (/disconnected|connection closed|connection lost|EPIPE|ECONNRESET|socket/i.test(message)) return "The connection was lost. Check the runtime and try again.";
-  // A single capitalised sentence of plain words: Pocket copy. Code punctuation, newlines, path or
-  // error markers, and numeric codes are runtime detail, so they fall back instead.
-  const pocketCopy = /^[A-Z][A-Za-z0-9 .,!?'’"…-]*$/.test(message) && message.length <= 160 && !/\d{3,}/.test(message);
-  return pocketCopy ? message : fallback;
+  return fallback;
 }
 
 function formatElapsed(milliseconds) {
@@ -1922,7 +1919,15 @@ function renderGoal() {
   const goal = state?.goal;
   if (goalClearDialog.open && !goalClearTargetMatches()) goalClearDialog.close();
   goalStrip.hidden = !goal;
-  if (!goal) { goalClock = null; return; }
+  const objective = document.querySelector("#goal-objective");
+  if (!goal) {
+    goalClock = null;
+    // Forget the last objective so an identical text in a later goal still starts collapsed.
+    delete objective.dataset.objective;
+    objective.classList.remove("wrapped");
+    objective.setAttribute("aria-expanded", "false");
+    return;
+  }
   const pursuing = goal.status === "active" && goal.activation !== "disarmed";
   const resumable = goal.status === "paused" || goal.status === "blocked"
     || (goal.status === "active" && goal.activation === "disarmed");
@@ -1931,7 +1936,6 @@ function renderGoal() {
   renderGoalTime();
   const labels = { active: "Pursuing Goal", paused: "Goal Paused", blocked: "Goal Blocked", usageLimited: "Goal Usage Limited", budgetLimited: "Goal Budget Limited", complete: "Goal Complete" };
   document.querySelector("#goal-status").textContent = labels[goal.status] || `Goal ${goal.status}`;
-  const objective = document.querySelector("#goal-objective");
   // A newly shown objective starts truncated; the click toggle owns the wrapped state after that.
   if (objective.dataset.objective !== goal.objective) {
     objective.dataset.objective = goal.objective;
@@ -2142,7 +2146,8 @@ async function addFiles(files) {
       if (taskKey) rememberComposerDraft(composerDrafts, taskKey, { text: composerDrafts.get(taskKey)?.text || "", images: nextImages, files: nextFiles });
     } else { selectedImages = nextImages; selectedFiles = nextFiles; }
   } catch (error) {
-    composerError = uiErrorMessage(error);
+    // Every throw in this flow is intentional Pocket copy: count/size guidance or an unreadable file.
+    composerError = error instanceof Error ? error.message : String(error);
   } finally {
     readingAttachments = false;
     elements.imagePicker.value = "";
@@ -2258,32 +2263,13 @@ function messageNode(message, displayCreatedAt) {
   renderMarkdownInto(body, message.text, message);
   // Keep the async question an answer belongs to visible without reverting to synthetic reply text.
   if (message.role === "user" && message.questionReplies?.length) {
+    // Quiet secondary context: the full question, wrapped, with no jump link or truncation. The
+    // user's answer stays the message body below.
     const reference = document.createElement("div");
     reference.className = "question-reply-reference";
     for (const reply of message.questionReplies) {
-      const link = document.createElement("a");
       const title = String(reply.question || "Question").replace(/\s+/gu, " ").trim();
-      link.textContent = `In response to: ${title.length > 100 ? `${title.slice(0, 99)}…` : title}`;
-      link.title = reply.question || "Question";
-      try {
-        const identity = JSON.parse(reply.questionItemId.replace(/\\"/g, '"'));
-        if (Array.isArray(identity) && identity[0] === "request_user_input_async" && Number.isInteger(identity[2])) {
-          link.href = `#${asyncQuestionAnchor(identity[1], identity[2])}`;
-        }
-      } catch { /* Older replies may carry only the message id. */ }
-      if (!link.hasAttribute("href")) link.href = `#${asyncQuestionAnchor(reply.questionItemId, 0)}`;
-      link.addEventListener("click", async event => {
-        event.preventDefault();
-        shouldFollowConversation = false;
-        const anchor = link.getAttribute("href").slice(1);
-        while (!document.getElementById(anchor) && nextCursor && !historyRequest) {
-          const cursor = nextCursor;
-          await loadHistory(cursor);
-          if (nextCursor === cursor) break;
-        }
-        document.getElementById(anchor)?.scrollIntoView({ block: "center" });
-      });
-      reference.append(link, document.createElement("br"));
+      reference.append(Object.assign(document.createElement("p"), { className: "question-reply-question", textContent: `In response to: ${title}` }));
     }
     body.prepend(reference);
   }
@@ -3668,7 +3654,11 @@ async function editQueuedMessage() {
     const response = await apiFetch(url, { method: "DELETE" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not withdraw the queued message");
-    if (result.cancelled !== true) throw new Error(queuedEditFailure(result.reason));
+    if (result.cancelled !== true) {
+      // The refusal reason is deliberate Pocket copy, so surface it directly, not via the fallback.
+      if (sameTask()) composerError = queuedEditFailure(result.reason);
+      return;
+    }
     const withdrawn = {
       text: queued.text || "",
       images: [...(queued.images || [])],

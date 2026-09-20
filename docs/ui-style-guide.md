@@ -15,7 +15,7 @@ One small rem scale, referenced by token everywhere except the two hero headings
 
 | Role | Token | Size | Typical use |
 | --- | --- | --- | --- |
-| Heading | `--text-heading` | 14px (`.875rem`) | message/transcript prose and the surfaces that compose it (main and fullscreen composer, async free-text answer); settings section titles |
+| Heading | `--text-heading` | 14px (`.875rem`) | message/transcript prose and the surfaces that compose it (main and expanded composer, async free-text answer); settings section titles |
 | UI | `--text-ui` | 13px (`.8125rem`) | controls, rows, ordinary form fields and pickers (Tasks search, Settings, New Task, Machine Details, Project Folder, Task Details selects, buttons) |
 | Label | `--text-label` | 12px (`.75rem`) | most labels, secondary buttons, list rows |
 | Secondary | `--text-secondary` | 11px (`.6875rem`) | status lines, hints, meta |
@@ -266,7 +266,7 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 ## Accessibility and state conventions
 
 - `aria-expanded` on every disclosure toggle: Tasks, Task Details, machine groups, activity rows,
-  the composer fullscreen toggle and the free-text "Other" answer.
+  the composer expand toggle and the free-text "Other" answer.
 - `aria-current="true"` marks the selected task row; `aria-pressed` marks the PIN reveal.
 - Async page status uses `aria-live="polite"` (`#composer-status`, `#settings-status`,
   `#login-error`, history/attention banners). Dialog and machine errors use `role="alert"`.

@@ -371,6 +371,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .message.user .message-meta { gap: 16px; }
 .message.user .message-body { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 11px; background: var(--surface-strong); }
 .question-reply-reference { margin-bottom: 6px; color: var(--muted); font-size: var(--text-secondary); line-height: 1.35; }
+.question-reply-question { margin: 0; overflow-wrap: anywhere; }
+.question-reply-question + .question-reply-question { margin-top: 4px; }
 .message.streaming .message-body::after { content: ""; display: inline-block; width: 5px; height: 1em; margin-left: 3px; background: var(--accent); vertical-align: -.15em; animation: blink 1s infinite; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
@@ -518,6 +520,11 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .expanded-composer textarea { min-height: 0; max-height: none; height: 100%; padding: 12px; border: 0; border-radius: 0; background: transparent; outline: none; }
 .expanded-composer .composer-actions { justify-self: end; grid-row: 2; }
 .expanded-composer .form-status { grid-row: 3; }
+/* Wide desktop: the expanded composer fills only the chat panel below the top bar, so both sidebars
+   stay visible and the composer track matches the normal composer exactly. */
+@media (min-width: 1100px) {
+  .chat-panel > .expanded-composer { position: absolute; inset: 0; height: auto; grid-row: 1 / -1; padding-inline: max(12px, calc((100% - 1050px) / 2)); }
+}
 .settings-card .enter-preference { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .settings-card .enter-preference input { width: 18px; height: 18px; }
 .form-status { grid-column: 1 / -1; margin: 0; color: var(--subtle); font-size: var(--text-secondary); line-height: 1.25; }
