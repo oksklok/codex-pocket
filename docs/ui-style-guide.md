@@ -37,6 +37,9 @@ One small rem scale, referenced by token everywhere except the two hero headings
 - `--icon-size: 36px` is the square hit target for icon buttons; the glyph inside is 18px.
 - `--sidebar-header-height: 56px` for Tasks/Task Details headers; the topbar is `min-height: 58px`.
 - `--control-inset: 12px` is the standard horizontal text inset for fields and selects.
+- Fields take a sensible width instead of stretching to the container: the Settings Network row is
+  `minmax(0, 260px) 110px` (Bind Address, then a compact Port), and the desktop Settings card is
+  500px. Full-bleed mobile keeps a single full-width column.
 - Standalone `.secondary-button` (34px) and `.primary-button`/`.danger-button` (36px) keep smaller
   defaults and are normalized to 40px only inside the action rows above.
 - `--radius: 12px` for panels, cards and dialogs; `--control-radius: 8px` for controls and buttons.
@@ -79,6 +82,9 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
 - The two mirrored sidebar glyphs are the one place fill is meaningful: the pane is unfilled when
   the sidebar is closed and filled via `:aria-expanded` / `[aria-expanded="true"]` when open.
 - Icon-only buttons always carry `aria-label` and usually a matching `title`.
+- A glyph is optically centred on its own ink, not just its viewBox: the conventional Copy mark is
+  drawn so its combined bounds centre on the 24-unit box's middle, and the check that replaces it is
+  centred the same way.
 
 ## Buttons
 
@@ -93,6 +99,16 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
 
 Quieter variants exist inside the transcript (`approval-approve`, `approval-deny`,
 `async-answer button`) and keep the same accent/danger/secondary language at a smaller size.
+
+## Copy control
+
+Fenced code blocks in conversation messages — assistant output and user instructions — carry exactly
+one Copy control. It is a 28px outline icon button with the conventional Copy glyph at 18px, optically
+centred, `aria-label`/`title` "Copy code", and a brief "Copied" or "Copy failed" state that resets
+after about 1.6 s. The button sits in a reserved right gutter so it never covers code, and the copied
+text is the original fenced code without the fence, wrapping or button. Command/Output and every
+other activity detail card, structured question titles and options, and any non-message Markdown never
+carry a Copy control.
 
 ## States
 
@@ -111,8 +127,11 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
   `--selected-bg`; checkbox/radio rows do the same as a group. Text fields deliberately have no
   focus cue — the caret and selection are the cue. `forced-colors` restores the system outline.
 - Active: only task-menu items define `:active` (`--selected-bg`).
-- Busy: controls are disabled and the label moves to a gerund with an ellipsis (`Saving…`,
-  `Sending…`, `Checking…`, `Opening…`, `Restarting…`), or a status line reports progress.
+- Busy: controls are disabled in place and keep their normal label. The UI never swaps in transient
+  prose (`Saving…`, `Checking…`, `Opening…`, `Loading…`); layout stays stable across a fast
+  operation.
+- Persistent status is always shown and is never treated as busy chrome: Working / Waiting / Failed /
+  Offline, validation, errors, warnings, confirmations and "Restart required".
 - `prefers-reduced-motion: reduce` disables the drawer/chevron transitions and the spin/pulse
   animations.
 
@@ -141,8 +160,9 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
   (`#task-dialog`), the Project Folder editor, queued-message Edit/Discard, and Clear goal.
 - Escape is stopped from propagating out of a dialog, and `cancel` is prevented while a request is
   busy so a mutation can't be abandoned mid-flight.
-- Settings is a full-screen `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a 600px
-  card and a sticky action footer.
+- Settings is a full-screen `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a 500px
+  desktop card (`width: min(100%, 500px)`) and a sticky action footer; at ≤520px it becomes
+  full-bleed.
 
 ## Copy and capitalization
 
@@ -174,19 +194,31 @@ status paragraph is hidden. Copy rules already settled on:
 - Do not surface implementation limits unless the user needs to know them. The 180-character name
   and 12000-character message limits are never advertised; attachment size caps appear only when an
   attachment violates them; token counts live in the context meter's tooltip, not the chrome.
-- Busy/loading copy is a gerund plus an ellipsis, never a bare noun.
+- Transient operations add no copy: a disabled control with its unchanged label is the whole state.
+  A status line is reserved for a persistent state, an error, or a restart/confirmation notice.
 - Errors say what happened and what to do next; they do not blame the user or expose internals.
 
 ## Empty and no-task states
 
 - Transcript with a task but no history: centred, `--subtle`, `--text-label`
   ("No conversation history yet."). No task selected: "Select a task or create one."
+- While history is loading the reserved `.empty-state` space stays empty; only a successful empty
+  read may claim "No conversation history yet."
 - Empty panes do not render a shared placeholder: the Plan panel hides itself when it has no items,
   and the transcript's no-history / no-task message is the centred `.empty-state`.
 - Sidebar list empties are left-aligned at `--subtle` `--text-secondary` inside the list padding
   ("No saved tasks", "No archived tasks", "No matching tasks").
 - With no task selected, Task Details hides metadata, Runtime, Plan and Display and shows a single
   plain message; the header phase row is hidden too.
+
+## Display categories
+
+Task Details → Display exposes exactly seven shared filters, in this order: Command, Tool, Search,
+File Changes, Subagents, Image, Context Compaction. Each filters its own activity kind, and a control
+is hidden only when the runtime positively disables the feature and the task has no activity of that
+kind; unknown capability never hides a control. Reasoning and Review stay parsed for compatibility
+but are not user-facing filters and always render. "Show All"/"Hide All" act only on the visible
+categories.
 
 ## Mobile vs desktop
 
@@ -226,9 +258,9 @@ status paragraph is hidden. Copy rules already settled on:
   1.55rem centred digits with a reserved reveal control. Every other ordinary single-line text input
   uses 40px.
 - The image viewer and its close button stay dark in both themes, with their own focus/hover colours.
-- The transcript's code/command Copy control is a 28px outline icon button, smaller than the 36px
-  `--icon-size`, so its reserved gutter can stay narrow on phones without covering code. It uses the
-  same stroke, caps and hover language as every other icon button.
+- The conversation Copy control is a 28px outline icon button, smaller than the 36px `--icon-size`,
+  so its reserved gutter can stay narrow on phones without covering code. It uses the same stroke,
+  caps and hover language as every other icon button.
 - Markdown code blocks, command/output detail blocks and file diffs soft-wrap at every viewport
   (`white-space: pre-wrap` with `overflow-wrap: anywhere`) instead of scrolling horizontally.
   Indentation and real line breaks are preserved, and the copied text is taken from the DOM, so it is

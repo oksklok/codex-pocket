@@ -93,7 +93,7 @@
           </section>
         <section class="chat-panel" aria-label="Codex conversation">
           <div class="history-status" id="history-status" aria-live="polite" hidden></div>
-          <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state">Loading recent messages…</p></div>
+          <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state"></p></div>
           <div class="composer-zone">
             <button class="jump-latest" id="jump-latest" type="button" aria-label="Jump to Latest" title="Jump to Latest" hidden>
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></svg>
@@ -165,14 +165,12 @@
             </section>
             <section class="secondary-panel display-panel" aria-labelledby="display-title">
               <div class="panel-heading display-heading"><h3 id="display-title">Display</h3><div class="display-actions"><button type="button" class="text-button" id="display-show-all">Show All</button><button type="button" class="text-button" id="display-hide-all">Hide All</button></div></div>
-              <label class="display-option"><input id="display-reasoning" type="checkbox" checked><span>Reasoning</span></label>
               <label class="display-option"><input id="display-command" type="checkbox" checked><span>Command</span></label>
               <label class="display-option"><input id="display-tool" type="checkbox" checked><span>Tool</span></label>
               <label class="display-option"><input id="display-search" type="checkbox" checked><span>Search</span></label>
               <label class="display-option"><input id="display-files" type="checkbox" checked><span>File Changes</span></label>
               <label class="display-option"><input id="display-collaboration" type="checkbox" checked><span>Subagents</span></label>
               <label class="display-option"><input id="display-images" type="checkbox" checked><span>Image</span></label>
-              <label class="display-option"><input id="display-review" type="checkbox" checked><span>Review</span></label>
               <label class="display-option"><input id="display-compaction" type="checkbox" checked><span>Context Compaction</span></label>
             </section>
           </div>

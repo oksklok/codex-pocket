@@ -71,10 +71,8 @@ const elements = {
   displayCommands: document.querySelector("#display-command"),
   displayTool: document.querySelector("#display-tool"),
   displaySearch: document.querySelector("#display-search"),
-  displayReview: document.querySelector("#display-review"),
   displayShowAll: document.querySelector("#display-show-all"),
   displayHideAll: document.querySelector("#display-hide-all"),
-  displayReasoning: document.querySelector("#display-reasoning"),
   displayCollaboration: document.querySelector("#display-collaboration"),
   displayImages: document.querySelector("#display-images"),
   displayCompaction: document.querySelector("#display-compaction"),
@@ -215,9 +213,12 @@ function renderMarkdownInto(element, value, message = null) {
     table.replaceWith(scroll);
     scroll.append(table);
   }
-  // Code blocks get their own Copy action; the copied text is the original code without the
-  // fence, wrapping or button label. Never nest a control inside another button.
-  for (const pre of element.querySelectorAll("pre")) if (!pre.closest("button")) wrapCodeBlock(pre);
+  // Only conversation messages carry the Copy action; runtime Command/Output and activity detail
+  // cards never do. The copied text is the original code without the fence, wrapping or button
+  // label, and a control is never nested inside another button.
+  if (element.classList.contains("message-body")) {
+    for (const pre of element.querySelectorAll("pre")) if (!pre.closest("button")) wrapCodeBlock(pre);
+  }
   for (const img of element.querySelectorAll("img")) enableImageViewer(img);
 }
 
@@ -243,10 +244,10 @@ async function writeClipboard(text) {
   }
 }
 
-// One shared Copy control for code and command/output blocks. The outline glyph keeps the control
-// compact; the accessible label carries the action and reports a brief success or failure.
-const COPY_GLYPH = '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-const COPIED_GLYPH = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></svg>';
+// One shared Copy control for conversation code blocks. The conventional copy glyph is drawn inside
+// a 24-unit box whose ink is centred on 12,12, so it stays optically centred in the button.
+const COPY_GLYPH = '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+const COPIED_GLYPH = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>';
 function copyButton(getText, label = "Copy code") {
   const button = document.createElement("button");
   button.type = "button";
@@ -469,13 +470,16 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => app
 
 function loadDisplayPreferences() {
   const defaults = {
-    command: true, tool: true, search: true, review: true, files: true, reasoning: true, collaboration: true, images: true, compaction: true,
+    command: true, tool: true, search: true, files: true, collaboration: true, images: true, compaction: true,
   };
   try {
     const saved = JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) || "{}") || {};
-    for (const key of ["command", "tool", "search", "review"]) {
+    for (const key of ["command", "tool", "search"]) {
       if (!Object.hasOwn(saved, key)) saved[key] = saved.commands ?? true;
     }
+    // Reasoning and Review are no longer user-facing filters; they always render.
+    delete saved.reasoning;
+    delete saved.review;
     return { ...defaults, ...saved };
   } catch {
     return defaults;
@@ -487,15 +491,15 @@ function saveDisplayPreferences() {
 }
 
 function activityVisible(activity) {
+  // Reasoning and Review are parsed and rendered but are not part of the Display controls.
+  if (activity.kind === "reasoning" || activity.kind === "review") return true;
   if (activity.kind === "files") return displayPreferences.files;
-  if (activity.kind === "reasoning") return displayPreferences.reasoning;
   if (activity.kind === "collaboration") return displayPreferences.collaboration;
   if (activity.kind === "image") return displayPreferences.images;
   if (activity.kind === "compaction") return displayPreferences.compaction;
   if (activity.kind === "command") return displayPreferences.command;
   if (activity.kind === "tool") return displayPreferences.tool;
   if (activity.kind === "search") return displayPreferences.search;
-  if (activity.kind === "review") return displayPreferences.review;
   return false;
 }
 
@@ -999,13 +1003,8 @@ function renderDestinationSwitcher(force = false) {
   syncMachineFooterVisibility();
   const query = elements.destinationSearch.value.trim().toLowerCase();
   const catalogMachines = Array.isArray(navigationCatalog?.machines) ? navigationCatalog.machines : [];
-  if (navigationRequest && !catalogMachines.length) {
-    const loading = document.createElement("p");
-    loading.className = "destination-empty";
-    loading.textContent = archived ? "Loading archived tasks…" : "Loading tasks…";
-    elements.destinationList.append(loading);
-    return;
-  }
+  // While the first catalog is in flight the list stays empty rather than flashing busy prose.
+  if (navigationRequest && !catalogMachines.length) return;
   // Reorder mode shows every machine name and nothing else; search, Archived and expansion wait.
   if (machineReorderMode) {
     renderMachineReorderList(catalogMachines);
@@ -1223,10 +1222,8 @@ function renderDestinationSwitcher(force = false) {
         if (project && project !== "—") label.append(Object.assign(document.createElement("small"), { className: "task-project", textContent: project }));
       }
       const status = document.createElement("span");
-      const statusText = destinationSelection?.machineId === member.id && destinationSelection?.threadId === task.id
-        ? "Opening…"
-        : taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id ? `${taskActionTarget.action === "rename" ? "Renaming" : taskActionTarget.action === "delete" ? "Deleting" : taskActionTarget.action === "archive" ? "Archiving" : "Unarchiving"}…`
-        : destinationTaskStatus(member, task, state, taskTerminalResults.get(draftKey(member.id, task.id)));
+      // A row always shows its persistent status; opening and task actions only disable the row.
+      const statusText = destinationTaskStatus(member, task, state, taskTerminalResults.get(draftKey(member.id, task.id)));
       status.className = taskStatusClassName(statusText);
       status.textContent = statusText;
       row.append(check, label, status);
@@ -1620,16 +1617,15 @@ function renderPlan() {
   }
 }
 
-// Each Display option filters its own activity kind; the key matches the saved preference name.
+// The seven shared Display categories; the key matches the saved preference name.
 const DISPLAY_ACTIVITY_KINDS = [
-  ["reasoning", "reasoning"], ["command", "command"], ["tool", "tool"], ["search", "search"],
-  ["files", "files"], ["collaboration", "collaboration"], ["images", "image"], ["review", "review"],
-  ["compaction", "compaction"],
+  ["command", "command"], ["tool", "tool"], ["search", "search"], ["files", "files"],
+  ["collaboration", "collaboration"], ["images", "image"], ["compaction", "compaction"],
 ];
 const DISPLAY_CONTROLS = {
-  reasoning: elements.displayReasoning, command: elements.displayCommands, tool: elements.displayTool,
-  search: elements.displaySearch, files: elements.displayFiles, collaboration: elements.displayCollaboration,
-  images: elements.displayImages, review: elements.displayReview, compaction: elements.displayCompaction,
+  command: elements.displayCommands, tool: elements.displayTool, search: elements.displaySearch,
+  files: elements.displayFiles, collaboration: elements.displayCollaboration,
+  images: elements.displayImages, compaction: elements.displayCompaction,
 };
 
 // Historical or live activity for a kind means its filter still matters, even if the runtime
@@ -1655,8 +1651,6 @@ function renderDisplayControls() {
   elements.displayCommands.checked = preferences.command;
   elements.displayTool.checked = preferences.tool;
   elements.displaySearch.checked = preferences.search;
-  elements.displayReview.checked = preferences.review;
-  elements.displayReasoning.checked = preferences.reasoning;
   elements.displayCollaboration.checked = preferences.collaboration;
   elements.displayImages.checked = preferences.images;
   elements.displayCompaction.checked = preferences.compaction;
@@ -1692,7 +1686,7 @@ function renderQueue() {
     elements.sendQueue.disabled = queued?.deliveryUnknown || queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue;
     elements.sendQueue.classList.toggle("icon-button", turnActive);
     elements.sendQueue.classList.toggle("text-button", !turnActive);
-    const actionLabel = turnActive ? "Steer Now" : sendingQueuedMessage ? "Sending…" : "Send";
+    const actionLabel = turnActive ? "Steer Now" : "Send";
     elements.sendQueue.setAttribute("aria-label", actionLabel);
     elements.sendQueue.title = actionLabel;
     elements.sendQueue.innerHTML = turnActive
@@ -1831,7 +1825,7 @@ function renderStructuredInput(pending) {
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.className = "approval-approve";
-  submit.textContent = submittingInputRequestId === pending.id || pending.resolving ? "Sending…" : "Answer";
+  submit.textContent = "Answer";
   submit.disabled = requestDisabled;
   actions.append(submit);
   form.append(actions);
@@ -1900,7 +1894,7 @@ function renderAttention() {
   const approve = document.createElement("button");
   approve.type = "button";
   approve.className = "approval-approve";
-  approve.textContent = pending.resolving ? "Sending…" : "Approve";
+  approve.textContent = "Approve";
   approve.disabled = resolvingApproval || pending.resolving || Boolean(state?.stoppingTurnId);
   approve.addEventListener("click", () => resolveApproval(pending.id, "approve"));
   actions.append(deny, approve);
@@ -2004,7 +1998,7 @@ function renderComposer() {
   elements.attachImage.disabled = elements.messageText.disabled || readingAttachments || Boolean(state?.queuedMessage) || attachmentDeliveryUnknown;
   if (turnActive && !hasText) {
     elements.sendMessage.dataset.action = "stop";
-    elements.sendMessage.textContent = stopping ? "Stopping…" : "Stop";
+    elements.sendMessage.textContent = "Stop";
     elements.sendMessage.classList.add("stop-action");
     elements.sendMessage.disabled = stopping;
   } else {
@@ -2415,7 +2409,7 @@ function asyncQuestionNode(message, question, index) {
   input.addEventListener("input", () => { draft.text = input.value; draft.error = ""; });
   const send = document.createElement("button");
   send.type = "submit";
-  send.textContent = draft.sending ? "Sending…" : "Answer";
+  send.textContent = "Answer";
   send.disabled = disabled;
   const freeText = document.createElement("div");
   freeText.className = "async-free-text";
@@ -2467,7 +2461,6 @@ async function submitAsyncAnswer(message, index, draft) {
   }
 }
 
-const COPYABLE_DETAIL_LABELS = new Set(["Command", "Output"]);
 function detailField(label, value, className = "detail-code") {
   if (value === null || value === undefined || value === "") return null;
   const field = document.createElement("div");
@@ -2480,10 +2473,6 @@ function detailField(label, value, className = "detail-code") {
   const content = document.createElement(className === "detail-code" ? "pre" : "div");
   content.className = className;
   content.textContent = String(value);
-  // Command and output blocks get the same Copy control as Markdown code.
-  if (className === "detail-code" && COPYABLE_DETAIL_LABELS.has(label)) {
-    headingRow.append(copyButton(() => String(value), `Copy ${label.toLowerCase()}`));
-  }
   field.append(headingRow, content);
   return field;
 }
@@ -2504,10 +2493,8 @@ function diffNode(value) {
 function renderRichActivityDetail(container, activity, value) {
   container.replaceChildren();
   if (!value) return;
-  if (value.loading) {
-    container.append(Object.assign(document.createElement("span"), { className: "detail-note", textContent: "Loading details…" }));
-    return;
-  }
+  // A fast detail fetch leaves the expanded card empty rather than flashing busy prose.
+  if (value.loading) return;
   if (value.error) {
     container.append(Object.assign(document.createElement("span"), { className: "detail-note", textContent: value.error }));
     return;
@@ -2703,8 +2690,9 @@ function activityNode(activity) {
 
 function emptyConversationText() {
   if (!state?.thread) return "Select a task or create one.";
-  // Only a successful empty history page may claim there is no conversation history.
-  if (historyPhase === "loading") return "Loading recent messages…";
+  // Only a successful empty history page may claim there is no conversation history; a load in
+  // progress keeps the reserved empty-state space without busy prose.
+  if (historyPhase === "loading") return "";
   if (historyPhase === "error") return "";
   return "No conversation history yet.";
 }
@@ -3025,7 +3013,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   let automaticCursor = null;
   historyRequest = token;
   if (!cursor) historyPhase = "loading";
-  setHistoryStatus(cursor ? "Loading earlier…" : "Loading recent…");
+  setHistoryStatus();
   try {
     const url = new URL("/api/history", location.origin);
     url.searchParams.set("limit", "2");
@@ -3232,7 +3220,6 @@ newTaskForm.addEventListener("submit", async event => {
   const startingSettings = { model: newTaskModelValue, effort: newTaskEffort.value, access: newTaskAccess.value };
   ++newTaskOptionsRequest;
   for (const control of newTaskForm.elements) control.disabled = true;
-  newTaskCreate.textContent = "Creating…";
   try {
     const result = await performTaskAction({ machineId: newTaskMachine.id, action: "create", name, cwd, ...startingSettings });
     if (result?.succeeded) {
@@ -3242,7 +3229,6 @@ newTaskForm.addEventListener("submit", async event => {
     }
     else newTaskError.textContent = result?.failure || "Task creation is unavailable right now";
   } finally {
-    newTaskCreate.textContent = "Create";
     for (const control of newTaskForm.elements) control.disabled = false;
   }
 });
@@ -4202,7 +4188,6 @@ async function renderMachineRuntimes(target, refresh = false) {
   const group = target.mode === "host" ? "local" : `ssh:${savedMachines()[target.index]?.ssh}`;
   const entries = machines.filter(machine => (machine.group || machine.id) === group);
   section.hidden = false;
-  if (!section.children.length) section.textContent = "Checking runtimes…";
   const results = await Promise.all(entries.map(async machine => {
     try {
       const response = await apiFetch(`/api/runtime?machineId=${encodeURIComponent(machine.id)}&refresh=${refresh}`);
@@ -4234,12 +4219,11 @@ async function renderMachineRuntimes(target, refresh = false) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "secondary-button";
-      button.textContent = updating ? "Updating…" : "Update";
+      button.textContent = "Update";
       button.disabled = updating || detail.busy;
       button.addEventListener("click", async () => {
         machineRuntimeUpdates.add(detail.machineId);
         button.disabled = true;
-        button.textContent = "Updating…";
         try {
           const response = await apiFetch("/api/runtime/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: detail.machineId }) });
           const result = await response.json();
@@ -4308,7 +4292,7 @@ async function runMachineDialogAction(action) {
   machineDialogBusy = true;
   elements.machineDialogSubmit.disabled = true;
   elements.machineDialogError.classList.remove("error-text");
-  elements.machineDialogError.textContent = "Saving…";
+  elements.machineDialogError.textContent = "";
   updateMachineDialogActions();
   try {
     await action();
@@ -4781,8 +4765,6 @@ for (const [element, key] of [
   [elements.displayCommands, "command"],
   [elements.displayTool, "tool"],
   [elements.displaySearch, "search"],
-  [elements.displayReview, "review"],
-  [elements.displayReasoning, "reasoning"],
   [elements.displayCollaboration, "collaboration"],
   [elements.displayImages, "images"],
   [elements.displayCompaction, "compaction"],
@@ -4821,9 +4803,10 @@ setInterval(() => {
 
 elements.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const button = elements.loginForm.querySelector("button");
+  // The reveal control is the form's first button; the Unlock submit is the one kept disabled.
+  const button = elements.loginForm.querySelector('button[type="submit"]');
   button.disabled = true;
-  elements.loginError.textContent = "Checking…";
+  elements.loginError.textContent = "";
   try {
     const response = await fetch("/api/login", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: elements.loginPin.value }),
@@ -4894,7 +4877,7 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   }
   savingSettings = true;
   elements.settingsSave.disabled = true;
-  elements.settingsStatus.textContent = "Saving…";
+  elements.settingsStatus.textContent = "";
   elements.settingsStatus.classList.remove("error-text");
   try {
     let result = { settings: settingsValue, restartRequired: !elements.settingsRestart.hidden };
@@ -4948,19 +4931,16 @@ elements.restartPocket.addEventListener("click", async () => {
   if (!confirmed) return;
   restartingPocket = true;
   elements.restartPocket.disabled = true;
-  elements.restartPocket.textContent = "Restarting…";
-  elements.settingsStatus.textContent = "Preparing restart…";
+  elements.settingsStatus.textContent = "";
   elements.settingsStatus.classList.remove("error-text");
   try {
     const response = await apiFetch("/api/restart", { method: "POST" });
     const result = await response.json();
     if (!response.ok || !result.restarting || !result.localUrl) throw new Error(result.error || "Could not restart Pocket");
-    elements.settingsStatus.textContent = "Restarting Pocket…";
     setTimeout(() => location.assign(result.localUrl), 900);
   } catch (error) {
     restartingPocket = false;
     elements.restartPocket.disabled = false;
-    elements.restartPocket.textContent = "Restart Pocket";
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");
   }
@@ -4976,8 +4956,7 @@ elements.quitPocket.addEventListener("click", async () => {
   if (!confirmed) return;
   quittingPocket = true;
   elements.quitPocket.disabled = true;
-  elements.quitPocket.textContent = "Quitting…";
-  elements.settingsStatus.textContent = "Quitting…";
+  elements.settingsStatus.textContent = "";
   elements.settingsStatus.classList.remove("error-text");
   try {
     const response = await apiFetch("/api/shutdown", { method: "POST" });
@@ -4987,7 +4966,6 @@ elements.quitPocket.addEventListener("click", async () => {
   } catch (error) {
     quittingPocket = false;
     elements.quitPocket.disabled = false;
-    elements.quitPocket.textContent = "Quit Pocket";
     elements.settingsStatus.textContent = error.message;
     elements.settingsStatus.classList.add("error-text");
   }
