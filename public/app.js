@@ -22,8 +22,6 @@ import {
 } from "./pocket-logic.js";
 
 const elements = {
-  showContext: document.querySelector("#show-context"),
-  showQuota: document.querySelector("#show-quota"),
   context: document.querySelector("#context-chip"),
   contextPercent: document.querySelector("#context-percent"),
   contextFill: document.querySelector("#context-fill"),
@@ -105,9 +103,6 @@ const elements = {
   settingsClose: document.querySelector("#settings-close"),
   settingsCancel: document.querySelector("#settings-cancel"),
   settingsSave: document.querySelector("#settings-save"),
-  settingsLanEnabled: document.querySelector("#settings-lan-enabled"),
-  settingsHost: document.querySelector("#settings-host"),
-  settingsPort: document.querySelector("#settings-port"),
   settingsPin: document.querySelector("#settings-pin"),
   settingsPinState: document.querySelector("#settings-pin-state"),
   settingsTheme: document.querySelector("#settings-theme"),
@@ -147,8 +142,6 @@ const elements = {
   settingsRestart: document.querySelector("#settings-restart"),
   restartPocket: document.querySelector("#restart-pocket"),
   quitPocket: document.querySelector("#quit-pocket"),
-  phoneUrls: document.querySelector("#phone-urls"),
-  phoneUrlList: document.querySelector("#phone-url-list"),
   settingsStatus: document.querySelector("#settings-status"),
 };
 
@@ -374,27 +367,9 @@ let attachmentDeliveryUnknown = false;
 let enterSends = !matchMedia("(max-width: 860px)").matches;
 try { const saved = localStorage.getItem("codex-pocket-enter-sends"); if (saved !== null) enterSends = saved !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
-const translucentUI = document.querySelector("#translucent-ui");
-try { translucentUI.checked = localStorage.getItem("codex-pocket-translucent-ui") !== "false"; } catch {}
-document.documentElement.dataset.translucent = String(translucentUI.checked);
-// The desktop topbar floats over the transcript when translucent, so publish its live height for
-// the conversation and docked sidebars to keep clear of it.
-const topbarElement = document.querySelector(".topbar");
-function syncTopbarHeight() {
-  if (topbarElement) document.documentElement.style.setProperty("--topbar-height", `${topbarElement.offsetHeight}px`);
-}
-if (topbarElement && typeof ResizeObserver === "function") new ResizeObserver(syncTopbarHeight).observe(topbarElement);
-syncTopbarHeight();
-for (const [toggle, meter, key] of [[elements.showContext, elements.context, "context"], [elements.showQuota, elements.quota, "quota"]]) {
-  try { toggle.checked = localStorage.getItem(`codex-pocket-show-${key}`) !== "false"; } catch {}
-  meter.hidden = !toggle.checked;
-}
 const showProjects = document.querySelector("#show-projects");
 try { showProjects.checked = localStorage.getItem("codex-pocket-show-projects") === "true"; } catch {}
 let projectsVisible = showProjects.checked;
-const showMachineControls = document.querySelector("#show-machine-controls");
-try { showMachineControls.checked = localStorage.getItem("codex-pocket-show-machine-controls") !== "false"; } catch {}
-let machineControlsVisible = showMachineControls.checked;
 let composerExpanded = false;
 let composing = false;
 let deferredTranscript = false;
@@ -1001,7 +976,7 @@ function renderDestinationSwitcher(force = false) {
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, projectsVisible, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
-    machineReorderMode, machineReorderBusy, machineReorderDraft, machineControlsVisible,
+    machineReorderMode, machineReorderBusy, machineReorderDraft,
   ]);
   if (renderKey === destinationRenderKey) {
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
@@ -4112,13 +4087,11 @@ function applySidebarLayout({ instant = false } = {}) {
 }
 WIDE_LAYOUT_QUERY.addEventListener("change", () => applySidebarLayout());
 
-// Settings owns network/security plus browser-local appearance. Machine management lives in the
-// Tasks sidebar (see the machine dialog below), so these payloads never carry machines or localName.
+// Settings owns security plus browser-local appearance. Machine management lives in the Tasks
+// sidebar (see the machine dialog below), so these payloads never carry machines or localName. A
+// focused save omits every unrelated field, including network config the UI no longer edits.
 function serverSettingsValue() {
   return {
-    lanEnabled: elements.settingsLanEnabled.checked,
-    host: elements.settingsHost.value.trim(),
-    port: Number(elements.settingsPort.value),
     pin: elements.settingsPin.value,
   };
 }
@@ -4126,24 +4099,16 @@ function serverSettingsValue() {
 function localSettingsValue() {
   return {
     theme: elements.settingsTheme.value,
-    translucent: translucentUI.checked,
     enterSends: elements.enterSends.checked,
-    context: elements.showContext.checked,
-    quota: elements.showQuota.checked,
     projects: showProjects.checked,
-    machineControls: showMachineControls.checked,
     display: { ...(settingsDisplayDraft || displayPreferences) },
   };
 }
 
 function restoreLocalSettingsControls() {
   elements.settingsTheme.value = selectedTheme;
-  translucentUI.checked = document.documentElement.dataset.translucent !== "false";
   elements.enterSends.checked = enterSends;
-  elements.showContext.checked = !elements.context.hidden;
-  elements.showQuota.checked = !elements.quota.hidden;
   showProjects.checked = projectsVisible;
-  showMachineControls.checked = machineControlsVisible;
   renderDisplayControls();
 }
 
@@ -4151,16 +4116,10 @@ function commitLocalSettings(value) {
   selectedTheme = value.theme;
   enterSends = value.enterSends;
   projectsVisible = value.projects;
-  machineControlsVisible = value.machineControls;
-  document.documentElement.dataset.translucent = String(value.translucent);
-  elements.context.hidden = !value.context;
-  elements.quota.hidden = !value.quota;
   Object.assign(displayPreferences, value.display);
   try {
     localStorage.setItem(THEME_STORAGE_KEY, selectedTheme);
-    for (const [key, setting] of [["translucent-ui", value.translucent], ["enter-sends", enterSends],
-      ["show-context", value.context], ["show-quota", value.quota], ["show-projects", projectsVisible],
-      ["show-machine-controls", machineControlsVisible]]) {
+    for (const [key, setting] of [["enter-sends", enterSends], ["show-projects", projectsVisible]]) {
       localStorage.setItem("codex-pocket-" + key, String(setting));
     }
   } catch {}
@@ -4565,8 +4524,9 @@ function syncMachineReorderUi() {
 }
 
 // Hide the whole footer only when it has nothing left: no controls, no restart hint, no error.
+// Add Machine and reorder are always available in the normal Tasks view, never in Archived.
 function syncMachineFooterVisibility() {
-  const setupHidden = !machineControlsVisible || archivedTasks;
+  const setupHidden = archivedTasks;
   elements.machinesFooterActions.hidden = machineReorderMode || setupHidden;
   elements.machineReorderActions.hidden = !machineReorderMode;
   elements.machinesFooter.hidden = !machineReorderMode && setupHidden
@@ -4665,10 +4625,6 @@ elements.machineReorderCancel.addEventListener("click", () => setMachineReorderM
 elements.machineReorderSave.addEventListener("click", () => void saveMachineReorder());
 function renderSettings(value) {
   settingsValue = value;
-  for (const field of [elements.settingsLanEnabled, elements.settingsHost, elements.settingsPort]) field.disabled = Boolean(value.headless);
-  document.querySelector("#settings-network-help").textContent = value.headless
-    ? "Network binding is managed by the container/host."
-    : "Use 0.0.0.0 for all local-network interfaces.";
   elements.quitPocket.disabled = Boolean(value.headless);
   // Host lifecycle control is unavailable in a container; Restart stays available everywhere.
   elements.quitPocket.hidden = Boolean(value.headless);
@@ -4676,27 +4632,9 @@ function renderSettings(value) {
   // DeepSeek needs no toggle; only a broken host credential is worth surfacing here.
   elements.settingsDeepseekSection.hidden = !value.deepseekError;
   elements.settingsDeepseekError.textContent = value.deepseekError || "";
-  elements.settingsLanEnabled.checked = Boolean(value.lanEnabled);
-  elements.settingsHost.value = value.host || "127.0.0.1";
-  elements.settingsPort.value = String(value.port || 4173);
   elements.settingsPin.value = "";
   elements.settingsPin.placeholder = value.pinConfigured ? "Leave blank to keep current PIN" : "Enter 4 digits";
   elements.settingsPinState.textContent = value.pinConfigured ? "PIN configured." : "No PIN configured.";
-  elements.phoneUrlList.replaceChildren();
-  // Show only usable, browser-facing origins: the configured deployment addresses when present,
-  // otherwise the exact origin this browser is already using. Never synthesize a URL from the
-  // address and port the gateway happens to listen on.
-  const urls = Array.isArray(value.accessUrls) && value.accessUrls.length
-    ? value.accessUrls
-    : [location.origin];
-  elements.phoneUrls.querySelector("#access-urls-title").textContent = urls.length === 1 ? "Access URL" : "Access URLs";
-  for (const url of urls) {
-    const link = document.createElement("a");
-    link.href = url;
-    link.textContent = url;
-    elements.phoneUrlList.append(link);
-  }
-  elements.phoneUrls.hidden = urls.length === 0;
   settingsBaseline = { server: JSON.stringify(serverSettingsValue()), local: JSON.stringify(localSettingsValue()) };
   updateSettingsSave();
 }
@@ -5024,9 +4962,6 @@ elements.settingsButton.addEventListener("click", openSettings);
 elements.settingsClose.addEventListener("click", closeSettings);
 elements.settingsCancel.addEventListener("click", closeSettings);
 elements.settingsScreen.addEventListener("click", (event) => { if (event.target === elements.settingsScreen) closeSettings(); });
-elements.settingsLanEnabled.addEventListener("change", () => {
-  if (elements.settingsLanEnabled.checked && elements.settingsHost.value === "127.0.0.1") elements.settingsHost.value = "0.0.0.0";
-});
 // Preview only: selectedTheme/localStorage stay untouched until Save.
 elements.settingsTheme.addEventListener("change", () => applyTheme(elements.settingsTheme.value));
 elements.settingsPin.addEventListener("input", () => {
@@ -5041,13 +4976,6 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   if (savingSettings || elements.settingsSave.disabled) return;
   const local = localSettingsValue();
   const serverChanged = JSON.stringify(serverSettingsValue()) !== settingsBaseline.server;
-  const pin = elements.settingsPin.value;
-  if (serverChanged && elements.settingsLanEnabled.checked && !settingsValue?.pinConfigured && !/^\d{4}$/.test(pin)) {
-    elements.settingsStatus.textContent = "Set a four-digit PIN before enabling LAN access";
-    elements.settingsStatus.classList.add("error-text");
-    elements.settingsPin.focus();
-    return;
-  }
   savingSettings = true;
   elements.settingsSave.disabled = true;
   elements.settingsStatus.textContent = "";

@@ -29,12 +29,12 @@ Real Pocket UI with synthetic demo data only, including all tasks, machines, con
 - Send images with text or on their own using Attach files or desktop clipboard paste. Removable thumbnails remain available in the fullscreen composer, and images travel with queued/steered messages. Sent images remain viewable from live messages and history where Codex exposes them. Input supports PNG, JPEG, GIF, and WebP: up to four images, 4 MB each and 8 MB combined.
 - Attach up to four other files (10 MB each, 20 MB combined), with or without text/images. Files follow task drafts and queued messages. Pocket stages them in the selected machine’s OS-temp `codex-pocket` directory and sends their paths as a text input; local and Windows/POSIX SSH runtimes are supported. Queued files retain staged metadata. Pocket does not delete staged files after send, queue cancellation, task deletion, or restart: they remain until OS temp cleanup or manual removal. There is no guaranteed expiry time; keep files that an active task still needs.
 - View surfaced assistant images inline and in a fullscreen viewer, including supported local-file references fetched through the gateway or SSH. Trusted remote image paths are fetched through SSH; external HTTP(S) images are not loaded. Unavailable images show useful alt text.
-- See account quota or, on a DeepSeek runtime, the account-wide **Balance**, alongside a **Context** chip showing context-window percentage used from authoritative backend usage. Without usage replay or a live update, it shows **Context —**. The Context chip and the Quota/Balance slot can each be hidden under Settings → Appearance for this browser.
+- See account quota or, on a DeepSeek runtime, the account-wide **Balance**, alongside a **Context** chip showing context-window percentage used from authoritative backend usage. Without usage replay or a live update, it shows **Context —**.
 - Browse bounded, paginated history in a mobile-focused UI with themes, display toggles, a fullscreen composer, and a browser-local **Enter Sends Message** preference.
 
 Settings changes take effect only on **Save**, including browser-local appearance and input preferences. Save is enabled only while values differ from those loaded; **Cancel**, **X**, and **Escape** discard unsaved edits. A successful save closes Settings unless a restart is required, when **Restart Pocket** is brought into view. Display controls in the inspector still apply immediately when Settings is closed.
 
-**Translucent UI** is available on mobile (up to 860px wide) and defaults on. **Enter Sends Message** defaults on for desktop and off for mobile on first use; an existing saved choice takes precedence and does not change on resize.
+**Enter Sends Message** defaults on for desktop and off for mobile on first use; an existing saved choice takes precedence and does not change on resize.
 
 The image viewer supports double-tap zoom/reset, pinch zoom, panning while zoomed, and desktop wheel zoom. Close it with **X**, **Escape**, or a tap outside the image. Dragging at 1× neither moves nor dismisses the image.
 
@@ -82,7 +82,7 @@ Codex Desktop itself is not required. Running Desktop alone does not necessarily
 
 4. Open the task selector in the top bar to browse machines and saved tasks in the Tasks drawer.
 
-For a phone, open web **Settings**, enable local-network access, choose the bind address/port, and set a four-digit PIN. Save and choose **Restart Pocket** if prompted, then open the displayed phone URL and enter the PIN over your trusted network.
+For a phone, set `lanEnabled`, `host`, `port`, and a four-digit `pin` in `.codex-pocket.local.json`, then **Restart Pocket** if prompted. Open the configured host and port from that machine's LAN or Tailscale address and enter the PIN over your trusted network.
 
 Phone URLs include local LAN and Tailscale/CGNAT IPv4 addresses (`100.64.0.0/10`). Use these only over a trusted LAN or private VPN.
 
@@ -98,7 +98,7 @@ Open the trusted HTTPS URL in Edge/Chromium on Android, choose **Add to phone / 
 
 Keep Caddy configuration, certificates, CA private keys, and all other machine-local HTTPS material outside the repository. Do not commit them. HTTPS does not change Pocket's [private-network security boundary](SECURITY.md).
 
-The optional `accessUrls` array in `.codex-pocket.local.json` lists the HTTP(S) origins shown in Settings (for example, `["http://pocket.lan:4173", "https://pocket.lan:8443"]`). Configure the actual deployment addresses; Pocket does not discover reverse-proxy URLs. Without a list, Settings shows the exact origin the browser is using rather than a URL synthesized from the port the gateway listens on. The heading uses “Access URL” for one address and “Access URLs” for multiple.
+The optional `accessUrls` array in `.codex-pocket.local.json` lists the HTTP(S) origins a phone should use (for example, `["http://pocket.lan:4173", "https://pocket.lan:8443"]`). Configure the actual deployment addresses; Pocket does not discover reverse-proxy URLs or display them in Settings.
 
 ## SSH machines
 
@@ -182,4 +182,4 @@ node scripts/deploy.mjs
 
 Open the host's LAN or Tailscale IPv4 address on port 4173 and sign in with your existing PIN. Use LAN/private VPN access only: the PIN is a convenience gate, not internet-grade authentication. **Never port-forward Pocket directly to the internet.**
 
-`CODEX_POCKET_DATA_DIR` keeps writable settings and runtime markers separate from application files. `CODEX_POCKET_HEADLESS=1` requires at least one SSH machine, omits the local runtime, and makes Restart Pocket exit cleanly for Compose to restart it. Headless Settings cannot change the container-owned bind address/port and must retain at least one SSH machine. Stop with `docker compose down`; the web Quit action is disabled. Neither variable changes the normal macOS host defaults when unset.
+`CODEX_POCKET_DATA_DIR` keeps writable settings and runtime markers separate from application files. `CODEX_POCKET_HEADLESS=1` requires at least one SSH machine, omits the local runtime, and makes Restart Pocket exit cleanly for Compose to restart it. Headless Pocket must retain at least one SSH machine. Stop with `docker compose down`; the web Quit action is disabled. Neither variable changes the normal macOS host defaults when unset.

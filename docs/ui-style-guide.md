@@ -37,9 +37,8 @@ One small rem scale, referenced by token everywhere except the two hero headings
 - `--icon-size: 36px` is the square hit target for icon buttons; the glyph inside is 18px.
 - `--sidebar-header-height: 56px` for Tasks/Task Details headers; the topbar is `min-height: 58px`.
 - `--control-inset: 12px` is the standard horizontal text inset for fields and selects.
-- Fields take a sensible width instead of stretching to the container: the Settings Network row is
-  `minmax(0, 260px) 110px` (Bind Address, then a compact Port), and the desktop Settings card is
-  500px. Full-bleed mobile keeps a single full-width column.
+- Fields take a sensible width instead of stretching to the container: the desktop Settings card is
+  500px and the PIN field caps at 280px. Full-bleed mobile keeps a single full-width column.
 - Standalone `.secondary-button` (34px) and `.primary-button`/`.danger-button` (36px) keep smaller
   defaults and are normalized to 40px only inside the action rows above.
 - `--radius: 12px` for panels, cards and dialogs; `--control-radius: 8px` for controls and buttons.
@@ -69,9 +68,8 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
 - Panels are a 1px `--line-soft` border over `--soft-surface`; metadata tiles are filled
   `--surface-strong` with no border.
 - Borders are 1px everywhere; there are no heavy outlines or nested borders.
-- Topbar and composer use translucent `--topbar`/`--composer-bg`; `[data-translucent="false"]`
-  collapses them to `--bg` at every width. On desktop the translucent topbar overlays the scrolling
-  transcript so the tint is visible.
+- Topbar and composer are opaque at every width (`--topbar`/`--composer-bg` resolve to `--bg`); they
+  never float over the transcript.
 - Light theme re-maps the same token names; components never hard-code dark values (the image
   viewer is the deliberate exception).
 
@@ -294,9 +292,6 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
   unchanged by wrapping.
 - `full access` in the Access select and the `working`/`waiting`/`failed` phase pills reuse semantic
   colours as persistent state, not as decoration.
-- When translucent, the desktop topbar overlaps the chat column so the transcript scrolls beneath it:
-  the conversation keeps a top gutter and the docked Tasks/Task Details sidebars start below it. With
-  the preference off, the topbar returns to its own in-flow row and stays opaque.
 - Quit lifecycle copy may be macOS-specific. Quit is only exposed on the native macOS host, so its
   confirmation and status wording (for example "Codex Pocket.app" and "that Mac") may name the Mac;
   headless and container hosts hide Quit and use their managed lifecycle instead.
