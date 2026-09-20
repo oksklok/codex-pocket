@@ -521,9 +521,11 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .expanded-composer .composer-actions { justify-self: end; grid-row: 2; }
 .expanded-composer .form-status { grid-row: 3; }
 /* Wide desktop: the expanded composer fills only the chat panel below the top bar, so both sidebars
-   stay visible and the composer track matches the normal composer exactly. */
+   stay visible and the composer track matches the normal composer exactly. Its own top border is
+   dropped because the top bar's bottom border already draws that separator, and stacking them
+   would read as a 2px line. */
 @media (min-width: 1100px) {
-  .chat-panel > .expanded-composer { position: absolute; inset: 0; height: auto; grid-row: 1 / -1; padding-inline: max(12px, calc((100% - 1050px) / 2)); }
+  .chat-panel > .expanded-composer { position: absolute; inset: 0; height: auto; grid-row: 1 / -1; border-top: 0; padding-inline: max(12px, calc((100% - 1050px) / 2)); }
 }
 .settings-card .enter-preference { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .settings-card .enter-preference input { width: 18px; height: 18px; }
