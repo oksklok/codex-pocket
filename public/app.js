@@ -2832,18 +2832,55 @@ function transcriptSelectionActive() {
   return selection && !selection.isCollapsed && (elements.conversation.contains(selection.anchorNode) || elements.conversation.contains(selection.focusNode));
 }
 
+// The first/last content position a transcript drag can reach. It can sit inside a nested text node
+// rather than on the conversation element's own boundary.
+function conversationEdgePoint(edge) {
+  let node = elements.conversation;
+  while (edge === "end" ? node.lastChild : node.firstChild) node = edge === "end" ? node.lastChild : node.firstChild;
+  return { node, offset: edge === "end" && node.nodeType === Node.TEXT_NODE ? node.length : 0 };
+}
+
+// True when the selection focus already sits on that content edge even though it is still inside the
+// conversation. A drag held at a screen edge can stay inside, and then the native auto-scroll stops
+// short of the true boundary.
+function selectionFocusAtConversationEdge(selection, edge) {
+  const point = conversationEdgePoint(edge);
+  const probe = document.createRange();
+  try {
+    if (edge === "end") {
+      probe.setStart(selection.focusNode, selection.focusOffset);
+      probe.setEnd(point.node, point.offset);
+    } else {
+      probe.setStart(point.node, point.offset);
+      probe.setEnd(selection.focusNode, selection.focusOffset);
+    }
+  } catch {
+    return false;
+  }
+  return probe.collapsed;
+}
+
+function scrollTranscriptToEdge(edge) {
+  const scroller = transcriptScroller();
+  scroller.scrollTop = edge === "start" ? 0 : scroller.scrollHeight;
+}
+
 function observeTranscriptSelection() {
   const selection = window.getSelection();
-  if (selection && !selection.isCollapsed
-    && elements.conversation.contains(selection.anchorNode) && !elements.conversation.contains(selection.focusNode)) {
-    const bounds = document.createRange();
-    bounds.selectNodeContents(elements.conversation);
-    const above = bounds.comparePoint(selection.focusNode, selection.focusOffset) < 0;
-    selection.extend(elements.conversation, above ? 0 : elements.conversation.childNodes.length);
-    // Clamping stops the native auto-scroll at the boundary; move the transcript itself so a drag
-    // past either edge ends at the true top/bottom of the selected content.
-    const scroller = transcriptScroller();
-    scroller.scrollTop = above ? 0 : scroller.scrollHeight;
+  if (selection && !selection.isCollapsed && elements.conversation.contains(selection.anchorNode)) {
+    if (!elements.conversation.contains(selection.focusNode)) {
+      const bounds = document.createRange();
+      bounds.selectNodeContents(elements.conversation);
+      const above = bounds.comparePoint(selection.focusNode, selection.focusOffset) < 0;
+      selection.extend(elements.conversation, above ? 0 : elements.conversation.childNodes.length);
+      // Clamping stops the native auto-scroll at the boundary; move the transcript itself so a drag
+      // past either edge ends at the true top/bottom of the selected content.
+      scrollTranscriptToEdge(above ? "start" : "end");
+    } else if (selectionFocusAtConversationEdge(selection, "end")) {
+      scrollTranscriptToEdge("end");
+    } else if (selectionFocusAtConversationEdge(selection, "start")) {
+      scrollTranscriptToEdge("start");
+    }
   }
   const selected = transcriptSelectionActive();
   if (selected) markSendNavigationOverride();
