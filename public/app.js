@@ -2865,6 +2865,21 @@ function scrollTranscriptToEdge(edge) {
   scroller.scrollTop = edge === "start" ? 0 : scroller.scrollHeight;
 }
 
+// The sticky composer overlays the bottom of the transcript on phones, so the browser's selection
+// auto-scroll can stop with the dragged edge hidden under it. Nudge the transcript so that edge
+// clears the composer; an edge anywhere else is left to the browser's own scrolling.
+function keepSelectionEdgeVisible(selection) {
+  if (!matchMedia("(max-width: 860px)").matches) return;
+  const range = selection.getRangeAt(selection.rangeCount - 1).cloneRange();
+  range.collapse(false);
+  const edge = range.getBoundingClientRect();
+  const composer = elements.composerZone?.getBoundingClientRect();
+  if (composer && edge.bottom > composer.top && edge.top < composer.bottom) {
+    const scroller = transcriptScroller();
+    scroller.scrollTop += edge.bottom - composer.top;
+  }
+}
+
 function observeTranscriptSelection() {
   const selection = window.getSelection();
   if (selection && !selection.isCollapsed && elements.conversation.contains(selection.anchorNode)) {
@@ -2887,6 +2902,7 @@ function observeTranscriptSelection() {
   selectionHold.observe(selected);
   elements.appShell.classList.toggle("transcript-selection-held", selectionHold.active);
   if (!selected) return;
+  keepSelectionEdgeVisible(selection);
   for (const node of elements.conversation.children) {
     for (let index = 0; index < selection.rangeCount; index++) {
       if (selection.getRangeAt(index).intersectsNode(node)) heldTranscriptNodes.add(node);
