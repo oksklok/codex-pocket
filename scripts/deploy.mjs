@@ -751,8 +751,10 @@ function sshArgs(machine, script) {
 const ssh = (machine, script, options) => run("ssh", sshArgs(machine, script), options);
 
 async function writeRemoteScript(machine, remotePath, text) {
-  const command = powershellCommand(`$stdinStream = [Console]::OpenStandardInput(); $output = [IO.File]::Create(${psQuote(remotePath)}); try { $stdinStream.CopyTo($output) } finally { $output.Dispose() }`);
-  const result = await run("ssh", [...sshBase(), machine.ssh, command], { input: Buffer.from(`\ufeff${text}`, "utf8"), timeout: 60_000 });
+  const input = Buffer.from(`\ufeff${text}`, "utf8");
+  // As with archive transfer, Windows OpenSSH can retain stdin after the last byte. Do not wait for EOF.
+  const command = powershellCommand(`$ErrorActionPreference='Stop'; $stdinStream = [Console]::OpenStandardInput(); $output = [IO.File]::Create(${psQuote(remotePath)}); try { $remaining=${input.length}; $buffer=New-Object byte[] 65536; while ($remaining -gt 0) { $n=$stdinStream.Read($buffer,0,[Math]::Min($buffer.Length,$remaining)); if ($n -le 0) { throw 'incomplete deployment script' }; $output.Write($buffer,0,$n); $remaining-=$n } } finally { $output.Dispose() }`);
+  const result = await run("ssh", [...sshBase(), machine.ssh, command], { input, timeout: 60_000 });
   return result.code === 0;
 }
 
