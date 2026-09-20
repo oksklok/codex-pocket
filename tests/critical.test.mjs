@@ -804,6 +804,28 @@ test("a request replayed before its thread attaches is delivered after attach", 
   clearRememberedSelection();
 });
 
+test("a deferred request settled before attach is never surfaced later", async () => {
+  clearRememberedSelection();
+  const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});
+  runtime.state.connected = true;
+  const request = { id: 42, method: 'item/tool/requestUserInput', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'q', isBlocking: true, questions: [{ id: 'q1', header: 'H', question: 'Pick', isOther: true, options: [{ label: 'A', description: '' }] }] } };
+  runtime.handleServerRequest(request);
+  assert.equal(runtime.deferredServerRequests.get('thread-1').length, 1);
+  // The runtime later reports the question resolved or cancelled while no task is selected.
+  runtime.settlePendingRequest('42');
+  assert.equal(runtime.deferredServerRequests.size, 0, 'the held copy is retired with the request');
+  runtime.loadedThreads = [{ id: 'thread-1', name: 'T', preview: '', cwd: '/tmp', project: 'tmp', status: 'idle', loaded: true, updatedAt: 0 }];
+  runtime.rpc = { request: async (method) => {
+    if (method === 'thread/resume') return { thread: { id: 'thread-1', name: 'T', cwd: '/tmp', status: 'idle' } };
+    if (method === 'thread/goal/get') return { goal: null };
+    if (method === 'permissionProfile/list') return { data: [], nextCursor: null };
+    return {};
+  } };
+  await runtime.attachLoadedThread('thread-1', false);
+  assert.equal(runtime.state.pending.length, 0, 'attaching does not resurrect the dead request');
+  clearRememberedSelection();
+});
+
 test("an authoritative thread-name update replaces a stale pending name", () => {
   clearRememberedSelection();
   const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});

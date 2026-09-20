@@ -3372,6 +3372,14 @@ export class MachineRuntime {
   // entry would keep the task stuck in waiting_input for the rest of the turn.
   private settlePendingRequest(requestId: string): void {
     this.pendingServerRequests.delete(requestId);
+    // A request replayed before its task was attached is held in deferredServerRequests. Answering
+    // or cancelling it must drop that copy too, or attaching later would surface a dead request.
+    for (const [threadId, queued] of this.deferredServerRequests) {
+      const kept = queued.filter((request) => String(request.id) !== requestId);
+      if (kept.length === queued.length) continue;
+      if (kept.length) this.deferredServerRequests.set(threadId, kept);
+      else this.deferredServerRequests.delete(threadId);
+    }
     const next = this.state.pending.filter((request) => request.id !== requestId);
     if (next.length === this.state.pending.length) return;
     this.state.pending = next;

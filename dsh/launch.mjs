@@ -5,10 +5,38 @@ import { spawn } from "node:child_process";
 import { connect as connectSocket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DSH_HOME as home, SOCKET_PATH as socketPath } from "./endpoint.mjs";
+import { lstatSync, readFileSync, unlinkSync } from "node:fs";
+import { DSH_HOME as home, SOCKET_PATH as socketPath, MAINTENANCE_MARKER } from "./endpoint.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const DEADLINE_MS = 20_000;
+const MARKER_TTL_MS = 15 * 60_000;
+
+// A fresh deployment marker means the adapter directory may be mid-swap: refuse to launch rather
+// than start a runtime from a partially updated installation. A stale marker is ignored.
+function maintenanceActive() {
+  try {
+    const value = JSON.parse(readFileSync(MAINTENANCE_MARKER, "utf8"));
+    if (Number.isFinite(value?.at) && Date.now() - value.at < MARKER_TTL_MS) return true;
+    try {
+      unlinkSync(MAINTENANCE_MARKER);
+    } catch {}
+    return false;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    // A marker we cannot parse is still respected while its file time is recent.
+    try {
+      return Date.now() - lstatSync(MAINTENANCE_MARKER).mtimeMs < MARKER_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function fail(reason) {
+  process.stderr.write(`Pocket DSH runtime unavailable (${reason}); check the machine-side installation.\n`);
+  process.exit(1);
+}
 
 function startRuntime() {
   try {
@@ -20,17 +48,43 @@ function startRuntime() {
       cwd: home,
     });
     child.unref();
+    return child;
   } catch {
-    // The retry loop below reports a generic failure if the runtime never answers.
+    return null;
   }
 }
 
 function attach() {
+  if (maintenanceActive()) fail("deployment in progress");
   const deadline = Date.now() + DEADLINE_MS;
   let started = false;
+  let runtimeExit = null;
+
   const attempt = () => {
     const socket = connectSocket(socketPath);
+    // Removed on connect so a later socket error only ends the attach and never starts a second
+    // runtime behind the one already serving this connection.
+    const onRetry = () => {
+      socket.destroy();
+      // A detached runtime that already exited cannot answer a later socket; stop retrying it.
+      if (runtimeExit !== null) fail(`runtime exited (${runtimeExit})`);
+      if (Date.now() >= deadline) fail("timed out starting the runtime");
+      if (!started) {
+        started = true;
+        const child = startRuntime();
+        if (!child) fail("could not start the runtime");
+        child.once("exit", (code) => {
+          runtimeExit = code ?? 1;
+        });
+        child.once("error", () => {
+          runtimeExit = 1;
+        });
+      }
+      setTimeout(attempt, 400);
+    };
+    socket.once("error", onRetry);
     socket.once("connect", () => {
+      socket.off("error", onRetry);
       socket.setEncoding("utf8");
       const done = () => {
         try {
@@ -46,18 +100,6 @@ function attach() {
       socket.on("error", done);
       socket.on("close", done);
       for (const sig of ["SIGHUP", "SIGTERM", "SIGINT"]) process.on(sig, done);
-    });
-    socket.once("error", () => {
-      socket.destroy();
-      if (Date.now() >= deadline) {
-        process.stderr.write("Pocket DSH runtime unavailable; check the machine-side installation.\n");
-        process.exit(1);
-      }
-      if (!started) {
-        started = true;
-        startRuntime();
-      }
-      setTimeout(attempt, 400);
     });
   };
   attempt();

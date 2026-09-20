@@ -1,8 +1,9 @@
 // Machine-side DSH runtime: owns the DSH home and its agent child independently of any gateway
-// connection. Attach clients connect over a private socket (Unix domain socket, or a named pipe on
-// Windows); detaching a client does not stop accepted DSH work. Mirrors the DSH child setup that
-// previously lived in launch.mjs.
+// connection. The gateway attaches over a private socket (Unix domain socket, or a named pipe on
+// Windows) and detaching does not stop accepted DSH work. A separate control endpoint serves
+// deployment inspection and idle-only shutdown without touching the attached gateway.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer, connect as connectSocket } from "node:net";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -17,16 +18,33 @@ import {
   closeSync,
   unlinkSync,
   chmodSync,
+  existsSync,
 } from "node:fs";
-import { DSH_ADAPTER_PROTOCOL } from "./projection.mjs";
-import { DSH_HOME as home, isWindows, LOCK_PATH as lockPath, LOG_PATH as logPath, SOCKET_PATH as socketPath } from "./endpoint.mjs";
+import { DSH_VERSION, DSH_ADAPTER_PROTOCOL } from "./projection.mjs";
+import {
+  DSH_HOME as home,
+  isWindows,
+  LOCK_PATH as lockPath,
+  LOG_PATH as logPath,
+  SOCKET_PATH as socketPath,
+  CONTROL_SOCKET_PATH as controlSocketPath,
+} from "./endpoint.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
+const REQUIRED_FILES = ["bridge.mjs", "projection.mjs", "launch.mjs", "runtime.mjs", "endpoint.mjs", "pocket.patch.yml"];
 
 function log(message) {
   try {
     appendFileSync(logPath, `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
   } catch {}
+}
+
+function safeParse(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
 }
 
 function alive(pid) {
@@ -39,47 +57,38 @@ function alive(pid) {
   }
 }
 
-function ownerLock() {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+// A complete, loadable installation: the pinned runtime, every adapter file, and both SDK packages
+// the adapter imports. Used by `--probe` before and after an activation.
+function installationReady() {
+  try {
+    const version = JSON.parse(readFileSync(join(root, "node_modules/@deepseek-ai/dsh/package.json"), "utf8")).version;
+    if (version !== DSH_VERSION) return { ok: false, reason: `dsh-version-${version}` };
+    if (!existsSync(join(root, "node_modules/@deepseek-ai/dsh-sdk-protocol/package.json"))) return { ok: false, reason: "sdk-protocol-missing" };
+  } catch {
+    return { ok: false, reason: "dsh-missing" };
+  }
+  for (const file of REQUIRED_FILES) {
     try {
-      const fd = openSync(lockPath, "wx", 0o600);
-      writeFileSync(fd, String(process.pid));
-      closeSync(fd);
-      return true;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      let pid = NaN;
-      try {
-        pid = Number(readFileSync(lockPath, "utf8"));
-      } catch {}
-      if (alive(pid)) return false;
-      try {
-        unlinkSync(lockPath);
-      } catch {}
+      if (!lstatSync(join(root, file)).isFile()) return { ok: false, reason: `missing-${file}` };
+    } catch {
+      return { ok: false, reason: `missing-${file}` };
     }
   }
-  return false;
+  return { ok: true };
 }
 
-function release() {
-  try {
-    if (readFileSync(lockPath, "utf8") === String(process.pid)) unlinkSync(lockPath);
-  } catch {}
-  if (!isWindows) {
-    try {
-      unlinkSync(socketPath);
-    } catch {}
-  }
-}
-
-// Control helpers run in their own short-lived process so the deploy command can query or stop a
-// runtime without touching its home.
-if (process.argv[2] === "--status" || process.argv[2] === "--stop") {
-  const socket = connectSocket(socketPath);
+// ── Control client ──────────────────────────────────────────────────────────
+// A short-lived process that talks only to the control endpoint, so it never evicts the attached
+// gateway and never receives that gateway's pending requests.
+function runControl(mode) {
+  const socket = connectSocket(controlSocketPath);
+  const requestId = 1;
+  const method = mode === "--stop" ? "pocket/runtimeShutdown" : "pocket/runtimeStatus";
   let settled = false;
-  const finish = (code) => {
+  const finish = (code, payload) => {
     if (settled) return;
     settled = true;
+    process.stdout.write(`${JSON.stringify(payload)}\n`);
     try {
       socket.destroy();
     } catch {}
@@ -87,34 +96,141 @@ if (process.argv[2] === "--status" || process.argv[2] === "--stop") {
   };
   socket.setEncoding("utf8");
   socket.on("connect", () => {
-    const method = process.argv[2] === "--stop" ? "pocket/runtimeShutdown" : "pocket/runtimeStatus";
-    socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method })}\n`);
+    try {
+      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method })}\n`);
+    } catch {
+      finish(1, { ok: false, reason: "write-failed" });
+    }
   });
   let buffer = "";
   socket.on("data", (chunk) => {
     buffer += chunk;
-    const at = buffer.indexOf("\n");
-    if (at < 0) return;
-    const line = buffer.slice(0, at);
-    if (process.argv[2] === "--status") process.stdout.write(`${line}\n`);
-    finish(0);
+    let at;
+    while ((at = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, at);
+      buffer = buffer.slice(at + 1);
+      const frame = safeParse(line);
+      if (!frame || frame.id !== requestId) continue;
+      if (frame.error) return finish(1, { ok: false, reason: "error" });
+      const result = frame.result;
+      if (!result || typeof result !== "object") return finish(1, { ok: false, reason: "malformed" });
+      if (mode === "--status") {
+        if (typeof result.busy !== "boolean" || typeof result.protocol !== "number") return finish(1, { ok: false, reason: "malformed" });
+        return finish(0, { ok: true, result });
+      }
+      if (result.accepted !== true) return finish(1, { ok: false, reason: String(result.reason ?? "refused"), result });
+      return finish(0, { ok: true, result });
+    }
   });
-  socket.on("error", () => finish(1));
-  socket.on("close", () => finish(process.argv[2] === "--stop" ? 0 : 1));
-  setTimeout(() => finish(1), 4000).unref();
-} else {
-  startRuntime();
+  socket.on("error", () => finish(1, { ok: false, reason: "unreachable" }));
+  socket.on("close", () => finish(1, { ok: false, reason: "unreachable" }));
+  setTimeout(() => finish(1, { ok: false, reason: "timeout" }), 4000).unref();
 }
 
+// ── Probe ───────────────────────────────────────────────────────────────────
+async function runProbe() {
+  const ready = installationReady();
+  if (!ready.ok) {
+    process.stdout.write(`${JSON.stringify({ ok: false, reason: ready.reason })}\n`);
+    process.exit(1);
+  }
+  try {
+    const projection = await import("./projection.mjs");
+    // Importing the bridge verifies its SDK dependency resolves without starting any runtime.
+    await import("./bridge.mjs");
+    process.stdout.write(`${JSON.stringify({ ok: true, protocol: projection.DSH_ADAPTER_PROTOCOL })}\n`);
+    process.exit(0);
+  } catch {
+    process.stdout.write(`${JSON.stringify({ ok: false, reason: "import-failed" })}\n`);
+    process.exit(1);
+  }
+}
+
+// ── Integrity ───────────────────────────────────────────────────────────────
+// Confirm the adapter files beside this runtime are exactly the bytes a manifest describes. Used by
+// deployment after staging and again after activation, so a partial copy is never trusted.
+function runVerify(manifestPath) {
+  let manifest = null;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {}
+  const files = manifest?.files;
+  if (!files || typeof files !== "object" || typeof manifest.protocol !== "number" || !Object.keys(files).length) {
+    process.stdout.write(`${JSON.stringify({ ok: false, reason: "manifest-unreadable" })}\n`);
+    process.exit(1);
+  }
+  const bundleRoot = dirname(root);
+  const mismatches = [];
+  for (const [relative, expected] of Object.entries(files)) {
+    if (typeof relative !== "string" || relative.startsWith("/") || /^[a-z]:[\\/]/i.test(relative) || relative.split(/[\\/]/).includes("..")) {
+      mismatches.push(String(relative));
+      continue;
+    }
+    try {
+      const actual = createHash("sha256").update(readFileSync(join(bundleRoot, relative))).digest("hex");
+      if (actual !== expected) mismatches.push(relative);
+    } catch {
+      mismatches.push(relative);
+    }
+  }
+  process.stdout.write(`${JSON.stringify({ ok: mismatches.length === 0, protocol: manifest.protocol, mismatches })}\n`);
+  process.exit(mismatches.length ? 1 : 0);
+}
+
+const mode = process.argv[2];
+if (mode === "--probe") runProbe();
+else if (mode === "--verify") runVerify(process.argv[3]);
+else if (mode === "--status" || mode === "--stop") runControl(mode);
+else startRuntime();
+
+// ── Runtime owner ───────────────────────────────────────────────────────────
 function startRuntime() {
   let child = null;
   let key = "";
+  let ownsLock = false;
+
+  function ownerLock() {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const fd = openSync(lockPath, "wx", 0o600);
+        writeFileSync(fd, String(process.pid));
+        closeSync(fd);
+        return true;
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        let pid = NaN;
+        try {
+          pid = Number(readFileSync(lockPath, "utf8"));
+        } catch {}
+        // Only a dead owner's lock is reclaimed. A live owner keeps its home.
+        if (alive(pid)) return false;
+        try {
+          unlinkSync(lockPath);
+        } catch {}
+      }
+    }
+    return false;
+  }
+
+  function release() {
+    // Never remove another owner's artifacts: only what this process established. Ownership was
+    // acquired before any stale socket was reclaimed, so these paths belong to this owner.
+    if (!ownsLock) return;
+    try {
+      if (readFileSync(lockPath, "utf8") === String(process.pid)) unlinkSync(lockPath);
+    } catch {}
+    if (!isWindows) {
+      for (const path of [socketPath, controlSocketPath]) {
+        try {
+          unlinkSync(path);
+        } catch {}
+      }
+    }
+  }
+
   try {
-    const version = JSON.parse(
-      readFileSync(join(root, "node_modules/@deepseek-ai/dsh/package.json"), "utf8"),
-    ).version;
-    if (version !== "0.1.6-alpha.2")
-      throw new Error("Install the locked Pocket DSH dependencies with npm ci in dsh/");
+    const ready = installationReady();
+    if (!ready.ok) throw new Error(`installation incomplete (${ready.reason})`);
     mkdirSync(home, { recursive: true, mode: 0o700 });
     if (lstatSync(home).isSymbolicLink() || (!isWindows && lstatSync(home).mode & 0o077))
       throw new Error("DSH home must be a private, non-symlink directory");
@@ -122,6 +238,20 @@ function startRuntime() {
       log("another runtime owns this DSH home; exiting");
       process.exit(0);
     }
+    ownsLock = true;
+
+    // Ownership is established, so a remaining socket can only be a dead owner's stale artifact.
+    if (!isWindows) {
+      for (const path of [socketPath, controlSocketPath]) {
+        try {
+          if (!lstatSync(path).isSocket()) throw new Error("Runtime endpoint is not a socket");
+          unlinkSync(path);
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+      }
+    }
+
     const keyPath = join(homedir(), ".codex-pocket", "secrets", "deepseek-api-key");
     if (Object.hasOwn(process.env, "DEEPSEEK_API_KEY")) key = process.env.DEEPSEEK_API_KEY;
     else {
@@ -200,12 +330,20 @@ function startRuntime() {
       .split(key)
       .join("[REDACTED]");
 
-  // A transparent, durable carrier: child frames are held for the attached client, responses are
-  // dropped when detached, and unanswered server requests are replayed on the next attach.
+  // The carrier tracks every starting/active turn across all sessions, not one boolean. Unanswered
+  // server requests are remembered with the connection that owns them and replayed on attach.
   let client = null;
   const pending = new Map();
   const pocketPending = new Map();
-  let busy = false;
+  const activeTurns = new Set();
+  const startingRequests = new Map();
+  const busy = () => activeTurns.size > 0 || startingRequests.size > 0;
+
+  const turnKey = (params) => {
+    const threadId = params?.threadId;
+    const turnId = params?.turn?.id ?? params?.turnId;
+    return threadId ? `${threadId}:${turnId ?? "active"}` : null;
+  };
 
   const writeClient = (line) => {
     if (!client || client.destroyed) return false;
@@ -217,65 +355,68 @@ function startRuntime() {
     }
   };
 
+  const forwardToChild = (line) => {
+    if (!child?.stdin?.writable) return;
+    try {
+      child.stdin.write(`${line}\n`);
+    } catch {
+      log("child stdin write failed");
+    }
+  };
+
   const onChildLine = (line) => {
     if (!line.trim()) return;
-    let frame = null;
-    try {
-      frame = JSON.parse(line);
-    } catch {}
-    if (frame && typeof frame.pocketRequestId === "string") {
-      const id = pocketPending.get(frame.pocketRequestId);
+    const frame = safeParse(line);
+    if (frame?.method === "pocket/requestResolved" && typeof frame.params?.pocketRequestId === "string") {
+      const id = pocketPending.get(frame.params.pocketRequestId);
       if (id !== undefined) {
         pending.delete(id);
-        pocketPending.delete(frame.pocketRequestId);
+        pocketPending.delete(frame.params.pocketRequestId);
       }
     }
     if (frame && frame.method !== undefined && frame.id !== undefined) {
       const id = String(frame.id);
-      pending.set(id, line);
-      if (typeof frame.params?.pocketRequestId === "string") pocketPending.set(frame.params.pocketRequestId, id);
+      const pocketRequestId = typeof frame.params?.pocketRequestId === "string" ? frame.params.pocketRequestId : null;
+      pending.set(id, { line, connection: client, pocketRequestId });
+      if (pocketRequestId) pocketPending.set(pocketRequestId, id);
     }
-    if (frame?.method === "turn/started") busy = true;
-    if (frame?.method === "turn/completed") busy = false;
+    if (frame && frame.method === undefined && frame.id !== undefined) startingRequests.delete(String(frame.id));
+    if (frame?.method === "turn/started") {
+      const id = turnKey(frame.params);
+      if (id) activeTurns.add(id);
+    }
+    if (frame?.method === "turn/completed") {
+      const id = turnKey(frame.params);
+      if (id) activeTurns.delete(id);
+    }
     writeClient(redact(line));
   };
 
-  const onClientLine = (line) => {
+  const onClientLine = (line, connection) => {
     if (!line.trim()) return;
-    let frame = null;
-    try {
-      frame = JSON.parse(line);
-    } catch {}
-    if (frame?.method === "pocket/runtimeStatus" && frame.id !== undefined) {
-      writeClient(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { busy, protocol: DSH_ADAPTER_PROTOCOL, pid: process.pid } }));
-      return;
-    }
-    if (frame?.method === "pocket/runtimeShutdown" && frame.id !== undefined) {
-      writeClient(JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { stopping: true } }));
-      setTimeout(() => shutdown(0), 50);
-      return;
-    }
+    const frame = safeParse(line);
     if (frame && frame.method === undefined && frame.id !== undefined) {
       const id = String(frame.id);
+      const entry = pending.get(id);
+      // Only the connection the request was delivered to may answer it. A late response from an
+      // old connection whose numeric id was reused by a new one is dropped, never forwarded.
+      if (!entry || entry.connection !== connection) return;
       pending.delete(id);
-      for (const [pocketId, pendingId] of pocketPending) if (pendingId === id) pocketPending.delete(pocketId);
+      if (entry.pocketRequestId) pocketPending.delete(entry.pocketRequestId);
+      forwardToChild(line);
+      return;
     }
-    if (child?.stdin?.writable) {
-      try {
-        child.stdin.write(`${line}\n`);
-      } catch {
-        log("child stdin write failed");
-      }
+    if (frame && (frame.method === "turn/start" || frame.method === "turn/steer") && frame.id !== undefined) {
+      startingRequests.set(String(frame.id), connection);
     }
+    forwardToChild(line);
   };
 
   const server = createServer((socket) => {
-    if (client && !client.destroyed) {
-      try {
-        client.destroy();
-      } catch {}
-    }
     client = socket;
+    // The new connection takes over every genuinely pending request, so a late answer from the
+    // previous one can no longer resolve it.
+    for (const entry of pending.values()) entry.connection = socket;
     socket.setEncoding("utf8");
     let buffer = "";
     socket.on("data", (chunk) => {
@@ -284,17 +425,55 @@ function startRuntime() {
       while ((at = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, at);
         buffer = buffer.slice(at + 1);
-        onClientLine(line);
+        onClientLine(line, socket);
       }
     });
     socket.on("error", () => {});
     socket.on("close", () => {
       if (client === socket) client = null;
+      for (const [id, entry] of startingRequests) if (entry === socket) startingRequests.delete(id);
     });
-    for (const line of pending.values()) socket.write(`${redact(line)}\n`);
+    for (const entry of pending.values()) socket.write(`${redact(entry.line)}\n`);
   });
   server.on("error", (error) => {
-    log(`listener failed (${error?.code ?? "error"})`);
+    log(`attach listener failed (${error?.code ?? "error"})`);
+    shutdown(1);
+  });
+
+  // Control never touches the attach connection or its pending requests.
+  const controlServer = createServer((socket) => {
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let at;
+      while ((at = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, at);
+        buffer = buffer.slice(at + 1);
+        const frame = safeParse(line);
+        if (!frame || frame.id === undefined) continue;
+        if (frame.method === "pocket/runtimeStatus") {
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: {
+            busy: busy(), protocol: DSH_ADAPTER_PROTOCOL, pid: process.pid,
+            attached: Boolean(client && !client.destroyed), turns: activeTurns.size, starting: startingRequests.size,
+          } })}\n`);
+        } else if (frame.method === "pocket/runtimeShutdown") {
+          // Idle-only: an accepted shutdown refuses new work and never races a running turn.
+          if (busy()) {
+            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { accepted: false, reason: "busy" } })}\n`);
+          } else {
+            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { accepted: true } })}\n`);
+            setTimeout(() => shutdown(0), 50);
+          }
+        } else {
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: { code: -32601, message: "unsupported control method" } })}\n`);
+        }
+      }
+    });
+    socket.on("error", () => {});
+  });
+  controlServer.on("error", (error) => {
+    log(`control listener failed (${error?.code ?? "error"})`);
     shutdown(1);
   });
 
@@ -304,6 +483,9 @@ function startRuntime() {
     shuttingDown = true;
     try {
       server.close();
+    } catch {}
+    try {
+      controlServer.close();
     } catch {}
     try {
       client?.destroy();
@@ -343,6 +525,13 @@ function startRuntime() {
         chmodSync(socketPath, 0o600);
       } catch {}
     }
-    log(`listening (protocol ${DSH_ADAPTER_PROTOCOL})`);
+    controlServer.listen(controlSocketPath, () => {
+      if (!isWindows) {
+        try {
+          chmodSync(controlSocketPath, 0o600);
+        } catch {}
+      }
+      log(`listening (protocol ${DSH_ADAPTER_PROTOCOL})`);
+    });
   });
 }

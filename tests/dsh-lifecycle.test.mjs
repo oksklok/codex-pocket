@@ -3,7 +3,7 @@
 // No credentials, no external network, no production state.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -315,6 +315,56 @@ test("a runtime that owns the home refuses a duplicate owner", { skip: !installe
   } finally {
     await first?.stop();
     await second?.stop();
+    const pid = ownerPid(home);
+    if (alive(pid)) { try { process.kill(pid, "SIGTERM"); } catch {} }
+    fake.server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("status inspection and idle-only stop never evict the attached gateway", { skip: !installed && "install dsh/node_modules with npm ci --prefix dsh" }, async () => {
+  const home = mkdtempSync(join(tmpdir(), "pocket-dsh-inspect-"));
+  const fake = await startQuestionEndpoint();
+  writeFileSync(join(home, "settings.yaml"), `llm-deepseek:\n  baseURL: http://127.0.0.1:${fake.port}\n`, { mode: 0o600 });
+  const runtime = join(ROOT, "dsh/runtime.mjs");
+  const control = (mode) => spawnSync(process.execPath, [runtime, mode], {
+    env: { ...process.env, POCKET_DSH_HOME: home, DEEPSEEK_API_KEY: "sk-dummy-test-key-000000000000" },
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  let connection;
+  try {
+    connection = new Connection(home);
+    await connection.start();
+    const started = (await connection.call("thread/start", { cwd: home })).result;
+    const threadId = started.thread.id;
+    const question = connection.waitFor((message) => message.method === "item/tool/requestUserInput");
+    await connection.call("turn/start", { threadId, requestId: "q-1", input: [{ type: "text", text: "ask me" }] });
+    const request = await question;
+
+    // A deployment status check must not connect to the attach endpoint, so the gateway keeps its
+    // connection and its pending question and the runtime reports itself busy.
+    const status = control("--status");
+    const reported = JSON.parse(status.stdout.trim());
+    assert.equal(reported.ok, true, status.stderr);
+    assert.equal(reported.result.busy, true);
+    assert.equal(reported.result.attached, true);
+    assert.equal(connection.received.filter((message) => message.method === "item/tool/requestUserInput").length, 1, "the question is not evicted or replayed");
+    assert.equal((await connection.call("thread/read", { threadId, includeTurns: true })).result.thread.turns[0].status, "inProgress");
+
+    // Idle-only shutdown refuses while the turn is active and leaves the connection working.
+    const stopped = control("--stop");
+    assert.notEqual(stopped.status, 0);
+    assert.equal(JSON.parse(stopped.stdout.trim()).reason, "busy");
+    assert.equal((await connection.call("thread/read", { threadId, includeTurns: true })).result.thread.turns[0].status, "inProgress");
+
+    const completed = connection.waitFor((message) => message.method === "turn/completed" && message.params.threadId === threadId, 60000);
+    connection.respond(request.id, { answers: { q1: { answers: ["A"] } } });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    fake.releaseAll();
+    await completed;
+  } finally {
+    await connection?.stop();
     const pid = ownerPid(home);
     if (alive(pid)) { try { process.kill(pid, "SIGTERM"); } catch {} }
     fake.server.close();

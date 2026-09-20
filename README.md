@@ -178,7 +178,7 @@ Deploy updates with one command from the checkout on the gateway host:
 node scripts/deploy.mjs
 ```
 
-(`npm run deploy` is equivalent where npm is available.) It rebuilds the gateway image and distributes the execution-side DSH adapter through the existing SSH aliases and `dshPath` values, staging each update and activating it only when that machine's runtime is idle. Busy or offline machines are reported as pending; rerun the same command to finish. A gateway/UI-only change updates only the NAS. See [DeepSeek setup](docs/deepseek.md) for the durable runtime lifecycle and the one-time cutover.
+(`npm run deploy` is equivalent where npm is available.) It rebuilds the gateway image and distributes the execution-side DSH adapter through the existing SSH aliases and `dshPath` values. Each update is inspected read-only, staged and hash-verified beside the install, activated only while that machine's durable runtime reports idle behind a maintenance marker, verified again, and restored from the retained previous install if verification fails. Busy, offline or unverifiable machines are reported as pending; rerun the same command to finish. The gateway is restarted only once every machine it attaches to speaks the protocol the built image speaks. A gateway/UI-only change updates only the NAS. See [DeepSeek setup](docs/deepseek.md) for the durable runtime lifecycle, the one-time `--confirm-idle` cutover, protocol upgrades and `--rollback`.
 
 Open the host's LAN or Tailscale IPv4 address on port 4173 and sign in with your existing PIN. Use LAN/private VPN access only: the PIN is a convenience gate, not internet-grade authentication. **Never port-forward Pocket directly to the internet.**
 
