@@ -422,6 +422,7 @@ function fitExpandedComposer() {
   }
 }
 let settingsValue = null;
+let settingsOpener = null;
 let settingsBaseline = null;
 let settingsDisplayDraft = null;
 let savingSettings = false;
@@ -957,13 +958,22 @@ async function refreshMachines() {
 
 let archivedTasks = false;
 const collapsedMachines = new Set();
-// Wake success feedback must outlive Tasks-sidebar rerenders, so its two-second lifetime lives here
-// rather than on the transient note element the render rebuilds.
+// The Wake request lifecycle lives here rather than on the transient DOM the Tasks render rebuilds:
+// the in-flight set, the success timestamp (two-second note) and the last failure message per machine.
+const wakePending = new Set();
 const wakeSuccessAt = new Map();
+const wakeFailure = new Map();
 const wakeExpiryTimers = new Map();
 function wakeFeedbackActive(machineId) {
   const at = wakeSuccessAt.get(machineId);
   return typeof at === "number" && Date.now() - at < 2000;
+}
+function clearWakeState(machineId) {
+  clearTimeout(wakeExpiryTimers.get(machineId));
+  wakeExpiryTimers.delete(machineId);
+  wakePending.delete(machineId);
+  wakeSuccessAt.delete(machineId);
+  wakeFailure.delete(machineId);
 }
 function scheduleWakeExpiry(machineId) {
   clearTimeout(wakeExpiryTimers.get(machineId));
@@ -971,12 +981,35 @@ function scheduleWakeExpiry(machineId) {
   wakeExpiryTimers.set(machineId, setTimeout(() => {
     wakeExpiryTimers.delete(machineId);
     wakeSuccessAt.delete(machineId);
-    // Remove the live note directly: a rerender may be skipped as unchanged, and it would then leave
-    // the note on screen past its two seconds.
-    for (const note of document.querySelectorAll(".wake-feedback")) {
-      if (note.dataset.wakeMachine === machineId) note.remove();
-    }
+    renderDestinationSwitcher();
   }, Math.max(0, 2000 - (Date.now() - at))));
+}
+// One request per machine. Completion only mutates state; the render owns every DOM update, so a
+// rerender mid-request can never strand the outcome on a detached node.
+async function requestWake(machine) {
+  if (wakePending.has(machine.id)) return;
+  // Keep any visible success note through the pending window: stop its timer but leave the timestamp.
+  // A previous failure is superseded by this attempt.
+  clearTimeout(wakeExpiryTimers.get(machine.id));
+  wakeExpiryTimers.delete(machine.id);
+  wakeFailure.delete(machine.id);
+  wakePending.add(machine.id);
+  renderDestinationSwitcher();
+  try {
+    const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
+    wakeSuccessAt.set(machine.id, Date.now());
+    wakeFailure.delete(machine.id);
+  } catch (error) {
+    // A failure supersedes the earlier success: drop its timestamp so nothing can resurrect it.
+    wakeSuccessAt.delete(machine.id);
+    wakeFailure.set(machine.id, error instanceof Error ? error.message : String(error));
+  } finally {
+    wakePending.delete(machine.id);
+    if (wakeSuccessAt.has(machine.id)) scheduleWakeExpiry(machine.id);
+    renderDestinationSwitcher();
+  }
 }
 try {
   const saved = JSON.parse(localStorage.getItem("codex-pocket-collapsed-machines") || "[]");
@@ -991,6 +1024,12 @@ function taskStatusClassName(value) {
   return "destination-task-status";
 }
 function renderDestinationSwitcher(force = false) {
+  // Wake state only matters while its machine is unreachable; drop it once the runtime connects or the
+  // machine disappears.
+  for (const id of new Set([...wakePending, ...wakeSuccessAt.keys(), ...wakeFailure.keys()])) {
+    const machine = machines.find(candidate => candidate.id === id);
+    if (!machine || machine.connected) clearWakeState(id);
+  }
   if (elements.destinationSwitcher.hidden && !force) return;
   const archived = archivedTasks;
   const slot = Number(archived);
@@ -999,7 +1038,7 @@ function renderDestinationSwitcher(force = false) {
   elements.destinationRefresh.disabled = Boolean(navigationRequest);
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
-    [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake]), elements.destinationSearch.value, Boolean(navigationRequest),
+    [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake, wakePending.has(machine.id), wakeFeedbackActive(machine.id), wakeFailure.get(machine.id) || ""]), elements.destinationSearch.value, Boolean(navigationRequest),
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
@@ -1170,42 +1209,18 @@ function renderDestinationSwitcher(force = false) {
       const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
       wake.setAttribute("aria-label", `Wake ${machine.name}`);
       wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
-      // The note, created on demand. It never clears an existing success note, so a repeated Wake
-      // keeps "Wake packet sent" visible while the new request is pending; every step re-reads the
-      // current node so a rerender mid-request cannot strand the update on a detached element.
-      const wakeNote = () => {
-        let note = wakeAction.querySelector(".wake-feedback");
-        if (!note) {
-          note = Object.assign(document.createElement("span"), { className: "wake-feedback" });
-          note.setAttribute("role", "status");
-          note.dataset.wakeMachine = machine.id;
-          wakeAction.append(note);
-        }
-        return note;
-      };
-      // Re-add the note on every rerender while the success is still inside its two-second lifetime.
-      if (wakeFeedbackActive(machine.id)) wakeNote().textContent = "Wake packet sent";
-      wake.addEventListener("click", async () => {
-        wake.disabled = true;
-        wakeNote();
-        try {
-          const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
-          wakeNote().textContent = "Wake packet sent";
-          // Re-arm from this success, so a repeated Wake restarts the full two seconds.
-          wakeSuccessAt.set(machine.id, Date.now());
-          scheduleWakeExpiry(machine.id);
-        } catch (error) {
-          // A failure supersedes any earlier success: stop and forget that timer before showing the
-          // error, so no stale timer removes this message and no rerender resurrects the success.
-          clearTimeout(wakeExpiryTimers.get(machine.id));
-          wakeExpiryTimers.delete(machine.id);
-          wakeSuccessAt.delete(machine.id);
-          wakeNote().textContent = error instanceof Error ? error.message : String(error);
-        }
-        finally { wake.disabled = false; }
-      });
+      wake.disabled = wakePending.has(machine.id);
+      // The note is derived entirely from state: while pending it keeps the last success (or an empty
+      // note on a first click), a failure wins over a success, and success lasts its two seconds.
+      const failure = wakeFailure.get(machine.id);
+      const noteText = failure || (wakeFeedbackActive(machine.id) ? "Wake packet sent" : wakePending.has(machine.id) ? "" : null);
+      if (noteText !== null) {
+        const note = Object.assign(document.createElement("span"), { className: "wake-feedback", textContent: noteText });
+        note.setAttribute("role", "status");
+        note.dataset.wakeMachine = machine.id;
+        wakeAction.append(note);
+      }
+      wake.addEventListener("click", () => void requestWake(machine));
       wakeAction.append(wake);
       controls.append(wakeAction);
     }
@@ -1560,6 +1575,8 @@ function openDestinationSwitcher(animate = true) {
   saveSidebarPreference("tasks", true);
   refreshNavigationCatalog(archivedTasks, true);
   renderDestinationSwitcher();
+  // The narrow drawer is modal, so it takes focus; the wide docked pane never steals it.
+  if (!isWideLayout()) elements.destinationSearch.focus({ preventScroll: true });
 }
 
 function currentCatalogModel(modelName = state?.model) {
@@ -4101,21 +4118,25 @@ function openInspector({ save = true } = {}) {
   if (save) saveSidebarPreference("details", true);
   elements.appShell.classList.remove("inspector-closed");
   elements.appShell.classList.add("inspector-open");
+  elements.inspector.inert = false;
+  // The narrow drawer is modal, so it takes focus; the wide docked column never steals it.
   if (isMobileInspector()) {
     elements.inspectorBackdrop.hidden = false;
+    elements.inspectorClose.focus({ preventScroll: true });
   } else {
     elements.inspectorBackdrop.hidden = true;
   }
-  elements.inspector.inert = false;
   updateInspectorButtonState();
 }
 function closeInspector({ save = true } = {}) {
   if (save) saveSidebarPreference("details", false);
+  const returnFocus = isMobileInspector() && elements.inspector.contains(document.activeElement);
   elements.appShell.classList.remove("inspector-open");
   elements.appShell.classList.add("inspector-closed");
   elements.inspectorBackdrop.hidden = true;
   elements.inspector.inert = true;
   updateInspectorButtonState();
+  if (returnFocus) elements.inspectorButton.focus({ preventScroll: true });
 }
 function toggleInspector() {
   const open = inspectorOpen();
@@ -4192,6 +4213,9 @@ function closeSettings() {
   if (settingsValue) renderSettings(settingsValue);
   settingsBaseline = null;
   updateSettingsSave();
+  // Return focus to whatever opened Settings, mirroring the drawer and dialog behavior.
+  if (settingsOpener?.isConnected) settingsOpener.focus({ preventScroll: true });
+  settingsOpener = null;
 }
 
 // ---- Machine configuration (owned by the Tasks sidebar) ----
@@ -4693,6 +4717,7 @@ function renderSettings(value) {
 }
 
 async function openSettings() {
+  settingsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : elements.settingsButton;
   settingsBaseline = null;
   settingsDisplayDraft = { ...displayPreferences };
   restoreLocalSettingsControls();

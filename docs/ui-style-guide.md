@@ -257,7 +257,7 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
   <1100px makes both sidebars drawers with the boxed destination selector (see Navigation).
 - ≤860px: the shell stops being a fixed-height grid — the page scrolls, the topbar and composer
   become sticky, the conversation takes 12px inline padding, and the composer adds safe-area bottom
-  padding.
+  padding. The transcript and composer hide their scrollbars; desktop keeps them thin (`--line`).
 - ≤620px: the topbar becomes a two-column layout; ≤520px: the elapsed timer hides, phase chips
   shrink/ellipsize and composer actions go compact.
 - ≤380px: New Task's two-column settings grid collapses to one column.
@@ -280,7 +280,9 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 - Native controls keep their native keyboard behavior; never re-implement it.
 - Custom clickable controls must offer keyboard-equivalent activation (Enter/Space where appropriate).
 - Escape cancels or closes a dialog unless a busy mutation prevents it.
-- Opening and closing modal UI uses deliberate focus placement and return rather than losing focus.
+- Opening and closing modal UI uses deliberate focus placement and return rather than losing focus;
+  the narrow drawers take focus on open and hand it back to their toggle on close, while the wide
+  docked sidebars never take focus.
 - DOM order is the normal Tab order; add custom keyboard navigation only when a component requires it.
 
 ## Intentional exceptions

@@ -354,9 +354,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .conversation {
   min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
   padding: 10px max(16px, calc((100% - 1050px) / 2)) 0; scroll-behavior: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
 }
-.conversation::-webkit-scrollbar { display: none; }
 .conversation { -webkit-user-select: text; user-select: text; }
 .message-body, .activity-label, .activity-detail, .activity-rich-detail { -webkit-user-select: text; user-select: text; }
 .message-meta, .activity-heading, .activity-status, .activity-kind, .async-options { -webkit-user-select: none; user-select: none; }
@@ -485,10 +484,9 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .composer-input { position: relative; min-width: 0; min-height: 0; }
 .composer-input textarea { display: block; }
 .expanded-composer .composer-input textarea { padding-right: 44px; }
-/* The draft keeps its own scroll: containment stops wheel/touch chaining to the transcript or page,
-   and the scrollbar is hidden without disabling overflow. */
-.composer textarea { height: 40px; min-height: 40px; max-height: var(--composer-max-height, 320px); resize: none; padding: 8px 11px; line-height: 1.58; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
-.composer textarea::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* The draft keeps its own scroll: containment stops wheel/touch chaining to the transcript or page.
+   Desktop reuses the sidebar's thin scrollbar; the narrow layout hides it again below. */
+.composer textarea { height: 40px; min-height: 40px; max-height: var(--composer-max-height, 320px); resize: none; padding: 8px 11px; line-height: 1.58; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .composer textarea:placeholder-shown { -webkit-user-select: none; user-select: none; }
 .composer-actions { align-self: end; gap: 6px; }
 .composer button { height: 40px; min-height: 40px; min-width: 66px; padding: 7px 10px; }
@@ -648,6 +646,9 @@ textarea.input-free-text { min-height: 52px; resize: vertical; line-height: 1.4;
   .shell .workspace { flex: 1; display: flex; overflow: visible; }
   .shell .chat-panel { flex: 1; height: auto; display: flex; flex-direction: column; }
   .shell .conversation { flex: 1; overflow: visible; overscroll-behavior: auto; }
+  /* Mobile keeps page/touch scrolling for the transcript and a hidden textarea scrollbar. */
+  .shell .conversation, .composer textarea { scrollbar-width: none; }
+  .composer textarea::-webkit-scrollbar { display: none; }
   .shell .topbar { position: sticky; top: 0; flex-shrink: 0; }
   /* Keep the sticky header and composer out of Android selection-handle hit-testing during the
      hold; both edges otherwise stop the drag where they overlay the transcript. */
