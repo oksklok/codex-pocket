@@ -2784,38 +2784,22 @@ function refreshExpandedDetailOnTerminal(previous, activity) {
 }
 
 // A completed DSH question reads as conversation, not as a tool activity: the muted question with the
-// recorded answer beneath it, one block per pair. The detail keeps the gateway's shape (question lines,
-// then an `Answer: …` line), so multiple pairs and a secret `Answer: Hidden` render unchanged.
-const ANSWER_LINE_PREFIX = "Answer: ";
-
-function questionPairs(detail) {
-  const pairs = [];
-  let question = [];
-  for (const line of String(detail || "").split("\n")) {
-    if (!line.startsWith(ANSWER_LINE_PREFIX)) {
-      question.push(line);
-      continue;
-    }
-    pairs.push({ question: question.join("\n").trim(), answer: line.slice(ANSWER_LINE_PREFIX.length) });
-    question = [];
-  }
-  const trailing = question.join("\n").trim();
-  if (trailing) pairs.push({ question: trailing, answer: "" });
-  return pairs;
-}
-
+// recorded answer beneath it, one block per pair. The gateway already resolved the pairs into the
+// activity's `qa` field (secrets masked), so the renderer never re-parses the human-readable detail.
 function questionRecordNode(activity) {
   const article = document.createElement("article");
   article.className = "question-record";
   article.dataset.activityId = activity.id;
-  for (const pair of questionPairs(activity.detail)) {
+  for (const pair of Array.isArray(activity.qa) ? activity.qa : []) {
+    const questionText = String(pair?.question ?? "");
+    const answerText = String(pair?.answer ?? "");
     const block = document.createElement("div");
     block.className = "question-record-pair";
     const question = document.createElement("p");
     question.className = "question-record-question";
-    question.textContent = pair.question;
+    question.textContent = questionText;
     block.append(question);
-    if (pair.answer) {
+    if (answerText) {
       const answer = document.createElement("p");
       answer.className = "question-record-answer";
       const label = document.createElement("span");
@@ -2823,7 +2807,7 @@ function questionRecordNode(activity) {
       label.textContent = "Answer:";
       const value = document.createElement("span");
       value.className = "question-record-answer-value";
-      value.textContent = pair.answer;
+      value.textContent = answerText;
       answer.append(label, " ", value);
       block.append(answer);
     }

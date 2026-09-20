@@ -108,6 +108,8 @@ type PocketActivity = {
   label: string;
   status: "running" | "completed" | "failed" | "interrupted";
   detail?: string;
+  // Resolved DSH question pairs: each question text with its answer, secrets already masked.
+  qa?: { question: string; answer: string }[];
   expandable?: boolean;
   createdAt: number;
 };
@@ -280,6 +282,9 @@ const MAX_ACTIVITIES = 50;
 const MAX_HISTORY_ACTIVITIES_PER_TURN = 100;
 const MAX_DETAIL_ITEMS = 200;
 const MAX_DETAIL_TEXT = 96_000;
+// Per-string caps for the structured question pairs the browser renders directly.
+const MAX_QUESTION_TEXT = 4_000;
+const MAX_QUESTION_ANSWER = 4_000;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const DETAIL_ITEMS_PAGE_LIMIT = 100;
 const DETAIL_ITEMS_MAX_PAGES = 20;
@@ -1506,27 +1511,30 @@ function dshQuestionAnswers(item: any): Map<string, string[]> {
   return new Map();
 }
 
-function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string; detail: string } | null {
+function dshQuestionRecord(item: any, phase: "start" | "done"): { label: string; detail: string; qa: { question: string; answer: string }[] } | null {
   const questions = Array.isArray(item?.arguments?.questions) ? item.arguments.questions : [];
   if (!questions.length) return null;
   const answers = dshQuestionAnswers(item);
   const lines: string[] = [];
+  const qa: { question: string; answer: string }[] = [];
   for (const question of questions) {
-    // The full question stays in the record; the overall boundedDetail cap is the only limit.
+    // The full question stays in the record; the per-string caps are the only limit.
     const text = String(question?.question ?? "").trim() || compact(question?.header, 160);
     if (!text) continue;
     lines.push(text);
-    if (phase === "done") {
-      // A secret answer is never echoed into browser-facing detail; its question still is.
-      if (question?.isSecret === true) lines.push("Answer: Hidden");
-      else {
-        const values = answers.get(String(question?.id ?? "")) ?? [];
-        lines.push(`Answer: ${values.length ? values.join("; ") : "(not recorded)"}`);
-      }
+    if (phase !== "done") continue;
+    // A secret answer is never echoed into the detail or the structured pairs.
+    let answer: string;
+    if (question?.isSecret === true) answer = "Hidden";
+    else {
+      const values = answers.get(String(question?.id ?? "")) ?? [];
+      answer = values.length ? values.join("; ") : "(not recorded)";
     }
+    lines.push(`Answer: ${answer}`);
+    qa.push({ question: boundedDetail(text, MAX_QUESTION_TEXT).text, answer: boundedDetail(answer, MAX_QUESTION_ANSWER).text });
   }
   if (!lines.length) return null;
-  return { label: compact(questions[0]?.header || questions[0]?.question, 200) || "Question", detail: lines.join("\n") };
+  return { label: compact(questions[0]?.header || questions[0]?.question, 200) || "Question", detail: lines.join("\n"), qa };
 }
 
 function activityFromItem(
@@ -1562,7 +1570,7 @@ function activityFromItem(
     if (item.tool === "ask_user_question") {
       const record = dshQuestionRecord(item, phase);
       if (record) {
-        return { ...base, kind: "question", label: record.label, detail: boundedDetail(record.detail, 8_000).text, expandable: false };
+        return { ...base, kind: "question", label: record.label, detail: boundedDetail(record.detail, 8_000).text, qa: record.qa, expandable: false };
       }
     }
     return { ...base, kind: "tool", label: compact(`${item.namespace ? `${item.namespace}/` : ""}${item.tool ?? "unknown"}`), expandable: true };
