@@ -996,7 +996,7 @@ function localRuntimeReason(error: string): string {
 // One short-lived machine-side command; SSH failure is never interpreted as daemon absence.
 export async function manageRuntime(ssh: string | null, request: JsonObject): Promise<any> {
   const source = readFileSync(new URL("./runtime-management.mjs", import.meta.url), "utf8");
-  const script = Buffer.from(source + `\ntry { console.log(JSON.stringify({result:await manage(${JSON.stringify(request)})})); } catch(e) { console.log(JSON.stringify({error:e.message})); }\n`);
+  const script = Buffer.from(source + `\nlet reply; try { reply={result:await manage(${JSON.stringify(request)})}; } catch(e) { reply={error:e.message}; } process.stdout.write(JSON.stringify(reply)+'\\n',()=>process.exit(0));\n`);
   // Read the known byte count: some SSH servers retain stdin after the sender ends it.
   const loader = `const b=Buffer.alloc(${script.length});let n=0;while(n<b.length){const r=require('fs').readSync(0,b,n,b.length-n,null);if(!r)throw Error('Incomplete runtime command');n+=r}import('data:text/javascript;base64,'+b.toString('base64'))`;
   return new Promise((resolve, reject) => {

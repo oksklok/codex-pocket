@@ -5,6 +5,8 @@ import { dirname, join, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { connect } from 'node:net';
 const windows = process.platform === 'win32';
+// SSH PATH may expose node through a user shim but omit npm beside the actual Node executable.
+if (!windows) process.env.PATH = `${dirname(process.execPath)}${delimiter}${process.env.PATH || ''}`;
 const quotePS = value => `'${String(value).replaceAll("'", "''")}'`;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function run(file, args = [], options = {}) {
