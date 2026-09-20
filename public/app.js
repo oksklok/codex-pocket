@@ -267,12 +267,13 @@ function copyButton(getText, label = "Copy code") {
     button.setAttribute("aria-label", message);
     button.title = message;
     clearTimeout(button.copyReset);
+    // A success checkmark is the 2s confirmation; failure keeps its shorter flash.
     button.copyReset = setTimeout(() => {
       button.classList.remove("copied", "error-text");
       status.textContent = label;
       button.setAttribute("aria-label", label);
       button.title = label;
-    }, 1600);
+    }, copied ? 2000 : 1600);
   });
   return button;
 }
@@ -376,6 +377,14 @@ elements.enterSends.checked = enterSends;
 const translucentUI = document.querySelector("#translucent-ui");
 try { translucentUI.checked = localStorage.getItem("codex-pocket-translucent-ui") !== "false"; } catch {}
 document.documentElement.dataset.translucent = String(translucentUI.checked);
+// The desktop topbar floats over the transcript when translucent, so publish its live height for
+// the conversation and docked sidebars to keep clear of it.
+const topbarElement = document.querySelector(".topbar");
+function syncTopbarHeight() {
+  if (topbarElement) document.documentElement.style.setProperty("--topbar-height", `${topbarElement.offsetHeight}px`);
+}
+if (topbarElement && typeof ResizeObserver === "function") new ResizeObserver(syncTopbarHeight).observe(topbarElement);
+syncTopbarHeight();
 for (const [toggle, meter, key] of [[elements.showContext, elements.context, "context"], [elements.showQuota, elements.quota, "quota"]]) {
   try { toggle.checked = localStorage.getItem(`codex-pocket-show-${key}`) !== "false"; } catch {}
   meter.hidden = !toggle.checked;
@@ -1167,7 +1176,7 @@ function renderDestinationSwitcher(force = false) {
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
           feedback.textContent = "Wake packet sent";
-          setTimeout(() => feedback.remove(), 3000);
+          setTimeout(() => feedback.remove(), 2000);
         } catch (error) { feedback.textContent = error instanceof Error ? error.message : String(error); }
         finally { wake.disabled = false; }
       });

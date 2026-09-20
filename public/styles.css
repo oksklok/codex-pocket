@@ -29,6 +29,8 @@
   --backdrop: rgba(8,8,8,.76);
   --radius: 12px;
   --sidebar-header-height: 56px;
+  /* Measured live from the rendered topbar; the desktop translucent overlay keeps clear of it. */
+  --topbar-height: 58px;
   --control-height: 40px;
   --control-inset: 12px;
   /* Persistent bottom action rows share one separator and one vertical rhythm. */
@@ -394,9 +396,6 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .markdown img { display: block; max-width: 100%; max-height: 65dvh; object-fit: contain; margin: 8px auto; cursor: zoom-in; }
 .image-viewer { position: fixed; inset: 0; margin: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; padding: 0; border: 0; overflow: hidden; background: #0b0b0bed; color: white; touch-action: none; overscroll-behavior: contain; user-select: none; }
 .image-viewer::backdrop { background: #0b0b0b; }
-@media (min-width: 861px) {
-  .checkbox-row.translucent-preference { display: none !important; }
-}
 .image-viewer img { position: absolute; left: 50%; top: 50%; max-width: calc(100% - 24px); max-height: calc(100% - 104px); width: auto; height: auto; object-fit: contain; transform: translate(-50%, -50%); transform-origin: center; touch-action: none; -webkit-user-drag: none; }
 .image-viewer button { position: absolute; z-index: 1; right: max(12px, env(safe-area-inset-right)); top: max(12px, env(safe-area-inset-top)); width: 40px; height: 40px; min-height: 40px; padding: 9px; background: #2b2b2bcc; color: white; border: 1px solid #ffffff30; border-radius: 50%; }
 .image-viewer button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -833,11 +832,19 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .task-action-menu { padding: 4px; border-radius: var(--control-radius); }
 .task-actions button { min-height: 36px; padding: 8px; }
 
-/* Translucency is a narrow-layout choice: the preference is hidden from 861px up because desktop
-   always renders translucent, so a browser that disabled it on mobile must not stay opaque when
-   widened. Scoping the override keeps that promise without touching the stored preference. */
-@media (max-width: 860px) {
-  :root[data-translucent="false"] { --topbar: var(--bg); --composer-bg: var(--bg); }
+/* One translucent preference at every width: disabling it makes the topbar and composer opaque. */
+:root[data-translucent="false"] { --topbar: var(--bg); --composer-bg: var(--bg); }
+/* A translucent topbar only reads if the transcript scrolls beneath it, so on desktop the header
+   shares the workspace's row when translucent; the conversation and docked sidebars are offset to
+   keep their content clear of it. Opaque keeps the original in-flow desktop layout. */
+@media (min-width: 861px) {
+  :root:not([data-translucent="false"]) .topbar { margin-bottom: calc(-1 * var(--topbar-height)); }
+  :root:not([data-translucent="false"]) .conversation { padding-top: calc(var(--topbar-height) + 10px); }
+  :root:not([data-translucent="false"]) .history-status { padding-top: calc(var(--topbar-height) + 7px); }
+}
+@media (min-width: 1100px) {
+  :root:not([data-translucent="false"]) .destination-switcher { top: var(--topbar-height); }
+  :root:not([data-translucent="false"]) .inspector { margin-top: var(--topbar-height); }
 }
 
 .new-task-dialog { width: min(420px, calc(100% - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); }

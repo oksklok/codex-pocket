@@ -70,7 +70,8 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
   `--surface-strong` with no border.
 - Borders are 1px everywhere; there are no heavy outlines or nested borders.
 - Topbar and composer use translucent `--topbar`/`--composer-bg`; `[data-translucent="false"]`
-  collapses them to `--bg`, and only at ≤860px (see Mobile vs desktop).
+  collapses them to `--bg` at every width. On desktop the translucent topbar overlays the scrolling
+  transcript so the tint is visible.
 - Light theme re-maps the same token names; components never hard-code dark values (the image
   viewer is the deliberate exception).
 
@@ -104,11 +105,11 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
 
 Fenced code blocks in assistant-authored conversation messages carry exactly one Copy control. It is a
 28px outline icon button with the conventional Copy glyph at 18px, optically centred,
-`aria-label`/`title` "Copy code", and a brief "Copied" or "Copy failed" state that resets after about
-1.6 s. The button sits in a reserved right gutter so it never covers code, and the copied text is the
-original fenced code without the fence, wrapping or button. User messages, Command/Output and every
-other activity detail card, structured question titles and options, and any non-assistant Markdown
-never carry a Copy control.
+`aria-label`/`title` "Copy code", and a brief "Copied" or "Copy failed" state; a transient success
+confirmation lasts 2 seconds. The button sits in a reserved right gutter so it never covers code, and
+the copied text is the original fenced code without the fence, wrapping or button. User messages,
+Command/Output and every other activity detail card, structured question titles and options, and any
+non-assistant Markdown never carry a Copy control.
 
 ## States
 
@@ -254,7 +255,7 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
   point (`aria-haspopup="dialog"`).
 - ≤860px: the shell stops being a fixed-height grid — the page scrolls, the topbar and composer
   become sticky, the conversation takes 12px inline padding, and the composer adds safe-area bottom
-  padding. The translucent-UI preference is hidden from 861px up.
+  padding.
 - ≤620px: the topbar becomes a two-column layout; ≤520px: settings go full-bleed, the elapsed timer
   hides, phase chips shrink/ellipsize and composer actions go compact.
 - ≤380px: New Task's two-column settings grid collapses to one column.
@@ -293,8 +294,9 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
   unchanged by wrapping.
 - `full access` in the Access select and the `working`/`waiting`/`failed` phase pills reuse semantic
   colours as persistent state, not as decoration.
-- The translucent-UI preference is hidden at ≥861px because desktop always renders translucent, so
-  the `[data-translucent="false"]` token override is scoped to ≤860px rather than applying globally.
+- When translucent, the desktop topbar overlaps the chat column so the transcript scrolls beneath it:
+  the conversation keeps a top gutter and the docked Tasks/Task Details sidebars start below it. With
+  the preference off, the topbar returns to its own in-flow row and stays opaque.
 - Quit lifecycle copy may be macOS-specific. Quit is only exposed on the native macOS host, so its
   confirmation and status wording (for example "Codex Pocket.app" and "that Mac") may name the Mac;
   headless and container hosts hide Quit and use their managed lifecycle instead.
