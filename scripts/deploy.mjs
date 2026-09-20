@@ -178,8 +178,13 @@ export function gatewayLifecycle(value) {
   const machineId = typeof value?.machineId === "string" ? value.machineId : "";
   const machines = Array.isArray(value?.machines) ? value.machines : [];
   const selected = machines.find((machine) => machine && machine.id === machineId) ?? null;
-  const durable = value?.provider === "deepseek" && value?.connected === true
+  const durableDsh = value?.provider === "deepseek" && value?.connected === true
     && selected?.provider === "deepseek" && selected?.connected === true;
+  // SSH Codex uses app-server proxy: the NAS owns only the connection, not the managed server
+  // or its turns. A gateway restart must not wait for work running in that independent server.
+  const managedCodex = value?.provider === "openai" && value?.connected === true
+    && selected?.provider === "openai" && selected?.connected === true && Boolean(selected?.ssh);
+  const durable = durableDsh || managedCodex;
   const busy = value?.turn?.status === "inProgress" || String(value?.threadStatus ?? "").startsWith("active") || value?.phase === "working";
   return { machineId, durable, busy };
 }
@@ -715,14 +720,16 @@ async function defaultRun(command, commandArgs, { input = null, timeout = 120_00
   });
 }
 
-// All external commands go through this seam so a caller can observe or replace them.
-export const processRunner = { run: defaultRun };
 // Readiness polling window; keep it long enough for a real container to become healthy.
-export const deployTiming = { readinessAttempts: 90, readinessDelayMs: 1000 };
-const run = (command, commandArgs, options) => processRunner.run(command, commandArgs, options);
+const deployTiming = { readinessAttempts: 90, readinessDelayMs: 1000 };
+const run = defaultRun;
 
 const sshBase = () => [
-  ...(existsSync(SSH_CONFIG) ? ["-F", SSH_CONFIG] : []),
+  ...(existsSync(SSH_CONFIG) ? [
+    "-F", SSH_CONFIG,
+    ...(existsSync(join(ROOT, "ssh", "id_ed25519")) ? ["-i", join(ROOT, "ssh", "id_ed25519")] : []),
+    ...(existsSync(join(ROOT, "ssh", "known_hosts")) ? ["-o", `UserKnownHostsFile=${join(ROOT, "ssh", "known_hosts")}`] : []),
+  ] : []),
   "-T",
   "-o", "BatchMode=yes",
   "-o", "ConnectTimeout=8",
@@ -882,7 +889,15 @@ async function stageMachine(entry, manifest, archive) {
   const { machine, dshDir, windows, current } = entry;
   const bundleRoot = parentDir(dshDir);
   const staging = joinPath(windows, bundleRoot, stagingName(manifest.bundle));
-  const installDeps = current?.lockHash !== manifest.lockHash;
+  // Legacy installations have no manifest, but their actual lockfile can still prove that the
+  // existing dependency tree is reusable. The staged load probe verifies that tree before cutover.
+  let installedLockHash = current?.lockHash;
+  if (!installedLockHash) {
+    const hashJs = "try{const fs=require('fs');const p=process.argv[1];if(fs.statSync(p+'/node_modules').isDirectory())process.stdout.write(require('crypto').createHash('sha256').update(fs.readFileSync(p+'/package-lock.json')).digest('hex'))}catch{}";
+    const hash = await ssh(machine, nodeCommand(windows, `-e "${hashJs}"`, quoteFor(windows, dshDir)));
+    if (hash.code === 0) installedLockHash = hash.stdout.trim();
+  }
+  const installDeps = installedLockHash !== manifest.lockHash;
   const options = { bundleRoot, dshDir, staging, installDeps };
   let result;
   if (windows) {
@@ -959,6 +974,9 @@ async function machineProtocol(entry) {
 async function incompatibleMachines(entries, manifest) {
   const incompatible = [];
   for (const entry of entries) {
+    // Offline machines cannot attach during cutover. Their adapters stay pending; the gateway's
+    // protocol handshake rejects an incompatible adapter when the machine returns.
+    if (entry.reason === "offline") continue;
     const protocol = await machineProtocol(entry);
     if (protocol !== manifest.protocol) incompatible.push({ ...entry, machineProtocol: protocol });
   }
@@ -1021,9 +1039,13 @@ async function imageProtocol() {
 // restart-safety decision comes from that runtime's provider plus the machine it belongs to.
 export async function gatewayRequest(pathname, { timeout = 4 } = {}) {
   const path = settingsPath();
-  let pin = null;
-  try { pin = JSON.parse(readFileSync(path, "utf8")).pin; } catch {}
-  const base = "http://127.0.0.1:4173";
+  let config = {};
+  try { config = JSON.parse(readFileSync(path, "utf8")); } catch {}
+  const pin = config.pin;
+  // A host-network deployment can bind only its LAN address; use its configured HTTP origin.
+  const base = (Array.isArray(config.accessUrls) ? config.accessUrls : [])
+    .find((url) => typeof url === "string" && url.startsWith("http://"))
+    ?? `http://${config.host && !["0.0.0.0", "::"].includes(config.host) ? config.host : "127.0.0.1"}:${config.port || 4173}`;
   const args = ["-s", "--max-time", String(timeout)];
   if (/^\d{4}$/.test(pin ?? "")) {
     const jar = join(tmpdir(), "pocket-deploy.jar");
