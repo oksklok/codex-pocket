@@ -118,10 +118,12 @@ h3 { margin: 0; font-size: var(--text-ui); }
   background: var(--surface-strong); color: var(--text);
 }
 .login-card input { min-height: 56px; padding: 9px 14px; font-size: 1.55rem; letter-spacing: .42em; text-align: center; }
-/* One explicit reveal control with symmetric reserved space; the indent offsets the trailing
-   letter-space so the centred digits sit on the field's true centre. */
+/* One explicit reveal control with symmetric reserved space. The input's empty placeholder lets
+   :placeholder-shown tell an empty field from a populated one, so the indent that offsets the
+   trailing letter-space applies only once digits exist and the empty caret stays centred. */
 .login-pin { position: relative; }
-.login-pin input { padding: 9px 44px; text-indent: .42em; }
+.login-pin input { padding: 9px 44px; }
+.login-pin input:not(:placeholder-shown) { text-indent: .42em; }
 .login-card .login-pin-reveal {
   position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
   display: grid; place-items: center; width: 36px; min-width: 36px; height: 36px; min-height: 36px;

@@ -139,8 +139,10 @@ never carry a Copy control.
   an entered value, and the reveal/hide toggle re-asserts the exact caret or selection after the
   password/text swap and focus transition have settled.
 - The login PIN offsets its trailing `letter-spacing` with an equal `text-indent`, so the entered
-  digits sit on the field's true centre, and its reveal control changes glyph with its state — open
-  eye to show, slashed eye to hide — alongside `aria-pressed` and the matching label.
+  digits sit on the field's true centre. The input's empty placeholder gates that indent on
+  `:placeholder-shown`, so an empty field keeps its caret centred too. Its reveal control changes
+  glyph with its state — open eye to show, slashed eye to hide — alongside `aria-pressed` and the
+  matching label.
 - `prefers-reduced-motion: reduce` disables the drawer/chevron transitions and the spin/pulse
   animations.
 
