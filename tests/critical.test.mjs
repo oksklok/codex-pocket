@@ -780,6 +780,16 @@ test("gateway and execution-side adapter protocol versions stay in sync", async 
   assert.equal(gateway.DSH_ADAPTER_PROTOCOL, DSH_ADAPTER_PROTOCOL);
 });
 
+test("the gateway refuses an execution adapter from another protocol generation", async () => {
+  const { DSH_ADAPTER_PROTOCOL, assertAdapterProtocol } = await import('../gateway.ts');
+  assert.doesNotThrow(() => assertAdapterProtocol({ adapterProtocol: DSH_ADAPTER_PROTOCOL }));
+  assert.doesNotThrow(() => assertAdapterProtocol({ adapterProtocol: String(DSH_ADAPTER_PROTOCOL) }));
+  assert.throws(() => assertAdapterProtocol({ adapterProtocol: DSH_ADAPTER_PROTOCOL + 1 }), /out of date/);
+  assert.throws(() => assertAdapterProtocol({ adapterProtocol: DSH_ADAPTER_PROTOCOL - 1 }), /out of date/);
+  assert.throws(() => assertAdapterProtocol({}), /out of date/, "a missing handshake field is refused");
+  assert.throws(() => assertAdapterProtocol({ adapterProtocol: "newer" }), /out of date/);
+});
+
 test("a request replayed before its thread attaches is delivered after attach", async () => {
   clearRememberedSelection();
   const runtime = new MachineRuntime({ machines: [] }, { id: 'local', name: 'Local', ssh: null }, () => {});

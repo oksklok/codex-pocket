@@ -21,6 +21,15 @@ import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPU
 // gateway refuses an execution-side adapter it does not understand.
 export const DSH_ADAPTER_PROTOCOL = 2;
 
+// The verified handshake: an execution-side adapter may only be used when its `initialize` reply
+// declares this gateway's protocol. A missing or different value refuses the connection instead of
+// running an incompatible mix; the deployment command updates both sides together.
+export function assertAdapterProtocol(initialized: any, protocol: number = DSH_ADAPTER_PROTOCOL): void {
+  if (Number(initialized?.adapterProtocol) !== protocol) {
+    throw new Error("The execution-machine DSH adapter is out of date; run the deployment command to update it");
+  }
+}
+
 type JsonObject = Record<string, any>;
 type PendingRpc = {
   resolve: (value: any) => void;
@@ -2640,9 +2649,7 @@ export class MachineRuntime {
       if (this.deepseek && initialized?.backend !== "dsh") throw new Error("Unexpected DeepSeek backend");
       // Refuse an execution-side adapter from a different protocol generation rather than running
       // an incompatible mix. The deployment command updates both together.
-      if (this.deepseek && Number(initialized?.adapterProtocol) !== DSH_ADAPTER_PROTOCOL) {
-        throw new Error("The execution-machine DSH adapter is out of date; run the deployment command to update it");
-      }
+      if (this.deepseek) assertAdapterProtocol(initialized);
       this.state.userAgent = compact(initialized?.userAgent, 180) || "Codex app-server";
       this.state.platform = [initialized?.platformFamily, initialized?.platformOs].filter(Boolean).join(" / ") || "unknown";
       this.technicalConnectionError = null;
