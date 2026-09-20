@@ -4287,6 +4287,14 @@ async function renderMachineRuntimes(target, refresh = false) {
   const list = section.querySelector("#machine-runtime-list");
   const group = target.mode === "host" ? "local" : `ssh:${savedMachines()[target.index]?.ssh}`;
   const entries = machines.filter(machine => (machine.group || machine.id) === group);
+  // A physical machine with no connected runtime has nothing to inspect: keep the dialog to its
+  // configuration fields instead of showing an empty Runtimes section with Offline rows.
+  if (!entries.some(machine => machine.connected)) {
+    list.replaceChildren();
+    section.hidden = true;
+    machineRuntimeInspecting = null;
+    return;
+  }
   section.hidden = false;
   const token = ++machineRuntimeRender;
   // Stable inspection state before the first rows; later polls refresh in place and keep them.
