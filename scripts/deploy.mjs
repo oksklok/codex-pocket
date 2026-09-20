@@ -163,6 +163,7 @@ export function planFleet({ entries, targetKeys, manifest, allowProtocolChange }
 // Idle-state decision for a rollback, matching activation: an unproven state never authorizes
 // stopping the runtime, and a busy runtime is never touched.
 export function rollbackDecision(entry, confirmIdle) {
+  if (entry.markerUnreadable === true) return { ok: false, reason: "the maintenance marker could not be read or verified; rollback is refused" };
   if (entry.liveStatus === "busy") return { ok: false, reason: "runtime busy" };
   if (entry.liveStatus === "idle") return { ok: true, stopLive: Boolean(entry.verifiable) && !entry.absentProven };
   if (!entry.verifiable && confirmIdle) return { ok: true, stopLive: false };
@@ -818,16 +819,22 @@ async function inspectMachine(machine, manifest, options) {
     const verify = await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, dshDir)), "--verify", quoteFor(windows, manifestPath(windows, dshDir))));
     installedVerified = verify.code === 0;
   }
-  // A previous run's maintenance marker tells a rerun to finish that target after activation. Only an
-  // explicit check decides existence; a failed check is "unknown", never "none".
+  // A previous run's maintenance marker tells a rerun to finish that target after activation. Only a
+  // successful existence check followed by a successful, shape-valid content read may classify a
+  // marker; every other outcome stays "unknown" and must block replacement, rollback and release.
   const marker = markerPath(windows, dshDir);
   const markerCheck = await ssh(machine, nodeCommand(windows, `-e "${JS_MARKER_CHECK}"`, quoteFor(windows, marker)));
   let markerState = "unknown";
   const markerVerdict = String(markerCheck.stdout ?? "").trim().split("\n").filter(Boolean).pop() ?? "";
-  if (markerCheck.code === 0 && markerVerdict === "absent") markerState = "none";
-  else if (markerCheck.code === 0 && markerVerdict === "exists") {
-    const markerValue = parseLastJson((await ssh(machine, readJsonCommand(windows, marker))).stdout);
-    markerState = markerValue?.stuck === true ? "stuck" : "held";
+  if (markerCheck.code === 0 && markerVerdict === "absent") {
+    markerState = "none";
+  } else if (markerCheck.code === 0 && markerVerdict === "exists") {
+    const content = await ssh(machine, readJsonCommand(windows, marker));
+    const value = content.code === 0 ? parseLastJson(content.stdout) : null;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (value.stuck === true) markerState = "stuck";
+      else if (typeof value.at === "number" && Number.isFinite(value.at)) markerState = "held";
+    }
   }
   let liveStatus = null;
   let statusProtocol = null;
@@ -859,7 +866,16 @@ async function inspectMachine(machine, manifest, options) {
       }
     }
   }
-  return { ...entry, current, liveStatus, verifiable, statusProtocol, installedVerified, liveReason, absentProven, ownerState, markerState, ...planMachine({ current, manifest, liveStatus, absentProven, ...options }) };
+  // An unreadable marker must block replacement, rollback and release for this installation; neither
+  // the full command nor --confirm-idle may plan an update over it.
+  const markerUnreadable = markerState === "unknown";
+  const plan = planMachine({ current, manifest, liveStatus, absentProven, ...options });
+  return {
+    ...entry,
+    current, liveStatus, verifiable, statusProtocol, installedVerified, liveReason, absentProven, ownerState, markerState, markerUnreadable,
+    ...plan,
+    ...(markerUnreadable ? { action: "hold", reason: "the maintenance marker could not be read or verified; resolve it on the machine before deploying" } : {}),
+  };
 }
 
 async function stageMachine(entry, manifest, archive) {
@@ -1151,6 +1167,9 @@ export async function main(argv = process.argv.slice(2)) {
   const heldTargets = inspected.filter((entry) => isTarget(entry) && entry.markerState === "held");
   const heldAll = inspected.filter((entry) => entry.markerState === "held");
   const stuckTargets = inspected.filter((entry) => isTarget(entry) && entry.markerState === "stuck");
+  const unreadableTargets = inspected.filter((entry) => isTarget(entry) && entry.markerUnreadable === true);
+  for (const entry of unreadableTargets) log(`${entry.name}: pending (the maintenance marker could not be read or verified; resolve it on the machine before deploying)`);
+  if (unreadableTargets.length) process.exitCode = 1;
   const plannedLegacyCutover = inspected.some((entry) => isTarget(entry) && entry.action === "update" && entry.legacyStop);
   if (!rollback && adaptersOnly && (protocolChanged || plannedLegacyCutover)) {
     log("--adapters-only cannot perform a protocol transition or the initial legacy cutover; run the full deploy so the gateway is activated with the adapters");

@@ -15,9 +15,9 @@ const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
 
 // A stateful fake host: it answers the deploy's SSH scripts and Docker/curl calls, and tracks the
 // running image so readiness and gateway restore behave like a real container lifecycle.
-function harness({ manifest, status, owner, gatewayState, health = true, failFirstUp = false, marker = null, releaseFails = false, checkFails = false, checkMalformed = false, healthFailures = 0 } = {}) {
+function harness({ manifest, status, owner, gatewayState, health = true, failFirstUp = false, marker = null, markerRead = null, releaseFails = false, checkFails = false, checkMalformed = false, healthFailures = 0 } = {}) {
   const calls = [];
-  const state = { imageId: IMAGE_A, builtId: IMAGE_B, refTarget: IMAGE_B, upCalls: 0, healthChecks: 0, markerReleased: false };
+  const state = { imageId: IMAGE_A, builtId: IMAGE_B, refTarget: IMAGE_B, upCalls: 0, healthChecks: 0, markerReleased: false, stuckRefusals: 0 };
   const currentManifest = manifest ?? { protocol: 2, bundle: "old-bundle", lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } };
   const statusValue = status ?? { ok: true, result: { busy: false, protocol: 2 } };
   const ownerValue = owner ?? { ok: true, state: "absent" };
@@ -36,7 +36,11 @@ function harness({ manifest, status, owner, gatewayState, health = true, failFir
       const script = String(args.at(-1) ?? "");
       if (script.includes("echo pocket-deploy-ok")) return ok("pocket-deploy-ok\n");
       if (script.includes("tar -xzf - -C")) return ok('{"ok":true}\n');
-      if (script.includes("MUTATED=1")) return ok('{"ok":true,"held":true}\n');
+      if (script.includes("MUTATED=1")) {
+        // The real activation script refuses a stuck marker before touching anything.
+        if (marker && marker.stuck === true) { state.stuckRefusals += 1; return { code: 8, stdout: '{"ok":false,"reason":"stuck-marker"}\n', stderr: "" }; }
+        return ok('{"ok":true,"held":true}\n');
+      }
       if (script.includes("no-previous")) return ok('{"ok":true}\n');
       if (script.includes(".pocket-deploying")) {
         if (script.includes("rm -f") || script.includes("Remove-Item")) {
@@ -51,6 +55,8 @@ function harness({ manifest, status, owner, gatewayState, health = true, failFir
           if (checkMalformed) return ok("garbage\n");
           return ok("absent\n");
         }
+        // The separate content read; its exit status and shape are what classify the marker.
+        if (markerRead) return { code: markerRead.code ?? 0, stdout: markerRead.stdout ?? "", stderr: markerRead.stderr ?? "" };
         return ok(marker && !state.markerReleased ? `${JSON.stringify(marker)}\n` : "null");
       }
       if (script.includes("--owner")) return ok(`${JSON.stringify(ownerValue)}\n`);
@@ -304,4 +310,51 @@ test("verified recovery releases protection only after the restored gateway is r
   assert.ok(scripts.some((script) => script.includes("no-previous")), "the switched adapter was restored");
   assert.ok(h.calls.some((call) => call.command === "docker" && call.args.join(" ").startsWith("tag ")), "the retained image was restored");
   assert.equal(process.exitCode, 1, "the deployment still ends pending while recovery succeeded");
+});
+
+// A manifest that would otherwise be updated, so a held machine is proven to be skipped.
+const changedManifest = () => ({ protocol: localManifest().protocol, bundle: "old-bundle", lockHash: "old-lock", features: ["control-socket", "integrity-verify", "idle-only-shutdown"], files: { "dsh/runtime.mjs": "x" } });
+
+for (const [label, markerRead] of [
+  ["a nonzero content read", { code: 1, stdout: "" }],
+  ["malformed JSON", { code: 0, stdout: "not json\n" }],
+  ["a null response", { code: 0, stdout: "null\n" }],
+  ["an unexpected shape", { code: 0, stdout: '{"foo":1}\n' }],
+]) {
+  test(`a stuck marker with ${label} is held, not released`, async () => {
+    // The underlying marker is stuck:true, but an unreadable read must not let it be classified held.
+    const h = harness({ manifest: changedManifest(), marker: { stuck: true, at: 123 }, markerRead });
+    process.exitCode = 0;
+    await withSettings([MACHINE], () => main(["--settings", "ignored"]));
+    assert.equal(mutation(h.calls).length, 0, "the installation is not replaced");
+    assert.equal(releaseCalls(h.calls).length, 0, "the marker is never released");
+    assert.equal(process.exitCode, 1, "the target is reported unresolved");
+  });
+}
+
+test("--confirm-idle cannot bypass an unreadable marker", async () => {
+  const h = harness({ manifest: changedManifest(), marker: { stuck: true, at: 123 }, markerRead: { code: 1, stdout: "" } });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--confirm-idle", "--settings", "ignored"]));
+  assert.equal(mutation(h.calls).length, 0);
+  assert.equal(releaseCalls(h.calls).length, 0);
+  assert.equal(process.exitCode, 1);
+});
+
+test("--rollback refuses an unreadable marker", async () => {
+  const h = harness({ manifest: changedManifest(), marker: { stuck: true, at: 123 }, markerRead: { code: 0, stdout: "null\n" } });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--rollback", "--settings", "ignored"]));
+  assert.equal(h.calls.some((call) => call.command === "ssh" && /no-previous/.test(String(call.args.at(-1)))), false, "no rollback script runs");
+  assert.equal(releaseCalls(h.calls).length, 0);
+  assert.equal(process.exitCode, 1);
+});
+
+test("a valid stuck marker retains its protection", async () => {
+  const h = harness({ manifest: changedManifest(), marker: { stuck: true, at: 123 } });
+  process.exitCode = 0;
+  await withSettings([MACHINE], () => main(["--settings", "ignored"]));
+  assert.equal(h.state.stuckRefusals, 1, "the activation refused the stuck marker");
+  assert.equal(releaseCalls(h.calls).length, 0, "a stuck marker is never released");
+  assert.equal(process.exitCode, 1);
 });
