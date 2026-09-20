@@ -275,6 +275,14 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 - `forced-colors: active` restores native selects and a system focus outline; `prefers-reduced-motion`
   disables transitions and looping animations.
 
+### Keyboard interaction
+
+- Native controls keep their native keyboard behavior; never re-implement it.
+- Custom clickable controls must offer keyboard-equivalent activation (Enter/Space where appropriate).
+- Escape cancels or closes a dialog unless a busy mutation prevents it.
+- Opening and closing modal UI uses deliberate focus placement and return rather than losing focus.
+- DOM order is the normal Tab order; add custom keyboard navigation only when a component requires it.
+
 ## Intentional exceptions
 
 - Wide layouts dock the sidebars (no backdrop, no close button, no `aria-haspopup`) — the same

@@ -1170,29 +1170,40 @@ function renderDestinationSwitcher(force = false) {
       const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
       wake.setAttribute("aria-label", `Wake ${machine.name}`);
       wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
+      // The note, created on demand. It never clears an existing success note, so a repeated Wake
+      // keeps "Wake packet sent" visible while the new request is pending; every step re-reads the
+      // current node so a rerender mid-request cannot strand the update on a detached element.
+      const wakeNote = () => {
+        let note = wakeAction.querySelector(".wake-feedback");
+        if (!note) {
+          note = Object.assign(document.createElement("span"), { className: "wake-feedback" });
+          note.setAttribute("role", "status");
+          note.dataset.wakeMachine = machine.id;
+          wakeAction.append(note);
+        }
+        return note;
+      };
       // Re-add the note on every rerender while the success is still inside its two-second lifetime.
-      if (wakeFeedbackActive(machine.id)) {
-        const note = Object.assign(document.createElement("span"), { className: "wake-feedback", textContent: "Wake packet sent" });
-        note.setAttribute("role", "status");
-        note.dataset.wakeMachine = machine.id;
-        wakeAction.append(note);
-      }
+      if (wakeFeedbackActive(machine.id)) wakeNote().textContent = "Wake packet sent";
       wake.addEventListener("click", async () => {
         wake.disabled = true;
-        wakeAction.querySelector(".wake-feedback")?.remove();
-        const feedback = Object.assign(document.createElement("span"), { className: "wake-feedback" });
-        feedback.setAttribute("role", "status");
-        feedback.dataset.wakeMachine = machine.id;
-        wakeAction.append(feedback);
+        wakeNote();
         try {
           const response = await apiFetch("/api/machines/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: machine.id }) });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "Could not send Wake packet");
-          feedback.textContent = "Wake packet sent";
+          wakeNote().textContent = "Wake packet sent";
           // Re-arm from this success, so a repeated Wake restarts the full two seconds.
           wakeSuccessAt.set(machine.id, Date.now());
           scheduleWakeExpiry(machine.id);
-        } catch (error) { feedback.textContent = error instanceof Error ? error.message : String(error); }
+        } catch (error) {
+          // A failure supersedes any earlier success: stop and forget that timer before showing the
+          // error, so no stale timer removes this message and no rerender resurrects the success.
+          clearTimeout(wakeExpiryTimers.get(machine.id));
+          wakeExpiryTimers.delete(machine.id);
+          wakeSuccessAt.delete(machine.id);
+          wakeNote().textContent = error instanceof Error ? error.message : String(error);
+        }
         finally { wake.disabled = false; }
       });
       wakeAction.append(wake);
