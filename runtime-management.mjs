@@ -41,6 +41,7 @@ export function newer(candidate, installed) {
   return false;
 }
 async function codexExecutable() {
+  if (process.env.CODEX_BIN) return realpathSync(process.env.CODEX_BIN);
   const path = windows ? await powershell('(Get-Command codex.exe).Source') : await run('sh', ['-c', 'command -v codex']);
   return realpathSync(path.trim());
 }
@@ -137,6 +138,11 @@ export async function manage(request) {
   }
   if (!request.path) throw new Error('DSH path is not configured');
   if (request.action === 'inspect') return dshInfo(request.path);
+  if (request.action === 'status') {
+    const status = JSON.parse(await run(process.execPath, [join(dirname(request.path), 'runtime.mjs'), '--status']));
+    if (!status.ok || typeof status.result?.busy !== 'boolean') throw new Error(status.reason || 'DSH did not report runtime status');
+    return status.result;
+  }
   if (request.action !== 'install') throw new Error('Unknown DSH operation');
   const root = dirname(request.path);
   const marker = join(dirname(root), '.pocket-deploying');

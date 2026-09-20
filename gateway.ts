@@ -1999,6 +1999,7 @@ export class MachineRuntime {
   private runtimeUpdating = false;
   private runtimeUpdateError: string | null = null;
   private runtimeVersions: any = null;
+  private runtimeInspection: Promise<any> | null = null;
   private daemonStart: ReturnType<typeof execFile> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelayIndex = 0;
@@ -2821,6 +2822,7 @@ export class MachineRuntime {
   }
 
   private async runtimeBusy(): Promise<boolean> {
+    if (this.deepseek) return (await this.runtimeRequest("status")).busy;
     if (!this.rpc || !this.state.connected) throw new Error("Cannot verify whether the runtime is idle");
     let cursor: string | undefined;
     do {
@@ -2837,8 +2839,11 @@ export class MachineRuntime {
 
   async runtimeDetails(refresh = true): Promise<JsonObject> {
     let error = this.runtimeUpdateError;
-    if (refresh && !this.runtimeUpdating) {
-      try { this.runtimeVersions = await this.runtimeRequest("inspect"); }
+    if ((refresh || !this.runtimeVersions) && !this.runtimeUpdating) {
+      try {
+        this.runtimeInspection ??= this.runtimeRequest("inspect").finally(() => { this.runtimeInspection = null; });
+        this.runtimeVersions = await this.runtimeInspection;
+      }
       catch (failure) { error = String(failure instanceof Error ? failure.message : failure); }
     }
     let busy = true;
