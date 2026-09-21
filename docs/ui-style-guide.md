@@ -1,310 +1,123 @@
 # Codex Pocket UI style guide
 
-The current production interface was the basis for this guide. From here on it is the convention to
-follow: new work matches it, and anything that deliberately diverges has to be documented under
-Intentional exceptions below. It describes the existing visual language, not a new design system.
-Implementation references: `public/index.html`, `public/styles.css`, `public/app.js`. Where CSS
-tokens are named, the token is the preferred value.
+This is the current UI contract for new work. It describes durable conventions, not a historical audit or a pixel-by-pixel inventory. Implementation references: `public/index.html`, `public/styles.css`, and `public/app.js`.
 
-## Typography
+## Typography and sizing
 
-One family: `Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`.
-Monospace (`ui-monospace, SFMono-Regular, Menlo, monospace`) is reserved for code, diffs and paths.
-
-One small rem scale, referenced by token everywhere except the two hero headings:
+Pocket uses `Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`. Monospace is reserved for code, diffs, and paths.
 
 | Role | Token | Size | Typical use |
 | --- | --- | --- | --- |
-| Heading | `--text-heading` | 14px (`.875rem`) | message/transcript prose and the surfaces that compose it (main and expanded composer, async free-text answer); settings section titles |
-| UI | `--text-ui` | 13px (`.8125rem`) | controls, rows, ordinary form fields and pickers (Tasks search, Settings, New Task, Machine Details, Project Folder, Task Details selects, buttons) |
-| Label | `--text-label` | 12px (`.75rem`) | most labels, secondary buttons, list rows |
-| Secondary | `--text-secondary` | 11px (`.6875rem`) | status lines, hints, meta |
-| Meta | `--text-meta` | 10px (`.625rem`) | uppercase micro-labels, badges |
+| Heading | `--text-heading` | 14px | transcript prose, composer, settings section titles |
+| UI | `--text-ui` | 13px | controls, fields, selects |
+| Label | `--text-label` | 12px | labels and compact rows |
+| Secondary | `--text-secondary` | 11px | status and hints |
+| Meta | `--text-meta` | 10px | badges and uppercase micro-labels |
 
-- `h1` is the only large type (1.55rem) and appears only on the login and stopped screens.
-- `h2` titles are 1rem (dialogs, Tasks and Task Details headings, Settings).
-- Uppercase micro-labels (`.eyebrow`, `.metadata dt`, `.activity-kind`, `.detail-field > strong`)
-  use `letter-spacing` plus weight 750–800; they never carry running copy.
-- Transcript prose and the surfaces that compose it are `--text-heading` at `line-height: 1.58`, so
-  a draft matches the message it becomes; UI chrome uses tighter leading (1.25–1.45).
+`--control-height: 40px` is the normal field/action height. `--icon-size: 36px` is the normal square icon target. The login PIN and the compact assistant-code Copy control are deliberate exceptions.
 
-## Control heights and sizing
+## Layout and spacing
 
-- `--control-height: 40px` is the canonical control height: text inputs, native selects, the
-  read-only single-choice value (`.select-static`), composer textarea/buttons and every dialog
-  action row (`.new-task-actions`, `.settings-actions`, `.machines-footer-reorder`,
-  `.machine-dialog-actions`).
-- `--icon-size: 36px` is the square hit target for icon buttons; the glyph inside is 18px.
-- `--sidebar-header-height: 56px` for Tasks/Task Details headers; the topbar is `min-height: 58px`.
-- `--control-inset: 12px` is the standard horizontal text inset for fields and selects.
-- Fields take a sensible width instead of stretching to the container: the desktop Settings card is
-  420px and the PIN field caps at 280px.
-- Standalone `.secondary-button` (34px) and `.primary-button`/`.danger-button` (36px) keep smaller
-  defaults and are normalized to 40px only inside the action rows above.
-- `--radius: 12px` is the default for main panels, cards and dialogs; compact cards and notices may
-  use 9–11px; controls and buttons use `--control-radius: 8px`.
+- Screen inset and ordinary panel padding: 12px.
+- Default gap: 8px; dense chrome may tighten it.
+- Main panels use `--radius`; controls use `--control-radius`.
+- Transcript and composer share the same centered content track.
+- Trailing text in compact rows ellipsizes rather than forcing controls to wrap.
+- User image thumbnails sit above the user bubble; image-only messages do not render an empty text bubble.
 
-## Spacing and alignment
+At **1100px and above**, Tasks and Task Details are docked sidebars and the chat reserves their widths. Below 1100px they become drawers with backdrops and close controls.
 
-- Screen inset is 12px; shells, sidebars and drawers all pad 12px.
-- The transcript and composer share a centred track: conversation padding is
-  `max(16px, calc((100% - 1050px) / 2))` — a percentage of the chat column, so the track centres on
-  the real remaining space once the wide-layout sidebars reserve their width — the composer/cards
-  are `min(100%, 780px)` and messages are `min(100%, 760px)`.
-- Gaps are 8px by default, tightening to 4–7px in dense chrome; dialog field stacks use 12px
-  vertical gaps and panel/metadata padding is 12px.
-- Shared action-row rhythm: `--action-row-gap: 8px`, `--action-row-inset: 10px`, separated from
-  content by `--action-row-border` (1px `--line-soft`).
-- Trailing text in a row ellipsizes (`min-width: 0` + `text-overflow: ellipsis`) rather than
-  wrapping; destructive/secondary actions in dialogs stay right-aligned, with `margin-right: auto`
-  pushing a lone destructive action (Remove Machine) to the left edge.
-- Sent user images are 72×72 `object-fit: cover` thumbnails above the user bubble, not inline
-  previews; an image-only message keeps the thumbnails and drops the empty text bubble.
+At **860px and below**, the page becomes the primary scroller; the top bar and composer remain sticky. Smaller breakpoints compact the top bar and composer, and the New Task grid collapses to one column on very narrow screens.
 
-## Surfaces, borders, radius
+## Surfaces and controls
 
-Neutral-gray surfaces; colour is reserved for actions, status and activity categories.
+Neutral surfaces carry most structure; semantic color is reserved for actions, status, and activity categories.
 
-- `--bg #181818` page, `--surface #202020` panels/sidebars, `--surface-strong #282828` inputs and
-  raised rows, `--line #3a3a3a` borders, `--line-soft #303030` internal dividers.
-- `--selected-bg #333333` / `--selected-border #4a4a4a` is the single neutral active surface shared
-  by hover, selection and sidebar toggles.
-- Panels are a 1px `--line-soft` border over `--soft-surface`; metadata tiles are filled
-  `--surface-strong` with no border.
-- Borders are 1px hairlines; there are no heavy outlines or nested borders, and chromeless controls
-  simply omit one. The Markdown blockquote's 2px left accent is the one deliberate exception.
-- Topbar and composer are opaque at every width (`--topbar`/`--composer-bg` resolve to `--bg`); they
-  never float over the transcript.
-- Light theme re-maps the same token names, so components read tokens rather than fixed colours; the
-  image viewer and the tinted accent/danger control fills are the deliberate exceptions.
+- Primary actions use the accent treatment.
+- Secondary actions use the raised neutral surface.
+- Destructive actions use the danger treatment.
+- Icon-only controls use outline glyphs and an `aria-label`.
+- Pocket emits no browser-native `title` tooltips.
+- Disabled controls stay visually inert.
+- Hover feedback is only applied on hover-capable devices.
+- `prefers-reduced-motion` disables drawer/chevron transitions and looping animations.
+- `forced-colors` restores system focus outlines and native control treatment.
 
-## Icons
+The image viewer remains dark in both themes. Archived task rows may remain fully opaque even when their actions are disabled.
 
-- Outline glyphs: `fill: none; stroke: currentColor`, `stroke-width: 1.5` at the standard 18px
-  size, 1.6–2 in denser contexts, with round caps and joins. No filled blobs.
-- Exception: the row overflow menu uses three filled dots (`fill: currentColor`).
-- The two mirrored sidebar glyphs are the one place fill is meaningful: the pane is unfilled when
-  the sidebar is closed and filled via `:aria-expanded` / `[aria-expanded="true"]` when open.
-- Pocket shows no native `title` hover tooltips; icon-only buttons carry an `aria-label`.
-- A glyph is optically centred on its own ink, not just its viewBox: the conventional Copy mark is
-  drawn so its combined bounds centre on the 24-unit box's middle, and the check that replaces it is
-  centred the same way.
+## Focus and keyboard behavior
 
-## Buttons
+Viewport width decides whether sidebars are docked or drawers. **Input capability decides composer autofocus.**
 
-| Kind | Treatment |
-| --- | --- |
-| Primary | accent-tinted fill `rgba(69,200,138,.17)`, `rgba(69,200,138,.4)` border, `--accent` text |
-| Secondary | `--surface-strong` fill, `--line` border, `--text` label |
-| Danger | `rgba(255,139,139,.08)` fill, `rgba(255,139,139,.35)` border, `--danger` text |
-| Icon | 36px square; often borderless/transparent inside cards and headers, boxed in the topbar |
-| Text | transparent fill, `--muted` label; keeps the shared 1px border and radius |
-| Composer | accent Send / danger Stop, 40px, min-width 66px (58px on narrow phones) |
+A coarse, hover-less touch device should not receive automatic focus that summons the software keyboard after task switching or New Task completion. Fine-pointer desktop/laptop input may focus the composer. Opening Tasks may focus Search on a fine pointer, but not on touch.
 
-Quieter variants exist inside the transcript (`approval-approve`, `approval-deny`,
-`async-answer button`) and keep the same accent/danger/secondary language at a smaller size.
+Explicit editing flows are different: when a user opens a rename/form field for deliberate editing, normal dialog focus still applies.
 
-## Copy control
+Other rules:
 
-Fenced code blocks in assistant-authored conversation messages carry exactly one Copy control. It is a
-28px outline icon button with the conventional Copy glyph at 16px, optically centred,
-`aria-label` "Copy code", and a brief "Copied" or "Copy failed" state; a transient success
-confirmation lasts 2 seconds. The button sits in a reserved right gutter so it never covers code, and
-the copied text is the original fenced code without the fence, wrapping or button. User messages,
-Command/Output and every other activity detail card, structured question titles and options, and any
-non-assistant Markdown never carry a Copy control.
+- Native controls keep native keyboard behavior.
+- Custom clickable controls provide equivalent keyboard activation.
+- Escape closes/cancels the topmost dismissible surface unless an in-flight mutation prevents it.
+- Narrow drawers return focus to their toggle when they close.
+- DOM order is the normal Tab order.
+- Text fields use the caret/selection as their normal focus cue; forced-colors restores a system outline.
 
-## States
+## Dialogs and sidebars
 
-- Disabled: `opacity: .52`, `cursor: default` — except archived task rows, which stay fully opaque.
-- Hover (hover-capable devices only): standard, button-like actions must visibly respond, and
-  disabled controls never react. Outlined families shift their border to `--muted` (secondary,
-  icon, text, async options, Jump to Latest, Approve/Deny); the accent and danger families
-  (primary, danger, composer Send/Stop, login Unlock, the free-text Answer submit) brighten one step
-  within their existing tints; borderless icon actions (composer-card glyphs, Attach, Expand,
-  machine-header and reorder icon actions, Other Answer) respond with a foreground change rather
-  than gaining a fake border; the image viewer's close control uses its own dark shade. Bare
-  navigation and disclosure surfaces (machine-name disclosure, activity rows, the destination
-  selector) keep their existing selected-state treatment and need no new hover chrome. No
-  transforms, shadows or animations.
-- Focus: there are no focus rings. Caret-less controls signal keyboard focus by switching to
-  `--selected-bg`; checkbox/radio rows do the same as a group. Text fields deliberately have no
-  focus cue — the caret and selection are the cue. `forced-colors` restores the system outline.
-- Active: only task-menu items define `:active` (`--selected-bg`).
-- Busy: fast local UI operations are disabled in place and keep their normal label, with no layout
-  shift. Only long remote or maintenance work may show stable progress such as `Checking…` /
-  `Updating…`.
-- Persistent status is always shown and is never treated as busy chrome: Working / Waiting / Failed /
-  Offline, validation, errors, warnings, confirmations and "Restart required".
-- Text-field caret/selection: the login PIN is focused programmatically with the caret at the end of
-  an entered value. The reveal/hide toggle re-asserts the exact caret or selection only when the PIN
-  field was already focused; clicked from elsewhere it must not focus the field or summon the keyboard.
-- The login PIN's trailing `letter-spacing` is offset by an equal `text-indent` (gated on
-  `:placeholder-shown`), so digits and an empty caret both stay centred. Its reveal control swaps an
-  open/slashed eye with `aria-pressed` and a matching label.
-- `prefers-reduced-motion: reduce` disables the drawer/chevron transitions and the spin/pulse
-  animations.
+Ordinary dialogs use the shared native-dialog shell: stacked fields, standard spacing, and a right-aligned action row. A shared confirmation dialog handles simple confirmations; richer destructive flows may use their own dialog on the same visual shell.
 
-## Selection
+Settings is a modal overlay with a centered card and sticky action footer. It keeps unsaved edits local until Save.
 
-Ordinary app, dialog and sidebar chrome is not selectable. The only selectable text is transcript
-content, editable form fields, and the deliberately copyable read-only values (Task Details metadata,
-approval detail, input prompts, queued-message copy) listed as `user-select` opt-ins in `styles.css`.
-Dialogs restate `user-select: none` because Chromium's UA stylesheet makes dialog content selectable
-by default.
+Concealed drawers are `inert`. On wide layouts, docked sidebars are navigation rather than modal dialogs, so they have no backdrop or close button.
 
-## Navigation: sidebar and drawers
+## Transcript, activity, and composer
 
-- Tasks (`#destination-switcher`, `role="dialog"`, `aria-label="Choose a task"`) and Task Details
-  (`#sidebar`, `<aside aria-labelledby>`) are one component with two modes.
-- Wide (≥1100px): both are docked columns — Tasks 310px absolute on the left, Task Details 340px
-  absolute on the right. Backdrops and the narrow close buttons are hidden; `aria-haspopup` is
-  removed from the destination control because it is navigation, not a dialog.
-- Narrow (<1100px): both become fixed drawers (`min(88vw, 340px)`, Tasks `min(400px, 88vw)`) with a
-  full-screen backdrop (`rgba(8,8,8,.62)`) and a visible close button.
-- Only one narrow drawer is open at a time: opening Task Details closes Tasks.
-- Concealed drawers get `inert` and translate off-screen; the toggle exposes `aria-expanded`
-  together with a "Show/Hide" label.
-- An offline machine shows no task rows; when it reconnects, its current catalog is fetched and shown
-  normally. Nothing is retained across the offline window.
+Assistant Markdown is rendered with HTML disabled. Unsupported links are not activated, external images are not loaded, and authored Markdown `title` attributes are stripped to preserve the no-native-tooltip rule.
 
-## Dialogs and confirmation dialogs
+Fenced code blocks in assistant conversation messages have one Copy control. The copied value is the code content, not the button label or wrapping.
 
-- All ordinary dialogs are native `<dialog class="new-task-dialog">`: `width: min(420px, 100% - 32px)`,
-  20px padding, `--radius`, `--surface`, backdrop `rgba(0,0,0,.55)`, title `h2` at 1rem with a 16px
-  gap, stacked fields, and a right-aligned action row (`margin-top: 16px`, 8px gap, 40px buttons).
-- One shared confirmation dialog (`#confirm-dialog`) backs `pocketConfirm({ title, message,
-  confirmLabel, danger })`; focus starts on Cancel and the submit switches to `.danger-button` when
-  `danger` is set.
-- Destructive-but-rich flows use their own dialog on the same shell: Rename/Delete Task
-  (`#task-dialog`), the Project Folder editor, queued-message Discard, and Clear goal.
-- Escape is stopped from propagating out of a dialog, and `cancel` is prevented while a request is
-  busy so a mutation can't be abandoned mid-flight.
-- A backdrop click behaves like Cancel: it closes the dialog without ever submitting its form and is
-  ignored while a mutation is in flight. The image viewer keeps its own backdrop handling.
-- Settings is a `role="dialog" aria-modal="true"` overlay (not `<dialog>`) with a centered,
-  rounded 420px card (`width: min(100%, 420px)`), a 12px screen inset, and a sticky action footer.
-  It stays a card at every width and scrolls internally only when the viewport is too short.
+Activity display categories are:
 
-## Machine Details runtimes
+- Command
+- Tool
+- Search
+- File Changes
+- Subagents
+- Image
+- Context Compaction
 
-Machine Details shows runtime status, installed/latest versions, and Update controls for a reachable
-machine. A fully offline machine shows only "Unavailable while offline": runtime inspection is skipped
-and no provider Offline rows, connection errors, or diagnostic prose are listed.
+Reasoning, Review, and completed Question entries are semantic transcript content and are not controlled by those filters. A running structured Question stays out of the transcript while its picker is the active UI.
 
-## Copy and capitalization
+The fullscreen composer preserves the current draft and transcript reading position. Goal and queued-message cards may be hidden while the composer is fullscreen without changing their state.
 
-Pocket-authored copy follows one capitalization rule; model-generated text, user text, task names,
-code and tool output are never rewritten to match it.
+## Status and copy
 
-- **Title Case** for dialog headings, action labels, and compact status labels: "Rename Task",
-  "Cancel Queued Message?", "Clear Unfinished Goal?", "New Task", "Answer", "Steer Now",
-  "Waiting", "Working", "Tasks Unavailable".
-- **Sentence case** for explanatory text, hints and user-facing errors: "Clear the current draft
-  before editing the queued message.", "Open elsewhere. Close it and retry.", "Could not load
-  history. Check the connection and try again."
-- Raw RPC/method failures are never shown verbatim. A transport or method error becomes concise,
-  actionable copy ("The runtime didn't respond in time. Try again.", "This action isn't supported by
-  the connected runtime."); the technical detail stays in gateway logs and diagnostics.
-- Model-generated questions, answers, task names, code and tool output are presented unchanged.
+Use **Title Case** for compact headings/actions/status labels and **sentence case** for explanatory text and errors.
 
-## Validation, status and error copy
+Short validation copy is concise and usually has no trailing period. Longer explanatory/error copy uses normal punctuation. User/model text, task names, code, and tool output are not rewritten to match UI capitalization.
 
-`--subtle` `.form-status` for neutral status; `.error-text` switches it to `--danger`; an empty
-status paragraph is hidden. Copy rules already settled on:
+Persistent state belongs in status surfaces; quick local operations should not introduce transient progress copy unless the operation is long enough to need it.
 
-- Short inline validation uses concise imperative wording with no trailing period:
-  "Enter a task name", "Enter an absolute project folder on this machine",
-  "Enter a message or attach files".
-- Longer explanatory or status messages use normal sentence punctuation:
-  "Starting settings unavailable. Check the Project Folder and try again.",
-  "Delivery unconfirmed. Check the task before sending again.", "Saved. Restart required."
-- Do not surface implementation limits unless the user needs to know them. The 180-character name
-  and 12000-character message limits are never advertised; attachment size caps appear only when an
-  attachment violates them; token counts live in the context meter's tooltip, not the chrome.
-- Transient operations add no copy; a status line is reserved for a persistent state, an error, or a
-  restart/confirmation notice (see States).
-- Errors say what happened and what to do next; they do not blame the user or expose internals.
+Transport uncertainty must remain explicit. Use delivery-unconfirmed wording rather than retry-oriented wording when a prompt may already have been accepted.
 
-## Empty and no-task states
+## Accessibility
 
-- Transcript with a task but no history: centred, `--subtle`, `--text-label`
-  ("No conversation history yet."). No task selected: "Select a task or create one."
-- While history is loading the reserved `.empty-state` space stays empty; only a successful empty
-  read may claim "No conversation history yet."
-- Empty panes do not render a shared placeholder: the Plan panel hides itself when it has no items,
-  and the transcript's no-history / no-task message is the centred `.empty-state`.
-- Sidebar list empties are left-aligned at `--subtle` `--text-secondary` inside the list padding
-  (e.g. "No saved tasks", "No archived tasks", "No matching tasks", "No matching saved tasks").
-- With no task selected, Task Details hides metadata, Runtime, Plan and Display and shows a single
-  plain message; the header phase row is hidden too.
+- `aria-expanded` marks disclosure state.
+- `aria-current="true"` marks the selected task.
+- `aria-pressed` marks toggle state such as PIN reveal.
+- Icon-only controls use `aria-label`; visible text, `aria-labelledby`, and `.sr-only` are the other naming mechanisms.
+- Dialog errors use assertive announcement where immediate correction is required; general status surfaces use polite announcements.
+- Concealed drawers are `inert`.
+- Backdrops are real controls with accessible names.
+- Touch opening must not move focus into a text field before the user chooses one.
 
-## Display categories
+## Component-specific exceptions
 
-Task Details → Display exposes seven shared filters in this order: Command, Tool, Search, File
-Changes, Subagents, Image, Context Compaction. Each filters its own activity kind; a control is
-hidden only when the runtime disables the feature and the task has no such activity, so unknown
-capability never hides one. "Show All"/"Hide All" act only on the visible categories. Reasoning,
-Review and an answered question sit outside the filters and always render.
+A few exceptions are intentional and should not be normalized away without a visible reason:
 
-Each category owns its activity color token in both themes, and distinct categories stay distinct:
-Command (`--activity-command`, amber) and Tool (`--activity-tool`, steel blue) are deliberately
-different, alongside Search (`--activity-search`), File Changes (`--activity-files`), Subagents
-(`--activity-collaboration`), Image (`--activity-image`) and Context Compaction
-(`--activity-neutral`). A failed or interrupted activity keeps the `--danger` override.
-
-## Mobile vs desktop
-
-- ≥1100px is "wide" (docked panes, unboxed machine/task/provider text, Tasks toggle icon);
-  <1100px makes both sidebars drawers with the boxed destination selector (see Navigation).
-- ≤860px: the shell stops being a fixed-height grid — the page scrolls, the topbar and composer
-  become sticky, the conversation takes 12px inline padding, and the composer adds safe-area bottom
-  padding. The transcript hides its scrollbar on mobile while desktop keeps it thin (`--line`); the
-  composer textarea never shows a scrollbar at any width.
-- ≤620px: the topbar becomes a two-column layout; ≤520px: the elapsed timer hides, phase chips
-  shrink/ellipsize and composer actions go compact.
-- ≤380px: New Task's two-column settings grid collapses to one column.
-- `env(safe-area-inset-*)` is applied to drawers, the composer and the settings action footer.
-
-## Accessibility and state conventions
-
-- `aria-expanded` on every disclosure toggle: Tasks, Task Details, machine groups, activity rows,
-  the composer expand toggle and the free-text "Other" answer.
-- `aria-current="true"` marks the selected task row; `aria-pressed` marks the PIN reveal.
-- Async page status uses `aria-live="polite"` (`#composer-status`, `#settings-status`,
-  `#login-error`, history/attention banners). Dialog and machine errors use `role="alert"`.
-- Accessible naming comes from visible text, `aria-label`, `aria-labelledby` or `.sr-only`; controls carry no `title`, so nothing here reveals information through a hover popup.
-- Concealed drawers are `inert`; backdrops are real buttons with an aria-label.
-- `forced-colors: active` restores native selects and a system focus outline; `prefers-reduced-motion`
-  disables transitions and looping animations.
-
-### Keyboard interaction
-
-- Native controls keep their native keyboard behavior; never re-implement it.
-- Custom clickable controls must offer keyboard-equivalent activation (Enter/Space where appropriate).
-- Escape cancels or closes a dialog unless a busy mutation prevents it.
-- Opening and closing modal UI uses deliberate focus placement and return rather than losing focus;
-  the narrow drawers hand focus back to their toggle on close and the wide docked sidebars never take
-  focus. Opening on touch never moves focus into a text field, so it cannot summon the keyboard
-  before the user picks one.
-- DOM order is the normal Tab order; add custom keyboard navigation only when a component requires it.
-
-## Intentional exceptions
-
-- Wide layouts dock the sidebars (no backdrop, no close button, no `aria-haspopup`) — the same
-  component intentionally presents as navigation rather than a dialog.
-- Archived task rows are `disabled` but keep full opacity so they still read as real content.
-- The login PIN field (`.login-card input`) is 56px tall, not `--control-height`, to render 1.55rem
-  centred digits with a reserved reveal control; every other single-line text input uses 40px.
-- The image viewer and its close button stay dark in both themes, with their own focus/hover colours.
-- The assistant-message Copy control is 28px, smaller than `--icon-size`, so its reserved gutter
-  stays narrow on phones without covering code; it shares the other icon buttons' stroke and caps.
-- Markdown code blocks, command/output detail blocks and file diffs soft-wrap at every viewport
-  (`white-space: pre-wrap` with `overflow-wrap: anywhere`) instead of scrolling horizontally.
-  Indentation and real line breaks are preserved, and the copied text is taken from the DOM, so it is
-  unchanged by wrapping.
-- `full access` in the Access select and the `working`/`waiting`/`failed` phase pills reuse semantic
-  colours as persistent state, not as decoration.
-- Quit lifecycle copy may be macOS-specific. Quit is only exposed on the native macOS host, so its
-  confirmation and status wording (for example "Codex Pocket.app" and "that Mac") may name the Mac;
-  headless and container hosts hide Quit and use their managed lifecycle instead.
+- Login PIN geometry is larger than normal fields.
+- The assistant-code Copy control is smaller than the standard icon button.
+- Image viewer controls stay on the dark viewer treatment in both themes.
+- Code, command output, and diffs soft-wrap instead of requiring horizontal scrolling.
+- Semantic Full Access/Working/Waiting/Failed treatments use their status colors.
+- Quit lifecycle copy may name macOS because Quit is exposed only by the native macOS host.

@@ -1,12 +1,12 @@
 # Codex Pocket
 
-Codex Pocket is a lightweight, self-hosted browser/PWA client for controlling official Codex app-server runtimes locally and over SSH. Run its small Node.js gateway from the macOS menu bar or headlessly, then manage tasks from your desktop or phone.
+Codex Pocket is a lightweight, self-hosted browser/PWA client for controlling official Codex app-server runtimes locally and over SSH. Run its Node.js gateway from the macOS menu bar or headlessly, then manage tasks from a desktop or phone.
 
 Codex Pocket is an unofficial community project and is not affiliated with or endorsed by OpenAI.
 
 ## Screenshots
 
-Real Pocket UI with synthetic demo data only, including all tasks, machines, conversations, and usage figures.
+Real Pocket UI with synthetic demo data only.
 
 | Monitor and control from your phone | Switch tasks across machines |
 | --- | --- |
@@ -21,106 +21,76 @@ Real Pocket UI with synthetic demo data only, including all tasks, machines, con
 
 ## What it does
 
-- Select and resume saved tasks across local and SSH runtimes; create a named task in a chosen project folder, or use **Rename**, **Archive**, **Unarchive**, and **Delete** from its action menu. Deletion requires confirmation.
-- Follow live messages, user-facing reasoning summaries, command/tool activities, file-change diffs, plans, and turn status. Activity details load on demand.
-- Respond to supported approvals and structured questions, including async questions with choices or free-text answers.
+- Browse, create, rename, archive, delete, and resume tasks across local and SSH runtimes.
+- Follow live messages, reasoning summaries, plans, command/tool activity, file changes, images, and turn status.
+- Respond to supported approvals and structured questions.
 - Choose the model, reasoning effort, and access mode exposed by the selected runtime.
-- Send messages, stop an active turn, or queue one message for the next turn. **Steer Now** in the queue banner injects that queued message into the active turn; **Cancel** removes it.
-- Send images with text or on their own using Attach files or desktop clipboard paste. Removable thumbnails remain available in the fullscreen composer, and images travel with queued/steered messages. Sent images remain viewable from live messages and history where Codex exposes them. Input supports PNG, JPEG, GIF, and WebP: up to four images, 4 MB each and 8 MB combined.
-- Attach up to four other files (10 MB each, 20 MB combined), with or without text/images. Files follow task drafts and queued messages. Pocket stages them in the selected machine’s OS-temp `codex-pocket` directory and sends their paths as a text input; local and Windows/POSIX SSH runtimes are supported. Queued files retain staged metadata. Pocket does not delete staged files after send, queue cancellation, task deletion, or restart: they remain until OS temp cleanup or manual removal. There is no guaranteed expiry time; keep files that an active task still needs.
-- View surfaced assistant images inline and in a fullscreen viewer, including supported local-file references fetched through the gateway or SSH. Trusted remote image paths are fetched through SSH; external HTTP(S) images are not loaded. Unavailable images show useful alt text.
-- See account quota or, on a DeepSeek runtime, the account-wide **Balance**, alongside a **Context** chip showing context-window percentage used from authoritative backend usage. Without usage replay or a live update, it shows **Context —**.
-- Browse bounded, paginated history in a mobile-focused UI with themes, display toggles, a fullscreen composer, and a browser-local **Enter Sends Message** preference.
+- Send, stop, steer, or queue one follow-up message. Ambiguous delivery is never retried automatically.
+- Attach images and files. Files are staged in the selected machine's OS temp directory and remain there until OS cleanup or manual removal.
+- Show account quota, or DeepSeek account Balance, plus authoritative context-window usage when the runtime supplies it.
+- Run as a responsive browser UI or installable PWA.
 
-Settings changes take effect only on **Save**, including browser-local appearance and input preferences. Save is enabled only while values differ from those loaded; **Cancel**, **X**, and **Escape** discard unsaved edits. A successful save closes Settings unless a restart is required, when **Restart Pocket** is brought into view. Display controls in the inspector still apply immediately when Settings is closed.
-
-**Enter Sends Message** defaults on for a fine pointer (mouse/trackpad) and off for a coarse, hover-less pointer (touch) on first use; an existing saved choice takes precedence and does not change on resize.
-
-The image viewer supports double-tap zoom/reset, pinch zoom, panning while zoomed, and desktop wheel zoom. Close it with **X**, **Escape**, or a tap outside the image. Dragging at 1× neither moves nor dismisses the image.
-
-While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion and stays parked after Stop. Steering clears it only after successful delivery. Queues live in gateway memory and survive task switches, but are lost on gateway restart. A queue stays parked while its task is away; returning alone does not send it. Editing a queued message withdraws it back into the composer together with its attachments, so it can be changed and sent again; cancelling requires confirmation. Only one message can be queued.
-
-Text, image, and file drafts are task-scoped and kept only in browser memory: up to eight recent non-empty drafts. They do not survive a page reload.
-
-**New Task** offers explicit model, reasoning-effort, and access choices. A successful creation without a settings warning remembers those choices per runtime in this browser. The Project Folder prefills from that runtime's selected task when available. Leaving it blank uses the runtime user's home directory on the selected runtime; failure to resolve that home directory asks for an explicit folder.
-
-At widths of **1100px and above**, successful task switching and New Task creation focus the message composer. Narrow layouts leave it unfocused to avoid opening the software keyboard. **Escape** dismisses narrow Tasks/Info overlays; wide pinned sidebars remain open. Dialogs, Settings, and the fullscreen composer handle Escape before sidebars.
-
-A lost response or upstream message RPC timeout triggers receipt recovery, never an automatic retry of the message POST. Unknown delivery stays unconfirmed until recovery supplies evidence; genuine rejections allow correction and another explicit send.
+Image input supports PNG, JPEG, GIF, and WebP, up to four images (4 MB each, 8 MB total). Other files are limited to four files (10 MB each, 20 MB total). Browser drafts are task-scoped, kept in memory, and do not survive a reload.
 
 ## Requirements
 
-- Node.js **22.6 or newer**, with npm. Pocket uses Node's `--experimental-strip-types` flag.
-- An authenticated Codex CLI on each runtime machine, with `codex app-server proxy` and a running shared/managed app-server. The earlier feature baseline was exercised with **Codex CLI 0.153.4**. A read-only local initialization/catalog probe also passed against **0.154.0**; this is not a full remote-device compatibility claim. Available controls depend on the runtime's protocol support.
-- macOS for the menu-bar host. The checked-in app executable is **Apple Silicon (arm64)**; rebuilding requires Apple's command-line developer tools.
-- For remote machines, working non-interactive SSH from the Pocket host and `codex` available in the remote SSH command environment.
+- Node.js **22.6 or newer**, with npm.
+- An authenticated Codex CLI on each OpenAI runtime machine, with `codex app-server proxy` and the shared/managed app-server available.
+- macOS for the optional menu-bar host. The checked-in app executable is Apple Silicon; rebuilding requires Apple's command-line developer tools.
+- Working non-interactive SSH for remote machines.
 
-Codex Desktop itself is not required. Running Desktop alone does not necessarily start the shared runtime Pocket needs.
+Codex Desktop itself is not required. A Desktop-owned stdio session is not automatically attachable through the shared app-server.
+
+## Security boundary
+
+Pocket can control powerful runtime actions. Its four-digit PIN is a convenience gate for trusted LAN/private-network use, **not internet-grade authentication**.
+
+**Do not port-forward Pocket directly to the public internet.** Use a trusted LAN or private encrypted network such as WireGuard or Tailscale. See [SECURITY.md](SECURITY.md).
 
 ## macOS quick start
 
-**Network boundary:** Pocket can control Codex runtimes and may approve powerful actions depending on the selected access mode. Its four-digit PIN is a convenience gate for trusted LAN/private-network use, **not internet-grade authentication**. **DO NOT port-forward Pocket directly to the public internet.** For remote access, use a private encrypted network/VPN such as WireGuard or Tailscale. Pocket serves HTTP and defaults to **localhost (`127.0.0.1:4173`)** unless LAN access is explicitly enabled.
-
-1. Clone this repository and install dependencies:
+1. Clone the repository and install dependencies:
 
    ```sh
    git clone https://github.com/oksklok/codex-pocket.git
    cd codex-pocket
-   npm install
+   npm ci
    ```
 
-2. Authenticate Codex if necessary and start its existing shared runtime:
+2. Authenticate Codex and start its shared runtime if needed:
 
    ```sh
    codex login
    codex app-server daemon start
    ```
 
-   To work in that runtime from the terminal as well, use `codex --remote unix://`. Use **New Task** in the switcher to create and select an empty task immediately, then send your first real message. No placeholder message is inserted; Codex may omit empty tasks from its persisted saved-task list until the first turn finishes.
+3. Double-click **Codex Pocket.app**, then choose **Open Pocket** from the menu-bar icon. Keep the app bundle inside the repository so it can find the gateway and dependencies.
 
-3. Double-click **Codex Pocket.app**, then choose **Open Pocket** from its menu-bar icon. Keep the app bundle inside the repository so it can find the gateway and dependencies. The host locates a compatible Node executable in common install locations or the Codex bundled runtime.
+4. Use the **Tasks** sidebar to select or create a task.
 
-4. Open the task selector in the top bar to browse machines and saved tasks in the Tasks drawer.
+`npm start` runs the gateway directly without the menu-bar host.
 
-For a phone, set `lanEnabled`, `host`, `port`, and a four-digit `pin` in `.codex-pocket.local.json`, then relaunch the process or container so it rereads the file — the web **Restart Pocket** action does not reread an externally edited config. Open the configured host and port from that machine's LAN or Tailscale address and enter the PIN over your trusted network.
+### Phone access
 
-Phone URLs include local LAN and Tailscale/CGNAT IPv4 addresses (`100.64.0.0/10`). Use these only over a trusted LAN or private VPN.
+For LAN/private-VPN access, configure `lanEnabled`, `host`, `port`, and a four-digit `pin` in `.codex-pocket.local.json`, then restart Pocket. Pocket defaults to `127.0.0.1:4173`.
 
-Closing browser tabs leaves the gateway running. The menu bar provides a gateway power switch, **Keep Mac Awake**, **Launch at Login** where supported, and **Quit Codex Pocket**. The app is not distributed as a notarized installer; you can rebuild it locally with `macos/build-app.sh`.
+A true standalone PWA install requires a trusted HTTPS origin. A private reverse proxy such as Caddy can provide HTTPS; keep it reachable only over the same trusted LAN or private VPN. HTTPS does not change Pocket's authentication boundary.
 
-## Standalone mobile app (PWA)
-
-Pocket includes a web app manifest and can launch as a standalone PWA without normal browser chrome. Adding a raw LAN HTTP URL such as `http://192.168.x.x:4173` to the home screen creates only a browser shortcut. A true standalone install requires a **trusted HTTPS origin**.
-
-For private access, keep Pocket on HTTP internally and put a small HTTPS reverse proxy such as Caddy in front of it. Keep the HTTPS endpoint reachable only over a trusted LAN, WireGuard, or another private VPN. Caddy's internal CA is suitable if the Android device trusts that CA.
-
-Open the trusted HTTPS URL in Edge/Chromium on Android, choose **Add to phone / Install app** from the browser menu, and launch the installed icon. It should open without the normal address bar or tab controls. No service worker or offline caching is required for this standalone use case; Pocket still needs a live connection to its gateway.
-
-Keep Caddy configuration, certificates, CA private keys, and all other machine-local HTTPS material outside the repository. Do not commit them. HTTPS does not change Pocket's [private-network security boundary](SECURITY.md).
-
-The optional `accessUrls` array in `.codex-pocket.local.json` lists the HTTP(S) origins a phone should use (for example, `["http://pocket.lan:4173", "https://pocket.lan:8443"]`). Configure the actual deployment addresses; Pocket does not discover reverse-proxy URLs or display them in Settings.
+The optional `accessUrls` setting can list the HTTP(S) origins a phone should use. Machine-local certificates, keys, reverse-proxy configuration, and SSH material belong outside the repository.
 
 ## SSH machines
 
-On each remote machine, authenticate Codex and start its shared app-server. From the Pocket host, verify an existing SSH alias works without prompting:
+On each remote machine, authenticate Codex and make sure its shared app-server is available. From the Pocket host, verify the SSH alias works without prompting:
 
 ```sh
 ssh -o BatchMode=yes devbox codex --version
 ```
 
-Then open the **Tasks** sidebar and use **Add Machine**, enter a display name and SSH alias such as `devbox`, save, and restart Pocket. Pocket launches `codex app-server proxy` through that alias and uses the host's existing SSH configuration, keys, and agent. It does not store SSH credentials. A remote Codex Desktop installation is unnecessary.
+Then open **Tasks → Add Machine**, enter a display name and SSH alias, save, and restart Pocket. Pocket uses the host's existing SSH config, keys, and agent; it does not store SSH credentials.
 
-Disconnected runtimes retry after 5, 10, 20, 30, then 60 seconds, staying at 60 seconds until a successful connection resets the delay. Transport establishment has a 15-second timeout.
+An optional Wake-on-LAN MAC address adds a **Wake** action for an offline SSH machine. Sending the packet only confirms that the packet was sent.
 
-For a PC that already supports Wake-on-LAN on the host's LAN, optionally enter its **Wake MAC** in machine settings (`wakeMac` in the config). After saving and restarting Pocket, an offline configured machine shows **Wake** in the Tasks drawer. This sends a magic packet from the Pocket host to UDP broadcast port 9 and nudges the existing reconnect retry. “Wake packet sent” confirms sending, not that the PC is online.
-
-### Connection states
-
-**Tasks Unavailable** means Pocket still has a transport connection but could not retrieve that machine's task catalog within its five-second budget, or received a catalog error. **Offline** means the transport is disconnected. Catalog errors alone do not force a machine Offline.
-
-Long-lived SSH proxy connections use `ConnectTimeout=5`, `ServerAliveInterval=15`, and `ServerAliveCountMax=3`. An unresponsive SSH peer is normally detected after approximately 45 seconds without responses; a responsive SSH server with a stalled Codex app-server can still show Tasks Unavailable. Once a disconnect is detected, retries wait 5, 10, 20, 30, then 60 seconds (capped), plus connection-attempt time. A successful connection resets backoff. Existing connections pick up changed SSH options when they reconnect.
-
-Server-backed settings are stored in the Git-ignored `.codex-pocket.local.json`; appearance, input, and display preferences stay in each browser’s local storage. Local config, runtime records, and logs should stay private. If the Mac runtime is unavailable, check that its shared daemon is running; Pocket also shows a concise underlying connection or task-ownership error.
+Server-backed settings live in the Git-ignored `.codex-pocket.local.json`; browser appearance and input/display preferences stay in browser local storage.
 
 ## Architecture and limits
 
@@ -132,54 +102,66 @@ Local / SSH Codex app-server runtimes
          Desktop / mobile browser
 ```
 
-Pocket uses supported app-server protocol surfaces. It does not scrape Codex databases, rollout/session files, terminal output, or Desktop UI. Desktop-private, stdio-owned live sessions are not attachable through Pocket; a saved task owned by another runtime may also refuse attachment.
+Pocket uses supported app-server protocol surfaces. It does not scrape Codex databases, rollout/session files, terminal output, or Desktop UI.
 
-Tasks sort active tasks first, then by Codex’s latest activity time within the active and idle groups. Opening, loading, or refreshing a task does not promote it.
+Only the selected runtime keeps a task attachment. Cross-machine switching attaches the destination before releasing the previous task, so a failed destination attach leaves the current task intact.
 
-Active, archived, and loaded-task catalogs fetch every cursor page, with no fixed task-count cap. Search covers the complete fetched catalog. Only the selected machine holds a task attachment; other configured machines stay connected for catalogs, status, and quota without retaining task writer ownership. A cross-machine switch attaches the destination first, then releases the previous task. A failed destination attachment leaves the current task intact.
+History is paginated and activity details load on demand. Pocket does not request full history merely to estimate context usage; if the runtime does not provide authoritative usage, Context remains unknown.
 
-Task attachment uses `thread/resume` with `excludeTurns: true`. History stays bounded through `thread/turns/list` and `thread/items/list`, with older pages loaded as you scroll and activity details fetched lazily. Pocket never requests full history just to obtain context usage, and it does not estimate tokens. Raw app-server events are not forwarded wholesale to browsers.
+Image transport is limited to validated input and image paths surfaced by trusted runtime items. It is not a general file browser.
 
-Image transport is limited to validated image input and images surfaced by trusted Codex items; it is not a general file browser or arbitrary-file endpoint. Access, approvals, model settings, and message controls remain subject to what the selected app-server supports.
+Message delivery uses bounded in-memory receipts. A timeout or lost response can be reconciled, but Pocket never automatically repeats a prompt whose delivery is uncertain.
+
+## DeepSeek Harness
+
+The optional [DeepSeek Harness backend](docs/deepseek.md) runs alongside the OpenAI/Codex backend. DeepSeek state and credentials stay on the execution machine; an SSH gateway does not need the provider key.
+
+The DeepSeek guide covers installation, lifecycle, limitations, and the coordinated deployment/rollback path.
 
 ## Development
 
 ```sh
-npm install
+npm ci
 npm start
 ```
 
-`npm start` runs the gateway directly without the menu-bar host and uses the same saved settings. With no saved LAN configuration it listens on localhost. `CODEX_BIN` can select a local Codex executable; `--host`, `--port`, and `CODEX_POCKET_PIN` override saved network settings. Non-loopback listening requires a four-digit PIN and the network precautions above.
+Useful commands:
 
-Validate logic or runtime changes directly — run the gateway or CLI and exercise the affected flow — rather than maintaining a regression suite. Temporary disposable probes, mock fixtures and headless-browser fixtures are fine while working, but they are not kept in the repository. Deployment changes are exercised with `node scripts/deploy.mjs` in a disposable environment.
+```sh
+npm run probe -- --list-only --monitor-seconds 0
+npm run probe-remote -- devbox --list-only --monitor-seconds 0
+zsh macos/build-app.sh
+```
 
-The optional [DeepSeek Harness backend](docs/deepseek.md) runs locally or on a configured execution machine over SSH, alongside the unchanged OpenAI/Codex backend. DeepSeek shares its physical machine's task group and keeps separate DSH state. An SSH gateway needs no DeepSeek key: credentials and balance requests stay on the execution machine. The guide covers the pinned installation, remote configuration, legacy-session limitations and verified behavior.
+Validate changed behavior directly rather than maintaining a permanent regression suite. Temporary probes, mock fixtures, and headless-browser fixtures are fine while solving a concrete issue; delete them afterward. Deployment changes should be exercised with `node scripts/deploy.mjs` in a disposable environment.
 
-Build the native host with `macos/build-app.sh`. For a read-only connectivity check, use `npm run probe -- --list-only` or `npm run probe-remote -- devbox --list-only`. [SPIKE_REPORT.md](SPIKE_REPORT.md) records the original historical experiment, not the current feature list.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution basics and [SECURITY.md](SECURITY.md) for security guidance. Licensed under the [MIT License](LICENSE). `package.json` deliberately retains `"private": true` to prevent accidental npm publication.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor conventions and [SECURITY.md](SECURITY.md) for security guidance.
 
 ## Docker / headless hosts
 
-Docker runs Pocket as an SSH-runtime-only gateway; it does not run Codex locally in the container. Install Docker with Compose, clone this repository, and prepare two private directories beside `compose.yaml`:
+Docker runs Pocket as an SSH-runtime-only gateway; it does not run Codex locally in the container.
 
-- `data/.codex-pocket.local.json`: Pocket settings with `lanEnabled: true`, `host: "0.0.0.0"`, `port: 4173`, your four-digit `pin`, and `machines` entries containing a display `name` and SSH alias (`ssh`). You can copy an existing Pocket settings file and adjust the machines.
-- `ssh/`: a dedicated outbound SSH key, `config`, and verified `known_hosts`. Each alias must specify its host, user, and `IdentityFile ~/.ssh/id_ed25519`. Install only this key's public half on the runtime machines. Protect the directories and private key with permissions 700 and 600 respectively.
+Create two private directories beside `compose.yaml`:
 
-The supplied container uses the image’s non-root `node` user (UID 1000). The mounted data and SSH files must be owned by UID 1000. Compose mounts SSH files read-only (`./ssh:/home/node/.ssh:ro`); provision keys and verified host records before starting Pocket. It has no privileged mode, Docker socket, or host filesystem access beyond these two mounts. Verify each alias can run `codex --version` and reach its shared Codex app-server before using Pocket. A machine entry with `dshPath` uses the DSH adapter installed on that SSH execution machine; the container provisions no DSH runtime and no provider credentials. See [DeepSeek setup](docs/deepseek.md).
+- `data/.codex-pocket.local.json` with `lanEnabled: true`, `host: "0.0.0.0"`, `port: 4173`, a four-digit `pin`, and at least one SSH machine.
+- `ssh/` with the outbound SSH key, config, and verified `known_hosts`.
+
+The supplied container runs as UID 1000. The mounted data and SSH files must be accessible to that user; keep private keys at restrictive permissions. The SSH directory is mounted read-only.
+
+Start or rebuild the gateway with:
 
 ```sh
 docker compose up -d --build
 ```
 
-Deploy updates with one command from the checkout on the gateway host:
+For a machine that also exposes DeepSeek, configure its `dshPath` and follow [docs/deepseek.md](docs/deepseek.md).
+
+Deploy gateway/adapter updates from the checkout on the gateway host:
 
 ```sh
 node scripts/deploy.mjs
 ```
 
-(`npm run deploy` is equivalent where npm is available.) It rebuilds the gateway image and distributes the execution-side DSH adapter through the existing SSH aliases and `dshPath` values. Each update is inspected read-only, staged beside the install (reusing the locked dependencies for code-only updates), hash-verified and load-probed, activated only while that machine's durable runtime reports idle behind a maintenance marker, verified again, and restored from the retained previous install if any step fails. Busy, offline or unverifiable machines are reported as pending; rerun the same command to finish. The gateway is restarted only once every machine it attaches to speaks the protocol the built image speaks. A gateway/UI-only change updates only the NAS. See [DeepSeek setup](docs/deepseek.md) for the durable runtime lifecycle, the one-time `--confirm-idle` cutover, protocol upgrades and `--rollback`.
+The deploy command stages and verifies execution-side adapter changes, updates only idle runtimes, and preserves rollback material. See the DeepSeek guide for protocol changes and rollback.
 
-Open the host's LAN or Tailscale IPv4 address on port 4173 and sign in with your existing PIN. Use LAN/private VPN access only: the PIN is a convenience gate, not internet-grade authentication. **Never port-forward Pocket directly to the internet.**
-
-`CODEX_POCKET_DATA_DIR` keeps writable settings and runtime markers separate from application files. `CODEX_POCKET_HEADLESS=1` requires at least one SSH machine, omits the local runtime, and makes Restart Pocket exit cleanly for Compose to restart it. Headless Pocket must retain at least one SSH machine. Stop with `docker compose down`; the web Quit action is disabled. Neither variable changes the normal macOS host defaults when unset.
+`CODEX_POCKET_DATA_DIR` separates writable settings/runtime state from application files. `CODEX_POCKET_HEADLESS=1` removes the local runtime and requires at least one SSH machine. Stop a Compose host with `docker compose down`; the web Quit action is disabled in headless mode.
