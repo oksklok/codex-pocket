@@ -728,6 +728,7 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
 
 /* Thumbnails sit above the user bubble as attachments, with a small gap to the bubble below. */
 .message-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.message-files { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 /* Sent images read as compact attachment thumbnails; clicking still opens the full viewer. */
 .message-images img { width: 72px; height: 72px; object-fit: cover; border: 1px solid var(--line); border-radius: 7px; cursor: zoom-in; }
 .composer-thumbnail img { cursor: zoom-in; }
@@ -961,7 +962,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .file-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: var(--text-secondary); }
 .file-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-chip small { flex: none; white-space: nowrap; }
-.file-chip button { flex: none; width: 28px; height: 28px; min-width: 28px; min-height: 28px; border: 0; padding: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.file-chip button { flex: none; width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--muted); cursor: pointer; }
 .queue-banner .file-chips { grid-column: 1 / -1; margin: 0; }
 
 .queue-banner .composer-images:empty { display: none; }

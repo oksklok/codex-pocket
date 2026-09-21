@@ -98,6 +98,8 @@ type PocketMessage = {
   // Correlation only; transcript renderers display text, never this metadata.
   questionReplies?: Array<{ questionItemId: string; question?: string; answer: string }>;
   imageCount?: number;
+  // Ordinary-file metadata recovered from the staged-path footer; history has no original sizes.
+  files?: Array<{ name: string; size?: number }>;
   createdAt: number;
   complete: boolean;
 };
@@ -1368,23 +1370,50 @@ function normalizedUserReply(text: string): { text: string; questionReplies?: Ar
   return { text: "Question answered." };
 }
 
-function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
+export function messageFromItem(item: any, turnId?: string, complete = true, fallbackTime = Date.now()): PocketMessage | null {
   if (!item || (item.type !== "userMessage" && item.type !== "agentMessage")) return null;
   const normalized = item.type === "userMessage" ? normalizedUserReply(readText(item)) : { text: readText(item) };
-  const { text } = normalized;
+  const staged = item.type === "userMessage" ? splitStagedFiles(normalized.text) : { text: normalized.text, files: [] as Array<{ name: string }> };
+  const { text } = staged;
   const imageCount = item.type === "userMessage" && Array.isArray(item.content) ? item.content.filter((input: any) => input.type === "image" || input.type === "localImage").length : 0;
-  if (!text && !imageCount && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
+  if (!text && !imageCount && !staged.files.length && !(item.delivery === "async" && normalizeAsyncQuestions(item.questions).length)) return null;
   return {
     id: String(item.id ?? `${item.type}-${randomBytes(6).toString("hex")}`),
     turnId,
     role: item.type === "userMessage" ? "user" : "assistant",
     ...normalized,
+    text,
     ...(imageCount ? { imageCount } : {}),
+    ...(staged.files.length ? { files: staged.files } : {}),
     ...(item.type === "agentMessage" ? { phase: item.phase == null ? null : String(item.phase) } : {}),
     ...(item.type === "agentMessage" ? { delivery: item.delivery === "async" ? "async" : null, questions: normalizeAsyncQuestions(item.questions) } : {}),
     createdAt: numberTime(item.createdAt ?? item.created_at, fallbackTime),
     complete,
   };
+}
+
+// Pocket stages ordinary files on the execution machine and appends this exact footer as its own input
+// item. Only a trailing, well-formed footer is removed: every line must be a staged path whose basename
+// is the runtime's `<index>-` prefix plus the original name. Similar wording in user text is left alone.
+const STAGED_FILES_MARKER = "Attached files available on this machine:";
+export function splitStagedFiles(text: string): { text: string; files: Array<{ name: string }> } {
+  const at = text.lastIndexOf(STAGED_FILES_MARKER);
+  if (at < 0 || (at > 0 && text[at - 1] !== "\n")) return { text, files: [] };
+  const lines = text.slice(at + STAGED_FILES_MARKER.length).split("\n");
+  if (lines.shift() !== "") return { text, files: [] };
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const files: Array<{ name: string }> = [];
+  for (const line of lines) {
+    if (!line.startsWith("- ")) return { text, files: [] };
+    const path = line.slice(2).trim();
+    // A POSIX filename may contain a backslash, so only fall back to `\` when the path has no `/`.
+    const basename = path.split(path.includes("/") ? "/" : "\\").pop() ?? "";
+    const match = basename.match(/^\d+-(.+)$/);
+    if (!match) return { text, files: [] };
+    files.push({ name: match[1] });
+  }
+  if (!files.length) return { text, files: [] };
+  return { text: at > 0 ? text.slice(0, at - 1) : "", files };
 }
 
 function readableCommandSummary(value: unknown): string {

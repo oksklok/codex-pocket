@@ -2263,9 +2263,13 @@ function renderFileChips(container, files, removable = false) {
     chip.className = "file-chip";
     const name = document.createElement("span");
     name.textContent = file.name;
-    const size = document.createElement("small");
-    size.textContent = file.size >= 1024 * 1024 ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(file.size / 1024)} KB`;
-    chip.append(name, size);
+    chip.append(name);
+    // History projection has no original size; omit it rather than render a fake value.
+    if (Number.isFinite(file.size)) {
+      const size = document.createElement("small");
+      size.textContent = file.size >= 1024 * 1024 ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(file.size / 1024)} KB`;
+      chip.append(size);
+    }
     if (removable) {
       const remove = document.createElement("button");
       remove.type = "button";
@@ -2456,15 +2460,22 @@ function messageNode(message, displayCreatedAt) {
       images.append(img);
     }
   }
+  let files = null;
+  if (message.role === "user" && message.files?.length) {
+    files = document.createElement("div");
+    files.className = "message-files";
+    renderFileChips(files, message.files);
+  }
   if (message.delivery === "async" && message.questions?.length) {
     suppressAsyncQuestionMarkdown(body, message.questions);
     for (const [index, question] of message.questions.entries()) body.append(asyncQuestionNode(message, question, index));
   }
   article.append(meta);
-  // Attachments sit directly above the bubble; an image-only message keeps its thumbnails and skips
-  // the otherwise empty text bubble.
+  // Attachments sit directly above the bubble; an attachment-only message keeps its images and chips
+  // and skips the otherwise empty text bubble.
   if (images) article.append(images);
-  if (!images || body.childElementCount) article.append(body);
+  if (files) article.append(files);
+  if (body.childElementCount || (!images && !files)) article.append(body);
   return article;
 }
 
