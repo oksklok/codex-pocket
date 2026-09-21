@@ -1234,6 +1234,8 @@ export async function main(argv = process.argv.slice(2)) {
       if (entry.action === "hold" && entry.reason === "offline") { log(`${entry.name}: pending (offline)`); continue; }
       const result = await rollbackMachine(entry, confirmIdle);
       log(result.action === "rolled back" ? `${result.name}: rolled back` : `${result.name}: pending (${result.reason})`);
+      // A refused or failed rollback is a failed requested operation; offline stays non-fatal.
+      if (result.action !== "rolled back" && String(result.reason ?? "").startsWith("rollback failed")) process.exitCode = 1;
     }
     return;
   }
@@ -1314,6 +1316,8 @@ export async function main(argv = process.argv.slice(2)) {
       process.exitCode = 1;
       return;
     }
+    // A staging failure is a failed requested operation even when the run is otherwise compatible.
+    if (stageFailure) process.exitCode = 1;
 
     // Pass 3: idle-only activation. A protocol change or the one-time legacy cutover holds the
     // maintenance marker so the switched adapters stay protected until a compatible gateway is ready.
@@ -1325,6 +1329,8 @@ export async function main(argv = process.argv.slice(2)) {
       const result = await activateMachine(entry, manifest, { holdMarker });
       log(result.action === "updated" ? `${result.name}: updated` : `${result.name}: pending (${result.reason}${result.rolledBack ? ", restored the previous install" : ""})`);
       if (result.action === "updated") { switched.push(result); continue; }
+      // A real activation failure fails the command; offline/busy pending targets stay non-fatal.
+      if (String(result.reason ?? "").startsWith("activation failed")) process.exitCode = 1;
       if (protocolSensitive) {
         log("an adapter target failed; returning the machines already switched to the previous arrangement");
         const restored = await restoreSwitched(switched, manifest);

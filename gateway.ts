@@ -2971,13 +2971,14 @@ export class MachineRuntime {
         this.reconnectTimer = null;
         this.state.connectionError = compact(error, 400);
         if (!this.state.connected) this.state.phase = "unavailable";
-        this.broadcast("snapshot", this.snapshot());
         throw new Error(compact(error, 400));
-      } finally { this.runtimeUpdating = false; }
-      // The flag is cleared before anything is reported, so the successful response and the settled
-      // capability never carry "updating", and a capability published mid-update cannot stick on
-      // "Runtime is updating".
-      this.broadcast("snapshot", this.snapshot());
+      } finally {
+        // One settled snapshot, after the flag clears, on success and on failure alike: nothing may be
+        // published while the runtime still reads as updating, and the capability cannot stick on
+        // "Runtime is updating".
+        this.runtimeUpdating = false;
+        this.broadcast("snapshot", this.snapshot());
+      }
       return await this.runtimeDetails(false);
     });
     this.selectionQueue = operation.then(() => {}, () => {});
