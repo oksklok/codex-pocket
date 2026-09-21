@@ -379,6 +379,8 @@ let composerNormalScrollTop = null;
 // Set while a composer expand/collapse is settling: the toggle's own refocus and box resize must not
 // pull the transcript to the latest turn.
 let composerToggleHold = false;
+// Identifies the newest toggle, so a superseded toggle's deferred release cannot clear a newer hold.
+let composerToggleRun = 0;
 let composing = false;
 let deferredTranscript = false;
 const viewer = setupImageViewer(elements.imageViewer, elements.viewerImage, elements.closeImage);
@@ -419,6 +421,8 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
   if (!composerExpanded) composerNormalScrollTop = heldScrollTop;
   else if (pinToLatest) composerNormalScrollTop = null;
   composerToggleHold = true;
+  composerToggleRun += 1;
+  const toggleRun = composerToggleRun;
   composerExpanded = !composerExpanded;
   elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
   elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Collapse Composer" : "Expand Composer");
@@ -433,7 +437,6 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
   }
   // Restore once the new composer box has been laid out.
   requestAnimationFrame(() => {
-    composerToggleHold = false;
     const next = transcriptScroller();
     // A successful send goes to latest. Otherwise a manual collapse returns to the position captured on
     // expand, so a merely-true following flag no longer re-pins the transcript after a manual toggle.
@@ -444,6 +447,9 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
     shouldFollowConversation = pinToLatest || wasFollowing;
     rememberTranscriptScroll();
     updateJumpLatest();
+    // Keep the hold through the ResizeObserver deliveries this toggle produces — they arrive after
+    // this callback — and release it on the next frame. A superseded toggle must not clear a newer hold.
+    requestAnimationFrame(() => { if (toggleRun === composerToggleRun) composerToggleHold = false; });
   });
 }
 
