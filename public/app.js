@@ -4935,6 +4935,10 @@ elements.expandComposer.addEventListener("pointerdown", (event) => event.prevent
 elements.messageText.addEventListener("focus", () => {
   // A focus the composer toggle triggered is not a deliberate focus, so it must not move the transcript.
   if (composerToggleHold) return;
+  // Focus has genuinely moved on, so a selection hold whose selection is already gone is stale: it would
+  // only block the composer's own resize reconciliation for the rest of its grace. A live transcript
+  // selection keeps its hold untouched.
+  if (selectionHold.active && !transcriptSelectionActive()) clearSelectionForOverlay();
   // Only a software keyboard needs the transcript re-pinned: a fine pointer focusing the composer at a
   // narrow width must not move a reader who is scrolled back.
   if (touchInput && matchMedia("(max-width: 860px)").matches) jumpToLatest(true);
