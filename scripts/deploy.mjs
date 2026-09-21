@@ -117,10 +117,12 @@ export function effectiveProtocol(entry) {
   return null;
 }
 
-export function planMachine({ current, manifest, liveStatus, absentProven, confirmIdle, allowProtocolChange }) {
+export function planMachine({ current, installedVerified, manifest, liveStatus, absentProven, confirmIdle, allowProtocolChange }) {
   const features = Array.isArray(current?.features) ? current.features : [];
+  // A matching manifest is not proof of a current install: the installed bytes must verify too, or
+  // modified, missing or corrupt files would never be repaired.
   const upToDate = Boolean(
-    current && current.bundle === manifest.bundle && current.protocol === manifest.protocol
+    installedVerified === true && current && current.bundle === manifest.bundle && current.protocol === manifest.protocol
       && FEATURES.every((feature) => features.includes(feature)),
   );
   const knownProtocol = typeof current?.protocol === "number" ? current.protocol : null;
@@ -882,7 +884,7 @@ async function inspectMachine(machine, manifest, options) {
   // An unreadable marker must block replacement, rollback and release for this installation; neither
   // the full command nor --confirm-idle may plan an update over it.
   const markerUnreadable = markerState === "unknown";
-  const plan = planMachine({ current, manifest, liveStatus, absentProven, ...options });
+  const plan = planMachine({ current, installedVerified, manifest, liveStatus, absentProven, ...options });
   return {
     ...entry,
     current, liveStatus, verifiable, statusProtocol, installedVerified, liveReason, absentProven, ownerState, markerState, markerUnreadable,
