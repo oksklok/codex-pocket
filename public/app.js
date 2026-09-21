@@ -4881,7 +4881,9 @@ elements.expandComposer.addEventListener("pointerdown", (event) => event.prevent
 elements.messageText.addEventListener("focus", () => {
   // A focus the composer toggle triggered is not a deliberate focus, so it must not move the transcript.
   if (composerToggleHold) return;
-  if (matchMedia("(max-width: 860px)").matches) jumpToLatest(true);
+  // Only a software keyboard needs the transcript re-pinned: a fine pointer focusing the composer at a
+  // narrow width must not move a reader who is scrolled back.
+  if (touchInput && matchMedia("(max-width: 860px)").matches) jumpToLatest(true);
 });
 let previousViewportHeight = window.visualViewport?.height ?? innerHeight;
 let viewportReconcileFrame;
@@ -4898,7 +4900,7 @@ window.visualViewport?.addEventListener("resize", () => {
   const decrease = previousViewportHeight - height;
   previousViewportHeight = height;
   cancelViewportReconciliation();
-  const mobileComposer = document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches;
+  const mobileComposer = touchInput && document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches;
   keyboardClosedHeight = Math.max(keyboardClosedHeight, height);
   const keyboardOpen = mobileComposer && keyboardClosedHeight - height > 150;
   const openingKeyboard = keyboardOpen && !composerKeyboardOpen;
@@ -4907,7 +4909,7 @@ window.visualViewport?.addEventListener("resize", () => {
   if (!matchMedia("(max-width: 860px)").matches) keyboardClosedHeight = height;
   if (closingKeyboard) return;
   if (openingKeyboard) jumpToLatest(true);
-  if (document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches && shouldFollowConversation) {
+  if (touchInput && document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches && shouldFollowConversation) {
     jumpToLatest(true);
     viewportReconcileFrame = requestAnimationFrame(() => {
       if (document.activeElement === elements.messageText && shouldFollowConversation) jumpToLatest(true);
