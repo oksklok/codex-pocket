@@ -669,10 +669,11 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
   /* Mobile keeps page/touch scrolling for the transcript; the composer textarea is hidden above. */
   .shell .conversation { scrollbar-width: none; }
   .shell .topbar { position: sticky; top: 0; flex-shrink: 0; }
-  /* Keep the sticky header and composer out of Android selection-handle hit-testing during the
-     hold; both edges otherwise stop the drag where they overlay the transcript. */
-  .shell.transcript-selection-held .topbar,
-  .shell.transcript-selection-held .composer-zone:not(.expanded-composer) { pointer-events: none; }
+  /* Keep the sticky header and composer out of Android selection-handle hit-testing only while a handle
+     is actually moving; both edges otherwise stop the drag where they overlay the transcript. A settled
+     selection leaves them clickable, and this class is never set for fine-pointer input. */
+  .shell.transcript-selection-dragging .topbar,
+  .shell.transcript-selection-dragging .composer-zone:not(.expanded-composer) { pointer-events: none; }
   .composer-zone:not(.expanded-composer) { position: sticky; bottom: 0; z-index: 3; }
   .destination-list { padding-bottom: 12px; }
   .workspace { display: block; position: relative; }

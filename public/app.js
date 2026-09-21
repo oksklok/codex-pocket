@@ -381,6 +381,7 @@ let deferredTranscript = false;
 const viewer = setupImageViewer(elements.imageViewer, elements.viewerImage, elements.closeImage);
 const transcriptNodes = new Map();
 const heldTranscriptNodes = new Set();
+let selectionDragTimer = null;
 const selectionHold = createSelectionHold(() => {
   elements.appShell.classList.remove("transcript-selection-held");
   heldTranscriptNodes.clear();
@@ -3070,7 +3071,15 @@ function observeTranscriptSelection() {
   const selected = transcriptSelectionActive();
   if (selected) markSendNavigationOverride();
   selectionHold.observe(selected);
-  elements.appShell.classList.toggle("transcript-selection-held", selectionHold.active);
+  // The Android handle-hit-testing workaround is touch-only, and it lasts only while a handle is moving:
+  // a settled selection must leave the sticky composer tappable so its first tap ends the selection and
+  // focuses the composer. The timer always runs, so the brief post-release grace is preserved.
+  elements.appShell.classList.toggle("transcript-selection-held", touchInput && selectionHold.active);
+  if (touchInput) {
+    if (selected) elements.appShell.classList.add("transcript-selection-dragging");
+    clearTimeout(selectionDragTimer);
+    selectionDragTimer = setTimeout(() => elements.appShell.classList.remove("transcript-selection-dragging"), 500);
+  }
   if (!selected) return;
   keepSelectionEdgeVisible(selection);
   for (const node of elements.conversation.children) {
@@ -3083,7 +3092,8 @@ function observeTranscriptSelection() {
 function clearSelectionForOverlay() {
   window.getSelection()?.removeAllRanges();
   selectionHold.reset();
-  elements.appShell.classList.remove("transcript-selection-held");
+  clearTimeout(selectionDragTimer);
+  elements.appShell.classList.remove("transcript-selection-held", "transcript-selection-dragging");
   heldTranscriptNodes.clear();
   flushDeferredTranscript();
 }
