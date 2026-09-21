@@ -787,8 +787,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
      transcript and composer keep their readable track centred on the real remaining space instead
      of running under a sidebar. The margin transition matches the panes' own 160ms slide. */
   .chat-panel { transition: margin 160ms ease; }
-  body.destination-open .chat-panel { margin-left: 310px; }
-  .shell:not(.inspector-closed) .chat-panel { margin-right: 340px; }
+  /* A docked sidebar narrows the chat symmetrically around its existing centerline instead of shifting
+     it: the wider open sidebar sets both margins, so the central content stays centered between them. */
+  body.destination-open .chat-panel { margin-inline: 310px; }
+  .shell:not(.inspector-closed) .chat-panel { margin-inline: 340px; }
 }
 .display-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .display-actions { display: flex; gap: 5px; }

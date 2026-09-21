@@ -1583,7 +1583,8 @@ function openDestinationSwitcher(animate = true) {
   elements.destinationSwitcher.setAttribute("role", isWideLayout() ? "navigation" : "dialog");
   // Only one narrow drawer: opening Tasks closes Details.
   if (!isWideLayout() && inspectorOpen()) closeInspector();
-  clearSelectionForOverlay();
+  // A wide docked Tasks sidebar keeps the transcript selection; only the narrow modal drawer clears it.
+  if (!isWideLayout()) clearSelectionForOverlay();
   clearTimeout(destinationCloseTimer);
   elements.destinationSwitcher.inert = false;
   // Restore the saved open position before revealing the drawer on startup.
@@ -4224,6 +4225,8 @@ function openInspector({ save = true } = {}) {
   elements.inspector.inert = false;
   // The narrow drawer is modal, so it takes focus; the wide docked column never steals it.
   if (isMobileInspector()) {
+    // The narrow Task Details drawer is modal over the transcript, so it clears the selection on open.
+    clearSelectionForOverlay();
     elements.inspectorBackdrop.hidden = false;
     elements.inspectorClose.focus({ preventScroll: true });
   } else {
