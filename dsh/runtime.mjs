@@ -14,9 +14,7 @@ import {
   readFileSync,
   writeFileSync,
   appendFileSync,
-  readdirSync,
-  linkSync,
-  renameSync,
+  rmSync,
   unlinkSync,
   chmodSync,
   existsSync,
@@ -332,105 +330,65 @@ function startRuntime() {
   let child = null;
   let key = "";
   let ownsLock = false;
-  const claimsDir = join(home, "pocket-owners");
+  const lockDirPath = join(home, "pocket-owner.lock");
+  const lockPidPath = join(lockDirPath, "pid");
 
-  // ── Ownership protocol ─────────────────────────────────────────────────────
-  // Ownership is a set of claims, one file per acquisition, named by its allocation index inside the
-  // claims directory and published atomically with its pid (hard-linked from a prepared file), so a
-  // claim is never observable before its content is complete. The lowest-indexed live claim owns the
-  // home and every other claimant withdraws only its own claim, so no launcher ever deletes or moves a
-  // claim another launcher published. Claim names are never reused, which makes removal by exact name
-  // safe. The pid file is written by the winner for `--owner` and deployment tooling: a report, not the
-  // authority.
-  let claim = null;
-
-  function liveClaims() {
-    let names = [];
+  // ── Ownership ──────────────────────────────────────────────────────────────
+  // The lock directory is the authority and mkdirSync is the atomic acquire, so exactly one contender
+  // can create it. A live recorded owner keeps the home; one confirmed dead is removed and the
+  // contenders simply race mkdirSync again. A lock whose pid cannot be read is never guessed at:
+  // acquisition fails closed and an operator clears it by hand.
+  function lockOwnerPid() {
+    let raw = null;
     try {
-      names = readdirSync(claimsDir);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    const claims = [];
-    for (const name of names) {
-      if (!/^\d{6}$/.test(name)) continue;
-      let pid = null;
-      try {
-        pid = Number(readFileSync(join(claimsDir, name), "utf8").trim());
-      } catch {
-        // A claim that cannot be read is treated as live: only a readable, dead pid is reclaimable.
-        claims.push({ index: Number(name), name, pid: null });
-        continue;
-      }
-      if (!Number.isInteger(pid) || pid <= 0 || !alive(pid)) {
-        try {
-          unlinkSync(join(claimsDir, name));
-        } catch {}
-        continue;
-      }
-      claims.push({ index: Number(name), name, pid });
-    }
-    return claims.sort((left, right) => left.index - right.index);
-  }
-
-  function publishClaim() {
-    const pending = join(claimsDir, `${process.pid}.pending`);
-    writeFileSync(pending, String(process.pid), { mode: 0o600 });
-    try {
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        // Allocating above the highest index keeps ordering with any claim already present, and a lost
-        // create race simply takes the next index, so two claimants can never hold the same one.
-        const claims = liveClaims();
-        const index = claims.length ? claims[claims.length - 1].index + 1 : 1;
-        const name = String(index).padStart(6, "0");
-        try {
-          linkSync(pending, join(claimsDir, name));
-        } catch (error) {
-          if (error?.code === "EEXIST") continue;
-          throw error;
-        }
-        return name;
-      }
-      return null;
-    } finally {
-      try {
-        unlinkSync(pending);
-      } catch {}
-    }
+      raw = readFileSync(lockPidPath, "utf8");
+    } catch {}
+    if (raw === null) return null;
+    const pid = Number(raw.trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
   }
 
   function ownerLock() {
-    mkdirSync(claimsDir, { recursive: true, mode: 0o700 });
-    claim = publishClaim();
-    if (!claim) return false;
-    if (liveClaims()[0]?.name !== claim) {
-      // An earlier live claim owns the home; this claimant only withdraws its own claim.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        unlinkSync(join(claimsDir, claim));
+        mkdirSync(lockDirPath, { mode: 0o700 });
+        try {
+          writeFileSync(lockPidPath, String(process.pid), { mode: 0o600 });
+        } catch (error) {
+          try {
+            rmSync(lockDirPath, { recursive: true, force: true });
+          } catch {}
+          throw error;
+        }
+        // The bare-PID report is for --owner and deployment tooling; the directory is the authority.
+        try {
+          writeFileSync(lockPath, String(process.pid), { mode: 0o600 });
+        } catch {}
+        return true;
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+      }
+      const pid = lockOwnerPid();
+      if (pid === null) {
+        log("DSH home lock is not attributable to a process; remove it by hand to start a runtime");
+        return false;
+      }
+      // A live owner keeps its home.
+      if (alive(pid)) return false;
+      // Its owner is confirmed dead: drop that stale directory, then race mkdirSync again with no
+      // further deletion against this pathname.
+      try {
+        rmSync(lockDirPath, { recursive: true, force: true });
       } catch {}
-      claim = null;
-      return false;
     }
-    try {
-      writeFileSync(lockPath, String(process.pid), { mode: 0o600 });
-    } catch {}
-    return true;
+    return false;
   }
 
   function release() {
     // Never remove another owner's artifacts: only what this process established. Ownership was
     // acquired before any stale socket was reclaimed, so these paths belong to this owner.
     if (!ownsLock) return;
-    try {
-      if (readFileSync(lockPath, "utf8") === String(process.pid)) unlinkSync(lockPath);
-    } catch {}
-    // Only this process's own claim is withdrawn; a claim is addressed by its exact name.
-    if (claim) {
-      try {
-        unlinkSync(join(claimsDir, claim));
-      } catch {}
-      claim = null;
-    }
+    // Ownership is held while the old endpoints go, then released last and only if it is still ours.
     if (!isWindows) {
       for (const path of [socketPath, controlSocketPath]) {
         try {
@@ -438,6 +396,12 @@ function startRuntime() {
         } catch {}
       }
     }
+    try {
+      if (readFileSync(lockPath, "utf8") === String(process.pid)) unlinkSync(lockPath);
+    } catch {}
+    try {
+      if (readFileSync(lockPidPath, "utf8") === String(process.pid)) rmSync(lockDirPath, { recursive: true, force: true });
+    } catch {}
   }
 
   try {
