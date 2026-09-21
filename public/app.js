@@ -373,6 +373,9 @@ let enterSends = !touchInput;
 try { const saved = localStorage.getItem("codex-pocket-enter-sends"); if (saved !== null) enterSends = saved !== "false"; } catch {}
 elements.enterSends.checked = enterSends;
 let composerExpanded = false;
+// The normal-mode document position captured when the composer was expanded. While expanded the removed
+// composer can clamp the document scroll, so the expanded position is never a valid collapse baseline.
+let composerNormalScrollTop = null;
 // Set while a composer expand/collapse is settling: the toggle's own refocus and box resize must not
 // pull the transcript to the latest turn.
 let composerToggleHold = false;
@@ -411,6 +414,10 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
   const scroller = transcriptScroller();
   const heldScrollTop = scroller.scrollTop;
   const wasFollowing = shouldFollowConversation;
+  // Entering expanded mode records the normal-mode reading position, before the composer leaves flow. A
+  // manual collapse restores it; an explicit pinToLatest (a successful send) discards it instead.
+  if (!composerExpanded) composerNormalScrollTop = heldScrollTop;
+  else if (pinToLatest) composerNormalScrollTop = null;
   composerToggleHold = true;
   composerExpanded = !composerExpanded;
   elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
@@ -428,8 +435,13 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
   requestAnimationFrame(() => {
     composerToggleHold = false;
     const next = transcriptScroller();
-    next.scrollTop = wasFollowing || pinToLatest ? next.scrollHeight : heldScrollTop;
-    shouldFollowConversation = wasFollowing || pinToLatest;
+    // A successful send goes to latest. Otherwise a manual collapse returns to the position captured on
+    // expand, so a merely-true following flag no longer re-pins the transcript after a manual toggle.
+    if (pinToLatest) next.scrollTop = next.scrollHeight;
+    else if (!composerExpanded && composerNormalScrollTop !== null) { next.scrollTop = composerNormalScrollTop; composerNormalScrollTop = null; }
+    else if (!composerExpanded && wasFollowing) next.scrollTop = next.scrollHeight;
+    else next.scrollTop = heldScrollTop;
+    shouldFollowConversation = pinToLatest || wasFollowing;
     rememberTranscriptScroll();
     updateJumpLatest();
   });
