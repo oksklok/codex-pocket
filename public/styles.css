@@ -928,6 +928,12 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
    objective's final line, the elapsed time and the actions never drift to the row's center or top. */
 @media (min-width: 861px) {
   .goal-strip:has(#goal-objective.wrapped) { align-items: end; }
+  /* The bottom row is the icon band, so the text is lifted back to where the collapsed card centered
+     it: half the icon/text height difference. Without this the label and the time drop by that gap. */
+  .goal-strip:has(#goal-objective.wrapped) :is(#goal-status, #goal-objective, #goal-time) {
+    margin-bottom: 10px;
+    margin-bottom: calc((var(--icon-size) - 1lh) / 2);
+  }
 }
 @media (max-width: 860px) {
   .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "status time actions" "objective objective actions"; }
