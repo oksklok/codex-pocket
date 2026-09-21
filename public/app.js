@@ -4998,12 +4998,14 @@ let composerResizeScrollTop = 0;
 new ResizeObserver(([entry]) => {
   if (entry.contentRect.height === composerZoneHeight) return;
   composerZoneHeight = entry.contentRect.height;
-  // A height change the expand toggle caused is reconciled by toggleComposer itself.
-  if (composerToggleHold || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest || composerResizeFrame !== null) return;
+  // A height change the expand toggle caused is reconciled by toggleComposer itself. A live transcript
+  // selection still suppresses the follow, but the stale logical hold must not: by the time the composer
+  // grows the selection is usually already gone, and the hold alone would block the follow for its grace.
+  if (composerToggleHold || composerExpanded || !shouldFollowConversation || transcriptSelectionActive() || historyRequest || composerResizeFrame !== null) return;
   composerResizeScrollTop = transcriptScroller().scrollTop;
   composerResizeFrame = requestAnimationFrame(() => {
     composerResizeFrame = null;
-    if (composerToggleHold || composerExpanded || !shouldFollowConversation || selectionHold.active || transcriptSelectionActive() || historyRequest) return;
+    if (composerToggleHold || composerExpanded || !shouldFollowConversation || transcriptSelectionActive() || historyRequest) return;
     const scroller = transcriptScroller();
     scroller.scrollTop = scroller.scrollHeight;
     shouldFollowConversation = true;
