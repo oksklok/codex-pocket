@@ -13,7 +13,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
 import { DshHost, DshRpcClient } from "./dsh.ts";
-import { DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStatus, withoutDeepseekKey, DEEPSEEK_MODEL, DeepSeekBalanceMonitor, EMPTY_DEEPSEEK_BALANCE, DEEPSEEK_BALANCE_REFRESH_MS, type DeepSeekBalance } from "./deepseek.ts";
+import { DEEPSEEK_KEY_PATH, deepseekCredentialStatus, withoutDeepseekKey, DeepSeekBalanceMonitor, EMPTY_DEEPSEEK_BALANCE, DEEPSEEK_BALANCE_REFRESH_MS, type DeepSeekBalance } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 

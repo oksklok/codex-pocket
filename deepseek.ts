@@ -5,16 +5,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { lstatSync, readFileSync } from "node:fs";
 
-export const DEEPSEEK_MODEL = "deepseek-flash";
-export const DEEPSEEK_HOME = join(homedir(), ".codex-pocket", "deepseek");
 // Host-owned credential file used when DEEPSEEK_API_KEY is not supplied explicitly.
 export const DEEPSEEK_KEY_DIR = join(homedir(), ".codex-pocket", "secrets");
 export const DEEPSEEK_KEY_PATH = join(DEEPSEEK_KEY_DIR, "deepseek-api-key");
 export const DEEPSEEK_KEY_HINT = `Create ${DEEPSEEK_KEY_PATH} with directory permissions 700 and file permissions 600.`;
-export const DEEPSEEK_PROVIDER = {
-  name: "DeepSeek", base_url: "https://api.deepseek.com", wire_api: "responses",
-  env_key: "DEEPSEEK_API_KEY", requires_openai_auth: false, supports_websockets: false, supports_standalone_web_search: false,
-};
 // Official account-wide balance endpoint; queried from the host with the resolved credential only.
 export const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 export const DEEPSEEK_BALANCE_TIMEOUT_MS = 5_000;
@@ -30,8 +24,6 @@ export type DeepSeekBalance = {
 };
 export const EMPTY_DEEPSEEK_BALANCE: DeepSeekBalance = { available: false, stale: false, isAvailable: null, entries: [], updatedAt: null };
 // Names and patterns every DeepSeek child strips from its environment.
-export const DEEPSEEK_SHELL_ENV_EXCLUDE = ["DEEPSEEK_API_KEY", "OPENAI_*", "CODEX_*TOKEN*"];
-
 export function normalizeDeepseekKey(value: unknown, source: string): string {
   if (typeof value !== "string") throw new Error(`DeepSeek API key from ${source} must be text`);
   if (/[\r\n\0]/.test(value)) throw new Error(`DeepSeek API key from ${source} must be a single line without control characters`);
@@ -85,81 +77,6 @@ export function withoutDeepseekKey(env = process.env): NodeJS.ProcessEnv {
   delete clean.DEEPSEEK_API_KEY;
   return clean;
 }
-
-export function deepseekEnvironment(env = process.env, home = DEEPSEEK_HOME, supplied?: string): NodeJS.ProcessEnv {
-  const key = supplied ? normalizeDeepseekKey(supplied, "the resolved DeepSeek credential") : env.DEEPSEEK_API_KEY?.trim();
-  if (!key) throw new Error(`DeepSeek needs DEEPSEEK_API_KEY in the host environment, or a host key file. ${DEEPSEEK_KEY_HINT} See docs/deepseek.md.`);
-  if (/[\r\n\0]/.test(key)) throw new Error("DEEPSEEK_API_KEY must contain a single API key, without embedded newlines");
-  const clean = withoutDeepseekKey(env);
-  for (const name of Object.keys(clean)) {
-    if (/^(OPENAI_|CODEX_|CHATGPT_)/i.test(name)) delete clean[name];
-  }
-  return { ...clean, CODEX_HOME: home, DEEPSEEK_API_KEY: key };
-}
-
-export function deepseekConfig(home = DEEPSEEK_HOME): Record<string, any> {
-  return {
-    model: DEEPSEEK_MODEL, model_provider: "deepseek", model_catalog_json: join(home, "models.json"),
-    model_reasoning_effort: "high", web_search: "disabled", review_model: DEEPSEEK_MODEL,
-    sqlite_home: home, log_dir: join(home, "logs"), allow_login_shell: false,
-    "model_providers.deepseek": DEEPSEEK_PROVIDER,
-    "shell_environment_policy.exclude": [...DEEPSEEK_SHELL_ENV_EXCLUDE],
-    "features.multi_agent": false, "features.remote_control": false,
-  };
-}
-
-function toml(value: any): string {
-  if (Array.isArray(value)) return `[${value.map(toml).join(", ")}]`;
-  if (value && typeof value === "object") return `{ ${Object.entries(value).map(([k, v]) => `${k} = ${toml(v)}`).join(", ")} }`;
-  return JSON.stringify(value);
-}
-
-export function deepseekArgs(home = DEEPSEEK_HOME): string[] {
-  return Object.entries(deepseekConfig(home)).flatMap(([key, value]) => ["-c", `${key}=${toml(value)}`]);
-}
-
-function matchesExcludedName(pattern: string, name: string): boolean {
-  const source = pattern.split("*").map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
-  return new RegExp(`^${source}$`, "i").test(name);
-}
-
-// shell_environment_policy.set runs after exclude, so an entry there can reintroduce a stripped name.
-function reintroducesCredential(set: unknown): boolean {
-  const names = Array.isArray(set) ? set : set && typeof set === "object" ? Object.keys(set) : [];
-  return names.some(name => DEEPSEEK_SHELL_ENV_EXCLUDE.some(pattern => matchesExcludedName(pattern, String(name))));
-}
-
-export function assertDeepseekConfig(config: any, home = DEEPSEEK_HOME): void {
-  const provider = config?.model_providers?.deepseek;
-  if (config?.model_provider !== "deepseek" || config?.model !== DEEPSEEK_MODEL
-    || config?.model_catalog_json !== join(home, "models.json")
-    || !provider || Object.keys(provider).some(k => !(k in DEEPSEEK_PROVIDER) && provider[k] != null)
-    || Object.entries(DEEPSEEK_PROVIDER).some(([k, v]) => provider[k] !== v)
-    || config?.web_search !== "disabled"
-    || config?.sqlite_home !== home || config?.log_dir !== join(home, "logs")
-    || config?.allow_login_shell !== false
-    || Object.keys(config?.mcp_servers ?? {}).length > 0 || config?.notify?.length > 0 || config?.hooks
-    || config?.experimental_thread_store || config?.experimental_thread_store_endpoint
-    || !config?.shell_environment_policy?.exclude?.includes("DEEPSEEK_API_KEY")
-    || reintroducesCredential(config?.shell_environment_policy?.set)) {
-    throw new Error("DeepSeek isolation check failed: effective project configuration must use Pocket's DeepSeek provider, model catalog, endpoint and shell credential exclusion.");
-  }
-}
-
-export function constrainDeepseekRequest(method: string, params: Record<string, any>, home = DEEPSEEK_HOME): Record<string, any> {
-  if (params.model && params.model !== DEEPSEEK_MODEL) throw new Error("This runtime only supports deepseek-flash");
-  if (params.effort && !["low", "high", "max"].includes(params.effort)) throw new Error("DeepSeek supports low, high or max effort");
-  if (params.approvalsReviewer === "auto_review") throw new Error("Automatic approval review is unavailable for DeepSeek; use Ask or Full access");
-  if (["thread/start", "thread/resume"].includes(method)) {
-    const config = deepseekConfig(home);
-    // Resume keeps the task's chosen effort; high is only the initial default.
-    if (method === "thread/resume") delete config.model_reasoning_effort;
-    return { ...params, model: DEEPSEEK_MODEL, modelProvider: "deepseek", config, approvalsReviewer: "user", serviceTier: null };
-  }
-  if (method === "command/exec") return { ...params, env: { ...params.env, DEEPSEEK_API_KEY: null, OPENAI_API_KEY: null } };
-  return params;
-}
-
 // Reduce the account balance payload to currency/amount pairs plus availability. Anything the contract
 // does not pin down (multiple currencies, non-numeric amounts, missing fields) is dropped rather than guessed.
 export function sanitizeDeepseekBalance(payload: unknown, now = Date.now()): DeepSeekBalance | null {
