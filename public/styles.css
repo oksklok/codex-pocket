@@ -791,6 +791,14 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
      it: the wider open sidebar sets both margins, so the central content stays centered between them. */
   body.destination-open .chat-panel { margin-inline: 310px; }
   .shell:not(.inspector-closed) .chat-panel { margin-inline: 340px; }
+  /* The separator follows the real sidebar edges instead of the narrowed chat panel, so it never leaves
+     a gap beside nor runs under a docked sidebar. It is drawn on the zone's own 1px separator position,
+     extending to the workspace edges each state actually reaches. */
+  .composer-zone { border-top: 0; }
+  .composer-zone::before { content: ""; position: absolute; top: 0; left: 0; right: 0; border-top: var(--action-row-border); }
+  body.destination-open .composer-zone::before { right: -310px; }
+  .shell:not(.inspector-closed) .composer-zone::before { left: -340px; }
+  body.destination-open .shell:not(.inspector-closed) .composer-zone::before { left: -30px; right: 0; }
 }
 .display-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .display-actions { display: flex; gap: 5px; }
