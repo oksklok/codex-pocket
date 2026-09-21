@@ -85,7 +85,7 @@ Neutral-gray surfaces; colour is reserved for actions, status and activity categ
 - Exception: the row overflow menu uses three filled dots (`fill: currentColor`).
 - The two mirrored sidebar glyphs are the one place fill is meaningful: the pane is unfilled when
   the sidebar is closed and filled via `:aria-expanded` / `[aria-expanded="true"]` when open.
-- Icon-only buttons always carry `aria-label` and usually a matching `title`.
+- Pocket shows no native `title` hover tooltips; icon-only buttons carry an `aria-label`.
 - A glyph is optically centred on its own ink, not just its viewBox: the conventional Copy mark is
   drawn so its combined bounds centre on the 24-unit box's middle, and the check that replaces it is
   centred the same way.
@@ -108,7 +108,7 @@ Quieter variants exist inside the transcript (`approval-approve`, `approval-deny
 
 Fenced code blocks in assistant-authored conversation messages carry exactly one Copy control. It is a
 28px outline icon button with the conventional Copy glyph at 16px, optically centred,
-`aria-label`/`title` "Copy code", and a brief "Copied" or "Copy failed" state; a transient success
+`aria-label` "Copy code", and a brief "Copied" or "Copy failed" state; a transient success
 confirmation lasts 2 seconds. The button sits in a reserved right gutter so it never covers code, and
 the copied text is the original fenced code without the fence, wrapping or button. User messages,
 Command/Output and every other activity detail card, structured question titles and options, and any
@@ -273,7 +273,7 @@ different, alongside Search (`--activity-search`), File Changes (`--activity-fil
 - `aria-current="true"` marks the selected task row; `aria-pressed` marks the PIN reveal.
 - Async page status uses `aria-live="polite"` (`#composer-status`, `#settings-status`,
   `#login-error`, history/attention banners). Dialog and machine errors use `role="alert"`.
-- Icon-only controls have `aria-label` (+ `title`); icon fields use `.sr-only` labels or `aria-label`.
+- Accessible naming comes from visible text, `aria-label`, `aria-labelledby` or `.sr-only`; controls carry no `title`, so nothing here reveals information through a hover popup.
 - Concealed drawers are `inert`; backdrops are real buttons with an aria-label.
 - `forced-colors: active` restores native selects and a system focus outline; `prefers-reduced-motion`
   disables transitions and looping animations.

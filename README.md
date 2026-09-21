@@ -38,7 +38,7 @@ Settings changes take effect only on **Save**, including browser-local appearanc
 
 The image viewer supports double-tap zoom/reset, pinch zoom, panning while zoomed, and desktop wheel zoom. Close it with **X**, **Escape**, or a tap outside the image. Dragging at 1× neither moves nor dismisses the image.
 
-While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion and stays parked after Stop. Steering clears it only after successful delivery. Queues live in gateway memory and survive task switches, but are lost on gateway restart. A queue stays parked while its task is away; returning alone does not send it. Queued text can be edited while its attachments stay unchanged; cancelling requires confirmation. Only one message can be queued.
+While a turn is active, normal **Send** queues input; answering an async question steers immediately into its original active turn, or starts a follow-up if that turn has ended. A queue starts automatically after normal completion and stays parked after Stop. Steering clears it only after successful delivery. Queues live in gateway memory and survive task switches, but are lost on gateway restart. A queue stays parked while its task is away; returning alone does not send it. Editing a queued message withdraws it back into the composer together with its attachments, so it can be changed and sent again; cancelling requires confirmation. Only one message can be queued.
 
 Text, image, and file drafts are task-scoped and kept only in browser memory: up to eight recent non-empty drafts. They do not survive a page reload.
 
@@ -108,7 +108,7 @@ On each remote machine, authenticate Codex and start its shared app-server. From
 ssh -o BatchMode=yes devbox codex --version
 ```
 
-Then use **Settings → Machines → Add Machine**, enter a display name and SSH alias such as `devbox`, save, and restart Pocket. Pocket launches `codex app-server proxy` through that alias and uses the host's existing SSH configuration, keys, and agent. It does not store SSH credentials. A remote Codex Desktop installation is unnecessary.
+Then open the **Tasks** sidebar and use **Add Machine**, enter a display name and SSH alias such as `devbox`, save, and restart Pocket. Pocket launches `codex app-server proxy` through that alias and uses the host's existing SSH configuration, keys, and agent. It does not store SSH credentials. A remote Codex Desktop installation is unnecessary.
 
 Disconnected runtimes retry after 5, 10, 20, 30, then 60 seconds, staying at 60 seconds until a successful connection resets the delay. Transport establishment has a 15-second timeout.
 

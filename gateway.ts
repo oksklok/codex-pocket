@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { createReadStream, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -2081,7 +2081,6 @@ export class MachineRuntime {
   private runtimeUpdateError: string | null = null;
   private runtimeVersions: any = null;
   private runtimeInspection: Promise<any> | null = null;
-  private daemonStart: ReturnType<typeof execFile> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelayIndex = 0;
   private contextByThread = new Map<string, { usedTokens: number; contextWindow: number; usedPercent: number }>();
@@ -2199,7 +2198,6 @@ export class MachineRuntime {
 
   async stop(): Promise<void> {
     this.shuttingDown = true;
-    this.daemonStart?.kill();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.quotaRefreshTimer) clearTimeout(this.quotaRefreshTimer);
