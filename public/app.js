@@ -5030,13 +5030,7 @@ elements.conversation.addEventListener("pointerdown", event => {
     elements.composerZone.inert = true;
   }
 });
-const clearTranscriptDrag = () => {
-  elements.composerZone.inert = false;
-  // The logical 500 ms hold stays for Android handle continuity, but the composer's pointer-events
-  // guard must end with the gesture: leaving it to the grace made the next tap miss the composer.
-  clearTimeout(selectionDragTimer);
-  elements.appShell.classList.remove("transcript-selection-dragging");
-};
+const clearTranscriptDrag = () => { elements.composerZone.inert = false; };
 for (const type of ["pointerup", "pointercancel", "mouseup"]) window.addEventListener(type, clearTranscriptDrag, true);
 window.addEventListener("blur", clearTranscriptDrag);
 elements.conversation.addEventListener("focusout", (event) => {
