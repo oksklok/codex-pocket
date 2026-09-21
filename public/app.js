@@ -390,7 +390,17 @@ function armComposerHoldRelease() {
   const run = composerToggleRun;
   composerHoldRelease = requestAnimationFrame(() => {
     composerHoldRelease = 0;
-    if (run === composerToggleRun) composerToggleHold = false;
+    if (run !== composerToggleRun) return;
+    // Last word of the settle: a browser-native keyboard/focus pan can overwrite the toggle's restoration
+    // after its frame, so the captured normal-mode baseline is restored once more, then released. A
+    // successful send has already discarded the baseline, so its pinToLatest result is left alone.
+    if (!composerExpanded && composerNormalScrollTop !== null) {
+      transcriptScroller().scrollTop = composerNormalScrollTop;
+      composerNormalScrollTop = null;
+      rememberTranscriptScroll();
+      updateJumpLatest();
+    }
+    composerToggleHold = false;
   });
 }
 let composing = false;
@@ -452,7 +462,9 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
     // A successful send goes to latest. Otherwise a manual collapse returns to the position captured on
     // expand, so a merely-true following flag no longer re-pins the transcript after a manual toggle.
     if (pinToLatest) next.scrollTop = next.scrollHeight;
-    else if (!composerExpanded && composerNormalScrollTop !== null) { next.scrollTop = composerNormalScrollTop; composerNormalScrollTop = null; }
+    // The baseline is kept alive: a browser-native keyboard/focus pan can still move the document after
+    // this frame, so it is reasserted once more as the transition settles (see armComposerHoldRelease).
+    else if (!composerExpanded && composerNormalScrollTop !== null) next.scrollTop = composerNormalScrollTop;
     else if (!composerExpanded && wasFollowing) next.scrollTop = next.scrollHeight;
     else next.scrollTop = heldScrollTop;
     shouldFollowConversation = pinToLatest || wasFollowing;
