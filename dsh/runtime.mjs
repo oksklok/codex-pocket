@@ -33,6 +33,10 @@ import {
 
 const root = dirname(fileURLToPath(import.meta.url));
 const REQUIRED_FILES = ["bridge.mjs", "projection.mjs", "launch.mjs", "runtime.mjs", "endpoint.mjs", "router.mjs", "pocket.patch.yml"];
+// A lock file is a hint, not proof. Nothing is reclaimed while a lock is younger than this: an empty
+// or partially written lock may still be mid-write by a live launcher. The write completes in
+// microseconds, so only a settled lock is evidence, and one abandoned mid-write is still recovered.
+const LOCK_WRITE_GRACE_MS = 2_000;
 
 function log(message) {
   try {
@@ -332,8 +336,32 @@ function startRuntime() {
   let key = "";
   let ownsLock = false;
 
+  function lockSnapshot() {
+    let stat;
+    try {
+      stat = lstatSync(lockPath);
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    let raw = "";
+    try {
+      raw = readFileSync(lockPath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+    }
+    const pid = Number(raw.trim());
+    return {
+      raw,
+      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+      ino: stat.ino,
+      dev: stat.dev,
+      settled: Date.now() - stat.mtimeMs >= LOCK_WRITE_GRACE_MS,
+    };
+  }
+
   function ownerLock() {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
       try {
         const fd = openSync(lockPath, "wx", 0o600);
         writeFileSync(fd, String(process.pid));
@@ -341,15 +369,23 @@ function startRuntime() {
         return true;
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
-        let pid = NaN;
-        try {
-          pid = Number(readFileSync(lockPath, "utf8"));
-        } catch {}
-        // Only a dead owner's lock is reclaimed. A live owner keeps its home.
-        if (alive(pid)) return false;
-        try {
-          unlinkSync(lockPath);
-        } catch {}
+      }
+      const observed = lockSnapshot();
+      if (!observed) continue;
+      // A live owner keeps its home.
+      if (observed.pid !== null && alive(observed.pid)) return false;
+      // A lock we cannot attribute, or one that may still be mid-write, is not proof its owner is
+      // dead, so it is left for a later launch rather than reclaimed now.
+      if (!observed.settled) continue;
+      // Reclaim exactly the lock just inspected. A replacement file, or changed content, means another
+      // launcher got there first: leave it alone and re-inspect instead of deleting it.
+      try {
+        const current = lstatSync(lockPath);
+        if (current.ino !== observed.ino || current.dev !== observed.dev) continue;
+        if (readFileSync(lockPath, "utf8") !== observed.raw) continue;
+        unlinkSync(lockPath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
       }
     }
     return false;

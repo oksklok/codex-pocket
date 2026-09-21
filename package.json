@@ -9,6 +9,7 @@
     "start": "node --experimental-strip-types gateway.ts",
     "gateway": "node --experimental-strip-types gateway.ts",
     "deploy": "node scripts/deploy.mjs",
+    "test": "node --test test/",
     "probe": "node --experimental-strip-types probe.ts",
     "probe-remote": "node --experimental-strip-types probe.ts --ssh"
   },

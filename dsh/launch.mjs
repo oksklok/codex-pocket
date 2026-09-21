@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { connect as connectSocket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { lstatSync, readFileSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { DSH_HOME as home, SOCKET_PATH as socketPath, MAINTENANCE_MARKER } from "./endpoint.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -42,6 +42,10 @@ function fail(reason) {
 
 function startRuntime() {
   try {
+    // The runtime owns and validates its home, but a detached child cannot start in a directory that
+    // does not exist yet, so a fresh machine would never launch. Create the private home first (same
+    // mode the runtime requires); its own symlink/permission validation still runs.
+    mkdirSync(home, { recursive: true, mode: 0o700 });
     const child = spawn(process.execPath, [join(root, "runtime.mjs")], {
       detached: true,
       windowsHide: true,
