@@ -799,6 +799,9 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   body.destination-open .composer-zone::before { right: -310px; }
   .shell:not(.inspector-closed) .composer-zone::before { left: -340px; }
   body.destination-open .shell:not(.inspector-closed) .composer-zone::before { left: -30px; right: 0; }
+  /* Expanded/fullscreen composer already gets its separator from the top bar; border-top: 0 cannot
+     suppress the pseudo-element above, so the line is excluded explicitly. */
+  .expanded-composer::before { display: none; }
 }
 .display-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .display-actions { display: flex; gap: 5px; }
