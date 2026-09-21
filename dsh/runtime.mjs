@@ -334,10 +334,10 @@ function startRuntime() {
   const lockPidPath = join(lockDirPath, "pid");
 
   // ── Ownership ──────────────────────────────────────────────────────────────
-  // The lock directory is the authority and mkdirSync is the atomic acquire, so exactly one contender
-  // can create it. A live recorded owner keeps the home; one confirmed dead is removed and the
-  // contenders simply race mkdirSync again. A lock whose pid cannot be read is never guessed at:
-  // acquisition fails closed and an operator clears it by hand.
+  // The lock directory is the authority and mkdirSync is the only acquire operation, so exactly one
+  // contender can create it. A live recorded owner keeps the home. A lock whose owner is dead, or
+  // whose pid is missing, invalid or unreadable, is never reclaimed automatically: acquisition fails
+  // closed and an operator removes pocket-owner.lock by hand.
   function lockOwnerPid() {
     let raw = null;
     try {
@@ -349,39 +349,26 @@ function startRuntime() {
   }
 
   function ownerLock() {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        mkdirSync(lockDirPath, { mode: 0o700 });
-        try {
-          writeFileSync(lockPidPath, String(process.pid), { mode: 0o600 });
-        } catch (error) {
-          try {
-            rmSync(lockDirPath, { recursive: true, force: true });
-          } catch {}
-          throw error;
-        }
-        // The bare-PID report is for --owner and deployment tooling; the directory is the authority.
-        try {
-          writeFileSync(lockPath, String(process.pid), { mode: 0o600 });
-        } catch {}
-        return true;
-      } catch (error) {
-        if (error?.code !== "EEXIST") throw error;
-      }
+    try {
+      mkdirSync(lockDirPath, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
       const pid = lockOwnerPid();
-      if (pid === null) {
-        log("DSH home lock is not attributable to a process; remove it by hand to start a runtime");
-        return false;
-      }
-      // A live owner keeps its home.
-      if (alive(pid)) return false;
-      // Its owner is confirmed dead: drop that stale directory, then race mkdirSync again with no
-      // further deletion against this pathname.
+      return pid !== null && alive(pid) ? "busy" : "stale";
+    }
+    try {
+      writeFileSync(lockPidPath, String(process.pid), { mode: 0o600 });
+    } catch (error) {
       try {
         rmSync(lockDirPath, { recursive: true, force: true });
       } catch {}
+      throw error;
     }
-    return false;
+    // The bare-PID report is for --owner and deployment tooling; the directory is the authority.
+    try {
+      writeFileSync(lockPath, String(process.pid), { mode: 0o600 });
+    } catch {}
+    return "owned";
   }
 
   function release() {
@@ -410,8 +397,11 @@ function startRuntime() {
     mkdirSync(home, { recursive: true, mode: 0o700 });
     if (lstatSync(home).isSymbolicLink() || (!isWindows && lstatSync(home).mode & 0o077))
       throw new Error("DSH home must be a private, non-symlink directory");
-    if (!ownerLock()) {
-      log("another runtime owns this DSH home; exiting");
+    const lock = ownerLock();
+    if (lock !== "owned") {
+      log(lock === "busy"
+        ? "another runtime owns this DSH home; exiting"
+        : `DSH home lock at ${lockDirPath} is not held by a live process; remove it by hand before starting a runtime`);
       process.exit(0);
     }
     ownsLock = true;
