@@ -381,28 +381,6 @@ let composerNormalScrollTop = null;
 let composerToggleHold = false;
 // Identifies the newest toggle, so a superseded toggle's deferred release cannot clear a newer hold.
 let composerToggleRun = 0;
-let composerHoldRelease = 0;
-// The hold is released one frame after the last transition signal for the current toggle — its own frame,
-// a composer-zone ResizeObserver delivery, or a keyboard/visual-viewport resize. That covers a settle that
-// arrives later than the toggle's frame without assuming a frame count, and the hold can never stick.
-function armComposerHoldRelease() {
-  if (composerHoldRelease) cancelAnimationFrame(composerHoldRelease);
-  const run = composerToggleRun;
-  composerHoldRelease = requestAnimationFrame(() => {
-    composerHoldRelease = 0;
-    if (run !== composerToggleRun) return;
-    // Last word of the settle: a browser-native keyboard/focus pan can overwrite the toggle's restoration
-    // after its frame, so the captured normal-mode baseline is restored once more, then released. A
-    // successful send has already discarded the baseline, so its pinToLatest result is left alone.
-    if (!composerExpanded && composerNormalScrollTop !== null) {
-      transcriptScroller().scrollTop = composerNormalScrollTop;
-      composerNormalScrollTop = null;
-      rememberTranscriptScroll();
-      updateJumpLatest();
-    }
-    composerToggleHold = false;
-  });
-}
 let composing = false;
 let deferredTranscript = false;
 const viewer = setupImageViewer(elements.imageViewer, elements.viewerImage, elements.closeImage);
@@ -444,6 +422,7 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
   else if (pinToLatest) composerNormalScrollTop = null;
   composerToggleHold = true;
   composerToggleRun += 1;
+  const toggleRun = composerToggleRun;
   composerExpanded = !composerExpanded;
   elements.composerZone.classList.toggle("expanded-composer", composerExpanded);
   elements.expandComposer.setAttribute("aria-label", composerExpanded ? "Collapse Composer" : "Expand Composer");
@@ -462,9 +441,7 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
     // A successful send goes to latest. Otherwise a manual collapse returns to the position captured on
     // expand, so a merely-true following flag no longer re-pins the transcript after a manual toggle.
     if (pinToLatest) next.scrollTop = next.scrollHeight;
-    // The baseline is kept alive: a browser-native keyboard/focus pan can still move the document after
-    // this frame, so it is reasserted once more as the transition settles (see armComposerHoldRelease).
-    else if (!composerExpanded && composerNormalScrollTop !== null) next.scrollTop = composerNormalScrollTop;
+    else if (!composerExpanded && composerNormalScrollTop !== null) { next.scrollTop = composerNormalScrollTop; composerNormalScrollTop = null; }
     else if (!composerExpanded && wasFollowing) next.scrollTop = next.scrollHeight;
     else next.scrollTop = heldScrollTop;
     shouldFollowConversation = pinToLatest || wasFollowing;
@@ -472,7 +449,7 @@ function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
     updateJumpLatest();
     // Keep the hold through the ResizeObserver deliveries this toggle produces — they arrive after
     // this callback — and release it on the next frame. A superseded toggle must not clear a newer hold.
-    armComposerHoldRelease();
+    requestAnimationFrame(() => { if (toggleRun === composerToggleRun) composerToggleHold = false; });
   });
 }
 
@@ -4970,8 +4947,7 @@ function cancelViewportReconciliation() { cancelAnimationFrame(viewportReconcile
 function viewportReconciliationBlocked() {
   const focused = document.activeElement;
   const editing = focused?.matches("textarea, input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]), [contenteditable]:not([contenteditable=false])");
-  // An already-scheduled reconciliation frame must also refuse once a toggle owns the transition.
-  return transcriptScroller() !== document.scrollingElement || composerExpanded || composerToggleHold || editing || selectionHold.active || transcriptSelectionActive();
+  return transcriptScroller() !== document.scrollingElement || composerExpanded || editing || selectionHold.active || transcriptSelectionActive();
 }
 window.visualViewport?.addEventListener("resize", () => {
   const height = window.visualViewport.height;
@@ -4985,10 +4961,6 @@ window.visualViewport?.addEventListener("resize", () => {
   const closingKeyboard = !keyboardOpen && composerKeyboardOpen;
   composerKeyboardOpen = keyboardOpen;
   if (!matchMedia("(max-width: 860px)").matches) keyboardClosedHeight = height;
-  // A composer toggle owns reconciliation for the viewport changes its own transition causes: all of
-  // the keyboard bookkeeping above still runs, but nothing jumps while the hold lasts, and each
-  // viewport resize re-arms the release so it covers the real settle.
-  if (composerToggleHold) { armComposerHoldRelease(); return; }
   if (closingKeyboard) return;
   if (openingKeyboard) jumpToLatest(true);
   if (touchInput && document.activeElement === elements.messageText && matchMedia("(max-width: 860px)").matches && shouldFollowConversation) {
