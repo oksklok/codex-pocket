@@ -200,6 +200,9 @@ markdown.renderer.rules.link_open = (tokens, index, options, environment, render
 function renderMarkdownInto(element, value, message = null) {
   element.classList.add("markdown");
   element.innerHTML = markdown.render(String(value || ""), { message, imageIndex: 0 });
+  // Authored Markdown titles become native hover tooltips, which Pocket never shows. Strip the
+  // attribute from the whole rendered subtree rather than special-casing links and images.
+  for (const node of element.querySelectorAll("[title]")) node.removeAttribute("title");
   for (const link of element.querySelectorAll("a[data-unsupported-link]")) link.replaceWith(...link.childNodes);
   for (const table of element.querySelectorAll("table")) {
     const scroll = document.createElement("div");
@@ -1222,7 +1225,7 @@ function renderDestinationSwitcher(force = false) {
     // Wake stays a machine action at the far right and always targets the live runtime id.
     if (!machine.local && !machine.connected && machine.canWake && machine.id.startsWith("ssh:")) {
       const wakeAction = Object.assign(document.createElement("div"), { className: "wake-action" });
-      const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button", title: `Wake ${machine.name}` });
+      const wake = Object.assign(document.createElement("button"), { type: "button", className: "icon-button" });
       wake.setAttribute("aria-label", `Wake ${machine.name}`);
       wake.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></svg>';
       wake.disabled = wakePending.has(machine.id);
