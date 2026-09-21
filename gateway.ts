@@ -2961,10 +2961,12 @@ export class MachineRuntime {
         await this.connect();
         if (!this.state.connected) throw new Error(this.technicalConnectionError || "Updated runtime could not reconnect");
         this.runtimeVersions = await this.runtimeRequest("inspect");
-        return await this.runtimeDetails(false);
       } catch (failure) {
         const error = failure instanceof Error ? failure.message : String(failure);
-        this.runtimeUpdateError = error;
+        // Only an update that leaves the runtime unusable may block later reconnects: a restart deferred
+        // because the runtime became busy, or a failed inspection on a still-connected runtime, reports
+        // the error to the caller without latching a reconnect blocker behind it.
+        this.runtimeUpdateError = this.state.connected ? null : error;
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
         this.state.connectionError = compact(error, 400);
@@ -2972,6 +2974,11 @@ export class MachineRuntime {
         this.broadcast("snapshot", this.snapshot());
         throw new Error(compact(error, 400));
       } finally { this.runtimeUpdating = false; }
+      // The flag is cleared before anything is reported, so the successful response and the settled
+      // capability never carry "updating", and a capability published mid-update cannot stick on
+      // "Runtime is updating".
+      this.broadcast("snapshot", this.snapshot());
+      return await this.runtimeDetails(false);
     });
     this.selectionQueue = operation.then(() => {}, () => {});
     return operation;

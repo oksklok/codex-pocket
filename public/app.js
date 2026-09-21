@@ -3587,7 +3587,8 @@ async function selectDestination(machineId, threadId) {
   if (!machineId || !threadId || destinationSelection || taskActionBusy || submittingMessage || sendingQueuedMessage || submittingInterrupt || updatingModel || updatingAccess || readingAttachments) return;
   destinationTaskError = null;
   if (machineId === state?.machineId && threadId === state?.thread?.id) {
-    if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
+    if (!isWideLayout()) closeDestinationSwitcher();
+    if (!touchInput) elements.messageText.focus({ preventScroll: true });
     return;
   }
   const expectedMachineId = state?.machineId || "";
