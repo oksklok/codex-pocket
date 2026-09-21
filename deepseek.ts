@@ -1,8 +1,5 @@
-import { fork, type ChildProcess } from "node:child_process";
-import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { lstatSync, readFileSync } from "node:fs";
 
 // Host-owned credential file used when DEEPSEEK_API_KEY is not supplied explicitly.
@@ -23,7 +20,6 @@ export type DeepSeekBalance = {
   updatedAt: number | null;
 };
 export const EMPTY_DEEPSEEK_BALANCE: DeepSeekBalance = { available: false, stale: false, isAvailable: null, entries: [], updatedAt: null };
-// Names and patterns every DeepSeek child strips from its environment.
 export function normalizeDeepseekKey(value: unknown, source: string): string {
   if (typeof value !== "string") throw new Error(`DeepSeek API key from ${source} must be text`);
   if (/[\r\n\0]/.test(value)) throw new Error(`DeepSeek API key from ${source} must be a single line without control characters`);
