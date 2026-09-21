@@ -3103,6 +3103,14 @@ function observeTranscriptSelection() {
   }
   const selected = transcriptSelectionActive();
   if (selected) markSendNavigationOverride();
+  // The composer's focus event fires while Chromium can still report the old transcript selection as
+  // live, so a stale hold can only be recognised here, at the selectionchange that actually collapses
+  // it. With the composer focused there is no handle left to protect, so drop the hold now instead of
+  // starting a 500 ms grace that would only block the composer's own resize reconciliation.
+  if (!selected && selectionHold.active && document.activeElement === elements.messageText) {
+    clearSelectionForOverlay();
+    return;
+  }
   selectionHold.observe(selected);
   // The Android handle-hit-testing workaround is touch-only, and it lasts only while a handle is moving:
   // a settled selection must leave the sticky composer tappable so its first tap ends the selection and
@@ -4935,10 +4943,6 @@ elements.expandComposer.addEventListener("pointerdown", (event) => event.prevent
 elements.messageText.addEventListener("focus", () => {
   // A focus the composer toggle triggered is not a deliberate focus, so it must not move the transcript.
   if (composerToggleHold) return;
-  // Focus has genuinely moved on, so a selection hold whose selection is already gone is stale: it would
-  // only block the composer's own resize reconciliation for the rest of its grace. A live transcript
-  // selection keeps its hold untouched.
-  if (selectionHold.active && !transcriptSelectionActive()) clearSelectionForOverlay();
   // Only a software keyboard needs the transcript re-pinned: a fine pointer focusing the composer at a
   // narrow width must not move a reader who is scrolled back.
   if (touchInput && matchMedia("(max-width: 860px)").matches) jumpToLatest(true);
