@@ -896,8 +896,22 @@ function providerLabel(provider) {
   return meta;
 }
 
+// These controls rebuild only when their own rendered state changes, so an unrelated live update cannot
+// replace an open native picker. The key is stored per slot and checked on every render.
+const controlRenderKeys = new WeakMap();
+function controlRenderUnchanged(node, key) {
+  if (controlRenderKeys.get(node) === key) return true;
+  controlRenderKeys.set(node, key);
+  return false;
+}
+
 // One choice is a value, not a picker: render read-only text until a second option exists.
 function renderChoiceControl(slot, { entries, selected, ariaLabel, id, disabled, emptyLabel = "Unavailable", onChange }) {
+  // The key is recorded on every render, including the first, so the first unrelated update can be
+  // skipped too. A populated slot with an unchanged key keeps its DOM and returns the live <select>;
+  // the static one-value case returns null. A slot another path emptied is always rebuilt.
+  const unchanged = controlRenderUnchanged(slot, JSON.stringify([entries, selected, ariaLabel, id, disabled, emptyLabel]));
+  if (slot.firstElementChild && unchanged) return slot.querySelector("select") ?? null;
   slot.replaceChildren();
   const label = slot.closest(".form-field")?.querySelector("label") || null;
   if (entries.length <= 1) {
@@ -1634,27 +1648,32 @@ function renderModelControls() {
 
   const selectedModel = currentCatalogModel(elements.modelSelect?.value || state?.model);
   const efforts = selectedModel?.supportedReasoningEfforts || [];
-  elements.effortSelect.replaceChildren();
-  for (const effort of efforts) {
-    const option = document.createElement("option");
-    option.value = effort.reasoningEffort;
-    option.textContent = effortLabel(effort.reasoningEffort);
-    option.selected = effort.reasoningEffort === state?.reasoningEffort;
-    elements.effortSelect.append(option);
+  const effortKey = JSON.stringify([efforts.map((effort) => [effort.reasoningEffort, effortLabel(effort.reasoningEffort)]), state?.reasoningEffort, enabled]);
+  if (!controlRenderUnchanged(elements.effortSelect, effortKey)) {
+    elements.effortSelect.replaceChildren();
+    for (const effort of efforts) {
+      const option = document.createElement("option");
+      option.value = effort.reasoningEffort;
+      option.textContent = effortLabel(effort.reasoningEffort);
+      option.selected = effort.reasoningEffort === state?.reasoningEffort;
+      elements.effortSelect.append(option);
+    }
+    if (!efforts.length) {
+      const option = document.createElement("option");
+      option.textContent = effortLabel(state?.reasoningEffort);
+      elements.effortSelect.append(option);
+    }
+    elements.effortSelect.disabled = !enabled || !efforts.length;
   }
-  if (!efforts.length) {
-    const option = document.createElement("option");
-    option.textContent = effortLabel(state?.reasoningEffort);
-    elements.effortSelect.append(option);
-  }
-  elements.effortSelect.disabled = !enabled || !efforts.length;
 }
 
 function renderAccessControl() {
   const access = state?.access;
-  elements.accessSelect.replaceChildren();
   // Unavailable modes are omitted; a custom/unknown current mode is preserved on its own.
   const available = ACCESS_MODES.filter((mode) => access?.choices?.[mode.value]?.available === true);
+  const accessKey = JSON.stringify([available.map((mode) => [mode.value, mode.label, access?.choices?.[mode.value]?.reason]), access?.mode, Boolean(state?.connected), Boolean(state?.thread), updatingAccess, resolvingApproval, submittingInputRequestId, submittingInterrupt]);
+  if (controlRenderUnchanged(elements.accessSelect, accessKey)) { elements.accessSelect.classList.toggle("full-access", access?.mode === "full"); return; }
+  elements.accessSelect.replaceChildren();
   if (!available.some((mode) => mode.value === access?.mode) && (access?.mode || !available.length)) {
     const option = document.createElement("option");
     option.value = access?.mode || "unavailable";
