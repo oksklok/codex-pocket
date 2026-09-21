@@ -14,6 +14,7 @@ import {
   readFileSync,
   writeFileSync,
   appendFileSync,
+  readdirSync,
   linkSync,
   renameSync,
   unlinkSync,
@@ -331,83 +332,89 @@ function startRuntime() {
   let child = null;
   let key = "";
   let ownsLock = false;
+  const claimsDir = join(home, "pocket-owners");
 
   // ── Ownership protocol ─────────────────────────────────────────────────────
-  // The lock path is the only authority. A lock is published atomically with complete content by
-  // hard-linking a prepared file, so a reader can never observe an empty or partially written lock and
-  // a launcher paused before publishing owns nothing. Reclamation steals the path atomically and drops
-  // only the file it actually moved, restoring a replacement lock instead of deleting it. Ownership is
-  // always concluded by reading the path back, never from a local handle or an earlier observation.
-  const ownedContent = () => String(process.pid);
+  // Ownership is a set of claims, one file per acquisition, named by its allocation index inside the
+  // claims directory and published atomically with its pid (hard-linked from a prepared file), so a
+  // claim is never observable before its content is complete. The lowest-indexed live claim owns the
+  // home and every other claimant withdraws only its own claim, so no launcher ever deletes or moves a
+  // claim another launcher published. Claim names are never reused, which makes removal by exact name
+  // safe. The pid file is written by the winner for `--owner` and deployment tooling: a report, not the
+  // authority.
+  let claim = null;
 
-  function publishLock() {
-    const pending = `${lockPath}.${process.pid}.pending`;
+  function liveClaims() {
+    let names = [];
     try {
-      writeFileSync(pending, ownedContent(), { mode: 0o600 });
+      names = readdirSync(claimsDir);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const claims = [];
+    for (const name of names) {
+      if (!/^\d{6}$/.test(name)) continue;
+      let pid = null;
       try {
-        linkSync(pending, lockPath);
-      } catch (error) {
-        if (error?.code === "EEXIST") return false;
-        throw error;
+        pid = Number(readFileSync(join(claimsDir, name), "utf8").trim());
+      } catch {
+        // A claim that cannot be read is treated as live: only a readable, dead pid is reclaimable.
+        claims.push({ index: Number(name), name, pid: null });
+        continue;
       }
+      if (!Number.isInteger(pid) || pid <= 0 || !alive(pid)) {
+        try {
+          unlinkSync(join(claimsDir, name));
+        } catch {}
+        continue;
+      }
+      claims.push({ index: Number(name), name, pid });
+    }
+    return claims.sort((left, right) => left.index - right.index);
+  }
+
+  function publishClaim() {
+    const pending = join(claimsDir, `${process.pid}.pending`);
+    writeFileSync(pending, String(process.pid), { mode: 0o600 });
+    try {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        // Allocating above the highest index keeps ordering with any claim already present, and a lost
+        // create race simply takes the next index, so two claimants can never hold the same one.
+        const claims = liveClaims();
+        const index = claims.length ? claims[claims.length - 1].index + 1 : 1;
+        const name = String(index).padStart(6, "0");
+        try {
+          linkSync(pending, join(claimsDir, name));
+        } catch (error) {
+          if (error?.code === "EEXIST") continue;
+          throw error;
+        }
+        return name;
+      }
+      return null;
     } finally {
       try {
         unlinkSync(pending);
       } catch {}
     }
-    // A concurrent reclaimer can move the lock the instant after it appears, so the path is re-read.
-    try {
-      return readFileSync(lockPath, "utf8") === ownedContent();
-    } catch {
-      return false;
-    }
-  }
-
-  function reclaimLock(observed) {
-    const claim = `${lockPath}.${process.pid}.claim`;
-    try {
-      renameSync(lockPath, claim);
-    } catch (error) {
-      if (error?.code === "ENOENT") return true;
-      throw error;
-    }
-    let moved = null;
-    try {
-      moved = readFileSync(claim, "utf8");
-    } catch {}
-    if (moved === observed) {
-      try {
-        unlinkSync(claim);
-      } catch {}
-      return true;
-    }
-    // Another launcher replaced the lock after it was judged stale: put that lock back untouched.
-    try {
-      renameSync(claim, lockPath);
-    } catch {
-      try {
-        unlinkSync(claim);
-      } catch {}
-    }
-    return false;
   }
 
   function ownerLock() {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      if (publishLock()) return true;
-      let observed = null;
+    mkdirSync(claimsDir, { recursive: true, mode: 0o700 });
+    claim = publishClaim();
+    if (!claim) return false;
+    if (liveClaims()[0]?.name !== claim) {
+      // An earlier live claim owns the home; this claimant only withdraws its own claim.
       try {
-        observed = readFileSync(lockPath, "utf8");
-      } catch {
-        continue;
-      }
-      const pid = Number(observed.trim());
-      // Only a complete pid of a dead process is reclaimable: an unattributable lock is never proof
-      // that its owner is dead, and a live owner always keeps the home.
-      if (!Number.isInteger(pid) || pid <= 0 || alive(pid)) return false;
-      if (!reclaimLock(observed)) return false;
+        unlinkSync(join(claimsDir, claim));
+      } catch {}
+      claim = null;
+      return false;
     }
-    return false;
+    try {
+      writeFileSync(lockPath, String(process.pid), { mode: 0o600 });
+    } catch {}
+    return true;
   }
 
   function release() {
@@ -417,6 +424,13 @@ function startRuntime() {
     try {
       if (readFileSync(lockPath, "utf8") === String(process.pid)) unlinkSync(lockPath);
     } catch {}
+    // Only this process's own claim is withdrawn; a claim is addressed by its exact name.
+    if (claim) {
+      try {
+        unlinkSync(join(claimsDir, claim));
+      } catch {}
+      claim = null;
+    }
     if (!isWindows) {
       for (const path of [socketPath, controlSocketPath]) {
         try {

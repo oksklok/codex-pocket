@@ -4,7 +4,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,6 +150,10 @@ async function terminatePid(pid, timeoutMs = 5_000) {
 function fixture(t) {
   const { root, adapter, home } = makeAdapter();
   const tracked = [];
+  const trackChild = (child) => {
+    tracked.push(child);
+    return track(child);
+  };
   t.after(async () => {
     const owner = status(adapter, home)?.result?.pid ?? lockPid(home);
     stop(adapter, home);
@@ -161,17 +165,26 @@ function fixture(t) {
   return {
     adapter,
     home,
-    track,
+    track: trackChild,
     startRuntime() {
-      return track(spawn(process.execPath, [join(adapter, "runtime.mjs")], { env: env(home), stdio: ["ignore", "ignore", "ignore"] }));
+      return trackChild(spawn(process.execPath, [join(adapter, "runtime.mjs")], { env: env(home), stdio: ["ignore", "ignore", "ignore"] }));
     },
   };
 }
 
-function seedLock(home, content) {
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  writeFileSync(lockPath(home), content, { mode: 0o600 });
+// The claims directory is the ownership authority; the pid file is only the winner's report.
+const claimsDir = (home) => join(home, "pocket-owners");
+function seedClaim(home, index, pid) {
+  mkdirSync(claimsDir(home), { recursive: true, mode: 0o700 });
+  writeFileSync(join(claimsDir(home), String(index).padStart(6, "0")), String(pid), { mode: 0o600 });
 }
+const claimPids = (home) => {
+  try {
+    return readdirSync(claimsDir(home)).filter((name) => /^\d{6}$/.test(name)).map((name) => Number(readFileSync(join(claimsDir(home), name), "utf8").trim())).sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
+};
 
 async function exitedPid() {
   const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
@@ -206,34 +219,41 @@ test("concurrent launchers elect exactly one owner", async (t) => {
   // While they race, every published lock must already be complete: never empty or partially written.
   const partial = [];
   const poll = setInterval(() => {
-    const raw = lockRaw(f.home);
-    if (raw !== null && !/^\d+$/.test(raw)) partial.push(raw);
+    for (const pid of claimPids(f.home)) if (!/^\d+$/.test(String(pid))) partial.push(String(pid));
+    try {
+      for (const name of readdirSync(claimsDir(f.home))) {
+        if (!/^\d{6}$/.test(name)) continue;
+        const raw = readFileSync(join(claimsDir(f.home), name), "utf8");
+        if (!/^\d+$/.test(raw)) partial.push(raw);
+      }
+    } catch {}
   }, 1);
+  t.after(() => clearInterval(poll));
   assert.ok(await waitFor(() => status(f.adapter, f.home)), "no runtime came up");
   await new Promise((resolve) => setTimeout(resolve, 600));
   clearInterval(poll);
   const one = survivors(runtimes);
   assert.equal(one.length, 1, "only one runtime may own the home");
   assert.equal(lockPid(f.home), one[0].pid, "the lock must name the surviving owner");
-  assert.deepEqual(partial, [], "a lock must never be observable before its content is complete");
+  assert.deepEqual(partial, [], "a claim must never be observable before its content is complete");
 });
 
-test("an unattributable lock is never reclaimed", async (t) => {
+test("a live claim blocks a new launcher", async (t) => {
   const f = fixture(t);
-  for (const content of ["", "not-a-pid", "12x"]) {
-    seedLock(f.home, content);
-    const child = f.startRuntime();
-    assert.equal(await exitCode(child), 0, `a runtime must not claim an unattributable lock (${JSON.stringify(content)})`);
-    assert.equal(lockRaw(f.home), content, "the unattributable lock must be left untouched");
-  }
+  seedClaim(f.home, 1, process.pid);
+  const child = f.startRuntime();
+  assert.equal(await exitCode(child), 0, "a live claim must block a second owner");
+  assert.deepEqual(claimPids(f.home), [process.pid], "another launcher's claim must be left untouched");
 });
 
-test("a dead-owner lock is reclaimed", async (t) => {
+test("a dead claim is reclaimed and the pid file is only a report", async (t) => {
   const f = fixture(t);
-  seedLock(f.home, String(await exitedPid()));
+  seedClaim(f.home, 1, await exitedPid());
+  writeFileSync(lockPath(f.home), "not-a-pid", { mode: 0o600 });
   const child = f.startRuntime();
   assert.ok(await waitFor(() => status(f.adapter, f.home)), "genuine dead-owner recovery must still work");
-  assert.equal(lockPid(f.home), child.pid);
+  assert.equal(lockPid(f.home), child.pid, "the winner reports its own pid");
+  assert.deepEqual(claimPids(f.home), [child.pid], "the dead claim is dropped, not inherited");
 });
 
 test("concurrent stale-lock recovery elects exactly one owner", async (t) => {
@@ -243,12 +263,13 @@ test("concurrent stale-lock recovery elects exactly one owner", async (t) => {
   for (let round = 0; round < 4; round += 1) {
     stop(f.adapter, f.home);
     await terminatePid(lockPid(f.home));
-    seedLock(f.home, String(await exitedPid()));
+    rmSync(claimsDir(f.home), { recursive: true, force: true });
+    seedClaim(f.home, 1, await exitedPid());
     const runtimes = [1, 2, 3].map(() => f.startRuntime());
     assert.ok(await waitFor(() => status(f.adapter, f.home)), `no runtime recovered the stale lock (round ${round})`);
     await new Promise((resolve) => setTimeout(resolve, 500));
     const one = survivors(runtimes);
     assert.equal(one.length, 1, `only one runtime may own the home after recovery (round ${round})`);
-    assert.equal(lockPid(f.home), one[0].pid, `a replacement lock must survive a stale observation (round ${round})`);
+    assert.deepEqual(claimPids(f.home), [one[0].pid], `a stale claim must not disturb the winner (round ${round})`);
   }
 });
