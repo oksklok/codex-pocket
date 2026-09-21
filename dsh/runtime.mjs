@@ -14,8 +14,8 @@ import {
   readFileSync,
   writeFileSync,
   appendFileSync,
-  openSync,
-  closeSync,
+  linkSync,
+  renameSync,
   unlinkSync,
   chmodSync,
   existsSync,
@@ -33,10 +33,6 @@ import {
 
 const root = dirname(fileURLToPath(import.meta.url));
 const REQUIRED_FILES = ["bridge.mjs", "projection.mjs", "launch.mjs", "runtime.mjs", "endpoint.mjs", "router.mjs", "pocket.patch.yml"];
-// A lock file is a hint, not proof. Nothing is reclaimed while a lock is younger than this: an empty
-// or partially written lock may still be mid-write by a live launcher. The write completes in
-// microseconds, so only a settled lock is evidence, and one abandoned mid-write is still recovered.
-const LOCK_WRITE_GRACE_MS = 2_000;
 
 function log(message) {
   try {
@@ -336,57 +332,80 @@ function startRuntime() {
   let key = "";
   let ownsLock = false;
 
-  function lockSnapshot() {
-    let stat;
+  // ── Ownership protocol ─────────────────────────────────────────────────────
+  // The lock path is the only authority. A lock is published atomically with complete content by
+  // hard-linking a prepared file, so a reader can never observe an empty or partially written lock and
+  // a launcher paused before publishing owns nothing. Reclamation steals the path atomically and drops
+  // only the file it actually moved, restoring a replacement lock instead of deleting it. Ownership is
+  // always concluded by reading the path back, never from a local handle or an earlier observation.
+  const ownedContent = () => String(process.pid);
+
+  function publishLock() {
+    const pending = `${lockPath}.${process.pid}.pending`;
     try {
-      stat = lstatSync(lockPath);
+      writeFileSync(pending, ownedContent(), { mode: 0o600 });
+      try {
+        linkSync(pending, lockPath);
+      } catch (error) {
+        if (error?.code === "EEXIST") return false;
+        throw error;
+      }
+    } finally {
+      try {
+        unlinkSync(pending);
+      } catch {}
+    }
+    // A concurrent reclaimer can move the lock the instant after it appears, so the path is re-read.
+    try {
+      return readFileSync(lockPath, "utf8") === ownedContent();
+    } catch {
+      return false;
+    }
+  }
+
+  function reclaimLock(observed) {
+    const claim = `${lockPath}.${process.pid}.claim`;
+    try {
+      renameSync(lockPath, claim);
     } catch (error) {
-      if (error?.code === "ENOENT") return null;
+      if (error?.code === "ENOENT") return true;
       throw error;
     }
-    let raw = "";
+    let moved = null;
     try {
-      raw = readFileSync(lockPath, "utf8");
-    } catch (error) {
-      if (error?.code === "ENOENT") return null;
+      moved = readFileSync(claim, "utf8");
+    } catch {}
+    if (moved === observed) {
+      try {
+        unlinkSync(claim);
+      } catch {}
+      return true;
     }
-    const pid = Number(raw.trim());
-    return {
-      raw,
-      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
-      ino: stat.ino,
-      dev: stat.dev,
-      settled: Date.now() - stat.mtimeMs >= LOCK_WRITE_GRACE_MS,
-    };
+    // Another launcher replaced the lock after it was judged stale: put that lock back untouched.
+    try {
+      renameSync(claim, lockPath);
+    } catch {
+      try {
+        unlinkSync(claim);
+      } catch {}
+    }
+    return false;
   }
 
   function ownerLock() {
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (publishLock()) return true;
+      let observed = null;
       try {
-        const fd = openSync(lockPath, "wx", 0o600);
-        writeFileSync(fd, String(process.pid));
-        closeSync(fd);
-        return true;
-      } catch (error) {
-        if (error?.code !== "EEXIST") throw error;
+        observed = readFileSync(lockPath, "utf8");
+      } catch {
+        continue;
       }
-      const observed = lockSnapshot();
-      if (!observed) continue;
-      // A live owner keeps its home.
-      if (observed.pid !== null && alive(observed.pid)) return false;
-      // A lock we cannot attribute, or one that may still be mid-write, is not proof its owner is
-      // dead, so it is left for a later launch rather than reclaimed now.
-      if (!observed.settled) continue;
-      // Reclaim exactly the lock just inspected. A replacement file, or changed content, means another
-      // launcher got there first: leave it alone and re-inspect instead of deleting it.
-      try {
-        const current = lstatSync(lockPath);
-        if (current.ino !== observed.ino || current.dev !== observed.dev) continue;
-        if (readFileSync(lockPath, "utf8") !== observed.raw) continue;
-        unlinkSync(lockPath);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
+      const pid = Number(observed.trim());
+      // Only a complete pid of a dead process is reclaimable: an unattributable lock is never proof
+      // that its owner is dead, and a live owner always keeps the home.
+      if (!Number.isInteger(pid) || pid <= 0 || alive(pid)) return false;
+      if (!reclaimLock(observed)) return false;
     }
     return false;
   }
