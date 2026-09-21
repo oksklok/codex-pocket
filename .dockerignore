@@ -6,7 +6,5 @@
 !dsh.ts
 !runtime-management.mjs
 !deepseek.ts
-!deepseek-server.mjs
-!deepseek-models.json
 !public/
 !public/**

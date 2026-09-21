@@ -13,7 +13,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
 import { DshHost, DshRpcClient } from "./dsh.ts";
-import { DeepSeekHost, DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStatus, withoutDeepseekKey, assertDeepseekConfig, constrainDeepseekRequest, DEEPSEEK_MODEL, DeepSeekBalanceMonitor, EMPTY_DEEPSEEK_BALANCE, DEEPSEEK_BALANCE_REFRESH_MS, type DeepSeekBalance } from "./deepseek.ts";
+import { DEEPSEEK_KEY_PATH, deepseekConfig, deepseekCredentialStatus, withoutDeepseekKey, DEEPSEEK_MODEL, DeepSeekBalanceMonitor, EMPTY_DEEPSEEK_BALANCE, DEEPSEEK_BALANCE_REFRESH_MS, type DeepSeekBalance } from "./deepseek.ts";
 import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
@@ -1035,18 +1035,16 @@ function connectProxy(
   onClose: (error?: Error) => void,
   registerAbort: (abort: () => void) => void,
   sshAlias?: string,
-  isolated?: ReturnType<DeepSeekHost["proxyOptions"]>,
 ): Promise<Wire> {
   return new Promise((resolve, reject) => {
     const codexBin = process.env.CODEX_BIN || "codex";
     const command = sshAlias ? process.env.SSH_BIN || "ssh" : codexBin;
     const args = sshAlias
       ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", sshAlias, "codex", "app-server", "proxy"]
-      : ["app-server", "proxy", ...(isolated?.args ?? [])];
+      : ["app-server", "proxy"];
     const child: ChildProcessWithoutNullStreams = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: isolated?.env ?? withoutDeepseekKey(),
-      ...(isolated ? { cwd: isolated.cwd } : {}),
+      env: withoutDeepseekKey(),
     });
     const websocketKey = randomBytes(16).toString("base64");
     const expectedAccept = createHash("sha1")
@@ -1187,7 +1185,6 @@ function connectProxy(
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
-      if (isolated) { stderr = "Isolated DeepSeek proxy failed; check its endpoint and CLI."; return; }
       stderr = (stderr + chunk).slice(-4000);
       const text = sshAlias ? compact(chunk, 400) : chunk.trim();
       if (text) console.error(`${sshAlias ? `${sshAlias} SSH proxy` : "app-server proxy"}: ${text}`);
@@ -1256,8 +1253,6 @@ function connectWebSocket(
 }
 
 export class RpcClient {
-  private deepseek: DeepSeekHost | undefined;
-  constructor(deepseek?: DeepSeekHost) { this.deepseek = deepseek; }
   private wire!: Wire;
   private abortTransport: (() => void) | null = null;
   private closing = false;
@@ -1269,14 +1264,12 @@ export class RpcClient {
   onClose: (error?: Error) => void = () => {};
 
   async connect(ws?: string, sshAlias?: string): Promise<void> {
-    const isolated = this.deepseek?.proxyOptions();
-    if (isolated && (ws || sshAlias)) throw new Error("DeepSeek only supports its isolated local proxy");
     const onPayload = (payload: Buffer) => {
       if (this.closing) return;
       this.onRawPayload(payload.length);
       try {
         const text = payload.toString("utf8");
-        this.receive(JSON.parse(this.deepseek ? this.deepseek.redact(text) : text));
+        this.receive(JSON.parse(text));
       } catch (error) {
         this.disconnect(error instanceof Error ? error : new Error(String(error)));
       }
@@ -1284,7 +1277,7 @@ export class RpcClient {
     const registerAbort = (abort: () => void) => { this.abortTransport = abort; };
     const wire = ws
       ? await connectWebSocket(ws, onPayload, (error) => this.disconnect(error), registerAbort)
-      : await connectProxy(onPayload, (error) => this.disconnect(error), registerAbort, sshAlias, isolated);
+      : await connectProxy(onPayload, (error) => this.disconnect(error), registerAbort, sshAlias);
     if (this.closing) {
       wire.close();
       throw new Error("app-server connection closed");
@@ -1295,13 +1288,6 @@ export class RpcClient {
 
   async request(method: string, params: JsonObject | undefined = {}, timeoutMs = 20_000): Promise<any> {
     const deadline = Date.now() + timeoutMs;
-    const deepseek = this.deepseek;
-    if (deepseek) {
-      params = constrainDeepseekRequest(method, params ?? {}, deepseek.home);
-      if (["thread/start", "thread/resume", "thread/settings/update", "turn/start"].includes(method)) {
-        await this.assertDeepseekTarget(deepseek, method, params as Record<string, any>, deadline);
-      }
-    }
     if (this.closing || !this.wire) return Promise.reject(new Error("app-server connection closed"));
     // The preflight shares this budget, so a consumed deadline must never dispatch.
     const remaining = deadline - Date.now();
@@ -1316,32 +1302,6 @@ export class RpcClient {
       try { this.wire.send(params === undefined ? { method, id } : { method, id, params }); }
       catch (error) { this.disconnect(error instanceof Error ? error : new Error(String(error))); }
     });
-  }
-
-  // DeepSeek re-checks provider isolation before a mutation. Those reads must finish inside the
-  // caller's budget, and any failure before the mutation dispatches is definitively not-sent.
-  private async assertDeepseekTarget(deepseek: DeepSeekHost, method: string, params: Record<string, any>, deadline: number): Promise<void> {
-    const budget = (): number => {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new MessageNotSentError(`${method} was not sent: the request deadline expired during verification`);
-      return remaining;
-    };
-    try {
-      let cwd = params.cwd;
-      if (!cwd && params.threadId) {
-        const read = await this.request("thread/read", { threadId: params.threadId, includeTurns: false }, budget());
-        if (read.thread?.modelProvider !== "deepseek") throw new Error("Refusing a non-DeepSeek task in the isolated runtime");
-        cwd = read.thread?.cwd;
-        if (method === "thread/resume" && ["low", "high", "max"].includes(read.thread?.reasoningEffort)) {
-          params.config.model_reasoning_effort = read.thread.reasoningEffort;
-        }
-      }
-      const effective = await this.request("config/read", { ...(cwd ? { cwd } : {}), includeLayers: false }, budget());
-      assertDeepseekConfig(effective.config, deepseek.home);
-    } catch (error) {
-      if (isMessageNotSent(error)) throw error;
-      throw new MessageNotSentError(error instanceof Error ? error.message : String(error));
-    }
   }
 
   notify(method: string, params: JsonObject = {}): void {
@@ -1373,7 +1333,6 @@ export class RpcClient {
   }
 
   private receive(message: JsonObject): void {
-    if (this.deepseek) message = JSON.parse(this.deepseek.redact(JSON.stringify(message)));
     if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
       const id = Number(message.id);
       const pending = this.pending.get(id);
