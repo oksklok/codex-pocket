@@ -401,7 +401,7 @@ function openImage(img) {
   viewer.open(img);
 }
 
-function toggleComposer({ refocus = true } = {}) {
+function toggleComposer({ refocus = true, pinToLatest = false } = {}) {
   const textarea = elements.messageText;
   const { selectionStart, selectionEnd, selectionDirection, scrollTop } = textarea;
   // The toggle refocuses the draft and changes the composer's box, either of which would normally pull
@@ -427,8 +427,8 @@ function toggleComposer({ refocus = true } = {}) {
   requestAnimationFrame(() => {
     composerToggleHold = false;
     const next = transcriptScroller();
-    next.scrollTop = wasFollowing ? next.scrollHeight : heldScrollTop;
-    shouldFollowConversation = wasFollowing;
+    next.scrollTop = wasFollowing || pinToLatest ? next.scrollHeight : heldScrollTop;
+    shouldFollowConversation = wasFollowing || pinToLatest;
     rememberTranscriptScroll();
     updateJumpLatest();
   });
@@ -591,7 +591,9 @@ async function postMessageAction(url, body) {
     const sameTask = requested.machineId === state?.machineId && requested.threadId === state?.thread?.id;
     // A reader who navigated after pressing Send keeps their place; an untouched view still lands on the new turn.
     const keepReading = Boolean(sendNavigation?.overridden) && sameTask;
-    if (composerSubmission && composerExpanded && sameTask) toggleComposer({ refocus: !keepReading });
+    // A successful send owns the position: collapsing the composer must not restore the pre-send
+    // reading spot, while a reader who navigated away mid-send still keeps their place.
+    if (composerSubmission && composerExpanded && sameTask) toggleComposer({ refocus: !keepReading, pinToLatest: !keepReading });
     if ((requested.action === "steer" || (requested.action === "start" && url === "/api/message"))
       && requested.text && !requested.images?.length && !requested.files?.length
       && sameTask) {
@@ -2879,8 +2881,8 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   const all = new Map(historyMessages);
   for (const [id, message] of liveMessages) all.set(id, message);
   const messages = reconcileConfirmedSteers([...all.values()]).sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
-  const allActivities = new Map(historyActivities);
-  for (const [id, activity] of liveActivities) allActivities.set(id, activity);
+  // A stale running live record must not replace a terminal durable history record.
+  const allActivities = new Map(mergeActivities([...historyActivities.values()], [...liveActivities.values()]).map((activity) => [activity.id, activity]));
   const activities = [...allActivities.values()].filter(activityVisible);
   const timeline = orderTranscriptEntries([
     ...messages.map((value) => ({ type: "message", value })),
@@ -3468,7 +3470,7 @@ newTaskForm.addEventListener("submit", async event => {
     if (result?.succeeded) {
       if (!result.warning) { try { localStorage.setItem(newTaskPreferenceKey(machineId), JSON.stringify(startingSettings)); } catch {} }
       newTaskDialog.close();
-      if (matchMedia("(min-width: 1100px)").matches) elements.messageText.focus({ preventScroll: true });
+      if (!touchInput) elements.messageText.focus({ preventScroll: true });
     }
     else newTaskError.textContent = result?.failure || "Task creation is unavailable right now";
   } finally {
@@ -3630,8 +3632,8 @@ async function selectDestination(machineId, threadId) {
     // The response covers events through the final selection snapshot. Preserve later deltas.
     const lastSnapshot = token.events.findLastIndex(entry => entry.snapshot?.machineId === accepted.machineId && entry.snapshot?.thread?.id === accepted.thread?.id);
     for (const entry of token.events.slice(lastSnapshot < 0 ? token.events.length : lastSnapshot + 1)) entry.deliver();
-    if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
-    else elements.messageText.focus({ preventScroll: true });
+    if (!isWideLayout()) closeDestinationSwitcher();
+    if (!touchInput) elements.messageText.focus({ preventScroll: true });
     await loadHistory(null, historyEpoch, true);
     await Promise.allSettled([refreshMachines(), refreshLoadedThreads()]);
   } else {
@@ -3695,7 +3697,9 @@ async function submitMessage(action) {
       elements.messageText.value = text;
       resizeComposer();
     }
-    composerError = uiErrorMessage(error);
+    composerError = error.deliveryUnknown
+      ? "Delivery unconfirmed. Check the task before sending again."
+      : uiErrorMessage(error);
   } finally {
     submittingMessage = false;
     renderState();
@@ -3909,7 +3913,9 @@ async function sendQueuedMessage() {
   } catch (error) {
     if (!current()) return;
     queueDeliveryUnknown = Boolean(error.deliveryUnknown);
-    if (current()) composerError = uiErrorMessage(error);
+    if (current()) composerError = error.deliveryUnknown
+      ? "Delivery unconfirmed. Check the task before sending again."
+      : uiErrorMessage(error);
   } finally {
     if (requestedEpoch === historyEpoch) sendingQueuedMessage = false;
     renderState();
