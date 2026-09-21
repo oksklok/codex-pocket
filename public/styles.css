@@ -924,6 +924,11 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 #goal-objective { grid-area: objective; cursor: pointer; }
 /* The default stays a one-line ellipsis; the toggle wraps the full objective in the same card. */
 #goal-objective.wrapped { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+/* Only the objective gains lines: the strip's bottom row stays where it was, so the status, the
+   objective's final line, the elapsed time and the actions never drift to the row's center or top. */
+@media (min-width: 861px) {
+  .goal-strip:has(#goal-objective.wrapped) { align-items: end; }
+}
 @media (max-width: 860px) {
   .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "status time actions" "objective objective actions"; }
   .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective actions"; }

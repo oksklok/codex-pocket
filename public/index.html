@@ -18,7 +18,7 @@
         <div class="login-pin">
           <label class="sr-only" for="login-pin">PIN</label>
           <input id="login-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" placeholder="" required>
-          <button class="login-pin-reveal" id="login-pin-reveal" type="button" aria-label="Show PIN" title="Show PIN" aria-pressed="false">
+          <button class="login-pin-reveal" id="login-pin-reveal" type="button" aria-label="Show PIN" aria-pressed="false">
             <svg class="pin-reveal-show" aria-hidden="true" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg class="pin-reveal-hide" aria-hidden="true" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path d="m4 4 16 16"/></svg>
           </button>
@@ -38,7 +38,7 @@
 
     <main class="shell" id="app-shell" hidden>
       <header class="topbar">
-        <button class="icon-button tasks-toggle" id="tasks-toggle" type="button" aria-controls="destination-switcher" aria-expanded="false" aria-label="Show tasks" title="Show tasks">
+        <button class="icon-button tasks-toggle" id="tasks-toggle" type="button" aria-controls="destination-switcher" aria-expanded="false" aria-label="Show tasks">
           <svg aria-hidden="true" viewBox="0 0 20 20"><path class="tasks-pane" d="M4 4h4v12H4z"/><path d="M3.5 3.5h13v13h-13zM8 3.5v13"/></svg>
         </button>
         <div class="destination-control">
@@ -54,17 +54,17 @@
         <div class="phase-row">
           <span class="phase-pill" id="phase-pill">Connecting</span>
           <span class="elapsed" id="elapsed">—</span>
-          <span class="quota-chip context-chip" id="context-chip" title="Context usage unavailable"><span class="quota-window"><span class="quota-label">Context</span><span class="quota-percent" id="context-percent">—</span><span class="quota-track"><span class="quota-fill" id="context-fill"></span></span></span></span>
-          <span class="quota-chip" id="quota-chip" title="Quota unavailable">Quota —</span>
+          <span class="quota-chip context-chip" id="context-chip"><span class="quota-window"><span class="quota-label">Context</span><span class="quota-percent" id="context-percent">—</span><span class="quota-track"><span class="quota-fill" id="context-fill"></span></span></span></span>
+          <span class="quota-chip" id="quota-chip">Quota —</span>
         </div>
         <div class="topbar-actions">
-          <div class="connection" id="connection" aria-live="polite" title="Gateway connection">
+          <div class="connection" id="connection" aria-live="polite">
             <span class="sr-only" id="connection-label">Connecting</span>
           </div>
-          <button class="secondary-button icon-button settings-button" id="settings-button" type="button" aria-label="Settings" title="Settings">
+          <button class="secondary-button icon-button settings-button" id="settings-button" type="button" aria-label="Settings">
             <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.73v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.73l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/></svg>
           </button>
-          <button class="secondary-button icon-button details-toggle" id="inspector-button" type="button" aria-expanded="false" aria-label="Toggle task details" title="Toggle task details">
+          <button class="secondary-button icon-button details-toggle" id="inspector-button" type="button" aria-expanded="false" aria-label="Toggle task details">
             <svg aria-hidden="true" viewBox="0 0 20 20"><path class="details-pane" d="M12 4h4v12h-4z"/><path d="M3.5 3.5h13v13h-13zM12 3.5v13"/></svg>
           </button>
         </div>
@@ -76,17 +76,17 @@
             <div class="destination-switcher-head">
               <strong>Tasks</strong>
               <label class="tasks-archived"><input id="show-archived" type="checkbox">Archived</label>
-              <button class="icon-button" id="destination-refresh" type="button" aria-label="Refresh tasks" title="Refresh tasks"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 3v6h-6"/><path d="M21 12a9 9 0 1 1-2.64-6.36L21 9"/></svg></button>
-              <button class="icon-button destination-close sidebar-close" id="destination-close" type="button" aria-label="Close task switcher" title="Close"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+              <button class="icon-button" id="destination-refresh" type="button" aria-label="Refresh tasks"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 3v6h-6"/><path d="M21 12a9 9 0 1 1-2.64-6.36L21 9"/></svg></button>
+              <button class="icon-button destination-close sidebar-close" id="destination-close" type="button" aria-label="Close task switcher"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
             </div>
-            <div class="destination-search"><input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…" aria-label="Search tasks"><button class="icon-button" id="destination-search-clear" type="button" aria-label="Clear search" title="Clear search" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button></div>
+            <div class="destination-search"><input id="destination-search" type="search" autocomplete="off" placeholder="Search tasks…" aria-label="Search tasks"><button class="icon-button" id="destination-search-clear" type="button" aria-label="Clear search" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button></div>
             <div class="destination-list" id="destination-list" aria-live="polite"></div>
             <div class="machines-footer">
               <p class="machines-restart" id="machines-restart" hidden>Saved. Restart required.</p>
               <p class="machines-error error-text" id="machines-error" role="alert" hidden></p>
               <div class="machines-footer-actions" id="machines-footer-actions">
                 <button class="secondary-button machines-add" id="machine-add" type="button"><span class="machines-add-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>Add Machine</button>
-                <button class="icon-button machines-reorder" id="machine-reorder" type="button" aria-label="Reorder machines" title="Reorder machines"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 4v16"/><path d="m3 8 4-4 4 4"/><path d="M17 20V4"/><path d="m21 16-4 4-4-4"/></svg></button>
+                <button class="icon-button machines-reorder" id="machine-reorder" type="button" aria-label="Reorder machines"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 4v16"/><path d="m3 8 4-4 4 4"/><path d="M17 20V4"/><path d="m21 16-4 4-4-4"/></svg></button>
               </div>
               <div class="machines-footer-reorder" id="machines-footer-reorder" hidden>
                 <button class="secondary-button" id="machine-reorder-cancel" type="button">Cancel</button>
@@ -98,14 +98,14 @@
           <div class="history-status" id="history-status" aria-live="polite" hidden></div>
           <div class="conversation" id="conversation" aria-live="polite"><p class="empty-state"></p></div>
           <div class="composer-zone">
-            <button class="jump-latest" id="jump-latest" type="button" aria-label="Jump to Latest" title="Jump to Latest" hidden>
+            <button class="jump-latest" id="jump-latest" type="button" aria-label="Jump to Latest" hidden>
               <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></svg>
             </button>
             <div class="goal-strip composer-card" id="goal-strip" hidden>
               <strong id="goal-status"></strong><div id="goal-objective" role="button" tabindex="0" aria-expanded="false"></div><span id="goal-time"></span>
               <span class="card-actions">
                 <button class="icon-button" id="goal-toggle" type="button"></button>
-                <button class="icon-button" id="goal-clear" type="button" aria-label="Clear goal" title="Clear goal"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button>
+                <button class="icon-button" id="goal-clear" type="button" aria-label="Clear goal"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button>
               </span>
             </div>
             <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
@@ -115,8 +115,8 @@
               <div class="file-chips" id="queue-files" hidden></div>
               <span class="queue-actions card-actions">
                 <button class="text-button" id="send-queue" type="button" hidden>Send</button>
-                <button class="icon-button" id="edit-queue" type="button" aria-label="Edit queued message" title="Edit queued message"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m16 3 5 5-12 12-6 1 1-6ZM13 6l5 5"/></svg></button>
-                <button class="icon-button" id="cancel-queue" type="button" aria-label="Cancel queued message" title="Cancel queued message"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+                <button class="icon-button" id="edit-queue" type="button" aria-label="Edit queued message"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m16 3 5 5-12 12-6 1 1-6ZM13 6l5 5"/></svg></button>
+                <button class="icon-button" id="cancel-queue" type="button" aria-label="Cancel queued message"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
               </span>
             </div>
             <div class="composer-images" id="composer-images" hidden></div>
@@ -131,7 +131,7 @@
                 </button>
               </div>
               <div class="composer-actions">
-                <button type="button" class="attach-image" id="attach-image" aria-label="Attach files" title="Attach files"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m7 10 5-5a3 3 0 0 1 4 4l-7 7a4 4 0 0 1-6-6l7-7m-4 9 7-7"/></svg></button>
+                <button type="button" class="attach-image" id="attach-image" aria-label="Attach files"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m7 10 5-5a3 3 0 0 1 4 4l-7 7a4 4 0 0 1-6-6l7-7m-4 9 7-7"/></svg></button>
                 <button type="submit" id="send-message" data-action="start" disabled>Send</button>
               </div>
               <p class="form-status" id="composer-status" aria-live="polite"></p>
@@ -150,7 +150,7 @@
             <dl class="metadata">
               <div><dt>Machine</dt><dd id="machine">—</dd></div>
               <div><dt>Provider</dt><dd id="provider">—</dd></div>
-              <div class="working-path-card"><dt>Project Folder</dt><dd id="project">—</dd><button id="edit-cwd" class="icon-button" type="button" aria-label="Edit Project Folder" title="Edit Project Folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg></button></div>
+              <div class="working-path-card"><dt>Project Folder</dt><dd id="project">—</dd><button id="edit-cwd" class="icon-button" type="button" aria-label="Edit Project Folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></svg></button></div>
             </dl>
             <section class="secondary-panel runtime-panel" aria-labelledby="runtime-title">
               <div class="panel-heading"><h3 id="runtime-title">Runtime</h3></div>

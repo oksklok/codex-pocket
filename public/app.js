@@ -251,7 +251,6 @@ function copyButton(getText, label = "Copy code") {
   const status = button.querySelector(".sr-only");
   status.textContent = label;
   button.setAttribute("aria-label", label);
-  button.title = label;
   button.addEventListener("click", async () => {
     const copied = await writeClipboard(getText());
     const message = copied ? "Copied" : "Copy failed";
@@ -259,14 +258,12 @@ function copyButton(getText, label = "Copy code") {
     button.classList.toggle("error-text", !copied);
     status.textContent = message;
     button.setAttribute("aria-label", message);
-    button.title = message;
     clearTimeout(button.copyReset);
     // A success checkmark is the 2s confirmation; failure keeps its shorter flash.
     button.copyReset = setTimeout(() => {
       button.classList.remove("copied", "error-text");
       status.textContent = label;
       button.setAttribute("aria-label", label);
-      button.title = label;
     }, copied ? 2000 : 1600);
   });
   return button;
@@ -819,15 +816,14 @@ function renderBalanceQuota(balance) {
   if (!usable) {
     // A failed or malformed fetch is never rendered as a zero balance.
     text.textContent = "—";
-    elements.quota.title = "DeepSeek balance unavailable";
     elements.quota.setAttribute("aria-label", "DeepSeek balance unavailable");
     return;
   }
   text.textContent = entries.map(formatBalanceEntry).join(" · ");
   const funds = insufficient ? " · insufficient funds" : "";
   const stale = balance.stale ? " · last known" : "";
-  elements.quota.title = `DeepSeek account balance: ${entries.map((entry) => `${entry.currency} ${entry.total}`).join(", ")}${funds}${stale}`;
-  elements.quota.setAttribute("aria-label", elements.quota.title);
+  const balanceLabel = `DeepSeek account balance: ${entries.map((entry) => `${entry.currency} ${entry.total}`).join(", ")}${funds}${stale}`;
+  elements.quota.setAttribute("aria-label", balanceLabel);
 }
 
 function renderQuota() {
@@ -838,7 +834,6 @@ function renderQuota() {
   if (windows.length === 0) {
     elements.quota.replaceChildren();
     elements.quota.textContent = "Quota —";
-    elements.quota.title = "Quota unavailable";
     elements.quota.setAttribute("aria-label", "Quota unavailable");
     elements.quota.classList.remove("multiple", "stale");
     return;
@@ -867,11 +862,11 @@ function renderQuota() {
   }
   const source = quota.sourceMachine ? ` via ${quota.sourceMachine}` : "";
   const stale = quota.stale ? " · last known" : "";
-  elements.quota.title = `${windows.map((window) => {
+  const quotaLabel = `${windows.map((window) => {
     const reset = window.resetsAt ? ` · resets ${formatQuotaReset(window.resetsAt)}` : "";
     return `${window.label}: ${Math.round(window.remainingPercent)}% left${reset}`;
   }).join("\n")}${source}${stale}`;
-  elements.quota.setAttribute("aria-label", elements.quota.title.replaceAll("\n", "; "));
+  elements.quota.setAttribute("aria-label", quotaLabel.replaceAll("\n", "; "));
 }
 
 function threadLabel(thread) {
@@ -1214,7 +1209,6 @@ function renderDestinationSwitcher(force = false) {
     info.type = "button";
     info.className = "icon-button machine-info";
     info.setAttribute("aria-label", machine.local ? `Host details for ${machine.name}` : `Machine details for ${machine.name}`);
-    info.title = "Machine details";
     info.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.75h.01"/></svg>';
     info.addEventListener("click", () => openMachineDetails(machine, info));
     nameBlock.append(info);
@@ -1252,7 +1246,6 @@ function renderDestinationSwitcher(force = false) {
     create.type = "button";
     create.className = "icon-button machine-create";
     create.setAttribute("aria-label", "New task");
-    create.title = "New task";
     create.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
     // Any create busy for one of this physical machine's runtimes disables its own + control only.
     const creatingHere = taskActionBusy && taskActionTarget?.action === "create"
@@ -1282,7 +1275,6 @@ function renderDestinationSwitcher(force = false) {
       if (task.archived && !rowUnavailable) row.classList.add("archived-available");
       row.disabled = rowUnavailable || task.archived;
       if (selected) row.setAttribute("aria-current", "true");
-      if (task.cwd) row.title = task.cwd;
       const check = document.createElement("span");
       check.className = "destination-check";
       if (selected) check.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
@@ -1553,7 +1545,6 @@ function syncTasksControls() {
   elements.tasksToggle.setAttribute("aria-expanded", String(open));
   const label = open ? "Hide tasks" : "Show tasks";
   elements.tasksToggle.setAttribute("aria-label", label);
-  elements.tasksToggle.title = label;
 }
 
 let destinationCloseTimer;
@@ -1663,7 +1654,6 @@ function renderAccessControl() {
     option.textContent = accessModeLabel(access?.mode);
     option.selected = true;
     option.disabled = true;
-    if (access?.description || access?.profileId) option.title = access.description || access.profileId;
     elements.accessSelect.append(option);
   }
   for (const mode of available) {
@@ -1671,7 +1661,6 @@ function renderAccessControl() {
     const option = document.createElement("option");
     option.value = mode.value;
     option.textContent = mode.label;
-    if (choice?.reason) option.title = choice.reason;
     option.selected = access?.mode === mode.value;
     elements.accessSelect.append(option);
   }
@@ -1682,9 +1671,6 @@ function renderAccessControl() {
     || submittingInputRequestId
     || submittingInterrupt;
   elements.accessSelect.classList.toggle("full-access", access?.mode === "full");
-  elements.accessSelect.title = access?.mode === "full"
-    ? "Unrestricted access to files and network"
-    : access?.description || access?.profileId || "Task access";
 }
 
 function renderPlan() {
@@ -1764,7 +1750,6 @@ function renderQueue() {
   renderFileChips(document.querySelector("#queue-files"), queued?.files || []);
   if (queued) {
     elements.queueText.textContent = queued.text || attachmentSummary(queued);
-    elements.queueText.title = queued.text;
     const turnActive = state?.turn?.status === "inProgress";
     elements.sendQueue.hidden = !turnActive && state?.message?.mode !== "start";
     elements.sendQueue.disabled = queued?.deliveryUnknown || queueDeliveryUnknown || !state?.message?.allowed || submittingMessage || sendingQueuedMessage || cancellingQueue;
@@ -1772,7 +1757,6 @@ function renderQueue() {
     elements.sendQueue.classList.toggle("text-button", !turnActive);
     const actionLabel = turnActive ? "Steer Now" : "Send";
     elements.sendQueue.setAttribute("aria-label", actionLabel);
-    elements.sendQueue.title = actionLabel;
     elements.sendQueue.innerHTML = turnActive
       ? '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 19v-7a5 5 0 0 1 5-5h9m-5-5 5 5-5 5"/></svg>'
       : actionLabel;
@@ -2091,15 +2075,9 @@ function renderGoal() {
     objective.setAttribute("aria-expanded", "false");
   }
   objective.textContent = goal.objective;
-  objective.title = goal.objective;
-  goalStrip.title = [
-    typeof goal.tokensUsed === "number" ? `${goal.tokensUsed.toLocaleString()} tokens used${typeof goal.tokenBudget === "number" ? ` / ${goal.tokenBudget.toLocaleString()} budget` : ""}` : "",
-    goal.blockedReason || "",
-  ].filter(Boolean).join(" · ");
   goalToggle.hidden = !pursuing && !resumable;
   goalToggle.dataset.action = pursuing ? "pause" : "resume";
-  goalToggle.title = pursuing ? "Pause goal" : "Resume goal";
-  goalToggle.setAttribute("aria-label", goalToggle.title);
+  goalToggle.setAttribute("aria-label", pursuing ? "Pause goal" : "Resume goal");
   goalToggle.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${pursuing ? "M8 5v14M16 5v14" : "m8 5 11 7-11 7Z"}"/></svg>`;
   goalToggle.disabled = goalClear.disabled = Boolean(goalActionBusy) || !state.connected;
 }
@@ -2241,7 +2219,6 @@ function renderFileChips(container, files, removable = false) {
     chip.className = "file-chip";
     const name = document.createElement("span");
     name.textContent = file.name;
-    name.title = file.name;
     const size = document.createElement("small");
     size.textContent = file.size >= 1024 * 1024 ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(file.size / 1024)} KB`;
     chip.append(name, size);
@@ -2378,7 +2355,6 @@ function renderState() {
   if (cwdDialog.open && !cwdBusy && !cwdDialogMatches()) cwdDialog.close();
   document.querySelector("#edit-cwd").disabled = !state.connected || !state.thread || cwdBusy;
   elements.project.textContent = state.thread?.cwd || "—";
-  elements.project.title = state.thread?.cwd || "";
   renderDestinationButton();
   renderDestinationSwitcher();
   renderModelControls();
@@ -2389,7 +2365,6 @@ function renderState() {
   const context = state.context;
   elements.contextPercent.textContent = context ? `${context.lastKnown ? "~" : ""}${context.usedPercent}%` : "—";
   elements.contextFill.style.width = `${context?.usedPercent ?? 0}%`;
-  elements.context.title = context ? `${context.lastKnown ? "Last known · " : ""}${context.usedPercent}% context used · ${context.usedTokens.toLocaleString()} / ${context.contextWindow.toLocaleString()} tokens used` : "Context usage unavailable";
   elements.runtimeReason.textContent = ["local", "local:dsh"].includes(state.machineId) ? state.connectionError || "" : "";
   elements.runtimeReason.hidden = !elements.runtimeReason.textContent;
   renderComposer();
@@ -4219,7 +4194,6 @@ function updateInspectorButtonState() {
   elements.inspectorButton.classList.toggle("active", open);
   const label = open ? "Hide task details" : "Show task details";
   elements.inspectorButton.setAttribute("aria-label", label);
-  elements.inspectorButton.title = label;
 }
 function openInspector({ save = true } = {}) {
   // Only one narrow drawer: opening Details closes Tasks.
@@ -4750,7 +4724,6 @@ function renderMachineReorderList(catalogMachines) {
         button.dataset.direction = up ? "up" : "down";
         const label = `Move ${name.textContent} ${up ? "up" : "down"}`;
         button.setAttribute("aria-label", label);
-        button.title = label;
         button.innerHTML = `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="${up ? "M12 19V5m-6 6 6-6 6 6" : "M12 5v14m-6-6 6 6 6-6"}"/></svg>`;
         button.disabled = machineReorderBusy || (up ? index === 0 : index === draft.length - 1);
         button.addEventListener("click", () => moveReorderDraft(index, direction, key));
@@ -5139,7 +5112,6 @@ elements.loginPinReveal.addEventListener("click", () => {
   pin.type = revealed ? "password" : "text";
   const label = revealed ? "Show PIN" : "Hide PIN";
   elements.loginPinReveal.setAttribute("aria-label", label);
-  elements.loginPinReveal.title = label;
   elements.loginPinReveal.setAttribute("aria-pressed", String(!revealed));
   if (!wasFocused) return;
   const restore = () => {
