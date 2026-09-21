@@ -535,12 +535,6 @@ function focusLoginPinAtEnd() {
   pin.focus();
   const end = pin.value.length;
   try { pin.setSelectionRange(end, end); } catch { /* unsupported type */ }
-  // A browser-restored or autofilled value, and the password field's own native restore, can move the
-  // caret after this focus. Re-assert the end once the field has settled; an empty field is untouched.
-  requestAnimationFrame(() => {
-    if (document.activeElement !== pin || !pin.value) return;
-    try { pin.setSelectionRange(pin.value.length, pin.value.length); } catch { /* unsupported type */ }
-  });
 }
 
 function showLogin(message = "") {
