@@ -2369,7 +2369,8 @@ function renderState() {
   elements.phase.className = `phase-pill ${phase}`;
   const startedAt = state.turn?.startedAt;
   const completedAt = state.turn?.completedAt;
-  elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
+  elements.elapsed.hidden = !startedAt;
+  elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "";
   // The provider is separate metadata next to the machine name, never part of the name.
   elements.machine.replaceChildren(state.machine || "—");
   const platform = platformLabel(state.platform);
@@ -5109,7 +5110,8 @@ setInterval(() => {
   if (goalClock?.active) renderGoalTime();
   const startedAt = state?.turn?.startedAt;
   const completedAt = state?.turn?.completedAt;
-  elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "—";
+  elements.elapsed.hidden = !startedAt;
+  elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "";
 }, 1_000);
 
 elements.loginForm.addEventListener("submit", async (event) => {

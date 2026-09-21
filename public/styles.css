@@ -644,11 +644,7 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
 .settings-lifecycle p { margin: 0; color: var(--muted); font-size: var(--text-label); }
 .settings-lifecycle-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .settings-lifecycle-actions button { min-height: var(--control-height); white-space: nowrap; }
-.settings-actions {
-  position: sticky; z-index: 2; bottom: -18px; justify-content: flex-end; gap: var(--action-row-gap);
-  margin: 10px -18px -18px; padding: var(--action-row-inset) 18px max(var(--action-row-inset), env(safe-area-inset-bottom));
-  border-top: var(--action-row-border); background: var(--surface);
-}
+.settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--action-row-gap); margin-top: 16px; }
 
 /* The header shares the sidebar breakpoint: below 1100px the boxed selector is the Tasks entry point. */
 @media (max-width: 1099px) {
@@ -794,8 +790,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   /* The separator follows the real sidebar edges instead of the narrowed chat panel, so it never leaves
      a gap beside nor runs under a docked sidebar. It is drawn on the zone's own 1px separator position,
      extending to the workspace edges each state actually reaches. */
-  .composer-zone { border-top: 0; }
-  .composer-zone::before { content: ""; position: absolute; top: 0; left: 0; right: 0; border-top: var(--action-row-border); }
+  /* The border stays for layout height and vertical alignment with the Tasks footer, but is made
+     transparent so the visible line can extend independently of the narrowed chat panel. */
+  .composer-zone { border-top-color: transparent; }
+  .composer-zone::before { content: ""; position: absolute; top: -1px; left: 0; right: 0; border-top: var(--action-row-border); transition: left 160ms ease, right 160ms ease; }
   body.destination-open .composer-zone::before { right: -310px; }
   .shell:not(.inspector-closed) .composer-zone::before { left: -340px; }
   body.destination-open .shell:not(.inspector-closed) .composer-zone::before { left: -30px; right: 0; }

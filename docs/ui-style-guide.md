@@ -66,7 +66,7 @@ Other rules:
 
 Ordinary dialogs use the shared native-dialog shell: stacked fields, standard spacing, and a right-aligned action row. A shared confirmation dialog handles simple confirmations; richer destructive flows may use their own dialog on the same visual shell.
 
-Settings is a modal overlay with a centered card and sticky action footer. It keeps unsaved edits local until Save.
+Settings is a modal overlay with a centered card and a normal action row at the end of its content. It keeps unsaved edits local until Save.
 
 Concealed drawers are `inert`. On wide layouts, docked sidebars are navigation rather than modal dialogs, so they have no backdrop or close button.
 
