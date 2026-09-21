@@ -3214,6 +3214,9 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
 }
 
 function resetConversationState() {
+  // A task change replaces the transcript, so a scroll baseline captured for the previous one must not
+  // be restored into the new one when the expanded composer is collapsed later.
+  composerNormalScrollTop = null;
   unresolvedSubmission = null;
   selectionHold.reset();
   elements.appShell.classList.remove("transcript-selection-held");
