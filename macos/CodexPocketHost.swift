@@ -5,7 +5,6 @@ import ServiceManagement
 
 private struct RuntimeRecord: Decodable {
     let pid: Int32
-    let localUrl: String
     let controlUrl: String
 }
 
@@ -34,7 +33,6 @@ private struct BalanceStatus: Decodable {
     let stale: Bool
     let isAvailable: Bool?
     let entries: [BalanceEntry]
-    let updatedAt: Double?
 }
 
 // Mirrors the browser's BALANCE_SYMBOLS so both surfaces format an account balance the same way.
@@ -52,7 +50,6 @@ private func balanceText(_ balance: BalanceStatus, stale: Bool) -> String {
 
 private struct HostStatus: Decodable {
     let running: Bool
-    let hostName: String
     let localUrl: String
     let phoneUrls: [String]
     let quota: QuotaStatus
@@ -267,7 +264,8 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var sleepActivity: NSObjectProtocol?
     private var timer: Timer?
     private var status: HostStatus?
-    private var gatewayProcess: Process?
+    private var lastRuntimeRecord: RuntimeRecord?
+    private let runtimeLock = NSLock()
     private var healthCheckRunning = false
     private var consecutiveFailures = 0
     private var quitting = false
@@ -422,7 +420,6 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 guard let self else { return }
                 let stopped = self.runtimeRecord() == nil || self.requestGatewayStop()
-                if stopped { self.waitForGatewayExit() }
                 DispatchQueue.main.async {
                     self.powerTransition = false
                     guard stopped else {
@@ -519,7 +516,6 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let stopped = self.runtimeRecord() == nil || self.requestGatewayStop()
-            if stopped { self.waitForGatewayExit() }
             DispatchQueue.main.async {
                 guard stopped else {
                     self.powerTransition = false
@@ -539,7 +535,7 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !quitting else { return }
         quitting = true
         updateMenu()
-        if !pocketEnabled || runtimeRecord() == nil {
+        if runtimeRecord() == nil {
             NSApp.terminate(nil)
             return
         }
@@ -547,7 +543,6 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             let accepted = self.requestGatewayShutdown()
             if accepted {
-                self.waitForGatewayExit()
                 try? self.fileManager.removeItem(at: self.quitMarkerURL)
                 DispatchQueue.main.async { NSApp.terminate(nil) }
             } else {
@@ -623,7 +618,17 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quitting = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            self.waitForGatewayExit()
+            guard let data = try? Data(contentsOf: self.quitMarkerURL),
+                  let marker = try? JSONDecoder().decode([String: Int].self, from: data),
+                  let value = marker["pid"], let pid = Int32(exactly: value), pid > 0,
+                  self.waitForGatewayExit(pid: pid) else {
+                DispatchQueue.main.async {
+                    self.quitting = false
+                    self.updateMenu()
+                    self.showError("Codex Pocket could not confirm its gateway exited. Check \(self.logURL.path) for details.")
+                }
+                return
+            }
             try? self.fileManager.removeItem(at: self.quitMarkerURL)
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
@@ -664,9 +669,17 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func runtimeRecord() -> RuntimeRecord? {
+        runtimeLock.lock()
+        defer { runtimeLock.unlock() }
+        // Shutdown may remove the file before the process exits. Retain its PID for retries.
+        if let record = lastRuntimeRecord,
+           kill(record.pid, 0) == 0 || errno != ESRCH { return record }
+        lastRuntimeRecord = nil
         guard let data = try? Data(contentsOf: runtimeURL),
               let record = try? JSONDecoder().decode(RuntimeRecord.self, from: data),
-              kill(record.pid, 0) == 0 else { return nil }
+              record.pid > 0,
+              kill(record.pid, 0) == 0 || errno != ESRCH else { return nil }
+        lastRuntimeRecord = record
         return record
     }
 
@@ -707,14 +720,17 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
             semaphore.signal()
         }.resume()
         _ = semaphore.wait(timeout: .now() + 2.5)
-        return accepted
+        return accepted && waitForGatewayExit(pid: record.pid)
     }
 
-    private func waitForGatewayExit() {
-        for _ in 0..<40 {
-            if runtimeRecord() == nil { return }
+    private func waitForGatewayExit(pid: Int32) -> Bool {
+        // Keep checking the captured PID even after shutdown removes runtime metadata.
+        // Allow margin for the gateway's five-second forced-exit fallback.
+        for _ in 0..<80 {
+            if kill(pid, 0) == -1 && errno == ESRCH { return true }
             usleep(100_000)
         }
+        return kill(pid, 0) == -1 && errno == ESRCH
     }
 
     private func startGateway(node: URL) throws {
@@ -757,7 +773,6 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
         process.standardOutput = log
         process.standardError = log
         try process.run()
-        gatewayProcess = process
         try? log.close()
     }
 

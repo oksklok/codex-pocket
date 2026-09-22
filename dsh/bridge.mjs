@@ -622,7 +622,10 @@ export function apply(ctx) {
     const turn = turns.at(-1);
     if (event.type === "turn/start") active.set(threadId, String(d.turn));
     if (event.type === "turn/start") notify("turn/started", { threadId, turn });
-    if (event.type === "turn/end") notify("turn/completed", { threadId, turn });
+    if (event.type === "turn/end") {
+      active.delete(threadId);
+      notify("turn/completed", { threadId, turn });
+    }
     if (event.type === "compaction/start" || event.type === "compaction/end") {
       const item = turns.flatMap(turn => turn.items).find((i) => i.type === "contextCompaction" && i.compactionId === d.compactionId);
       if (item)
@@ -674,12 +677,13 @@ export function apply(ctx) {
       });
     if (frame.type === "end") attempts.delete(agent.id);
   });
-  ctx.on("agent/status", ({ agent, status }) =>
+  ctx.on("agent/status", ({ agent, status }) => {
+    if (!/^dsh-/.test(agent.id)) return;
     notify("thread/status/changed", {
       threadId: agent.id,
       status: { type: status === "running" ? "active" : "idle" },
-    }),
-  );
+    });
+  });
   async function humanRequest(method, params, signal) {
     const pocketRequestId = randomUUID();
     try {

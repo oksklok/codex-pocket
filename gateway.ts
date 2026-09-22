@@ -628,12 +628,9 @@ function phoneUrlsFor(host: string, port: number): string[] {
   return [...new Set(addresses)].sort().map((address) => `http://${address}:${port}`);
 }
 
-function writeRuntimeInfo(options: Options, controlUrl: string): void {
+function writeRuntimeInfo(controlUrl: string): void {
   writeFileSync(RUNTIME_PATH, `${JSON.stringify({
     pid: process.pid,
-    host: options.host,
-    port: options.port,
-    localUrl: browserUrl(options.host, options.port),
     controlUrl,
   }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
@@ -5942,7 +5939,7 @@ async function main(): Promise<void> {
     throw error;
   }
   try {
-    writeRuntimeInfo(options, controlUrl);
+    writeRuntimeInfo(controlUrl);
   } catch (error) {
     console.warn(`Warning: could not write runtime metadata: ${compact(error, 240)}`);
   }
