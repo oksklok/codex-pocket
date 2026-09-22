@@ -933,7 +933,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .composer-card :is(#goal-objective, #queue-text) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .goal-strip { grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "status objective time actions"; border-color: var(--line-soft); background: var(--soft-surface); color: var(--muted); }
 #goal-status { grid-area: status; color: var(--text); }
-#goal-time { grid-area: time; white-space: nowrap; font-size: var(--text-secondary); }
+#goal-time { grid-area: time; white-space: nowrap; font-size: var(--text-secondary); font-variant-numeric: tabular-nums; min-width: 7ch; }
 #goal-objective { grid-area: objective; cursor: pointer; }
 /* The default stays a one-line ellipsis; the toggle wraps the full objective in the same card. */
 #goal-objective.wrapped { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
@@ -942,8 +942,11 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 @media (min-width: 861px) {
   .goal-strip:has(#goal-objective.wrapped) { align-items: end; }
   /* The bottom row is the icon band, so the text is lifted back to where the collapsed card centered
-     it: half the icon/text height difference. Without this the label and the time drop by that gap. */
+     it: half the icon/text height difference. The matching top margin keeps the wrapped text's first
+     line as far from the card border as the last line is. */
   .goal-strip:has(#goal-objective.wrapped) :is(#goal-status, #goal-objective, #goal-time) {
+    margin-top: 10px;
+    margin-top: calc((var(--icon-size) - 1lh) / 2);
     margin-bottom: 10px;
     margin-bottom: calc((var(--icon-size) - 1lh) / 2);
   }
@@ -952,6 +955,10 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "status time actions" "objective objective actions"; }
   .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective actions"; }
   .composer-card { row-gap: 0; padding-top: 5px; padding-bottom: 5px; }
+  /* The Goal objective wraps to a second row; a fixed gap keeps the status-to-objective spacing the
+     same collapsed and wrapped, and bottom-pinning the actions stops them drifting with the row. */
+  .composer-card.goal-strip { row-gap: 4px; }
+  .goal-strip .card-actions { align-self: end; }
   /* With the card's row-gap collapsed on mobile, attachment rows keep the shared 8px rhythm. */
   .queue-banner .composer-images:not([hidden]), .queue-banner .file-chips:not([hidden]) { margin-top: var(--action-row-gap); }
 }
