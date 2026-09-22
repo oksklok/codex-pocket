@@ -2589,7 +2589,7 @@ function asyncQuestionNode(message, question, index) {
   input.rows = 2;
   input.disabled = disabled;
   input.maxLength = 8000;
-  input.placeholder = question.options.length ? "Or write your answer…" : "Write your answer…";
+  input.placeholder = "Write your answer…";
   input.setAttribute("aria-label", `Your answer: ${question.title}`);
   input.value = draft.text;
   let answerComposing = false;
@@ -2615,7 +2615,7 @@ function asyncQuestionNode(message, question, index) {
     const other = document.createElement("button");
     other.type = "button";
     other.className = "other-answer";
-    other.textContent = "Other Answer…";
+    other.textContent = "Other answer…";
     other.disabled = disabled;
     other.setAttribute("aria-expanded", String(!freeText.hidden));
     other.addEventListener("click", () => {
