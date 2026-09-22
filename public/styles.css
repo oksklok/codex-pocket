@@ -933,7 +933,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .composer-card :is(#goal-objective, #queue-text) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .goal-strip { grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "status objective time actions"; border-color: var(--line-soft); background: var(--soft-surface); color: var(--muted); }
 #goal-status { grid-area: status; color: var(--text); }
-#goal-time { grid-area: time; white-space: nowrap; font-size: var(--text-secondary); font-variant-numeric: tabular-nums; min-width: 7ch; }
+#goal-time { grid-area: time; white-space: nowrap; font-size: var(--text-secondary); font-variant-numeric: tabular-nums; min-width: 9ch; }
 #goal-objective { grid-area: objective; cursor: pointer; }
 /* The default stays a one-line ellipsis; the toggle wraps the full objective in the same card. */
 #goal-objective.wrapped { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
