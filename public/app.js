@@ -1625,6 +1625,9 @@ function openDestinationSwitcher(animate = true) {
   elements.destinationBackdrop.hidden = false;
   void elements.destinationSwitcher.offsetWidth; // Establish the closed position before transitioning.
   document.body.classList.add("destination-open");
+  // Opening Tasks acknowledges any unread "another task finished" marker.
+  taskDoneUnread = false;
+  renderTaskDoneIndicator();
   syncTasksControls();
   saveSidebarPreference("tasks", true);
   refreshNavigationCatalog(archivedTasks, true);
@@ -3376,6 +3379,13 @@ function restoreTaskTerminalResults(machineId, results) {
   for (const key of taskTerminalResults.keys()) if (JSON.parse(key)[0] === machineId) taskTerminalResults.delete(key);
   for (const [threadId, result] of Object.entries(results)) taskTerminalResults.set(draftKey(machineId, threadId), result);
 }
+// An unread "another task finished" marker, shown on whichever Tasks entry point is visible.
+let taskDoneUnread = false;
+const taskDoneNotified = new Set();
+function renderTaskDoneIndicator() {
+  elements.tasksToggle.classList.toggle("tasks-unread", taskDoneUnread);
+  elements.destinationButton.classList.toggle("tasks-unread", taskDoneUnread);
+}
 const newTaskDialog = document.querySelector("#new-task-dialog");
 const newTaskForm = document.querySelector("#new-task-form");
 const newTaskName = document.querySelector("#new-task-name");
@@ -4182,6 +4192,14 @@ function connectEvents() {
       else taskTerminalResults.delete(key);
     }
     if (value.status?.startsWith("active")) taskTerminalResults.delete(key);
+    // Re-arm when the task runs again or the runtime clears the terminal result.
+    if (!value.terminalResult || value.status?.startsWith("active")) taskDoneNotified.delete(key);
+    // A Done on another task is unread until Tasks is opened; the selected task never marks itself.
+    if (value.terminalResult === "Done" && value.threadId !== state?.thread?.id && !tasksSwitcherOpen() && !taskDoneNotified.has(key)) {
+      taskDoneNotified.add(key);
+      taskDoneUnread = true;
+      renderTaskDoneIndicator();
+    }
     updateLiveTaskCatalog(value);
   });
   on("status", (event) => { mergeState(parseEvent(event)); });
