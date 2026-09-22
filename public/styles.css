@@ -460,11 +460,6 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 }
 .timeline-activity.failed .activity-status, .timeline-activity.interrupted .activity-status { color: var(--danger); }
 .activity-summary { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.timeline-activity.expandable.expanded > .activity-summary {
-  /* Offset the scroll container's 10px top padding so details cannot peek above the pinned header. */
-  position: sticky; top: -10px; z-index: 1;
-  background: linear-gradient(var(--activity-bg), var(--activity-bg)), var(--bg);
-}
 .timeline-activity:not(.expandable) .activity-summary { cursor: default; }
 .activity-heading { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 3px; }
 .activity-kind, .activity-status { color: var(--subtle); font-size: var(--text-meta); font-weight: 750; text-transform: uppercase; }
@@ -677,12 +672,10 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
   /* Mobile keeps page/touch scrolling for the transcript; the composer textarea is hidden above. */
   .shell .conversation { scrollbar-width: none; }
   .shell .topbar { position: sticky; top: 0; flex-shrink: 0; }
-  .timeline-activity.expandable.expanded > .activity-summary { top: var(--activity-summary-top, 0px); }
   /* Keep the sticky header and composer out of Android selection-handle hit-testing only while a handle
      is actually moving; both edges otherwise stop the drag where they overlay the transcript. A settled
      selection leaves them clickable, and this class is never set for fine-pointer input. */
   .shell.transcript-selection-dragging .topbar,
-  .shell.transcript-selection-dragging .timeline-activity.expanded > .activity-summary,
   .shell.transcript-selection-dragging .composer-zone:not(.expanded-composer) { pointer-events: none; }
   .composer-zone:not(.expanded-composer) { position: sticky; bottom: 0; z-index: 3; }
   .destination-list { padding-bottom: 12px; }
