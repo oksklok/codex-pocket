@@ -4542,6 +4542,12 @@ function machineRuntimeRow(detail) {
   const latest = detail.latest || "Unavailable";
   versions.textContent = installed === latest ? `Installed ${installed} · Latest` : `Installed ${installed} · Latest ${latest}`;
   info.append(versions);
+  if (detail.error) {
+    const error = document.createElement("p");
+    error.className = "machine-runtime-versions error-text";
+    error.textContent = detail.error;
+    info.append(error);
+  }
   row.append(info);
   return row;
 }

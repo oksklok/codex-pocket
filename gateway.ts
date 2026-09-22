@@ -2893,7 +2893,10 @@ export class MachineRuntime {
         this.runtimeInspection ??= this.runtimeRequest("inspect").finally(() => { this.runtimeInspection = null; });
         this.runtimeVersions = await this.runtimeInspection;
       }
-      catch (failure) { error = String(failure instanceof Error ? failure.message : failure); }
+      catch (failure) {
+        this.runtimeVersions = null;
+        error = String(failure instanceof Error ? failure.message : failure);
+      }
     }
     return { machineId: this.definition.id, provider: this.deepseek ? "deepseek" : "openai",
       ...this.runtimeVersions, status: this.state.connected ? "Running" : "Offline",
