@@ -1,6 +1,6 @@
 # DeepSeek Harness backend
 
-Pocket can expose DeepSeek alongside the normal OpenAI/Codex runtime by using **DeepSeek Harness (DSH)**. The shipped DSH dependency is pinned in `dsh/package-lock.json` (currently `0.1.6-alpha.2`).
+Pocket can expose DeepSeek alongside the normal OpenAI/Codex runtime by using **DeepSeek Harness (DSH)**. The shipped DSH dependency is pinned in `dsh/package-lock.json` (currently `0.1.7-alpha.2`).
 
 Pocket remains the UI and orchestration layer. DSH owns its agent loop, tools, sessions, compaction, attachments, and persistence; the Pocket adapter projects those facts into the same task/message/activity contract used by the browser.
 
