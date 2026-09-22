@@ -237,11 +237,11 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-switcher.reordering .tasks-archived, .destination-switcher.reordering #destination-refresh, .destination-switcher.reordering .destination-close { display: none; }
 /* Keep the search element in the grid flow (zero height) so the footer keeps its own row. */
 .destination-switcher.reordering .destination-search { height: 0; min-height: 0; padding: 0; overflow: hidden; visibility: hidden; }
-.destination-group { display: grid; gap: 2px; padding: 4px 0 8px; }
+.destination-group { display: grid; gap: 2px; padding: 10px 0; }
 /* 8px between the search field and the first machine header, without stacking extra margins. */
 .destination-group:first-child { padding-top: 8px; }
-.destination-group + .destination-group { border-top: 1px solid var(--line-soft); padding-top: 12px; }
-.destination-group-heading { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 6px; padding: 4px 0 4px 8px; }
+.destination-group + .destination-group { border-top: 1px solid var(--line-soft); }
+.destination-group-heading { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 6px; padding: 4px 0 4px 8px; line-height: 1.2; }
 .destination-group-heading strong { color: var(--text); font-size: var(--text-ui); font-weight: 600; }
 /* Name plus its inline status, then Info beside the name, then Wake/New Task at the far right. */
 .machine-name-block { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; }
