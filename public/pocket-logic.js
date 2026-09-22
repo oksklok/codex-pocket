@@ -326,17 +326,21 @@ export function modelVersionParts(model) {
   return null;
 }
 
-// Pocket's display policy for the recognized GPT-5.6 tiers; not a benchmark ranking. Only applies
-// when the entry is a recognizable 5.6 model and its id or name carries one of the tier words, so
+// Pocket's display policy for the recognized GPT tiers; not a benchmark ranking. Only applies
+// when the entry has a known version and its id or name carries one of that version's tier words, so
 // unknown families and other generations keep the deterministic fallback.
-const GPT_56_TIERS = ["sol", "terra", "luna"];
-export function modelGpt56Tier(model) {
+const GPT_TIERS = new Map([
+  ["5.6", ["sol", "terra", "luna"]],
+  ["6", ["astra", "sol", "luna"]],
+]);
+export function modelGptTier(model) {
   const version = modelVersionParts(model);
-  if (!version || version[0] !== 5 || version[1] !== 6 || version.length !== 2) return null;
+  const tiers = GPT_TIERS.get(version?.join("."));
+  if (!tiers) return null;
   for (const text of [model?.model, model?.displayName]) {
     if (typeof text !== "string") continue;
-    const match = /(?:^|[^a-z])(sol|terra|luna)(?![a-z])/i.exec(text);
-    if (match) return GPT_56_TIERS.indexOf(match[1].toLowerCase());
+    const match = new RegExp(`(?:^|[^a-z])(${tiers.join("|")})(?![a-z])`, "i").exec(text);
+    if (match) return tiers.indexOf(match[1].toLowerCase());
   }
   return null;
 }
@@ -351,8 +355,8 @@ export function compareModelDisplayOrder(left, right) {
     }
   } else if (leftVersion) return -1;
   else if (rightVersion) return 1;
-  const leftTier = modelGpt56Tier(left);
-  const rightTier = modelGpt56Tier(right);
+  const leftTier = modelGptTier(left);
+  const rightTier = modelGptTier(right);
   if (leftTier !== null || rightTier !== null) {
     if (leftTier === null) return 1;
     if (rightTier === null) return -1;
