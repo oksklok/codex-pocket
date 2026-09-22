@@ -4769,7 +4769,7 @@ export class MachineRuntime {
   // the client must treat as "not unsupported" rather than hiding the filter.
   private activityCapabilities(): JsonObject {
     if (!this.deepseek) return { search: null, collaboration: null };
-    return { command: true, tool: true, files: true, search: true, collaboration: true, image: true, compaction: true, reasoning: false, review: false };
+    return { command: true, tool: true, files: true, search: true, collaboration: true, image: true, compaction: true };
   }
 
   private messageCapability(): JsonObject {

@@ -26,7 +26,7 @@ async function npm(args, cwd) {
     ? powershell(`Set-Location ${quotePS(cwd)}; & npm.cmd ${args.map(quotePS).join(' ')}; if ($LASTEXITCODE -ne 0) { throw 'npm failed' }`, 240000)
     : run('npm', args, { cwd, timeout: 240000 });
 }
-export function newer(candidate, installed) {
+function newer(candidate, installed) {
   const parse = v => /^(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?/.exec(v ?? '');
   const a = parse(candidate), b = parse(installed);
   if (!a || !b) return false;
@@ -110,7 +110,7 @@ async function codexInfo() {
       latest = metadata.tag_name.replace(/^rust-v/, '');
     }
   } catch (e) { error = `Latest version: ${e.message}`; }
-  return { installed, latest, error, updateAvailable: newer(latest, installed) };
+  return { installed, latest, error };
 }
 async function dshInfo(path) {
   const root = dirname(path);
@@ -123,7 +123,7 @@ async function dshInfo(path) {
     latest = tags[channel] || tags.latest;
     if (newer(tags.latest, latest)) latest = tags.latest;
   } catch (e) { error = `Latest version: ${e.message}`; }
-  return { installed, latest, channel, error, updateAvailable: newer(latest, installed) };
+  return { installed, latest, error };
 }
 export async function manage(request) {
   if (request.action === 'start') { await startCodex(await codexExecutable()); return {}; }
