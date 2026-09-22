@@ -1625,9 +1625,9 @@ function openDestinationSwitcher(animate = true) {
   elements.destinationBackdrop.hidden = false;
   void elements.destinationSwitcher.offsetWidth; // Establish the closed position before transitioning.
   document.body.classList.add("destination-open");
-  // Opening Tasks acknowledges any unread "another task finished" marker.
-  taskDoneUnread = false;
-  renderTaskDoneIndicator();
+  // Opening Tasks acknowledges every unread away-task indicator.
+  taskUnreadStates.clear();
+  renderTaskUnreadIndicator();
   syncTasksControls();
   saveSidebarPreference("tasks", true);
   refreshNavigationCatalog(archivedTasks, true);
@@ -3379,12 +3379,19 @@ function restoreTaskTerminalResults(machineId, results) {
   for (const key of taskTerminalResults.keys()) if (JSON.parse(key)[0] === machineId) taskTerminalResults.delete(key);
   for (const [threadId, result] of Object.entries(results)) taskTerminalResults.set(draftKey(machineId, threadId), result);
 }
-// An unread "another task finished" marker, shown on whichever Tasks entry point is visible.
-let taskDoneUnread = false;
-const taskDoneNotified = new Set();
-function renderTaskDoneIndicator() {
-  elements.tasksToggle.classList.toggle("tasks-unread", taskDoneUnread);
-  elements.destinationButton.classList.toggle("tasks-unread", taskDoneUnread);
+// Unread away-task states, shown on whichever Tasks entry point is visible. A state is recorded as
+// seen even while the pane is open, so only a genuinely new state can mark again.
+const taskUnreadStates = new Map();
+const taskStateSeen = new Map();
+const TASK_UNREAD_RANK = { done: 1, waiting: 2, stopped: 2, failed: 3 };
+function renderTaskUnreadIndicator() {
+  let best = null;
+  for (const state of taskUnreadStates.values()) if (!best || TASK_UNREAD_RANK[state] > TASK_UNREAD_RANK[best]) best = state;
+  for (const element of [elements.tasksToggle, elements.destinationButton]) {
+    element.classList.toggle("tasks-unread", Boolean(best));
+    element.classList.toggle("tasks-unread-waiting", best === "waiting" || best === "stopped");
+    element.classList.toggle("tasks-unread-failed", best === "failed");
+  }
 }
 const newTaskDialog = document.querySelector("#new-task-dialog");
 const newTaskForm = document.querySelector("#new-task-form");
@@ -4192,15 +4199,24 @@ function connectEvents() {
       else taskTerminalResults.delete(key);
     }
     if (value.status?.startsWith("active")) taskTerminalResults.delete(key);
-    // Re-arm only on an explicitly cleared result (a recency-only update omits the property) or a new run.
-    if ((Object.hasOwn(value, "terminalResult") && !value.terminalResult) || value.status?.startsWith("active")) taskDoneNotified.delete(key);
-    // A Done on another task is unread until Tasks is opened; a persistent Done must not re-light later.
-    const selectedTask = value.machineId === state?.machineId && value.threadId === state?.thread?.id;
-    if (value.terminalResult === "Done" && !selectedTask && !taskDoneNotified.has(key)) {
-      taskDoneNotified.add(key);
-      if (!tasksSwitcherOpen()) {
-        taskDoneUnread = true;
-        renderTaskDoneIndicator();
+    // A recency-only update carries neither field and must not re-arm or clear anything.
+    if (Object.hasOwn(value, "terminalResult") || value.status !== undefined) {
+      const selectedTask = value.machineId === state?.machineId && value.threadId === state?.thread?.id;
+      const waiting = value.status?.startsWith("active:") && /waitingOnApproval|waitingOnUserInput/.test(value.status);
+      const unreadState = value.terminalResult === "Failed" ? "failed"
+        : value.terminalResult === "Stopped" ? "stopped"
+        : value.terminalResult === "Done" ? "done"
+        : waiting ? "waiting" : null;
+      if (!unreadState) {
+        // Working, a cleared result, or a new run: a later state may notify again.
+        taskStateSeen.delete(key);
+        if (taskUnreadStates.delete(key)) renderTaskUnreadIndicator();
+      } else if (taskStateSeen.get(key) !== unreadState) {
+        taskStateSeen.set(key, unreadState);
+        if (!selectedTask && !tasksSwitcherOpen()) {
+          taskUnreadStates.set(key, unreadState);
+          renderTaskUnreadIndicator();
+        }
       }
     }
     updateLiveTaskCatalog(value);

@@ -163,12 +163,15 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: de
 }
 .tasks-toggle { position: relative; display: none; }
 .tasks-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-/* Unread "another task finished" dot; only the entry point visible at the breakpoint shows it. */
+/* Unread away-task dot; only the entry point visible at the breakpoint shows it. */
+.tasks-unread { --task-unread-color: var(--accent-strong); }
+.tasks-unread.tasks-unread-waiting { --task-unread-color: var(--warning); }
+.tasks-unread.tasks-unread-failed { --task-unread-color: var(--danger); }
 @media (max-width: 1099px) {
-  #destination-button.tasks-unread::after { content: ""; position: absolute; z-index: 1; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent-strong); }
+  #destination-button.tasks-unread::after { content: ""; position: absolute; z-index: 1; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--task-unread-color); }
 }
 @media (min-width: 1100px) {
-  #tasks-toggle.tasks-unread::after { content: ""; position: absolute; z-index: 1; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent-strong); }
+  #tasks-toggle.tasks-unread::after { content: ""; position: absolute; z-index: 1; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--task-unread-color); }
 }
 .destination-control { position: relative; min-width: 0; }
 .destination-button {
