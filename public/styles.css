@@ -551,8 +551,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .form-status:empty { display: none; }
 .composer-credits { margin-left: 4px; color: var(--muted); text-decoration: underline; }
 .form-status.error-text, .error-text { color: var(--danger); }
-.attention-banner { width: min(100%, 780px); margin: 0 auto 7px; padding: 7px 9px; border-radius: 8px; font-size: var(--text-secondary); }
-.attention-banner { display: grid; gap: 5px; border: 1px solid rgba(240,195,106,.25); background: rgba(240,195,106,.1); color: var(--warning); }
+.attention-banner { width: min(100%, 780px); margin: 0 auto 7px; padding: 7px 9px; border-radius: 8px; font-size: var(--text-secondary); display: grid; gap: 5px; border: 1px solid rgba(240,195,106,.25); background: rgba(240,195,106,.1); color: var(--warning); }
 .approval-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .approval-heading span { color: var(--muted); font-size: var(--text-secondary); }
 .approval-label { color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
@@ -644,8 +643,6 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
 .settings-section:first-of-type { border-top: 0; padding-top: 2px; }
 .settings-section h3 { margin-bottom: 0; }
 .form-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; min-width: 0; }
-.checkbox-row { display: flex !important; align-items: center; gap: 8px; }
-.checkbox-row input { width: 17px; min-height: 17px; }
 .field-help { margin: 0; color: var(--subtle); font-size: var(--text-secondary); line-height: 1.4; }
 .settings-inline-field { grid-template-columns: auto minmax(120px, 170px); align-items: center; justify-content: start; gap: 8px; }
 .settings-inline-field select { width: 100%; }
@@ -762,8 +759,7 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
 .task-actions button:active:not(:disabled) { background: var(--selected-bg); }
 /* Composing surfaces use the prose size so a draft matches the message it becomes. */
 .composer textarea { font-size: var(--text-heading); }
-.composer #send-message { font-size: var(--text-ui); }
-.composer #send-message { font-weight: 650; }
+.composer #send-message { font-size: var(--text-ui); font-weight: 650; }
 /* One shared placeholder treatment: same colour and opacity everywhere, inheriting each field's typography. */
 input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 1; }
 .settings-card { font-size: var(--text-ui); }
@@ -774,7 +770,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 .settings-card .enter-preference { margin-top: 0; }
 .settings-card .field-help { font-size: var(--text-secondary); line-height: 1.4; margin: 0; }
 #settings-pin { max-width: 280px; }
-.settings-card .checkbox-row, .settings-card .enter-preference { min-height: 28px; }
+.settings-card .enter-preference { min-height: 28px; }
 .task-selection-error { display: block; white-space: normal; overflow-wrap: anywhere; color: var(--danger); font-size: var(--text-secondary); font-weight: 400; line-height: 1.35; margin-top: 0; }
 
 .detail-image { cursor: zoom-in; }
@@ -1002,7 +998,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
    The translucent backdrops and the image viewer's close control keep their own treatments below. */
 :is(button, summary, [role="button"]):not(.destination-backdrop):not(.inspector-backdrop):not(#close-image):focus-visible { background-color: var(--selected-bg); }
 select:focus-visible { background-color: var(--selected-bg); }
-:is(.checkbox-row, .enter-preference, .display-option, .input-choice, .tasks-archived):has(input:focus-visible) { background-color: var(--selected-bg); border-radius: 6px; }
+:is(.enter-preference, .display-option, .input-choice, .tasks-archived):has(input:focus-visible) { background-color: var(--selected-bg); border-radius: 6px; }
 /* The image viewer stays dark in both themes, so its close control brightens to a still-dark shade
    that keeps the white icon readable. */
 .image-viewer button:focus-visible { background-color: #444444; }

@@ -63,7 +63,7 @@ export function permission(value, current = "workspace-write") {
     );
   return current;
 }
-export function textContent(content) {
+function textContent(content) {
   return (content ?? [])
     .filter((p) => p.type === "text")
     .map((p) => p.text)

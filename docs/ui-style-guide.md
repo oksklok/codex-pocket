@@ -92,6 +92,14 @@ The fullscreen composer preserves the current draft and transcript reading posit
 
 ## Status and copy
 
+- Connecting: blue.
+- Working: accent green with pulse.
+- Done: accent green without pulse.
+- Waiting / Stopped: warning.
+- Failed / Unavailable: danger.
+
+Away-task unread indicators reuse the same semantic colors.
+
 Use **Title Case** for compact headings/actions/status labels and **sentence case** for explanatory text and errors.
 
 Short validation copy is concise and usually has no trailing period. Longer explanatory/error copy uses normal punctuation. User/model text, task names, code, and tool output are not rewritten to match UI capitalization.

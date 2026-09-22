@@ -3636,7 +3636,12 @@ async function performTaskAction(body) {
     const lastSnapshot = target.events.findLastIndex(entry => entry.snapshot?.machineId === snapshot.machineId && entry.snapshot?.thread?.id === snapshot.thread?.id);
     for (const entry of target.events.slice(lastSnapshot < 0 ? target.events.length : lastSnapshot + 1)) entry.deliver();
   } else for (const entry of target.events) entry.deliver();
-  if (succeeded && body.action === "delete") composerDrafts.delete(draftKey(body.machineId, body.threadId));
+  if (succeeded && body.action === "delete") {
+    const key = draftKey(body.machineId, body.threadId);
+    composerDrafts.delete(key);
+    taskStateSeen.delete(key);
+    if (taskUnreadStates.delete(key)) renderTaskUnreadIndicator();
+  }
   if (failure && body.action !== "create") destinationTaskError = { machineId: body.machineId, threadId: body.threadId, message: taskFailureMessage(failure) };
   // Keep the visible lists rendered while both catalogs refresh in the background; the Refresh
   // control's disabled/spinning state is the only loading indicator for a cached list.
