@@ -4293,8 +4293,17 @@ export class MachineRuntime {
     }
     // A relocation notification addresses the replacement id but explicitly
     // marks the current id as its source, so it must reach the settings handler.
-    if (params.threadId && String(params.threadId) !== this.state.thread?.id
-      && String(params.relocatedFrom ?? "") !== this.state.thread?.id) return;
+    const awayThreadId = params.threadId && String(params.threadId) !== this.state.thread?.id
+      && String(params.relocatedFrom ?? "") !== this.state.thread?.id ? String(params.threadId) : null;
+    // An away task's compaction still needs its hint so selecting that task can restore the card, but it
+    // must not render into the selected task's activities. Every other away item is still ignored.
+    if (awayThreadId && (method === "item/started" || method === "item/completed") && params.item?.type === "contextCompaction") {
+      const phase = method === "item/started" ? "start" : "done";
+      const itemTurnId = String(params.turnId ?? "");
+      const activity = activityFromItem(params.item, phase, itemTurnId);
+      if (activity) this.trackCompactionHint(awayThreadId, params.item, phase, itemTurnId, activity);
+    }
+    if (awayThreadId) return;
     switch (method) {
       case "thread/goal/updated":
         this.updateGoal(params.threadId, params.goal);
@@ -4569,22 +4578,26 @@ export class MachineRuntime {
     this.rememberItem(item, itemTurnId);
     const activity = activityFromItem(item, phase, itemTurnId);
     if (!activity) return;
-    if (item.type === "contextCompaction" && this.state.thread) {
-      if (phase === "start" && this.rpc) {
-        const thread = this.state.thread;
-        const hint: { activity: PocketActivity; occurrence?: number; baseline?: Promise<void> } = { activity };
-        this.compactionHints.set(thread.id, hint);
-        // History IDs differ from live IDs. Capture the count preceding this live occurrence.
-        hint.baseline = this.completedCompactions(this.rpc, thread.id, itemTurnId).then(completed => {
-          if (completed && this.compactionHints.get(thread.id) === hint) {
-            hint.occurrence = completed.length + 1;
-          }
-        });
-      } else if (this.compactionHints.get(this.state.thread.id)?.activity.id === activity.id) this.compactionHints.delete(this.state.thread.id);
-    }
+    if (item.type === "contextCompaction" && this.state.thread) this.trackCompactionHint(this.state.thread.id, item, phase, itemTurnId, activity);
     this.state.activities = mergeActivities(this.state.activities, [activity]).slice(-MAX_ACTIVITIES);
     const stored = this.state.activities.find((candidate) => candidate.id === activity.id);
     if (stored) this.broadcast("activity", stored);
+  }
+
+  // Remember a running compaction per thread so selecting that task can restore its card, and clear it
+  // when the matching completion arrives. History IDs differ from live IDs, so the baseline records how
+  // many compactions preceded this live occurrence.
+  private trackCompactionHint(threadId: string, item: any, phase: "start" | "done", turnId: string, activity: PocketActivity): void {
+    if (item.type !== "contextCompaction") return;
+    if (phase === "start" && this.rpc) {
+      const hint: { activity: PocketActivity; occurrence?: number; baseline?: Promise<void> } = { activity };
+      this.compactionHints.set(threadId, hint);
+      hint.baseline = this.completedCompactions(this.rpc, threadId, turnId).then(completed => {
+        if (completed && this.compactionHints.get(threadId) === hint) hint.occurrence = completed.length + 1;
+      });
+    } else if (this.compactionHints.get(threadId)?.activity.id === activity.id) {
+      this.compactionHints.delete(threadId);
+    }
   }
 
   private queueAssistantDelta(itemId: string, turnId: string, delta: string): void {
