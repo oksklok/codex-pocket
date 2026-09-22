@@ -289,7 +289,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   display: inline-flex; align-items: center; min-height: 28px; padding: 4px 9px;
   border-radius: 999px; background: rgba(139,184,255,.12); color: var(--blue); font-size: var(--text-label); font-weight: 750;
 }
-.phase-pill.working { background: rgba(69,200,138,.12); color: var(--accent); }
+.phase-pill.working, .phase-pill.done { background: rgba(69,200,138,.12); color: var(--accent); }
 /* The top-bar Working label reuses the activity pulse; the dot inherits the pill's green accent. */
 .phase-pill.working::before {
   content: ""; flex: none; width: 6px; height: 6px; margin-right: 5px;
