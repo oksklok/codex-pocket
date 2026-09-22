@@ -4192,13 +4192,16 @@ function connectEvents() {
       else taskTerminalResults.delete(key);
     }
     if (value.status?.startsWith("active")) taskTerminalResults.delete(key);
-    // Re-arm when the task runs again or the runtime clears the terminal result.
-    if (!value.terminalResult || value.status?.startsWith("active")) taskDoneNotified.delete(key);
-    // A Done on another task is unread until Tasks is opened; the selected task never marks itself.
-    if (value.terminalResult === "Done" && value.threadId !== state?.thread?.id && !tasksSwitcherOpen() && !taskDoneNotified.has(key)) {
+    // Re-arm only on an explicitly cleared result (a recency-only update omits the property) or a new run.
+    if ((Object.hasOwn(value, "terminalResult") && !value.terminalResult) || value.status?.startsWith("active")) taskDoneNotified.delete(key);
+    // A Done on another task is unread until Tasks is opened; a persistent Done must not re-light later.
+    const selectedTask = value.machineId === state?.machineId && value.threadId === state?.thread?.id;
+    if (value.terminalResult === "Done" && !selectedTask && !taskDoneNotified.has(key)) {
       taskDoneNotified.add(key);
-      taskDoneUnread = true;
-      renderTaskDoneIndicator();
+      if (!tasksSwitcherOpen()) {
+        taskDoneUnread = true;
+        renderTaskDoneIndicator();
+      }
     }
     updateLiveTaskCatalog(value);
   });
