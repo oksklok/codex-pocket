@@ -1,6 +1,6 @@
-// Executed on the execution machine over the existing SSH connection. No resident updater.
+// Executed on the execution machine over the existing SSH connection. Runtime inspection and normal Codex startup.
 import { spawn } from 'node:child_process';
-import { readFileSync, realpathSync, existsSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, realpathSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { dirname, join, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { connect } from 'node:net';
@@ -87,14 +87,6 @@ async function startCodex(exe) {
   try { detail = readFileSync(join(dir, 'pocket-start.stderr.log'), 'utf8').trim().slice(-1000); } catch {}
   throw new Error(detail || 'Codex did not start in the logged-in Windows session');
 }
-async function stopCodex(exe) {
-  if (!await socketRunning()) return;
-  if (!windows) { await run(exe, ['app-server', 'daemon', 'stop']); return; }
-  // Only the shared server, never proxy connections, terminals, or the other provider.
-  await powershell(`$servers=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'codex.exe' -and $_.CommandLine -match ' app-server --listen unix://(?: |$)' }); if ($servers.Count -ne 1) { throw 'Could not identify the shared Codex server' }; $servers | ForEach-Object { Stop-Process -Id $_.ProcessId }`);
-  for (let i = 0; i < 30; i++) { if (!await socketRunning()) return; await pause(300); }
-  throw new Error('Codex server did not stop');
-}
 async function codexInfo() {
   const exe = await codexExecutable();
   const installed = (await run(exe, ['--version'])).match(/\d+\.\d+\.\d+(?:-[\w.]+)?/)?.[0];
@@ -135,45 +127,8 @@ async function dshInfo(path) {
 }
 export async function manage(request) {
   if (request.action === 'start') { await startCodex(await codexExecutable()); return {}; }
-  if (request.provider === 'openai') {
-    if (request.action === 'inspect') return codexInfo();
-    const exe = await codexExecutable();
-    if (request.action === 'install') {
-      const env = { ...process.env, CODEX_NON_INTERACTIVE: '1' };
-      if (windows) {
-        const path = process.env.Path ?? process.env.PATH;
-        for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
-        env.Path = `${process.env.SystemRoot}\\System32${delimiter}${path}`;
-      }
-      await run(exe, ['update'], { env, timeout: 300000 });
-    } else if (request.action === 'restart') { await stopCodex(exe); await startCodex(exe); }
-    else throw new Error('Unknown Codex operation');
-    return {};
-  }
+  if (request.action !== 'inspect') throw new Error('Unknown runtime operation');
+  if (request.provider === 'openai') return codexInfo();
   if (!request.path) throw new Error('DSH path is not configured');
-  if (request.action === 'inspect') return dshInfo(request.path);
-  if (request.action === 'status') {
-    const status = JSON.parse(await run(process.execPath, [join(dirname(request.path), 'runtime.mjs'), '--status']));
-    if (!status.ok || typeof status.result?.busy !== 'boolean') throw new Error(status.reason || 'DSH did not report runtime status');
-    return status.result;
-  }
-  if (request.action !== 'install') throw new Error('Unknown DSH operation');
-  const root = dirname(request.path);
-  const marker = join(dirname(root), '.pocket-deploying');
-  // Reuse the attach launcher's maintenance marker so reconnect cannot start a half-installed DSH.
-  writeFileSync(marker, JSON.stringify({ at: Date.now() }), { flag: 'wx', mode: 0o600 });
-  let stopped = false;
-  try {
-    const result = JSON.parse(await run(process.execPath, [join(root, 'runtime.mjs'), '--stop']));
-    if (!result.ok || !result.result?.accepted) throw new Error(result.reason || 'DSH refused shutdown');
-    stopped = true;
-    await npm(['install', '--save-exact', `@deepseek-ai/dsh@${request.version}`, '--omit=dev', '--no-audit', '--no-fund'], root);
-    await run(process.execPath, [join(root, 'runtime.mjs'), '--probe']);
-    unlinkSync(marker);
-    return {};
-  } catch (error) {
-    if (stopped) writeFileSync(marker, JSON.stringify({ stuck: true, at: Date.now(), error: error.message }));
-    else unlinkSync(marker);
-    throw error;
-  }
+  return dshInfo(request.path);
 }

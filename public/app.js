@@ -4513,15 +4513,13 @@ function updateMachineDialogActions() {
 let machineRuntimeTimer = null;
 let machineRuntimeRender = 0;
 let machineRuntimeInspecting = null;
-const machineRuntimeUpdates = new Set();
 
 function machineRuntimeProviderName(detail) {
   return detail.provider === "deepseek" ? "DSH" : "Codex";
 }
 
-// One provider row: name, status, installed/latest version, and the Update control. Provider
-// inspection failures are not printed here; a failed user-triggered update uses the dialog error.
-function machineRuntimeRow(detail, target) {
+// One read-only provider row: name, status, and installed/latest versions.
+function machineRuntimeRow(detail) {
   const row = document.createElement("div");
   row.className = "machine-runtime-row";
   const info = document.createElement("div");
@@ -4545,31 +4543,6 @@ function machineRuntimeRow(detail, target) {
   versions.textContent = installed === latest ? `Installed ${installed} · Latest` : `Installed ${installed} · Latest ${latest}`;
   info.append(versions);
   row.append(info);
-  const updating = machineRuntimeUpdates.has(detail.machineId) || detail.updating;
-  if (detail.updateAvailable || updating) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary-button";
-    // A package update can take minutes, so this one control keeps visible progress.
-    button.textContent = updating ? "Updating…" : "Update";
-    button.disabled = updating || detail.busy;
-    button.addEventListener("click", async () => {
-      machineRuntimeUpdates.add(detail.machineId);
-      button.disabled = true;
-      button.textContent = "Updating…";
-      try {
-        const response = await apiFetch("/api/runtime/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ machineId: detail.machineId }) });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Runtime update failed");
-      } catch (error) {
-        if (machineDialogTarget === target) elements.machineDialogError.textContent = error instanceof Error ? error.message : String(error);
-      } finally {
-        machineRuntimeUpdates.delete(detail.machineId);
-        if (machineDialogTarget === target) await renderMachineRuntimes(target, true);
-      }
-    });
-    row.append(button);
-  }
   return row;
 }
 
@@ -4616,7 +4589,7 @@ async function renderMachineRuntimes(target, refresh = false) {
   });
   if (machineDialogTarget !== target || token !== machineRuntimeRender) return;
   list.replaceChildren();
-  for (const detail of results) list.append(machineRuntimeRow(detail, target));
+  for (const detail of results) list.append(machineRuntimeRow(detail));
 }
 
 function openMachineDialog(target) {

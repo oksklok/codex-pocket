@@ -1017,4 +1017,3 @@ select:focus-visible { background-color: var(--selected-bg); }
 .machine-runtime-status.offline { color: var(--subtle); }
 .machine-runtime-versions { margin: 3px 0 0; color: var(--muted); font-size: var(--text-secondary); line-height: 1.4; overflow-wrap: anywhere; }
 .machine-runtime-checking, .machine-runtime-offline { margin: 0; color: var(--subtle); font-size: var(--text-secondary); }
-.machine-runtime-row button { flex-shrink: 0; }

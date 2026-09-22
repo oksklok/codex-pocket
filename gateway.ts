@@ -2065,8 +2065,6 @@ export class MachineRuntime {
   private options: Options;
   private definition: MachineDefinition;
   private shuttingDown = false;
-  private runtimeUpdating = false;
-  private runtimeUpdateError: string | null = null;
   private runtimeVersions: any = null;
   private runtimeInspection: Promise<any> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -2873,7 +2871,7 @@ export class MachineRuntime {
   }
 
   private scheduleReconnect(): void {
-    if (this.shuttingDown || this.runtimeUpdating || this.runtimeUpdateError || this.reconnectTimer) return;
+    if (this.shuttingDown || this.reconnectTimer) return;
     const delays = [5_000, 10_000, 20_000, 30_000, 60_000];
     const delay = delays[this.reconnectDelayIndex];
     this.reconnectDelayIndex = Math.min(this.reconnectDelayIndex + 1, delays.length - 1);
@@ -2883,92 +2881,23 @@ export class MachineRuntime {
     }, delay);
   }
 
-  private runtimeRequest(action: string, extra: JsonObject = {}): Promise<any> {
+  private runtimeRequest(action: string): Promise<any> {
     return manageRuntime(this.definition.ssh, { action, provider: this.deepseek ? "deepseek" : "openai",
-      path: this.definition.dshPath ?? fileURLToPath(new URL("./dsh/launch.mjs", import.meta.url)), ...extra });
-  }
-
-  private async runtimeBusy(): Promise<boolean> {
-    if (this.deepseek) return (await this.runtimeRequest("status")).busy;
-    if (!this.rpc || !this.state.connected) throw new Error("Cannot verify whether the runtime is idle");
-    let cursor: string | undefined;
-    do {
-      const page = await this.rpc.request("thread/loaded/list", { cursor });
-      for (const value of page.data ?? []) {
-        const result = await this.rpc.request("thread/read", { threadId: typeof value === "string" ? value : value.id, includeTurns: false });
-        if (!result.thread?.status) throw new Error("Runtime did not report task status");
-        if (result.thread.status.type === "active") return true;
-      }
-      cursor = page.nextCursor || undefined;
-    } while (cursor);
-    return false;
+      path: this.definition.dshPath ?? fileURLToPath(new URL("./dsh/launch.mjs", import.meta.url)) });
   }
 
   async runtimeDetails(refresh = true): Promise<JsonObject> {
-    let error = this.runtimeUpdateError;
-    if ((refresh || !this.runtimeVersions) && !this.runtimeUpdating) {
+    let error: string | null = null;
+    if (refresh || !this.runtimeVersions) {
       try {
         this.runtimeInspection ??= this.runtimeRequest("inspect").finally(() => { this.runtimeInspection = null; });
         this.runtimeVersions = await this.runtimeInspection;
       }
       catch (failure) { error = String(failure instanceof Error ? failure.message : failure); }
     }
-    let busy = true;
-    try { busy = await this.runtimeBusy(); } catch (failure) { if (this.state.connected && !error) error = failure instanceof Error ? failure.message : String(failure); }
     return { machineId: this.definition.id, provider: this.deepseek ? "deepseek" : "openai",
-      ...this.runtimeVersions, status: this.state.connected ? "Running" : "Offline", busy,
-      updating: this.runtimeUpdating, error: compact(error || this.runtimeVersions?.error || (!this.state.connected ? this.technicalConnectionError : ""), 400) || null };
-  }
-
-  updateRuntime(): Promise<JsonObject> {
-    const operation = this.selectionQueue.then(async () => {
-      if (this.runtimeUpdating) throw new Error("Runtime update is already in progress");
-      if (await this.runtimeBusy()) throw new Error("Runtime is executing a turn; wait until it is idle");
-      const versions = await this.runtimeRequest("inspect");
-      if (!versions.updateAvailable) throw new Error(versions.error || "Runtime is already up to date");
-      // Recheck after the package-source request, before changing the installation.
-      if (await this.runtimeBusy()) throw new Error("Runtime is executing a turn; wait until it is idle");
-      this.runtimeUpdating = true;
-      this.runtimeUpdateError = null;
-      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-      try {
-        // DSH's machine-side shutdown checks busy atomically. Codex stays available during download
-        // so work accepted through another client can be detected before its restart.
-        if (this.deepseek) { this.state.connected = false; this.broadcast("status", this.statusPayload()); }
-        await this.runtimeRequest("install", { version: versions.latest });
-        if (!this.deepseek) {
-          if (await this.runtimeBusy()) throw new Error("CLI installed; restart deferred because Codex became busy");
-          this.state.connected = false;
-          this.broadcast("status", this.statusPayload());
-          await this.runtimeRequest("restart");
-        }
-        this.runtimeUpdateError = null;
-        await this.connect();
-        if (!this.state.connected) throw new Error(this.technicalConnectionError || "Updated runtime could not reconnect");
-        this.runtimeVersions = await this.runtimeRequest("inspect");
-      } catch (failure) {
-        const error = failure instanceof Error ? failure.message : String(failure);
-        // Only an update that leaves the runtime unusable may block later reconnects: a restart deferred
-        // because the runtime became busy, or a failed inspection on a still-connected runtime, reports
-        // the error to the caller without latching a reconnect blocker behind it.
-        this.runtimeUpdateError = this.state.connected ? null : error;
-        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-        this.state.connectionError = compact(error, 400);
-        if (!this.state.connected) this.state.phase = "unavailable";
-        throw new Error(compact(error, 400));
-      } finally {
-        // One settled snapshot, after the flag clears, on success and on failure alike: nothing may be
-        // published while the runtime still reads as updating, and the capability cannot stick on
-        // "Runtime is updating".
-        this.runtimeUpdating = false;
-        this.broadcast("snapshot", this.snapshot());
-      }
-      return await this.runtimeDetails(false);
-    });
-    this.selectionQueue = operation.then(() => {}, () => {});
-    return operation;
+      ...this.runtimeVersions, status: this.state.connected ? "Running" : "Offline",
+      error: compact(error || this.runtimeVersions?.error || (!this.state.connected ? this.technicalConnectionError : ""), 400) || null };
   }
 
   async wake(): Promise<JsonObject> {
@@ -4740,7 +4669,6 @@ export class MachineRuntime {
   }
 
   private async startQueuedMessage(threadId: string, tracked = false): Promise<boolean> {
-    if (this.runtimeUpdating) return false;
     if (this.startingQueuedMessage) return false;
     const queued = this.state.queuedMessage;
     if (!queued || queued.deliveryUnknown || queued.threadId !== threadId || this.state.thread?.id !== threadId || !this.rpc) return false;
@@ -4842,7 +4770,6 @@ export class MachineRuntime {
   }
 
   private messageCapability(): JsonObject {
-    if (this.runtimeUpdating) return { allowed: false, mode: null, reason: "Runtime is updating" };
     if (!this.state.connected || !this.rpc) return { allowed: false, mode: null, reason: "Codex is disconnected" };
     if (!this.state.thread) return { allowed: false, mode: null, reason: "No task is selected" };
     if (this.state.stoppingTurnId) return { allowed: false, mode: null, reason: "Stopping the active turn…" };
@@ -5014,10 +4941,10 @@ export class PocketGateway {
     }));
   }
 
-  async runtimeManagement(machineId: unknown, update = false, refresh = true): Promise<JsonObject> {
+  async runtimeManagement(machineId: unknown, refresh = true): Promise<JsonObject> {
     const runtime = typeof machineId === "string" ? this.runtimes.get(machineId) : undefined;
     if (!runtime) throw new Error("Machine runtime is not configured");
-    return update ? runtime.updateRuntime() : runtime.runtimeDetails(refresh);
+    return runtime.runtimeDetails(refresh);
   }
 
   async wakeMachine(machineId: unknown): Promise<JsonObject> {
@@ -5489,7 +5416,7 @@ async function readJsonBody(request: IncomingMessage, maxBytes = 65_536): Promis
 const JSON_POST_ROUTES = new Set([
   "/api/login", "/api/settings", "/api/tasks", "/api/message", "/api/turn/interrupt",
   "/api/message/queue", "/api/thread/settings", "/api/thread/cwd", "/api/thread/access", "/api/approval",
-  "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake", "/api/goal", "/api/runtime/update",
+  "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake", "/api/goal",
 ]);
 
 function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
@@ -5794,10 +5721,10 @@ export async function handleRequest(
     }
     return;
   }
-  if ((method === "GET" && url.pathname === "/api/runtime") || (method === "POST" && url.pathname === "/api/runtime/update")) {
+  if (method === "GET" && url.pathname === "/api/runtime") {
     try {
-      const machineId = method === "POST" ? (await readJsonBody(request)).machineId : url.searchParams.get("machineId");
-      sendJson(response, 200, await gateway.runtimeManagement(machineId, method === "POST", url.searchParams.get("refresh") !== "false"), gateway);
+      const machineId = url.searchParams.get("machineId");
+      sendJson(response, 200, await gateway.runtimeManagement(machineId, url.searchParams.get("refresh") !== "false"), gateway);
     } catch (error) { sendJson(response, 409, { error: error instanceof Error ? error.message : String(error) }, gateway); }
     return;
   }
