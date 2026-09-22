@@ -671,16 +671,18 @@ final class PocketHost: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func runtimeRecord() -> RuntimeRecord? {
         runtimeLock.lock()
         defer { runtimeLock.unlock() }
+        if let data = try? Data(contentsOf: runtimeURL),
+           let record = try? JSONDecoder().decode(RuntimeRecord.self, from: data),
+           record.pid > 0,
+           kill(record.pid, 0) == 0 || errno != ESRCH {
+            lastRuntimeRecord = record
+            return record
+        }
         // Shutdown may remove the file before the process exits. Retain its PID for retries.
         if let record = lastRuntimeRecord,
            kill(record.pid, 0) == 0 || errno != ESRCH { return record }
         lastRuntimeRecord = nil
-        guard let data = try? Data(contentsOf: runtimeURL),
-              let record = try? JSONDecoder().decode(RuntimeRecord.self, from: data),
-              record.pid > 0,
-              kill(record.pid, 0) == 0 || errno != ESRCH else { return nil }
-        lastRuntimeRecord = record
-        return record
+        return nil
     }
 
     private func fetchHostStatus() -> HostStatus? {
