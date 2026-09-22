@@ -22,6 +22,7 @@ import {
 } from "./pocket-logic.js";
 
 const elements = {
+  topbar: document.querySelector(".topbar"),
   context: document.querySelector("#context-chip"),
   contextPercent: document.querySelector("#context-percent"),
   contextFill: document.querySelector("#context-fill"),
@@ -2369,6 +2370,13 @@ function resizeComposer() {
   textarea.scrollTop = scrollTop;
 }
 
+// Mobile scrolls the page below a top bar whose meters can wrap; desktop sticks inside .conversation.
+function updateActivitySummaryOffset() {
+  if (matchMedia("(max-width: 860px)").matches) {
+    elements.appShell.style.setProperty("--activity-summary-top", `${elements.topbar.getBoundingClientRect().height}px`);
+  }
+}
+
 function renderState() {
   if (!state) return;
   const selectedMachine = machines.find((machine) => machine.id === state.machineId);
@@ -2417,6 +2425,7 @@ function renderState() {
   const context = state.context;
   elements.contextPercent.textContent = context ? `${context.lastKnown ? "~" : ""}${context.usedPercent}%` : "—";
   elements.contextFill.style.width = `${context?.usedPercent ?? 0}%`;
+  updateActivitySummaryOffset();
   elements.runtimeReason.textContent = ["local", "local:dsh"].includes(state.machineId) ? state.connectionError || "" : "";
   elements.runtimeReason.hidden = !elements.runtimeReason.textContent;
   renderComposer();
@@ -5145,6 +5154,7 @@ elements.inspectorButton.addEventListener("click", toggleInspector);
 elements.inspectorClose.addEventListener("click", closeInspector);
 elements.inspectorBackdrop.addEventListener("click", closeInspector);
 window.addEventListener("resize", () => {
+  updateActivitySummaryOffset();
   updateInspectorButtonState();
   elements.destinationSwitcher.setAttribute("role", isWideLayout() ? "navigation" : "dialog");
   resizeComposer();
@@ -5189,6 +5199,7 @@ setInterval(() => {
   const completedAt = state?.turn?.completedAt;
   elements.elapsed.hidden = !startedAt;
   elements.elapsed.textContent = startedAt ? formatElapsed((completedAt || Date.now()) - startedAt) : "";
+  updateActivitySummaryOffset();
 }, 1_000);
 
 elements.loginForm.addEventListener("submit", async (event) => {
