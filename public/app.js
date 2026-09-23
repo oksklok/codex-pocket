@@ -2601,11 +2601,15 @@ function asyncQuestionNode(message, question, index) {
       form.requestSubmit();
     }
   });
-  input.addEventListener("input", () => { draft.text = input.value; draft.error = ""; });
   const send = document.createElement("button");
   send.type = "submit";
   send.textContent = "Answer";
-  send.disabled = disabled;
+  send.disabled = disabled || !input.value.trim();
+  input.addEventListener("input", () => {
+    draft.text = input.value;
+    draft.error = "";
+    send.disabled = disabled || !input.value.trim();
+  });
   const freeText = document.createElement("div");
   freeText.className = "async-free-text";
   freeText.hidden = question.options.length > 0 && !draft.otherOpen;
