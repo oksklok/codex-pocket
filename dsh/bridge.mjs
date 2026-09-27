@@ -20,6 +20,7 @@ export const inject = [
   "loader",
   "agents",
   "subagents",
+  "jobs",
   "agentLoop",
   "agentDefaultModel",
   "sessionPersistence",
@@ -56,6 +57,29 @@ export function apply(ctx) {
     try { return await operation(); }
     finally { admissions--; }
   };
+  // list() alone sees only unowned jobs. Seed each live owner's records and
+  // observe all owners thereafter, including jobs surviving an owner's teardown.
+  const jobs = new Map();
+  ctx.jobs.events.subscribe({ owners: "all" }, (event) => {
+    try {
+      if (event.type === "output") return;
+      if (event.type === "removed") jobs.delete(event.job.id);
+      else jobs.set(event.job.id, event.job.status);
+    } catch { activityUnknown = true; }
+  });
+  try {
+    for (const owner of [undefined, ...ctx.agents.list().map((agent) => agent.id)])
+      for (const job of ctx.jobs.list(owner)) jobs.set(job.id, job.status);
+  } catch { activityUnknown = true; }
+  const upstreamJobStart = ctx.jobs.start;
+  ctx.jobs.start = function (...args) {
+    assertAdmitting();
+    // Keep start synchronous, including producer exceptions and its exact id.
+    // Count preflight/producer entry until the registered event owns the work.
+    admissions++;
+    try { return upstreamJobStart.apply(this, args); }
+    finally { admissions--; }
+  };
   for (const method of ["start", "startContinuable", "sendMessage", "prompt"]) {
     const upstream = ctx.subagents[method];
     ctx.subagents[method] = function (...args) {
@@ -87,7 +111,9 @@ export function apply(ctx) {
   }
   const runtimeBusy = () => {
     try {
-      return activityUnknown || admissions > 0 || runs.size > 0 || ctx.agents.list().some((agent) =>
+      return activityUnknown || admissions > 0 || runs.size > 0 ||
+        [...jobs.values()].some((status) => !["completed", "failed", "killed"].includes(status)) ||
+        ctx.agents.list().some((agent) =>
         agent.status !== "idle" ||
         !Array.isArray(agent.inbox?.nextTurn) || !Array.isArray(agent.inbox?.nextStep) ||
         agent.inbox.nextTurn.length > 0 || agent.inbox.nextStep.length > 0);
