@@ -590,6 +590,7 @@ body.destination-open .destination-switcher { transform: translateX(0); }
   border-radius: 7px; background: var(--surface-strong); color: var(--text); font-size: var(--text-ui);
 }
 textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: vertical; line-height: 1.4; }
+.async-answer textarea { resize: none; }
 .queue-banner { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "status objective actions"; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
 .queue-copy { display: contents; }
 .queue-copy strong { grid-area: status; }

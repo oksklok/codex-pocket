@@ -2547,6 +2547,57 @@ function suppressAsyncQuestionMarkdown(body, questions) {
   }
 }
 
+let cancelAsyncAnswerReveal = null;
+function revealAsyncAnswer(input, field) {
+  cancelAsyncAnswerReveal?.();
+  shouldFollowConversation = false;
+  markSendNavigationOverride();
+  const controller = new AbortController();
+  const { signal } = controller;
+  const scroller = transcriptScroller();
+  const scrollTarget = scroller === document.scrollingElement ? document : scroller;
+  const viewport = window.visualViewport;
+  let frame;
+  const cancel = () => {
+    cancelAnimationFrame(frame);
+    controller.abort();
+    if (cancelAsyncAnswerReveal === cancel) cancelAsyncAnswerReveal = null;
+  };
+  cancelAsyncAnswerReveal = cancel;
+  const reveal = () => {
+    if (!input.isConnected || field.hidden || document.activeElement !== input) { cancel(); return; }
+    const bounds = scroller === document.scrollingElement ? null : scroller.getBoundingClientRect();
+    const header = bounds ? null : document.querySelector(".topbar")?.getBoundingClientRect();
+    const top = Math.max(viewport?.offsetTop ?? 0, bounds?.top ?? 0, header?.bottom ?? 0) + 8;
+    let bottom = Math.min((viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight), bounds?.bottom ?? Infinity);
+    const composer = elements.composerZone.getBoundingClientRect();
+    if (composer.bottom > top && composer.top < bottom) bottom = composer.top;
+    bottom -= 8;
+    const rect = field.getBoundingClientRect();
+    // Align only the obscured edge; keep the input visible if space cannot fit both controls.
+    const delta = rect.top < top ? rect.top - top : Math.max(0, Math.min(rect.bottom - bottom, rect.top - top));
+    scroller.scrollTop += delta;
+    shouldFollowConversation = false;
+    rememberTranscriptScroll();
+    updateJumpLatest();
+  };
+  const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(reveal); };
+  // Focus can open/pan the mobile keyboard after the initial layout. Follow only
+  // those viewport changes, never transcript growth or a user's scroll gesture.
+  viewport?.addEventListener("resize", schedule, { signal });
+  viewport?.addEventListener("scroll", schedule, { signal });
+  window.addEventListener("resize", schedule, { signal });
+  for (const type of ["wheel", "touchmove", "pointerdown"]) document.addEventListener(type, cancel, { passive: true, signal });
+  document.addEventListener("keydown", (event) => {
+    if (event.target !== input && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) cancel();
+  }, { signal });
+  // Reaching the bottom as part of this reveal is not a request to follow new messages.
+  scrollTarget.addEventListener("scroll", () => { shouldFollowConversation = false; }, { signal });
+  input.addEventListener("blur", cancel, { once: true, signal });
+  input.focus({ preventScroll: true });
+  schedule();
+}
+
 function asyncQuestionNode(message, question, index) {
   const key = `${message.id}:${index}`;
   const draft = asyncDrafts.get(key) || { text: "", sending: false, error: "", uncertain: false };
@@ -2620,7 +2671,8 @@ function asyncQuestionNode(message, question, index) {
       draft.otherOpen = !draft.otherOpen;
       freeText.hidden = !draft.otherOpen;
       other.setAttribute("aria-expanded", String(draft.otherOpen));
-      if (draft.otherOpen) input.focus();
+      if (draft.otherOpen) revealAsyncAnswer(input, freeText);
+      else cancelAsyncAnswerReveal?.();
     });
     fields.append(other);
   }
