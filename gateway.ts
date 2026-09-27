@@ -995,7 +995,7 @@ function localRuntimeReason(error: string): string {
   if (/active writer/i.test(error)) return "This task is open in another Codex runtime. Close it there, then retry.";
   if (/failed to connect to socket/i.test(error) && /No such file/i.test(error)) return "Local Codex app-server is not running (shared socket missing).";
   if (/spawn .*ENOENT|executable.*not found/i.test(error)) return "Codex executable not found.";
-  return compact(error.replace(/^Error:\s*/, ""), 180);
+  return "Local Codex unavailable.";
 }
 
 // One short-lived machine-side command; SSH failure is never interpreted as daemon absence.
@@ -3186,7 +3186,8 @@ export class MachineRuntime {
       }
       // The new task is already attached; catalog failure must not abort the handoff.
       try { await this.refreshLoadedThreads(); } catch {}
-      return { ...this.snapshot(), ...(warnings.length ? { warning: `Task created. Some starting settings could not be applied: ${warnings.join("; ")}` } : {}) };
+      if (warnings.length) console.warn(`${this.definition.name}: task ${id} starting settings: ${warnings.join("; ")}`);
+      return { ...this.snapshot(), ...(warnings.length ? { warning: "Task created, but some starting settings weren't applied." } : {}) };
     }
     if (!["rename", "archive", "unarchive", "delete"].includes(action)) throw new Error("Unknown task action");
     const id = String(body.threadId ?? "");

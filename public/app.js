@@ -2176,7 +2176,8 @@ document.querySelector("#goal-clear-form").addEventListener("submit", event => {
 function renderComposer() {
   renderGoal();
   const capability = state?.message;
-  const turnError = state?.phase === "failed" && state?.turn?.status !== "inProgress" ? state?.turn?.error : "";
+  const rawTurnError = state?.phase === "failed" && state?.turn?.status !== "inProgress" ? state?.turn?.error : "";
+  const turnError = rawTurnError ? usageLimitMessage(rawTurnError) || uiErrorMessage(rawTurnError, "Task failed.") : "";
   const turnActive = state?.turn?.status === "inProgress" && Boolean(state?.turn?.id);
   const stopping = submittingInterrupt || (turnActive && state?.stoppingTurnId === state?.turn?.id);
   const hasText = Boolean(elements.messageText.value.trim()) || (selectedImages.length > 0 || selectedFiles.length > 0);
@@ -2214,13 +2215,6 @@ function renderComposer() {
   const status = noTask ? "" : composerError || turnError || capabilityError || state?.taskNameWarning || "";
   const usageLimit = usageLimitMessage(status);
   elements.composerStatus.textContent = usageLimit || status;
-  if (usageLimit) {
-    const credits = Object.assign(document.createElement("a"), {
-      className: "composer-credits", textContent: "Buy credits",
-      href: "https://chatgpt.com/codex/settings/usage", target: "_blank", rel: "noopener noreferrer",
-    });
-    elements.composerStatus.append(" ", credits);
-  }
   elements.composerStatus.hidden = !status;
   elements.composerStatus.classList.toggle("error-text", !noTask && Boolean(composerError || turnError));
   renderAttention();

@@ -646,12 +646,7 @@ export function apply(ctx) {
       const items = turn?.items ?? [];
       const item =
         event.type === "tool/result"
-          ? items.find(
-              (i) =>
-                i.id ===
-                (d.message.content?.[0]?.toolCallId ??
-                  d.message.content?.[0]?.callId),
-            )
+          ? items.find((i) => i.id === d.message.toolCallId)
           : items.at(-1);
       if (item)
         notify(event.type === "tool/call" ? "item/started" : "item/completed", {

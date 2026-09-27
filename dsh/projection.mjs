@@ -246,41 +246,40 @@ export function projectEvents(events, cwd) {
       // durable session log. A result without it (failure, or a create with no before-image) keeps
       // the call-time changes instead of pretending they were applied.
       const meta = d.meta;
-      for (const r of d.message.content ?? []) {
-        const item = calls.get(r.toolCallId ?? r.callId ?? r.id);
-        if (!item) continue;
-        Object.assign(item, {
-          status: r.isError ? "failed" : "completed",
-          success: !r.isError,
-          contentItems: r.content,
-          aggregatedOutput: textContent(r.content),
-          results: r.content,
-          resultMeta: meta,
-          error: d.error,
-        });
-        if (item.type === "imageView") {
-          if (!r.isError && r.content?.some(block => block.type === "image") && typeof item.arguments?.file_path === "string" && cwd) {
-            item.path = resolve(cwd, item.arguments.file_path);
-          } else if (r.isError) item.failure = d.error ?? textContent(r.content);
-        }
-        if (item.type === "fileChange") {
-          const applied = changesFromDiffs(Array.isArray(meta?.diffs) ? meta.diffs : []);
-          if (r.isError) {
-            Object.assign(item, { applied: false });
-          } else if (applied.length) {
-            // The durable result metadata is authoritative for the applied change.
-            Object.assign(item, { changes: applied, applied: true, unchanged: false });
-          } else if (meta?.operation === "create") {
-            // A create has no before-image; the whole file is the applied addition.
-            Object.assign(item, { changes: intendedChanges(item.tool, item.arguments), applied: true, unchanged: false });
-          } else if (meta && typeof meta === "object" && "diffs" in meta) {
-            // An update with no hunks: the file content did not change.
-            Object.assign(item, { changes: [], applied: true, unchanged: true });
-          }
-          // No metadata and no error keeps the requested changes as unconfirmed.
-        }
-        // A completed subagent tool call is not proof that its background agent finished.
+      const r = d.message;
+      const item = calls.get(r.toolCallId);
+      if (!item) continue;
+      Object.assign(item, {
+        status: r.isError ? "failed" : "completed",
+        success: !r.isError,
+        contentItems: r.content,
+        aggregatedOutput: textContent(r.content),
+        results: r.content,
+        resultMeta: meta,
+        error: d.error,
+      });
+      if (item.type === "imageView") {
+        if (!r.isError && r.content?.some(block => block.type === "image") && typeof item.arguments?.file_path === "string" && cwd) {
+          item.path = resolve(cwd, item.arguments.file_path);
+        } else if (r.isError) item.failure = d.error ?? textContent(r.content);
       }
+      if (item.type === "fileChange") {
+        const applied = changesFromDiffs(Array.isArray(meta?.diffs) ? meta.diffs : []);
+        if (r.isError) {
+          Object.assign(item, { applied: false });
+        } else if (applied.length) {
+          // The durable result metadata is authoritative for the applied change.
+          Object.assign(item, { changes: applied, applied: true, unchanged: false });
+        } else if (meta?.operation === "create") {
+          // A create has no before-image; the whole file is the applied addition.
+          Object.assign(item, { changes: intendedChanges(item.tool, item.arguments), applied: true, unchanged: false });
+        } else if (meta && typeof meta === "object" && "diffs" in meta) {
+          // An update with no hunks: the file content did not change.
+          Object.assign(item, { changes: [], applied: true, unchanged: true });
+        }
+        // No metadata and no error keeps the requested changes as unconfirmed.
+      }
+      // A completed subagent tool call is not proof that its background agent finished.
     }
     if (e.type === "compaction/start") {
       const item = {
