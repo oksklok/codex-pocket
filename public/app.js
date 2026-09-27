@@ -2554,8 +2554,8 @@ function revealAsyncAnswer(input, field) {
   markSendNavigationOverride();
   const controller = new AbortController();
   const { signal } = controller;
-  const scroller = transcriptScroller();
-  const scrollTarget = scroller === document.scrollingElement ? document : scroller;
+  let scrollTarget = null;
+  const suppressFollowing = () => { shouldFollowConversation = false; };
   const viewport = window.visualViewport;
   let frame;
   const cancel = () => {
@@ -2566,6 +2566,14 @@ function revealAsyncAnswer(input, field) {
   cancelAsyncAnswerReveal = cancel;
   const reveal = () => {
     if (!input.isConnected || field.hidden || document.activeElement !== input) { cancel(); return; }
+    const scroller = transcriptScroller();
+    const nextScrollTarget = scroller === document.scrollingElement ? document : scroller;
+    if (nextScrollTarget !== scrollTarget) {
+      scrollTarget?.removeEventListener("scroll", suppressFollowing);
+      scrollTarget = nextScrollTarget;
+      // A breakpoint can switch scrollers. Revealing at either bottom must not resume following.
+      scrollTarget.addEventListener("scroll", suppressFollowing, { signal });
+    }
     const bounds = scroller === document.scrollingElement ? null : scroller.getBoundingClientRect();
     const header = bounds ? null : document.querySelector(".topbar")?.getBoundingClientRect();
     const top = Math.max(viewport?.offsetTop ?? 0, bounds?.top ?? 0, header?.bottom ?? 0) + 8;
@@ -2591,8 +2599,6 @@ function revealAsyncAnswer(input, field) {
   document.addEventListener("keydown", (event) => {
     if (event.target !== input && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) cancel();
   }, { signal });
-  // Reaching the bottom as part of this reveal is not a request to follow new messages.
-  scrollTarget.addEventListener("scroll", () => { shouldFollowConversation = false; }, { signal });
   input.addEventListener("blur", cancel, { once: true, signal });
   input.focus({ preventScroll: true });
   schedule();
