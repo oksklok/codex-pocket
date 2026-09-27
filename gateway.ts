@@ -5884,8 +5884,7 @@ async function main(): Promise<void> {
   const shutdown = (): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shuttingDown = true;
-    // Last-resort fallback only: the DeepSeek supervisor can spend up to 3s stopping its owned
-    // Codex child before it removes its lock/socket, so allow margin over that window.
+    // Last-resort fallback if gateway cleanup or server close does not finish.
     const forceExit = setTimeout(() => process.exit(0), 5_000);
     forceExit.unref();
     shutdownPromise = (async () => {

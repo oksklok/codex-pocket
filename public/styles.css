@@ -624,7 +624,7 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
 .plan-item { position: relative; padding-left: 15px; color: var(--muted); font-size: var(--text-label); line-height: 1.4; overflow-wrap: anywhere; }
 .plan-item::before { content: ""; position: absolute; left: 1px; top: .4em; width: 6px; height: 6px; border-radius: 50%; background: var(--subtle); }
 .plan-item.completed::before { background: var(--accent-strong); }
-.plan-item.in_progress::before { background: var(--warning); }
+.plan-item.inProgress::before { background: var(--warning); }
 .display-panel { display: grid; gap: 8px; }
 .display-panel .panel-heading { margin-bottom: 0; }
 .display-option { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-label); cursor: pointer; }

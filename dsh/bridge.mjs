@@ -19,6 +19,7 @@ export const inject = [
   "permissionPresets",
   "loader",
   "agents",
+  "subagents",
   "agentLoop",
   "agentDefaultModel",
   "sessionPersistence",
@@ -37,6 +38,61 @@ export function apply(ctx) {
   const active = new Map();
   const attempts = new Map();
   const usageSeq = new Map();
+  // Runtime control is independent of Pocket's dsh-* display filter. DSH's
+  // public status covers the whole driver; its inbox covers accepted input
+  // before a turn starts. Admissions and maintenance also own work while no
+  // driver is running. Close these entry points in the same synchronous check
+  // that accepts shutdown, rather than trusting a supervisor-side snapshot.
+  let draining = false;
+  let admissions = 0;
+  let activityUnknown = false;
+  const runs = new Set();
+  const assertAdmitting = () => {
+    if (draining) throw new Error("DSH runtime is draining");
+  };
+  const admitted = async (operation) => {
+    assertAdmitting();
+    admissions++;
+    try { return await operation(); }
+    finally { admissions--; }
+  };
+  for (const method of ["start", "startContinuable", "sendMessage", "prompt"]) {
+    const upstream = ctx.subagents[method];
+    ctx.subagents[method] = function (...args) {
+      return admitted(() => upstream.apply(this, args));
+    };
+  }
+  ctx.on("subagent/start", ({ runId }) => runs.add(runId));
+  ctx.on("subagent/end", ({ runId }) => runs.delete(runId));
+  const observeAgent = (agent) => {
+    const send = agent.send;
+    agent.send = function (...args) {
+      assertAdmitting();
+      return send.apply(this, args);
+    };
+    const maintenance = agent.runMaintenance;
+    agent.runMaintenance = function (...args) {
+      assertAdmitting();
+      // Preserve runMaintenance's synchronous rejection when already active.
+      admissions++;
+      try { return Promise.resolve(maintenance.apply(this, args)).finally(() => admissions--); }
+      catch (error) { admissions--; throw error; }
+    };
+  };
+  ctx.on("agent/created", ({ agent }) => observeAgent(agent));
+  for (const agent of ctx.agents.list()) {
+    observeAgent(agent);
+    // An already-present agent may be in maintenance with public status idle.
+    void admitted(() => agent.whenIdle()).catch(() => { activityUnknown = true; });
+  }
+  const runtimeBusy = () => {
+    try {
+      return activityUnknown || admissions > 0 || runs.size > 0 || ctx.agents.list().some((agent) =>
+        agent.status !== "idle" ||
+        !Array.isArray(agent.inbox?.nextTurn) || !Array.isArray(agent.inbox?.nextStep) ||
+        agent.inbox.nextTurn.length > 0 || agent.inbox.nextStep.length > 0);
+    } catch { return true; }
+  };
   // DSH exposes no public session-deletion command, but its AgentRegistry
   // create/resume already return the exact lifecycle handle. Capture those
   // handles so Pocket can dispose one live Agent before removing its session
@@ -44,16 +100,16 @@ export function apply(ctx) {
   const agentHandles = new Map();
   const upstreamCreate = ctx.agents.create.bind(ctx.agents);
   const upstreamResume = ctx.agents.resume.bind(ctx.agents);
-  ctx.agents.create = async (options) => {
+  ctx.agents.create = (options) => admitted(async () => {
     const handle = await upstreamCreate(options);
     agentHandles.set(handle.agent.id, handle);
     return handle;
-  };
-  ctx.agents.resume = async (options) => {
+  });
+  ctx.agents.resume = (options) => admitted(async () => {
     const handle = await upstreamResume(options);
     if (handle?.agent) agentHandles.set(handle.agent.id, handle);
     return handle;
-  };
+  });
   ctx.on("agent/disposed", ({ agent }) => agentHandles.delete(agent.id));
   const goalValue = (g) =>
     g
@@ -363,6 +419,14 @@ export function apply(ctx) {
   }
   wire.onRequest(async (method, p = {}) => {
     await ctx.loader.await();
+    if (method === "pocket/runtimeActivity") return { busy: draining || runtimeBusy(), draining };
+    if (method === "pocket/runtimeDrain") {
+      if (draining) return { accepted: true };
+      if (runtimeBusy()) return { accepted: false, reason: "busy" };
+      draining = true;
+      return { accepted: true };
+    }
+    return admitted(async () => {
     if (method === "initialize")
       return {
         userAgent: `DeepSeek Harness ${DSH_VERSION}`,
@@ -591,6 +655,7 @@ export function apply(ctx) {
     if (method === "fs/readFile")
       return { dataBase64: (await readFile(p.path)).toString("base64") };
     throw new Error(`DSH adapter does not support ${method}`);
+    });
   });
   ctx.on("goal/changed", ({ agent, change }) => {
     if (!/^dsh-/.test(agent.id)) return;

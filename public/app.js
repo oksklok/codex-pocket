@@ -3656,12 +3656,13 @@ async function performTaskAction(body) {
   if (succeeded && body.action === "create") {
     if (!matchMedia("(min-width: 1100px)").matches) closeDestinationSwitcher();
   }
-  if (succeeded && snapshot?.warning) { composerError = snapshot.warning.replace(/^Task created\. /, ""); renderComposer(); }
+  if (succeeded && snapshot?.warning) { composerError = snapshot.warning; renderComposer(); }
   if (changed && state?.thread) await loadHistory(null, historyEpoch, true);
   return { succeeded, failure, warning: snapshot?.warning };
 }
 
 function taskFailureMessage(message) {
+  if (message === "Could not confirm the task action. Check the refreshed list before trying again.") return message;
   if (/another Codex runtime|active writer/i.test(message)) return "Open elsewhere. Close it and retry.";
   return uiErrorMessage(message, "Task action failed. Try again.");
 }

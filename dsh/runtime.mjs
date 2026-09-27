@@ -530,9 +530,32 @@ function startRuntime() {
     }
   };
 
+  // Private child control replies never enter the client router or transcript.
+  let controlSeq = 0;
+  let checkingShutdown = false;
+  const childControls = new Map();
+  const childControl = (method) => new Promise((resolve) => {
+    const id = `pocket-control:${++controlSeq}`;
+    const timer = setTimeout(() => {
+      childControls.delete(id);
+      resolve(null); // Missing, old, or unresponsive adapters are not idle.
+    }, 1500);
+    childControls.set(id, (frame) => {
+      clearTimeout(timer);
+      resolve(frame.error ? null : frame.result);
+    });
+    forwardToChild(JSON.stringify({ jsonrpc: "2.0", id, method }));
+  });
+
   const onChildLine = (line) => {
     if (!line.trim()) return;
     const frame = safeParse(line);
+    if (frame?.method === undefined && childControls.has(frame?.id)) {
+      const reply = childControls.get(frame.id);
+      childControls.delete(frame.id);
+      reply(frame);
+      return;
+    }
     if (frame?.method === "pocket/requestResolved" && typeof frame.params?.pocketRequestId === "string") {
       router.resolvePocket(frame.params.pocketRequestId);
     }
@@ -558,6 +581,7 @@ function startRuntime() {
     if (!line.trim()) return;
     const frame = safeParse(line);
     if (!frame) return;
+    if (["pocket/runtimeActivity", "pocket/runtimeDrain"].includes(frame.method)) return;
     const decision = router.fromClient(frame, line, connection);
     if (decision.action === "forward") forwardToChild(decision.line);
   };
@@ -598,6 +622,38 @@ function startRuntime() {
     shutdown(1);
   });
 
+  const handleControl = async (frame, socket) => {
+    const reply = (result) => writeTo(socket, JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }));
+    if (frame.method === "pocket/runtimeStatus") {
+      const activity = await childControl("pocket/runtimeActivity");
+      reply({
+        busy: busy() || checkingShutdown || activity?.busy !== false,
+        draining: router.draining || activity?.draining === true,
+        protocol: DSH_ADAPTER_PROTOCOL, pid: process.pid,
+        attached: Boolean(router.client && !router.client.destroyed), turns: activeTurns.size, starting: router.starting.size,
+      });
+    } else if (frame.method === "pocket/runtimeShutdown") {
+      if (busy() || checkingShutdown) {
+        reply({ accepted: false, reason: router.draining || checkingShutdown ? "draining" : "busy" });
+        return;
+      }
+      checkingShutdown = true;
+      // The child checks all DSH work and closes admission atomically. Only its
+      // acknowledgement permits the supervisor to drain and stop the process.
+      const result = await childControl("pocket/runtimeDrain");
+      checkingShutdown = false;
+      if (result?.accepted !== true) {
+        reply({ accepted: false, reason: result?.reason === "busy" ? "busy" : "activity-unknown" });
+        return;
+      }
+      router.startDraining();
+      reply({ accepted: true });
+      setTimeout(() => shutdown(0), 50);
+    } else {
+      writeTo(socket, JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: { code: -32601, message: "unsupported control method" } }));
+    }
+  };
+
   // Control never touches the attach connection or its pending requests.
   const controlServer = createServer((socket) => {
     controlSockets.add(socket);
@@ -612,24 +668,7 @@ function startRuntime() {
         buffer = buffer.slice(at + 1);
         const frame = safeParse(line);
         if (!frame || frame.id === undefined) continue;
-        if (frame.method === "pocket/runtimeStatus") {
-          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: {
-            busy: busy(), draining: router.draining, protocol: DSH_ADAPTER_PROTOCOL, pid: process.pid,
-            attached: Boolean(router.client && !router.client.destroyed), turns: activeTurns.size, starting: router.starting.size,
-          } })}\n`);
-        } else if (frame.method === "pocket/runtimeShutdown") {
-          // Idle-only: accepting immediately enters a draining state that rejects new work, new
-          // attaches and competing shutdowns, then stops the child and only then exits.
-          if (busy()) {
-            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { accepted: false, reason: router.draining ? "draining" : "busy" } })}\n`);
-          } else {
-            router.startDraining();
-            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: { accepted: true } })}\n`);
-            setTimeout(() => shutdown(0), 50);
-          }
-        } else {
-          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: { code: -32601, message: "unsupported control method" } })}\n`);
-        }
+        void handleControl(frame, socket);
       }
     });
     socket.on("error", () => {});
