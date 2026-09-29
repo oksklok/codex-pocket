@@ -782,6 +782,7 @@ function uiErrorMessage(error, fallback = "Something went wrong. Try again.") {
   if (/is not supported yet|-32601|method[^\n]*not found|unsupported[^\n]*method/i.test(message)) return "This action isn't supported by the connected runtime.";
   if (/timed out|timeout/i.test(message)) return "The runtime didn't respond in time. Try again.";
   if (/disconnected|connection closed|connection lost|EPIPE|ECONNRESET|socket/i.test(message)) return "The connection was lost. Check the runtime and try again.";
+  if (/\bmodel\s+(?:(?:is|currently|temporarily)\s+){0,2}at\s+capacity\b/i.test(message)) return "Model is at capacity. Try another model.";
   return fallback;
 }
 
