@@ -3418,7 +3418,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   const liveBeforeRequest = new Map(liveMessages);
   const olderPage = Boolean(cursor) && !recovery;
   const loadedTurns = recovery?.loadedTurns || new Set(historyTurnIds);
-  const bridgeGap = Boolean(recovery) || (!cursor && historyPaginationLoaded && loadedTurns.size > 0);
+  const bridgeGap = Boolean(recovery) || (!cursor && historyPaginationLoaded);
   const recoveredTurns = recovery?.recoveredTurns || new Set();
   const seenCursors = new Set();
   let pagesRead = 0;

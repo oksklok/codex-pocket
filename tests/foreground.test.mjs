@@ -534,6 +534,25 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     assert.equal(await evaluate("document.querySelector('#history-status').hidden"), true);
     assert.deepEqual(await visibleGapTurns(), Array.from({ length: 100 }, (_, i) => i + 1));
   });
+  await t.test("successfully empty history recovers all turns accumulated while backgrounded", async () => {
+    historyTurns = [];
+    liveMessages = [];
+    thread.id = "gap-initially-empty";
+    const initialReads = historyReads;
+    sendSnapshot();
+    await waitFor(() => historyReads > initialReads, "empty history read");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading && Boolean(document.querySelector('.empty-state'))"), "successful empty history");
+    assert.deepEqual(await visibleGapTurns(), []);
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    await evaluate("document.querySelector('#message-text').value = 'Draft from the empty task'");
+    const reads = historyReads;
+    await resumeGapTask(20, 16);
+    assert.equal(historyReads - reads, 10, "recover backward to the beginning without a loaded-turn overlap");
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 20 }, (_, i) => i + 1));
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    assert.equal(await evaluate("document.querySelector('#message-text').value"), "Draft from the empty task");
+    assert.equal(await evaluate("document.querySelector('#history-status').hidden"), true);
+  });
   assert.deepEqual(exceptions, []);
   assert.equal(requests.filter(r => r.method !== "GET").length, 0, "foreground recovery must never submit a mutation");
 });
