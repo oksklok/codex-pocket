@@ -91,7 +91,7 @@ body { margin: 0; min-width: 320px; background: var(--bg); }
 button, input, select, textarea { font: inherit; }
 /* Editable form fields, plus the read-only content values worth copying. */
 input, textarea,
-.metadata dd, .approval-label, .approval-detail, .approval-scope,
+.metadata #project, .approval-label, .approval-detail, .approval-scope,
 .input-prompt, .input-choice span, .queue-copy {
   -webkit-user-select: text; user-select: text;
 }
@@ -327,6 +327,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 }
 /* Keyboard focus strengthens the warning tint while the border and readable text stay unchanged. */
 #access-select.full-access:focus-visible { background-color: rgba(255,139,139,.26); }
+/* Windows native option rows inherit the closed select's warning color unless reset explicitly. */
+#access-select option { background: var(--surface-strong); color: var(--text); font-weight: normal; }
 .topbar-actions { grid-column: 5; justify-content: flex-end; gap: 8px; }
 .connection { display: none; }
 

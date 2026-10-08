@@ -73,7 +73,7 @@ function attach() {
     const onRetry = () => {
       socket.destroy();
       // A detached runtime that already exited cannot answer a later socket; stop retrying it.
-      if (runtimeExit !== null) fail(`runtime exited (${runtimeExit})`);
+      if (runtimeExit !== null) fail(`runtime exited (${runtimeExit}); inspect pocket-owner.lock and pocket-runtime.log`);
       if (Date.now() >= deadline) fail("timed out starting the runtime");
       if (!started) {
         started = true;

@@ -74,6 +74,8 @@ It is a directory acquired with an atomic `mkdir`. A live owner is never stolen.
 
 After an ungraceful runtime death, manual removal of `pocket-owner.lock` may therefore be required. This is an intentional simplicity tradeoff.
 
+Windows reboot can leave this lock behind too. Before removing it, verify the PID in `pocket-owner.lock/pid` is absent, `runtime.mjs --owner <installed-dsh-directory>` reports an absent owner with a complete, empty DSH child list, and `runtime.mjs --status` confirms the control endpoint is absent. A refused endpoint alone is not proof of safety; live or unverifiable ownership must be left intact. After verified manual recovery, Pocket's existing reconnect path starts and attaches the runtime.
+
 The separate `pocket-owner` bare-PID file exists only for inspection/deployment tooling; it is not the ownership authority.
 
 ### Control and shutdown

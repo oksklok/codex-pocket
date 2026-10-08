@@ -320,6 +320,7 @@ let loadedThreads = [];
 let machines = [];
 let nextCursor = null;
 let source = null;
+let pageBackgrounded = document.visibilityState === "hidden";
 const NEAR_BOTTOM_PX = 200;
 let shouldFollowConversation = true;
 let transcriptUpwardScroll = 0;
@@ -331,6 +332,7 @@ let transcriptScrollElement = null;
 let pendingSendNavigation = null;
 let historyEpoch = 0;
 let historyRequest = null;
+let historyRefreshPending = false;
 // The transcript's own load state, separate from any live event: the empty-history message may only
 // follow a successful (possibly empty) history result.
 let historyPhase = "loading";
@@ -3068,7 +3070,7 @@ function renderConversation({ preserveScroll = null, forceBottom = false, restor
   }
   rememberTranscriptScroll();
   updateJumpLatest();
-  settleBottomAfterImages();
+  if (restoreScrollTop === null) settleBottomAfterImages();
 }
 
 // Images decode after layout, so a following view can end up short of the bottom. Re-pin on each
@@ -3248,7 +3250,7 @@ function jumpToLatest(instant = false) {
   updateJumpLatest();
 }
 
-function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities)) {
+function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || Array.isArray(next.activities), conversationOptions) {
   if (Object.hasOwn(next, "queuedMessage") && !next.queuedMessage && !unresolvedSubmission) queueDeliveryUnknown = false;
   const terminalTransitions = [];
   if (Array.isArray(next.activities)) {
@@ -3286,7 +3288,7 @@ function mergeState(next, renderMessages = Array.isArray(next.liveMessages) || A
     for (const activity of next.activities) liveActivities.set(activity.id, activity);
   }
   renderState();
-  if (renderMessages) renderConversation();
+  if (renderMessages) renderConversation(conversationOptions);
   for (const [previous, activity] of terminalTransitions) refreshExpandedDetailOnTerminal(previous, activity);
 }
 
@@ -3313,6 +3315,7 @@ function resetConversationState() {
   terminalDetailRefreshes.clear();
   nextCursor = null;
   historyRequest = null;
+  historyRefreshPending = false;
   historyPhase = "loading";
   historyNeedsRecovery = false;
   historyRecoveryAttempts = 0;
@@ -3356,7 +3359,7 @@ function applySnapshot(next, loadChangedHistory = true) {
     composerError = unresolvedSubmission?.warning || "";
     resizeComposer();
   }
-  mergeState(next, true);
+  mergeState(next, true, { restoreScrollTop: taskChanged ? null : transcriptScroller().scrollTop });
   if (taskChanged && unresolvedSubmission) void recoverUnresolvedSubmission();
   if (taskChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
   else if (!taskChanged) recoverInitialHistory();
@@ -3373,11 +3376,22 @@ function recoverInitialHistory() {
   }, 1000);
 }
 
+// A new SSE connection supplies a bounded live snapshot, not every turn missed while suspended.
+// Read the latest durable page once; if a page is already loading, reconcile immediately afterward.
+function refreshRecentHistory() {
+  if (!state?.connected || !state?.thread) return;
+  historyRefreshPending = true;
+  if (historyRequest) return;
+  historyRefreshPending = false;
+  void loadHistory(null, historyEpoch);
+}
+
 async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = false) {
   const requestedMachineId = state?.machineId;
   const requestedThreadId = state?.thread?.id;
   if (!requestedMachineId || !requestedThreadId || historyRequest?.epoch === epoch) return;
-  const token = { epoch };
+  const token = { epoch, controller: new AbortController() };
+  const liveBeforeRequest = new Map(liveMessages);
   let automaticCursor = null;
   historyRequest = token;
   if (!cursor) historyPhase = "loading";
@@ -3387,19 +3401,23 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     url.searchParams.set("limit", "2");
     url.searchParams.set("machineId", requestedMachineId);
     if (cursor) url.searchParams.set("cursor", cursor);
-    const response = await apiFetch(url);
+    const response = await apiFetch(url, { signal: token.controller.signal });
     const page = await response.json();
     if (!response.ok) throw new Error(page.error || "History unavailable");
-    if (epoch !== historyEpoch
+    if (historyRequest !== token || epoch !== historyEpoch
       || requestedMachineId !== state?.machineId
       || requestedThreadId !== state?.thread?.id
       || page.machineId !== requestedMachineId
       || page.threadId !== requestedThreadId) return;
     const preserveScroll = cursor ? { scrollHeight: transcriptScroller().scrollHeight, scrollTop: transcriptScroller().scrollTop } : null;
+    const restoreScrollTop = !cursor && !forceBottom ? transcriptScroller().scrollTop : null;
     for (const turn of page.turns || []) {
       for (const message of turn.messages || []) {
         const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
         historyMessages.set(message.id, preserveMessageCreatedAt(existing, message));
+        // An old live record can fall outside the reconnect snapshot's bounded tail. Let durable
+        // completion replace it, unless a newer SSE update arrived while this read was in flight.
+        if (message.complete && liveMessages.get(message.id) === liveBeforeRequest.get(message.id)) liveMessages.delete(message.id);
       }
       for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
     }
@@ -3407,12 +3425,12 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     historyPhase = "ready";
     if (!cursor) historyNeedsRecovery = Boolean(page.pendingMaterialization);
     setHistoryStatus();
-    renderConversation({ preserveScroll, forceBottom });
+    renderConversation({ preserveScroll, forceBottom, restoreScrollTop });
     void recoverUnresolvedSubmission();
     const transcriptFits = transcriptScroller().scrollHeight <= transcriptScroller().clientHeight + 1;
     if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {
-    if (epoch !== historyEpoch || requestedMachineId !== state?.machineId || requestedThreadId !== state?.thread?.id) return;
+    if (historyRequest !== token || epoch !== historyEpoch || requestedMachineId !== state?.machineId || requestedThreadId !== state?.thread?.id) return;
     // An earlier-page failure keeps the history already on screen; only the initial read can leave
     // the transcript without a resolved history state.
     if (!cursor) { historyPhase = "error"; historyNeedsRecovery = true; }
@@ -3421,7 +3439,10 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   } finally {
     if (historyRequest === token) {
       historyRequest = null;
-      if (state?.turn && historyNeedsRecovery) recoverInitialHistory();
+      if (historyRefreshPending) {
+        automaticCursor = null;
+        refreshRecentHistory();
+      } else if (state?.turn && historyNeedsRecovery) recoverInitialHistory();
     }
   }
   if (automaticCursor && epoch === historyEpoch && requestedMachineId === state?.machineId && requestedThreadId === state?.thread?.id) {
@@ -4221,12 +4242,13 @@ async function submitStructuredInput(pending) {
 
 function parseEvent(event) { return JSON.parse(event.data); }
 
-async function handleEventError() {
+async function handleEventError(eventSource = source) {
   if (intentionalQuit) return;
   setConnection(false, true);
   try {
     const response = await fetch("/api/auth");
     const auth = await response.json();
+    if (source !== eventSource) return;
     if (auth.required && !auth.authenticated) showLogin("Session expired.");
   } catch {
     // EventSource retries transient gateway outages itself.
@@ -4236,12 +4258,15 @@ async function handleEventError() {
 function connectEvents() {
   if (intentionalQuit) return;
   source?.close();
-  source = new EventSource("/events");
-  const on = (type, handler) => source.addEventListener(type, event => {
+  const events = new EventSource("/events");
+  source = events;
+  const deliver = (handler, event) => { if (source === events && !intentionalQuit) handler(event); };
+  const on = (type, handler) => events.addEventListener(type, event => {
+    if (source !== events || intentionalQuit) return;
     const pending = destinationSelection || taskActionTarget;
     if (pending && type !== "open" && type !== "error" && type !== "task-status") {
-      pending.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => handler(event) });
-    } else handler(event);
+      pending.events.push({ snapshot: type === "snapshot" ? parseEvent(event) : null, deliver: () => deliver(handler, event) });
+    } else deliver(handler, event);
   });
   on("open", () => {
     setConnection(true);
@@ -4251,8 +4276,13 @@ function connectEvents() {
     // A reconnect may have changed which machines are reachable; reconcile every catalog.
     refreshTaskSurface();
   });
-  on("error", handleEventError);
-  on("snapshot", (event) => { applySnapshot(parseEvent(event)); });
+  on("error", () => handleEventError(events));
+  on("snapshot", (event) => {
+    const next = parseEvent(event);
+    const sameTask = next.machineId === state?.machineId && next.thread?.id === state?.thread?.id;
+    applySnapshot(next);
+    if (sameTask) refreshRecentHistory();
+  });
   on("task-status", event => {
     if (machineDialogTarget && elements.machineDialog.open) void renderMachineRuntimes(machineDialogTarget);
     const value = parseEvent(event);
@@ -4358,6 +4388,23 @@ function connectEvents() {
     liveMessages.set(value.id, message);
     renderConversation();
   });
+}
+
+function restoreForeground() {
+  if (document.visibilityState !== "visible" || !pageBackgrounded) return;
+  pageBackgrounded = false;
+  if (!source || intentionalQuit || elements.appShell.hidden) return;
+  // Native selection may have collapsed while suspended without a selectionchange event. Keep
+  // real selections, but let the existing grace/release path flush an obsolete logical hold.
+  selectionHold.observe(transcriptSelectionActive());
+  flushDeferredTranscript();
+  // A suspended history fetch can retain its in-flight token indefinitely too. Cancel only that
+  // read, keeping the loaded transcript and task epoch; the new snapshot requests a fresh page.
+  historyRequest?.controller.abort();
+  historyRequest = null;
+  // A suspended mobile EventSource can still say OPEN despite a dead carrier. Reopen explicitly
+  // to get a current snapshot and durable history; this never submits or resends a message.
+  connectEvents();
 }
 
 function isMobileInspector() { return !isWideLayout(); }
@@ -5110,6 +5157,12 @@ for (const type of ["pointerdown", "touchstart", "wheel", "keydown"]) document.a
   composerResizeFrame = null;
 }, { passive: true });
 document.addEventListener("selectionchange", observeTranscriptSelection);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") pageBackgrounded = true;
+  else restoreForeground();
+});
+window.addEventListener("pagehide", () => { pageBackgrounded = true; });
+window.addEventListener("pageshow", event => { if (event.persisted) restoreForeground(); });
 elements.conversation.addEventListener("pointerdown", event => {
   if (event.isPrimary && event.button === 0 && !matchMedia("(max-width: 860px)").matches) {
     elements.composerZone.inert = true;

@@ -83,6 +83,8 @@ export class DshHost {
     });
     this.child = child;
     let buffer = "";
+    let stderr = "";
+    const transportError = () => new Error(`${DSH_TRANSPORT_ENDED}${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       buffer += chunk;
@@ -123,12 +125,15 @@ export class DshHost {
         }
       }
     });
-    child.stderr.resume();
+    // The attach launcher reports sanitized startup/ownership failures here. The durable runtime
+    // keeps its own detached stdio; capturing this carrier's stderr does not tie its work to SSH.
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-2000); });
     // A broken stdin/stdout pipe must never reach the process as an unhandled
     // stream error, and a half-close without an exit must still disconnect
     // rather than leaving the gateway waiting on a dead transport.
     child.on("error", () => this.fail(child, new Error(DSH_TRANSPORT_ENDED)));
-    child.on("exit", () => this.fail(child, new Error(DSH_TRANSPORT_ENDED)));
+    child.on("exit", () => this.fail(child, transportError()));
     child.stdin.on("error", () =>
       this.fail(child, new Error(DSH_TRANSPORT_ENDED)),
     );
@@ -139,7 +144,7 @@ export class DshHost {
       this.fail(child, new Error(DSH_TRANSPORT_ENDED)),
     );
     child.stdout.on("close", () =>
-      this.fail(child, new Error(DSH_TRANSPORT_ENDED)),
+      this.fail(child, transportError()),
     );
     child.stderr.on("error", () => {});
   }
