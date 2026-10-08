@@ -333,7 +333,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await evaluate("fixtureApp.loadHistory()");
     assert.equal(await evaluate("fixtureApp.nextCursor"), "older-1");
   });
-  await t.test("Queued Next puts actions, images, files and text in visual and DOM order on mobile and desktop", async () => {
+  await t.test("Queued Next keeps attachment ordering and selectable text on mobile and desktop", async () => {
     const image = { url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" };
     for (const width of [390, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
@@ -350,11 +350,14 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
             images: ${images.length} ? rect(card.querySelector('#queue-images')) : null,
             files: ${files.length} ? rect(card.querySelector('#queue-files')) : null,
             thumb: ${images.length} ? rect(card.querySelector('img')) : null, text: rect(card.querySelector('#queue-text')),
+            selection: [getComputedStyle(card.querySelector('#queue-text')).userSelect,
+              getComputedStyle(card.querySelector('#queue-text')).webkitUserSelect, getComputedStyle(card.querySelector('strong')).userSelect],
             editEnabled: !card.querySelector('#edit-queue').disabled, cancelEnabled: !card.querySelector('#cancel-queue').disabled,
             composerOrder: Boolean(document.querySelector('#composer-images').compareDocumentPosition(document.querySelector('#message-text')) & Node.DOCUMENT_POSITION_FOLLOWING)
               && Boolean(document.querySelector('#composer-files').compareDocumentPosition(document.querySelector('#message-text')) & Node.DOCUMENT_POSITION_FOLLOWING) };
         })()`);
         assert.deepEqual(layout.order, ["strong", "span", "queue-images", "queue-files", "queue-text"]);
+        assert.deepEqual(layout.selection, ["text", "text", "none"]);
         const rows = [layout.images, layout.files, layout.text].filter(Boolean);
         assert.ok(Math.max(layout.heading.bottom, layout.actions.bottom) <= rows[0].top);
         for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].bottom <= rows[i].top);

@@ -92,7 +92,7 @@ button, input, select, textarea { font: inherit; }
 /* Editable form fields, plus the read-only content values worth copying. */
 input, textarea,
 .metadata #project, .approval-label, .approval-detail, .approval-scope,
-.input-prompt, .input-choice span, .queue-copy {
+.input-prompt, .input-choice span, #queue-text {
   -webkit-user-select: text; user-select: text;
 }
 button, select { touch-action: manipulation; }
