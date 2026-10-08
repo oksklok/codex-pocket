@@ -133,7 +133,7 @@ npm run probe-remote -- devbox --list-only --monitor-seconds 0
 zsh macos/build-app.sh
 ```
 
-Validate changed behavior directly rather than maintaining a permanent regression suite. Temporary probes, mock fixtures, and headless-browser fixtures are fine while solving a concrete issue; delete them afterward. Deployment changes should be exercised with `node scripts/deploy.mjs` in a disposable environment.
+Run the maintained regression tests with `node --experimental-strip-types --test tests/*.test.mjs`. The browser tests require `POCKET_TEST_BROWSER` to point to an installed Chromium-compatible executable; otherwise they are skipped. They use isolated headless instances with temporary profiles. See [CONTRIBUTING.md](CONTRIBUTING.md) for the commands. Deployment changes should be exercised in a disposable environment while preserving runtime safety checks.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor conventions and [SECURITY.md](SECURITY.md) for security guidance.
 

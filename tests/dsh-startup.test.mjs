@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -8,8 +8,34 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DshHost } from "../dsh.ts";
+import { posixLegacyStopLines } from "../scripts/deploy.mjs";
 
 const execute = promisify(execFile);
+test("legacy deployment clears ownership only with a verified empty child array", () => {
+  // Execute only the actual generated parser, never deployment or process termination.
+  const line = posixLegacyStopLines(true).find(line => line.startsWith("owner_clear()"));
+  const guard = line.match(/node -e "(.*)";/)[1];
+  const valid = { ok: true, state: "absent", dshChildrenKnown: true, dshChildren: [] };
+  const cases = [
+    ["verified empty", valid, "clear"],
+    ["missing children", { ...valid, dshChildren: undefined }, "busy"],
+    ...[null, {}, "", 0, false].map(value => ["malformed children", { ...valid, dshChildren: value }, "busy"]),
+    ["live child", { ...valid, dshChildren: [{ pid: process.pid }] }, "busy"],
+    ...[undefined, false, "true", 1].map(value => ["unverified enumeration", { ...valid, dshChildrenKnown: value }, "busy"]),
+    ["live owner", { ...valid, state: "owned" }, "busy"],
+    ["unknown owner", { ...valid, state: "unverified" }, "busy"],
+    ["probe failed", { ...valid, ok: false }, "busy"],
+    ["empty output", "", "busy"],
+    ["malformed output", "not JSON", "busy"],
+    ["failed final probe", `${JSON.stringify(valid)}\n{\"ok\":false}`, "busy"],
+  ];
+  for (const [label, value, expected] of cases) {
+    const result = spawnSync(process.execPath, ["-e", guard], { input: typeof value === "string" ? value : JSON.stringify(value), encoding: "utf8" });
+    assert.equal(result.status, 0, label);
+    assert.equal(result.stdout, expected, label);
+  }
+});
+
 function fixture(t, pid) {
   const root = mkdtempSync(join(tmpdir(), "pocket-dsh-startup-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

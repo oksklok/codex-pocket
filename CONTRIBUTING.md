@@ -14,11 +14,24 @@ npm run probe -- --list-only --monitor-seconds 0
 
 Record the app-server and Codex CLI versions when compatibility matters.
 
+Run the maintained regression tests:
+
+```sh
+node --experimental-strip-types --test tests/*.test.mjs
+```
+
+To include browser coverage, point `POCKET_TEST_BROWSER` at an installed Chromium-compatible executable:
+
+```sh
+POCKET_TEST_BROWSER=/path/to/chromium node --experimental-strip-types --test tests/*.test.mjs
+```
+
+Browser tests use isolated headless instances and temporary profiles; never use existing browser sessions. Without `POCKET_TEST_BROWSER`, browser coverage is skipped.
+
 ## Working rules
 
 - Prefer the smallest practical change. Avoid speculative refactors and cleanup for cleanup's sake.
-- Validate the behavior you changed directly. Temporary probes, mock fixtures, and headless-browser fixtures are fine; delete them afterward.
-- Do not add a maintained regression suite unless that project decision is explicitly changed.
+- Validate changed behavior directly and add focused coverage to the existing regression tests. Remove temporary probes and fixtures afterward.
 - Exercise deployment changes with `node scripts/deploy.mjs` in a disposable environment and preserve its ownership, integrity, readiness, and rollback safeguards.
 - Rebuild the native app with `zsh macos/build-app.sh` only when its source changes.
 - Preserve ambiguous-delivery semantics: never automatically resend a prompt whose delivery may have succeeded.

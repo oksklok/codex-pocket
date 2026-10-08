@@ -16,7 +16,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
   const message = (id, text, createdAt) => ({ id, text, createdAt, role: "assistant", complete: true });
   const selectedMessage = message("selected", "Selected answer before refresh", 100);
   let messages = [selectedMessage, ...Array.from({ length: 24 }, (_, i) => message(`m${i}`, `Paragraph ${i}: ${"Readable content. ".repeat(24)}`, 200 + i))];
-  let liveMessages = [selectedMessage];
+  let liveMessages = [selectedMessage], historyTurns = null, failedHistoryCursor = null, repeatedHistoryCursor = null;
   const allTasks = [thread, ...Array.from({ length: 40 }, (_, i) => ({ id: `task-${i}`, name: `Task ${i}`, status: "idle", cwd: thread.cwd }))];
   let navigationTasks = allTasks, holdNavigation = false, queuedMessage = null;
   const navigationReplies = [];
@@ -50,6 +50,18 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     }
     else if (url.pathname === "/api/history") {
       historyReads++;
+      if (historyTurns) {
+        const cursor = url.searchParams.get("cursor");
+        if (cursor === failedHistoryCursor && cursor !== null) {
+          res.writeHead(503, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Fixture history unavailable" }));
+          return;
+        }
+        const end = cursor ? Number(cursor.slice(4)) : historyTurns.length, start = Math.max(0, end - 2);
+        json({ machineId: "local", threadId: thread.id, turns: historyTurns.slice(start, end),
+          nextCursor: cursor !== null && cursor === repeatedHistoryCursor ? cursor : start ? `gap-${start}` : null });
+        return;
+      }
       const pageMessages = structuredClone(messages);
       const cursor = url.searchParams.get("cursor");
       const nextCursor = pendingMaterialization ? null : cursor === null ? "older-1" : cursor === "older-1" ? "older-2" : null;
@@ -390,6 +402,83 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await evaluate("document.querySelector('#queue-dialog-cancel').click()");
     queuedMessage = null;
     for (const res of connections) res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);
+  });
+  const gapTurns = Array.from({ length: 60 }, (_, i) => ({ id: `gap-turn-${i + 1}`,
+    messages: [message(`gap-${i + 1}`, `Turn ${i + 1}: ${"Readable content. ".repeat(80)}`, 1000 + i)], activities: [] }));
+  const sendSnapshot = () => { for (const res of connections) res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`); };
+  const startGapTask = async id => {
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    historyTurns = gapTurns.slice(0, 20);
+    liveMessages = [];
+    thread.id = id;
+    sendSnapshot();
+    await waitFor(() => evaluate("fixtureApp.nextCursor === 'gap-18' && !fixtureApp.historyLoading"), "new task history");
+  };
+  const resumeGapTask = async (count, tailStart) => {
+    await evaluate("setFixtureVisibility('hidden')");
+    historyTurns = gapTurns.slice(0, count);
+    liveMessages = historyTurns.slice(tailStart).flatMap(turn => turn.messages);
+    const reads = historyReads;
+    await evaluate("setFixtureVisibility('visible')");
+    await waitFor(() => historyReads > reads, "foreground head read");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading"), "foreground history recovery");
+  };
+  const visibleGapTurns = () => evaluate("[...document.querySelectorAll('[data-message-id]')].map(node => Number(node.dataset.messageId.slice(4))).sort((a, b) => a - b)");
+  await t.test("long suspension backfills the gap without resetting older pagination, drafts, scroll or selection", async () => {
+    await startGapTask("gap-partial");
+    await evaluate("fixtureApp.loadHistory(fixtureApp.nextCursor)");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-16");
+    await evaluate(`document.querySelector('#message-text').value = 'Draft survives backfill'; document.scrollingElement.scrollTop = 150;
+      const node = document.querySelector('[data-message-id=gap-17] .message-body');
+      const range = document.createRange(); range.selectNodeContents(node);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      window.gapSelectionNode = node;`);
+    const before = await evaluate("({ top: document.scrollingElement.scrollTop, selection: getSelection().toString() })");
+    const reads = historyReads;
+    await resumeGapTask(40, 32);
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 24 }, (_, i) => i + 17));
+    assert.equal(historyReads - reads, 11, "stop at overlap with loaded turns, not at the live tail");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-16");
+    assert.deepEqual(await evaluate("({ top: document.scrollingElement.scrollTop, selection: getSelection().toString() })"), before);
+    assert.equal(await evaluate("document.querySelector('[data-message-id=gap-17] .message-body') === gapSelectionNode"), true);
+    assert.equal(await evaluate("document.querySelector('#message-text').value"), "Draft survives backfill");
+    await evaluate("getSelection().removeAllRanges()");
+    await evaluate("fixtureApp.loadHistory(fixtureApp.nextCursor)");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-14");
+  });
+  await t.test("20 to 40 turns recover fully while exhausted older history stays exhausted", async () => {
+    await startGapTask("gap-exhausted");
+    for (let cursor = 18; cursor > 0; cursor -= 2) await evaluate(`fixtureApp.loadHistory('gap-${cursor}')`);
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    await resumeGapTask(40, 32);
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 40 }, (_, i) => i + 1));
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    const reads = historyReads;
+    await evaluate("document.scrollingElement.scrollTop = 0");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(historyReads, reads, "no duplicate pages when scrolling exhausted history");
+  });
+  await t.test("an interrupted gap backfill remains recoverable on the next foreground refresh", async () => {
+    failedHistoryCursor = "gap-56";
+    await resumeGapTask(60, 52);
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    assert.equal((await visibleGapTurns()).includes(41), false);
+    failedHistoryCursor = null;
+    await resumeGapTask(60, 52);
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 60 }, (_, i) => i + 1));
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+  });
+  await t.test("a repeated recovery cursor stops instead of looping and leaves the gap retryable", async () => {
+    await startGapTask("gap-repeated-cursor");
+    repeatedHistoryCursor = "gap-36";
+    const reads = historyReads;
+    await resumeGapTask(40, 32);
+    assert.equal(historyReads - reads, 3, "each recovery cursor is requested at most once");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-18");
+    repeatedHistoryCursor = null;
+    await resumeGapTask(40, 32);
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 22 }, (_, i) => i + 19));
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-18");
   });
   assert.deepEqual(exceptions, []);
   assert.equal(requests.filter(r => r.method !== "GET").length, 0, "foreground recovery must never submit a mutation");

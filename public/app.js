@@ -313,6 +313,7 @@ const phaseLabels = {
 
 let state = null;
 let historyMessages = new Map();
+const historyTurnIds = new Set();
 let liveMessages = new Map();
 let historyActivities = new Map();
 let liveActivities = new Map();
@@ -3319,6 +3320,7 @@ function resetConversationState() {
   elements.conversation.replaceChildren();
   historyEpoch += 1;
   historyMessages.clear();
+  historyTurnIds.clear();
   liveMessages.clear();
   historyActivities.clear();
   liveActivities.clear();
@@ -3391,7 +3393,7 @@ function recoverInitialHistory() {
 }
 
 // A new SSE connection supplies a bounded live snapshot, not every turn missed while suspended.
-// Read the latest durable page once; if a page is already loading, reconcile immediately afterward.
+// Reconcile durable history from the head; if a page is already loading, refresh afterward.
 function refreshRecentHistory() {
   if (!state?.connected || !state?.thread) return;
   historyRefreshPending = true;
@@ -3406,43 +3408,58 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
   if (!requestedMachineId || !requestedThreadId || historyRequest?.epoch === epoch) return;
   const token = { epoch, controller: new AbortController() };
   const liveBeforeRequest = new Map(liveMessages);
+  const loadedTurns = new Set(historyTurnIds);
+  const bridgeGap = !cursor && historyPaginationLoaded && loadedTurns.size > 0;
+  const recoveredTurns = new Set();
+  const seenCursors = new Set();
+  let requestCursor = cursor;
   let automaticCursor = null;
   historyRequest = token;
   if (!cursor) historyPhase = "loading";
   setHistoryStatus();
   try {
-    const url = new URL("/api/history", location.origin);
-    url.searchParams.set("limit", "2");
-    url.searchParams.set("machineId", requestedMachineId);
-    if (cursor) url.searchParams.set("cursor", cursor);
-    const response = await apiFetch(url, { signal: token.controller.signal });
-    const page = await response.json();
-    if (!response.ok) throw new Error(page.error || "History unavailable");
-    if (historyRequest !== token || epoch !== historyEpoch
-      || requestedMachineId !== state?.machineId
-      || requestedThreadId !== state?.thread?.id
-      || page.machineId !== requestedMachineId
-      || page.threadId !== requestedThreadId) return;
-    const preserveScroll = cursor ? { scrollHeight: transcriptScroller().scrollHeight, scrollTop: transcriptScroller().scrollTop } : null;
-    const restoreScrollTop = !cursor && !forceBottom ? transcriptScroller().scrollTop : null;
-    for (const turn of page.turns || []) {
-      for (const message of turn.messages || []) {
-        const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
-        historyMessages.set(message.id, preserveMessageCreatedAt(existing, message));
-        // An old live record can fall outside the reconnect snapshot's bounded tail. Let durable
-        // completion replace it, unless a newer SSE update arrived while this read was in flight.
-        if (message.complete && liveMessages.get(message.id) === liveBeforeRequest.get(message.id)) liveMessages.delete(message.id);
+    do {
+      if (seenCursors.has(requestCursor)) throw new Error("History retrieval incomplete: repeated turn cursor");
+      seenCursors.add(requestCursor);
+      const url = new URL("/api/history", location.origin);
+      url.searchParams.set("limit", "2");
+      url.searchParams.set("machineId", requestedMachineId);
+      if (requestCursor) url.searchParams.set("cursor", requestCursor);
+      const response = await apiFetch(url, { signal: token.controller.signal });
+      const page = await response.json();
+      if (!response.ok) throw new Error(page.error || "History unavailable");
+      if (historyRequest !== token || epoch !== historyEpoch
+        || requestedMachineId !== state?.machineId
+        || requestedThreadId !== state?.thread?.id
+        || page.machineId !== requestedMachineId
+        || page.threadId !== requestedThreadId) return;
+      const preserveScroll = cursor ? { scrollHeight: transcriptScroller().scrollHeight, scrollTop: transcriptScroller().scrollTop } : null;
+      const restoreScrollTop = !cursor && !forceBottom ? transcriptScroller().scrollTop : null;
+      const overlapsLoaded = (page.turns || []).some(turn => loadedTurns.has(turn.id));
+      for (const turn of page.turns || []) {
+        if (turn.id) recoveredTurns.add(turn.id);
+        for (const message of turn.messages || []) {
+          const existing = liveMessages.get(message.id) || historyMessages.get(message.id);
+          historyMessages.set(message.id, preserveMessageCreatedAt(existing, message));
+          // An old live record can fall outside the reconnect snapshot's bounded tail. Let durable
+          // completion replace it, unless a newer SSE update arrived while this read was in flight.
+          if (message.complete && liveMessages.get(message.id) === liveBeforeRequest.get(message.id)) liveMessages.delete(message.id);
+        }
+        for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
       }
-      for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
-    }
-    // A recent-page refresh must not rewind the older-page boundary, including exhausted history.
-    if (cursor || !historyPaginationLoaded) nextCursor = page.nextCursor;
-    if (!page.pendingMaterialization) historyPaginationLoaded = true;
-    historyPhase = "ready";
-    if (!cursor) historyNeedsRecovery = Boolean(page.pendingMaterialization);
-    setHistoryStatus();
-    renderConversation({ preserveScroll, forceBottom, restoreScrollTop });
-    void recoverUnresolvedSubmission();
+      // A recent-page refresh must not rewind the older-page boundary, including exhausted history.
+      if (cursor || !historyPaginationLoaded) nextCursor = page.nextCursor;
+      if (!page.pendingMaterialization) historyPaginationLoaded = true;
+      historyPhase = "ready";
+      if (!cursor) historyNeedsRecovery = Boolean(page.pendingMaterialization);
+      setHistoryStatus();
+      renderConversation({ preserveScroll, forceBottom, restoreScrollTop });
+      void recoverUnresolvedSubmission();
+      // Keep the user's older boundary separate from the refreshed head's continuation.
+      requestCursor = bridgeGap && !overlapsLoaded && !page.pendingMaterialization ? page.nextCursor : null;
+    } while (requestCursor);
+    // Partial recovery must not become an overlap boundary: a later refresh must retry the gap.
+    for (const id of recoveredTurns) historyTurnIds.add(id);
     const transcriptFits = transcriptScroller().scrollHeight <= transcriptScroller().clientHeight + 1;
     if (nextCursor && nextCursor !== cursor && transcriptFits) automaticCursor = nextCursor;
   } catch (error) {
