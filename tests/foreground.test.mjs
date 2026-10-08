@@ -7,7 +7,47 @@ import { spawn } from "node:child_process";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { once } from "node:events";
+import { once, EventEmitter } from "node:events";
+
+async function stopBrowser(child, dir, graceMs = 1000) {
+  const exited = () => child.exitCode !== null || child.signalCode !== null || !child.pid;
+  const stop = signal => new Promise(resolve => {
+    if (exited()) return resolve(true);
+    const done = value => { clearTimeout(timer); child.removeListener("exit", onExit); resolve(value); };
+    const onExit = () => done(true);
+    const timer = setTimeout(() => done(false), graceMs);
+    child.once("exit", onExit);
+    child.kill(signal);
+  });
+  try {
+    if (!await stop("SIGTERM") && !await stop("SIGKILL")) throw new Error("Browser did not exit during bounded teardown");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test("headless teardown handles prior exit, signals and bounded shutdown", async t => {
+  for (const mode of ["exited", "signaled", "spawn-failed", "immediate", "needs-kill", "unresponsive"]) {
+    await t.test(mode, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pocket-teardown-"));
+      const child = new EventEmitter();
+      Object.assign(child, { exitCode: mode === "exited" ? 0 : null, signalCode: mode === "signaled" ? "SIGTERM" : null, pid: mode === "spawn-failed" ? undefined : 123 });
+      const signals = [];
+      child.kill = signal => {
+        signals.push(signal);
+        if (mode === "immediate" || mode === "needs-kill" && signal === "SIGKILL") {
+          child.signalCode = signal;
+          child.emit("exit", null, signal);
+        }
+      };
+      const before = Date.now();
+      if (mode === "unresponsive") await assert.rejects(stopBrowser(child, dir, 20), /bounded teardown/);
+      else await stopBrowser(child, dir, 20);
+      assert.ok(Date.now() - before < 1000);
+      assert.throws(() => readFileSync(dir), { code: "ENOENT" });
+      assert.equal(child.listenerCount("exit"), 0);
+      assert.deepEqual(signals, ["immediate"].includes(mode) ? ["SIGTERM"] : ["needs-kill", "unresponsive"].includes(mode) ? ["SIGTERM", "SIGKILL"] : []);
+    });
+  }
+});
 
 test("native controls and foreground transcript recovery", { skip: !process.env.POCKET_TEST_BROWSER }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "pocket-foreground-"));
@@ -84,13 +124,12 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
   const child = spawn(process.env.POCKET_TEST_BROWSER, ["--headless", "--disable-gpu", "--no-first-run", "--disable-background-networking", "--remote-debugging-port=0", `--user-data-dir=${dir}`], { stdio: ["ignore", "ignore", "pipe"] });
   let socket;
   t.after(async () => {
-    socket?.close();
-    child.kill();
-    for (const res of connections) res.destroy();
-    server.closeAllConnections();
-    await new Promise(resolve => server.close(resolve));
-    if (child.exitCode === null) await once(child, "exit");
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      socket?.close();
+      for (const res of connections) res.destroy();
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    } finally { await stopBrowser(child, dir); }
   });
   const debuggerUrl = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Browser did not start")), 10000);

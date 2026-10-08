@@ -5348,7 +5348,7 @@ export function handleControlRequest(
     sendControlJson(response, 403, { error: "loopback access only" });
     return;
   }
-  if (!allowedBrowserHost(request, { ...options, host: "127.0.0.1" })) {
+  if (!allowedBrowserHost(request, { ...options, host: "127.0.0.1", accessUrls: [] })) {
     sendControlJson(response, 403, { error: "Unrecognized Pocket host" });
     return;
   }
@@ -5420,7 +5420,7 @@ const JSON_POST_ROUTES = new Set([
   "/api/input", "/api/thread", "/api/navigation/select", "/api/machines/wake", "/api/goal",
 ]);
 
-function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
+export function allowedBrowserHost(request: IncomingMessage, options: Options): boolean {
   const authority = request.headers.host;
   if (!authority) return false;
   try {
@@ -5428,6 +5428,11 @@ function allowedBrowserHost(request: IncomingMessage, options: Options): boolean
     if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return false;
     const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
     if (isLoopbackHost(host)) return true;
+    if (options.accessUrls?.some(origin => {
+      const configured = new URL(origin);
+      const supplied = new URL(`${configured.protocol}//${authority}`);
+      return supplied.host === configured.host;
+    })) return true;
     if (isLoopbackHost(options.host)) return false;
     // LAN/private and CGNAT IP literals also cover Docker's published host address and port.
     // Never resolve a supplied hostname to decide whether it is trusted.

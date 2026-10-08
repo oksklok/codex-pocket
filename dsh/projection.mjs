@@ -137,14 +137,15 @@ function changesFromDiffs(diffs) {
 // real target file instead of the raw arguments.
 function intendedChanges(name, args) {
   if (!args || typeof args !== "object") return [];
+  const text = key => typeof args[key] === "string" ? args[key] : "";
   if (name === "write" && typeof args.file_path === "string")
-    return changesFromDiffs([{ path: args.file_path, oldText: null, newText: args.content ?? "" }]);
+    return changesFromDiffs([{ path: args.file_path, oldText: null, newText: text("content") }]);
   if (name === "edit" && typeof args.file_path === "string")
-    return changesFromDiffs([{ path: args.file_path, oldText: typeof args.old_string === "string" ? args.old_string : null, newText: args.new_string ?? "" }]);
+    return changesFromDiffs([{ path: args.file_path, oldText: typeof args.old_string === "string" ? args.old_string : null, newText: text("new_string") }]);
   if (name === "str_replace_editor" && typeof args.path === "string") {
-    if (args.command === "create") return changesFromDiffs([{ path: args.path, oldText: null, newText: args.file_text ?? "" }]);
-    if (args.command === "str_replace") return changesFromDiffs([{ path: args.path, oldText: args.old_str ?? null, newText: args.new_str ?? "" }]);
-    if (args.command === "insert") return changesFromDiffs([{ path: args.path, oldText: null, newText: args.new_str ?? "" }]);
+    if (args.command === "create") return changesFromDiffs([{ path: args.path, oldText: null, newText: text("file_text") }]);
+    if (args.command === "str_replace") return changesFromDiffs([{ path: args.path, oldText: typeof args.old_str === "string" ? args.old_str : null, newText: text("new_str") }]);
+    if (args.command === "insert") return changesFromDiffs([{ path: args.path, oldText: null, newText: text("new_str") }]);
   }
   return [];
 }
@@ -212,14 +213,14 @@ export function projectEvents(events, cwd) {
       if (/^(bash|pwsh)$/.test(d.name))
         Object.assign(item, {
           type: "commandExecution",
-          command: args.command ?? args.script ?? d.arguments,
+          command: args?.command ?? args?.script ?? d.arguments,
         });
       if (d.name === "read_image") Object.assign(item, { type: "imageView" });
       const searchKey = SEARCH_TOOLS[d.name];
       if (searchKey)
         Object.assign(item, {
           type: "webSearch",
-          query: args?.[searchKey] ?? args?.query ?? args?.queries?.join("; "),
+          query: args?.[searchKey] ?? args?.query ?? (Array.isArray(args?.queries) ? args.queries.filter(query => typeof query === "string").join("; ") : undefined),
           action: args,
         });
       if (FILE_TOOLS.has(d.name)) {

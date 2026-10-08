@@ -162,6 +162,20 @@ export function planFleet({ entries, targetKeys, manifest, allowProtocolChange }
   };
 }
 
+export function selectMachines(machines, only) {
+  const aliases = new Set();
+  for (const machine of machines) {
+    const alias = machine.ssh.toLowerCase();
+    if (aliases.has(alias)) throw new Error(`duplicate SSH alias: ${machine.ssh}`);
+    aliases.add(alias);
+  }
+  if (!only) return machines;
+  const aliasesMatched = machines.filter(machine => machine.ssh === only);
+  const matches = aliasesMatched.length ? aliasesMatched : machines.filter(machine => machine.name === only);
+  if (matches.length !== 1) throw new Error(matches.length ? `ambiguous machine name: ${only}; use an SSH alias` : `unknown execution machine: ${only}`);
+  return matches;
+}
+
 // Idle-state decision for a rollback, matching activation: an unproven state never authorizes
 // stopping the runtime, and a busy runtime is never touched.
 export function rollbackDecision(entry, confirmIdle) {
@@ -170,6 +184,14 @@ export function rollbackDecision(entry, confirmIdle) {
   if (entry.liveStatus === "idle") return { ok: true, stopLive: Boolean(entry.verifiable) && !entry.absentProven };
   if (!entry.verifiable && confirmIdle) return { ok: true, stopLive: false };
   return { ok: false, reason: "runtime state could not be verified; --confirm-idle applies only to the deliberate legacy cutover" };
+}
+
+export function manualRollbackDecision(entry, confirmIdle, gatewayProtocol, retainedProtocol) {
+  if (!Number.isInteger(gatewayProtocol) || gatewayProtocol < 1 || !Number.isInteger(retainedProtocol) || retainedProtocol < 1)
+    return { ok: false, reason: "rollback protocol compatibility could not be verified" };
+  if (retainedProtocol !== gatewayProtocol)
+    return { ok: false, reason: `retained adapter protocol ${retainedProtocol} is incompatible with running gateway protocol ${gatewayProtocol}` };
+  return rollbackDecision(entry, confirmIdle);
 }
 
 // The selected runtime's own state is the restart-safety fact. `listMachines()` reports
@@ -824,7 +846,7 @@ async function inspectMachine(machine, manifest, options) {
   const name = machine.name || machine.ssh;
   const dshDir = parentDir(machine.dshPath);
   const windows = isWindowsPath(machine.dshPath);
-  const entry = { key: name, name, machine, dshDir, windows };
+  const entry = { key: machine.ssh, name, machine, dshDir, windows };
   const reachable = await ssh(machine, "echo pocket-deploy-ok");
   if (reachable.code !== 0) return { ...entry, current: null, liveStatus: null, verifiable: false, statusProtocol: null, installedVerified: false, markerState: "unknown", action: "hold", reason: "offline" };
   const current = parseLastJson((await ssh(machine, readJsonCommand(windows, manifestPath(windows, dshDir)))).stdout);
@@ -944,6 +966,23 @@ async function activateMachine(entry, manifest, { holdMarker = false } = {}) {
   return { ...entry, action: "hold", reason: `activation failed (${payload?.reason ?? result.code})`, rolledBack: payload?.rolledBack === true, stuck: payload?.stuck === true };
 }
 
+async function retainedAdapterProtocol(entry) {
+  const { machine, dshDir, windows } = entry;
+  const previous = joinPath(windows, parentDir(dshDir), previousName);
+  const path = joinPath(windows, previous, ".pocket-adapter.json");
+  const manifestRead = await ssh(machine, readJsonCommand(windows, path));
+  const manifest = manifestRead.code === 0 ? parseLastJson(manifestRead.stdout) : null;
+  if (!ADAPTER_FILES.every(file => /^[a-f0-9]{64}$/.test(manifest?.files?.[file] ?? ""))) return null;
+  const verify = await ssh(machine, nodeCommand(windows, quoteFor(windows, runtimePath(windows, joinPath(windows, previous, "dsh"))), "--verify", quoteFor(windows, path)));
+  if (verify.code !== 0) return null;
+  const source = await ssh(machine, readJsonCommand(windows, joinPath(windows, previous, "dsh", "projection.mjs")));
+  if (source.code !== 0) return null;
+  try {
+    const protocol = protocolFrom(source.stdout, "retained projection.mjs");
+    return protocol === manifest.protocol ? protocol : null;
+  } catch { return null; }
+}
+
 async function rollbackMachine(entry, confirmIdle, { holdMarker = false } = {}) {
   const { machine, dshDir, windows, verifiable, liveStatus } = entry;
   const bundleRoot = parentDir(dshDir);
@@ -1037,15 +1076,20 @@ async function composeImageName() {
   return config.code === 0 && name ? name : null;
 }
 
+const JS_GATEWAY_PROTOCOL = "const s=require('fs').readFileSync('/app/gateway.ts','utf8');const m=/export const DSH_ADAPTER_PROTOCOL = (\\d+)/.exec(s);console.log(JSON.stringify({protocol:m?Number(m[1]):null}))";
 async function imageProtocol() {
-  const js = "const s=require('fs').readFileSync('/app/gateway.ts','utf8');const m=/export const DSH_ADAPTER_PROTOCOL = (\\d+)/.exec(s);console.log(JSON.stringify({protocol:m?Number(m[1]):null}))";
-  const probe = await run("docker", ["compose", "run", "--rm", "--no-deps", "-T", "--entrypoint", "node", "pocket", "-e", js], { cwd: ROOT, timeout: 120_000 });
+  const probe = await run("docker", ["compose", "run", "--rm", "--no-deps", "-T", "--entrypoint", "node", "pocket", "-e", JS_GATEWAY_PROTOCOL], { cwd: ROOT, timeout: 120_000 });
   return parseLastJson(probe.stdout)?.protocol ?? null;
+}
+
+async function runningGatewayProtocol() {
+  const probe = await run("docker", ["compose", "exec", "-T", "pocket", "node", "-e", JS_GATEWAY_PROTOCOL], { cwd: ROOT });
+  return probe.code === 0 ? parseLastJson(probe.stdout)?.protocol ?? null : null;
 }
 
 // /api/state returns the selected runtime's own snapshot, whose contract field is `machineId`; the
 // restart-safety decision comes from that runtime's provider plus the machine it belongs to.
-export async function gatewayRequest(pathname, { timeout = 4 } = {}) {
+export async function gatewayRequest(pathname, { timeout = 4, runCommand = run } = {}) {
   const path = settingsPath();
   let config = {};
   try { config = JSON.parse(readFileSync(path, "utf8")); } catch {}
@@ -1055,14 +1099,22 @@ export async function gatewayRequest(pathname, { timeout = 4 } = {}) {
     .find((url) => typeof url === "string" && url.startsWith("http://"))
     ?? `http://${config.host && !["0.0.0.0", "::"].includes(config.host) ? config.host : "127.0.0.1"}:${config.port || 4173}`;
   const args = ["-s", "--max-time", String(timeout)];
-  if (/^\d{4}$/.test(pin ?? "")) {
-    const jar = join(tmpdir(), "pocket-deploy.jar");
-    const login = await run("curl", ["-s", "-c", jar, "-X", "POST", "-H", "Content-Type: application/json", "-H", `Origin: ${base}`, "--data", JSON.stringify({ pin }), "--max-time", "4", `${base}/api/login`], { cwd: ROOT });
-    if (login.code !== 0) return { code: login.code, value: null, reason: "login failed" };
-    args.push("-b", jar);
+  let privateDir;
+  try {
+    if (/^\d{4}$/.test(pin ?? "")) {
+      privateDir = mkdtempSync(join(tmpdir(), "pocket-deploy-auth-"));
+      chmodSync(privateDir, 0o700);
+      const jar = join(privateDir, "cookies");
+      writeFileSync(jar, "", { mode: 0o600 });
+      const login = await runCommand("curl", ["-s", "-c", jar, "-X", "POST", "-H", "Content-Type: application/json", "-H", `Origin: ${base}`, "--data-binary", "@-", "--max-time", "4", `${base}/api/login`], { cwd: ROOT, input: JSON.stringify({ pin }) });
+      if (login.code !== 0) return { code: login.code, value: null, reason: "login failed" };
+      args.push("-b", jar);
+    }
+    const result = await runCommand("curl", [...args, `${base}${pathname}`], { cwd: ROOT });
+    return { code: result.code, value: parseLastJson(result.stdout) };
+  } finally {
+    if (privateDir) rmSync(privateDir, { recursive: true, force: true });
   }
-  const result = await run("curl", [...args, `${base}${pathname}`], { cwd: ROOT });
-  return { code: result.code, value: parseLastJson(result.stdout) };
 }
 
 async function gatewayState() {
@@ -1163,14 +1215,14 @@ export async function main(argv = process.argv.slice(2)) {
   log(`adapter protocol ${manifest.protocol}, bundle ${manifest.bundle.slice(0, 12)}`);
 
   const all = readMachines().filter((machine) => machine.ssh && machine.dshPath);
-  const targets = all.filter((machine) => !only || machine.name === only || machine.ssh === only);
+  const targets = selectMachines(all, only);
   if (!targets.length && adapterMode) log("no matching execution machines with dshPath configured");
 
   // Pass 1: read-only inspection of every configured machine. Adapter work is limited to targets;
   // the gateway compatibility decision always covers the whole fleet.
   const inspected = [];
   for (const machine of all) inspected.push(await inspectMachine(machine, manifest, { confirmIdle, allowProtocolChange }));
-  const targetKeys = new Set(targets.map((machine) => machine.name || machine.ssh));
+  const targetKeys = new Set(targets.map((machine) => machine.ssh));
   const fleet = planFleet({ entries: inspected, targetKeys, manifest, allowProtocolChange });
   const { isTarget, protocolChanged, blockers } = fleet;
   for (const entry of inspected.filter(isTarget)) {
@@ -1222,9 +1274,22 @@ export async function main(argv = process.argv.slice(2)) {
   // Rollback is adapter-only, never mutates under --dry-run, and never runs under --gateway-only.
   if (rollback) {
     if (!targets.length) log("nothing to roll back");
+    const gatewayProtocol = await runningGatewayProtocol();
+    const decisions = new Map();
+    for (const entry of inspected.filter(isTarget)) {
+      if (entry.reason === "offline") continue;
+      const decision = manualRollbackDecision(entry, confirmIdle, gatewayProtocol, await retainedAdapterProtocol(entry));
+      decisions.set(entry.key, decision);
+      if (!decision.ok) log(`${entry.name}: pending (${decision.reason})`);
+    }
+    if ([...decisions.values()].some(decision => !decision.ok)) {
+      log("rollback refused; nothing was changed");
+      process.exitCode = 1;
+      return;
+    }
     if (dryRun) {
       for (const entry of inspected.filter(isTarget)) {
-        const decision = rollbackDecision(entry, confirmIdle);
+        const decision = decisions.get(entry.key) ?? { ok: false, reason: "offline" };
         log(`${entry.name}: ${decision.ok ? "would roll back" : `pending (${decision.reason})`}`);
       }
       log("dry run: no files, images or containers were changed");
