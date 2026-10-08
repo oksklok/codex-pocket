@@ -593,10 +593,9 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 }
 textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: vertical; line-height: 1.4; }
 .async-answer textarea { resize: none; }
-.queue-banner { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "status objective actions"; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
-.queue-copy { display: contents; }
-.queue-copy strong { grid-area: status; }
-.queue-copy #queue-text { grid-area: objective; }
+.queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions"; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
+.queue-banner > strong { grid-area: status; }
+.queue-banner #queue-text { grid-column: 1 / -1; }
 .card-actions { grid-area: actions; display: flex; align-items: center; gap: 0; margin-right: -8px; }
 .card-actions > .text-button:not([hidden]) + .icon-button { margin-left: 8px; }
 .queue-actions button { min-height: 36px; }
@@ -961,14 +960,12 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
 }
 @media (max-width: 860px) {
   .goal-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "status time actions" "objective objective actions"; }
-  .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions" "objective actions"; }
   .composer-card { row-gap: 0; padding-top: 5px; padding-bottom: 5px; }
   /* The Goal objective wraps to a second row; a fixed gap keeps the status-to-objective spacing the
      same collapsed and wrapped, and bottom-pinning the actions stops them drifting with the row. */
   .composer-card.goal-strip { row-gap: 4px; }
   .goal-strip .card-actions { align-self: end; }
-  /* With the card's row-gap collapsed on mobile, attachment rows keep the shared 8px rhythm. */
-  .queue-banner .composer-images:not([hidden]), .queue-banner .file-chips:not([hidden]) { margin-top: var(--action-row-gap); }
+  .composer-card.queue-banner { row-gap: var(--action-row-gap); }
 }
 .composer-card .icon-button { flex: none; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); }
 .composer-card .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }

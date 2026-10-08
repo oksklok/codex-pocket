@@ -1075,6 +1075,7 @@ try {
   if (Array.isArray(saved) && saved.every(id => typeof id === "string")) for (const id of saved) collapsedMachines.add(id);
 } catch {}
 let destinationRenderKey = null;
+let destinationScrollTop = 0;
 // Row status keeps the accent treatment except for the states that carry their own meaning. Full
 // rendering and the status-only fast update share this rule so the two can never drift.
 function taskStatusClassName(value) {
@@ -1097,7 +1098,7 @@ function renderDestinationSwitcher(force = false) {
   elements.destinationRefresh.disabled = Boolean(navigationRequest);
   // Transcript/usage updates do not change the catalog. Keep open menus and focus.
   const renderKey = JSON.stringify([
-    [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake, wakePending.has(machine.id), wakeFeedbackActive(machine.id), wakeFailure.get(machine.id) || ""]), elements.destinationSearch.value, Boolean(navigationRequest),
+    [...collapsedMachines], navigationCatalog, machines.map(machine => [machine.id, machine.connected, machine.canWake, wakePending.has(machine.id), wakeFeedbackActive(machine.id), wakeFailure.get(machine.id) || ""]), elements.destinationSearch.value, Boolean(navigationRequest && !navigationCatalog),
     [...taskTerminalResults], state?.machineId, state?.thread?.id, destinationSelection && [destinationSelection.machineId, destinationSelection.threadId], taskActionBusy,
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
@@ -1114,6 +1115,7 @@ function renderDestinationSwitcher(force = false) {
     return;
   }
   destinationRenderKey = renderKey;
+  if (!elements.destinationSwitcher.hidden) destinationScrollTop = elements.destinationList.scrollTop;
   elements.destinationList.replaceChildren();
   // The saved configuration and the running connections are distinct: surface a restart hint here
   // rather than restarting on the user's behalf.
@@ -1127,6 +1129,8 @@ function renderDestinationSwitcher(force = false) {
   // Reorder mode shows every machine name and nothing else; search, Archived and expansion wait.
   if (machineReorderMode) {
     renderMachineReorderList(catalogMachines);
+    elements.destinationList.scrollTop = destinationScrollTop;
+    if (!elements.destinationSwitcher.hidden) destinationScrollTop = elements.destinationList.scrollTop;
     return;
   }
   const displayMachines = sidebarMachineCatalog(catalogMachines);
@@ -1410,6 +1414,8 @@ function renderDestinationSwitcher(force = false) {
     empty.textContent = navigationErrors[slot] || (query ? "No matching tasks" : archived ? "No archived tasks" : "Task catalog unavailable");
     elements.destinationList.append(empty);
   }
+  elements.destinationList.scrollTop = destinationScrollTop;
+  if (!elements.destinationSwitcher.hidden) destinationScrollTop = elements.destinationList.scrollTop;
 }
 
 async function refreshLoadedThreads() {
@@ -1443,11 +1449,11 @@ async function refreshLoadedThreads() {
   }
 }
 
-// Drop every cached catalog and any in-flight read so the next fetch is authoritative. Clearing the
-// rows too means an offline machine shows no tasks until it reconnects.
-function invalidateNavigationCatalogs() {
+// Invalidate in-flight reads so the next fetch is authoritative. Configuration changes also drop
+// the catalogs; ordinary reconnects keep the existing rows until fresh data arrives.
+function invalidateNavigationCatalogs(preserveCatalogs = false) {
   navigationEpoch += 1;
-  navigationCatalogs.fill(null);
+  if (!preserveCatalogs) navigationCatalogs.fill(null);
   navigationRequests.fill(null);
   navigationErrors.fill("");
   // Drop in-flight catalog-adjacent reads too: their epoch guard now discards the response, and
@@ -1461,7 +1467,8 @@ function invalidateNavigationCatalogs() {
 // machines stay offline because only a successful /api/navigation read for a connected runtime
 // can report availability.
 function refreshTaskSurface() {
-  invalidateNavigationCatalogs();
+  // Keep the existing rows while replacing their data; runtime connectivity still controls visibility.
+  invalidateNavigationCatalogs(true);
   void Promise.allSettled([
     refreshMachines(),
     refreshLoadedThreads(),
@@ -1562,7 +1569,10 @@ function restoreTaskMenuFocus() {
   else if (!elements.destinationSwitcher.hidden) elements.destinationRefresh.focus({ preventScroll: true });
 }
 document.addEventListener("pointerdown", (event) => closeTaskMenus(event.target.closest(".task-actions")));
-elements.destinationList.addEventListener("scroll", () => closeTaskMenus());
+elements.destinationList.addEventListener("scroll", () => {
+  if (!elements.destinationSwitcher.hidden) destinationScrollTop = elements.destinationList.scrollTop;
+  closeTaskMenus();
+});
 window.addEventListener("resize", () => closeTaskMenus());
 
 function saveSidebarPreference(sidebar, open) {
@@ -1593,6 +1603,7 @@ let destinationCloseTimer;
 function concealDestinationSwitcher({ clearSearch = false } = {}) {
   closeTaskMenus();
   clearTimeout(destinationCloseTimer);
+  if (!elements.destinationSwitcher.hidden) destinationScrollTop = elements.destinationList.scrollTop;
   elements.destinationSwitcher.inert = true;
   if (elements.destinationSwitcher.contains(document.activeElement)) {
     (isWideLayout() ? elements.tasksToggle : elements.destinationButton).focus();
@@ -1628,6 +1639,7 @@ function openDestinationSwitcher(animate = true) {
   elements.destinationSwitcher.hidden = false;
   elements.destinationBackdrop.hidden = false;
   void elements.destinationSwitcher.offsetWidth; // Establish the closed position before transitioning.
+  elements.destinationList.scrollTop = destinationScrollTop;
   document.body.classList.add("destination-open");
   // Opening Tasks acknowledges every unread away-task indicator.
   taskUnreadStates.clear();

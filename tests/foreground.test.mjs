@@ -17,8 +17,11 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
   const selectedMessage = message("selected", "Selected answer before refresh", 100);
   let messages = [selectedMessage, ...Array.from({ length: 24 }, (_, i) => message(`m${i}`, `Paragraph ${i}: ${"Readable content. ".repeat(24)}`, 200 + i))];
   let liveMessages = [selectedMessage];
+  const allTasks = [thread, ...Array.from({ length: 40 }, (_, i) => ({ id: `task-${i}`, name: `Task ${i}`, status: "idle", cwd: thread.cwd }))];
+  let navigationTasks = allTasks, holdNavigation = false, queuedMessage = null;
+  const navigationReplies = [];
   const snapshot = () => ({ machineId: "local", machine: machine.name, provider: "openai", platform: "windows", connected: true,
-    thread, threadStatus: "idle", phase: "done", pending: [], plan: [], activities: [], liveMessages,
+    thread, threadStatus: "idle", phase: "done", pending: [], plan: [], activities: [], liveMessages, queuedMessage,
     models: [], model: "fixture", reasoningEffort: "high", message: { allowed: true, mode: "start" }, machines: [machine],
     access: { mode: "full", choices: Object.fromEntries(["ask", "auto", "full"].map(k => [k, { available: true }])) } });
   const connections = new Set();
@@ -39,7 +42,12 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     else if (url.pathname === "/api/settings") json({ settings: { localName: machine.name, machines: [] } });
     else if (url.pathname === "/api/machines") json({ machines: [machine] });
     else if (url.pathname === "/api/threads") json({ threads: [thread] });
-    else if (url.pathname === "/api/navigation") json({ machines: [machine] });
+    else if (url.pathname === "/api/navigation") {
+      const value = structuredClone({ machines: [{ ...machine, tasks: navigationTasks }] });
+      const reply = () => json(value);
+      if (holdNavigation) navigationReplies.push(reply);
+      else reply();
+    }
     else if (url.pathname === "/api/history") {
       historyReads++;
       const pageMessages = structuredClone(messages);
@@ -53,7 +61,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
         const path = url.pathname === "/" ? "public/index.html" : url.pathname === "/vendor/markdown-it.min.js"
           ? "node_modules/markdown-it/dist/markdown-it.min.js" : `public${url.pathname}`;
         let body = readFileSync(new URL(`../${path}`, import.meta.url));
-        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { loadHistory, selectionHold, get nextCursor() { return nextCursor; }, get historyLoading() { return Boolean(historyRequest); } };\n")]);
+        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { loadHistory, selectionHold, refreshTaskSurface, get nextCursor() { return nextCursor; }, get historyLoading() { return Boolean(historyRequest); } };\n")]);
         res.writeHead(200, { "Content-Type": path.endsWith(".js") ? "text/javascript" : path.endsWith(".css") ? "text/css" : "text/html" });
         res.end(body);
       } catch { res.writeHead(404); res.end(); }
@@ -116,6 +124,65 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
   await waitFor(() => evaluate("Boolean(window.fixtureApp && document.querySelector('[data-message-id=m23]'))"), "initial transcript");
   await waitFor(() => eventConnections >= 1, "initial SSE connection");
   await new Promise(resolve => setTimeout(resolve, 100));
+
+  await t.test("Tasks reopening and unchanged refreshes keep rows and scroll position", async () => {
+    for (const width of [1280, 390]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
+      await evaluate("if (!document.body.classList.contains('destination-open')) document.querySelector('#tasks-toggle').click()");
+      await waitFor(() => evaluate("document.querySelectorAll('.destination-task').length === 41 && !document.querySelector('#destination-refresh').disabled"), "task catalog");
+      const top = await evaluate("document.querySelector('#destination-list').scrollTop = 350");
+      await evaluate("window.savedTaskRow = document.querySelector('.destination-task'); document.querySelector('#tasks-toggle').click()");
+      await waitFor(() => evaluate("document.querySelector('#destination-switcher').hidden"), "Tasks closed");
+      holdNavigation = true;
+      await evaluate("document.querySelector('#tasks-toggle').click()");
+      await waitFor(() => navigationReplies.length === 1, "reopen refresh started");
+      try {
+        assert.equal(await evaluate("document.querySelector('.destination-task') === savedTaskRow"), true);
+        assert.equal(await evaluate("document.querySelector('#destination-list').scrollTop"), top);
+      } finally {
+        holdNavigation = false;
+        navigationReplies.shift()();
+        await waitFor(() => evaluate("!document.querySelector('#destination-refresh').disabled"), "reopen refresh complete");
+      }
+      assert.equal(await evaluate("document.querySelector('.destination-task') === savedTaskRow"), true);
+      assert.equal(await evaluate("document.querySelector('#destination-list').scrollTop"), top);
+    }
+  });
+
+  await t.test("Tasks retain rows during reconnect refresh and keep scroll when updated tasks arrive", async () => {
+    const top = await evaluate("document.querySelector('#destination-list').scrollTop");
+    navigationTasks = [...allTasks.map(task => task.id === "task-2" ? { ...task, status: "active" } : task), { id: "added", name: "Added Task", status: "idle" }];
+    holdNavigation = true;
+    await evaluate("fixtureApp.refreshTaskSurface()");
+    await waitFor(() => navigationReplies.length === 2, "both reconnect catalogs loading");
+    try {
+      assert.equal(await evaluate("document.querySelector('.destination-task') === savedTaskRow"), true);
+      assert.equal(await evaluate("document.querySelectorAll('.destination-task').length"), 41);
+    } finally {
+      holdNavigation = false;
+      navigationReplies.splice(0).forEach(reply => reply());
+      await waitFor(() => evaluate("document.querySelectorAll('.destination-task').length === 42 && !document.querySelector('#destination-refresh').disabled"), "new task catalog");
+    }
+    assert.equal(await evaluate("document.querySelector('#destination-list').scrollTop"), top);
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true] .destination-task-text').textContent"), "Fixture");
+    assert.equal(await evaluate("[...document.querySelectorAll('.destination-task')].find(row => row.querySelector('.destination-task-text').textContent === 'Task 2').querySelector('.destination-task-status').textContent"), "Working");
+  });
+
+  await t.test("Tasks search, expansion and shorter catalogs still clamp scroll normally", async () => {
+    await evaluate("const search = document.querySelector('#destination-search'); search.value = 'Added Task'; search.dispatchEvent(new Event('input'))");
+    assert.equal(await evaluate("document.querySelectorAll('.destination-task').length"), 1);
+    assert.equal(await evaluate("document.querySelector('#destination-list').scrollTop"), 0);
+    await evaluate("document.querySelector('#destination-search-clear').click(); document.querySelector('.machine-toggle').click()");
+    await evaluate("document.querySelector('#destination-refresh').click()");
+    await waitFor(() => evaluate("!document.querySelector('#destination-refresh').disabled"), "collapsed catalog refreshed");
+    assert.equal(await evaluate("document.querySelector('.machine-toggle').getAttribute('aria-expanded')"), "false");
+    await evaluate("document.querySelector('.machine-toggle').click(); document.querySelector('#destination-list').scrollTop = 350");
+    navigationTasks = [thread];
+    await evaluate("document.querySelector('#destination-refresh').click()");
+    await waitFor(() => evaluate("document.querySelectorAll('.destination-task').length === 1 && !document.querySelector('#destination-refresh').disabled"), "shorter catalog");
+    assert.equal(await evaluate("document.querySelector('#destination-list').scrollTop"), 0);
+    await evaluate("document.querySelector('#destination-close').click()");
+  });
 
   await t.test("foreground refresh preserves the deeper older-history cursor", async () => {
     assert.equal(await evaluate("fixtureApp.nextCursor"), "older-1", "initial history establishes pagination");
@@ -265,6 +332,41 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     pendingMaterialization = false;
     await evaluate("fixtureApp.loadHistory()");
     assert.equal(await evaluate("fixtureApp.nextCursor"), "older-1");
+  });
+  await t.test("Queued Next puts actions, images, files and text in visual and DOM order on mobile and desktop", async () => {
+    const image = { url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" };
+    for (const width of [390, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
+      for (const [images, files] of [[[image], [{ name: "notes.txt", size: 25 }]], [[image], []], [[], [{ name: "notes.txt", size: 25 }]], [[], []]]) {
+        const text = `Queued text ${width}: ${images.length} images, ${files.length} files`;
+        queuedMessage = { id: "queued", threadId: thread.id, text, images, files };
+        for (const res of connections) res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);
+        await waitFor(() => evaluate(`document.querySelector('#queue-text').textContent === ${JSON.stringify(text)}`), "queued attachments rendered");
+        const layout = await evaluate(`(() => {
+          const card = document.querySelector('#queue-banner');
+          const rect = node => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width, height: r.height }; };
+          return { order: [...card.children].map(node => node.id || node.tagName.toLowerCase()),
+            heading: rect(card.querySelector('strong')), actions: rect(card.querySelector('.queue-actions')),
+            images: ${images.length} ? rect(card.querySelector('#queue-images')) : null,
+            files: ${files.length} ? rect(card.querySelector('#queue-files')) : null,
+            thumb: ${images.length} ? rect(card.querySelector('img')) : null, text: rect(card.querySelector('#queue-text')),
+            editEnabled: !card.querySelector('#edit-queue').disabled, cancelEnabled: !card.querySelector('#cancel-queue').disabled,
+            composerOrder: Boolean(document.querySelector('#composer-images').compareDocumentPosition(document.querySelector('#message-text')) & Node.DOCUMENT_POSITION_FOLLOWING)
+              && Boolean(document.querySelector('#composer-files').compareDocumentPosition(document.querySelector('#message-text')) & Node.DOCUMENT_POSITION_FOLLOWING) };
+        })()`);
+        assert.deepEqual(layout.order, ["strong", "span", "queue-images", "queue-files", "queue-text"]);
+        const rows = [layout.images, layout.files, layout.text].filter(Boolean);
+        assert.ok(Math.max(layout.heading.bottom, layout.actions.bottom) <= rows[0].top);
+        for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].bottom <= rows[i].top);
+        if (layout.thumb) assert.deepEqual([layout.thumb.width, layout.thumb.height], [36, 36]);
+        assert.equal(layout.editEnabled && layout.cancelEnabled && layout.composerOrder, true);
+      }
+    }
+    await evaluate("document.querySelector('#cancel-queue').click()");
+    assert.equal(await evaluate("document.querySelector('#queue-dialog').open"), true);
+    await evaluate("document.querySelector('#queue-dialog-cancel').click()");
+    queuedMessage = null;
+    for (const res of connections) res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);
   });
   assert.deepEqual(exceptions, []);
   assert.equal(requests.filter(r => r.method !== "GET").length, 0, "foreground recovery must never submit a mutation");
