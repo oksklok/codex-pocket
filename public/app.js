@@ -319,6 +319,7 @@ let liveActivities = new Map();
 let loadedThreads = [];
 let machines = [];
 let nextCursor = null;
+let historyPaginationLoaded = false;
 let source = null;
 let pageBackgrounded = document.visibilityState === "hidden";
 const NEAR_BOTTOM_PX = 200;
@@ -3314,6 +3315,7 @@ function resetConversationState() {
   activityDetailVersions.clear();
   terminalDetailRefreshes.clear();
   nextCursor = null;
+  historyPaginationLoaded = false;
   historyRequest = null;
   historyRefreshPending = false;
   historyPhase = "loading";
@@ -3421,7 +3423,9 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
       }
       for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
     }
-    nextCursor = page.nextCursor;
+    // A recent-page refresh must not rewind the older-page boundary, including exhausted history.
+    if (cursor || !historyPaginationLoaded) nextCursor = page.nextCursor;
+    if (!page.pendingMaterialization) historyPaginationLoaded = true;
     historyPhase = "ready";
     if (!cursor) historyNeedsRecovery = Boolean(page.pendingMaterialization);
     setHistoryStatus();

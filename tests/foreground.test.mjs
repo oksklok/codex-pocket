@@ -23,7 +23,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     access: { mode: "full", choices: Object.fromEntries(["ask", "auto", "full"].map(k => [k, { available: true }])) } });
   const connections = new Set();
   const requests = [];
-  let eventConnections = 0, historyReads = 0, blockedPage = null;
+  let eventConnections = 0, historyReads = 0, blockedPage = null, pendingMaterialization = false;
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://fixture");
     requests.push({ method: req.method, path: url.pathname });
@@ -43,7 +43,9 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     else if (url.pathname === "/api/history") {
       historyReads++;
       const pageMessages = structuredClone(messages);
-      const reply = () => { if (!res.destroyed) json({ machineId: "local", threadId: thread.id, turns: [{ id: "fixture-turn", messages: pageMessages, activities: [] }], nextCursor: null }); };
+      const cursor = url.searchParams.get("cursor");
+      const nextCursor = pendingMaterialization ? null : cursor === null ? "older-1" : cursor === "older-1" ? "older-2" : null;
+      const reply = () => { if (!res.destroyed) json({ machineId: "local", threadId: thread.id, turns: [{ id: "fixture-turn", messages: pageMessages, activities: [] }], nextCursor, pendingMaterialization }); };
       if (url.searchParams.get("cursor") === "blocked") blockedPage = reply;
       else reply();
     } else {
@@ -51,7 +53,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
         const path = url.pathname === "/" ? "public/index.html" : url.pathname === "/vendor/markdown-it.min.js"
           ? "node_modules/markdown-it/dist/markdown-it.min.js" : `public${url.pathname}`;
         let body = readFileSync(new URL(`../${path}`, import.meta.url));
-        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { loadHistory, selectionHold };\n")]);
+        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { loadHistory, selectionHold, get nextCursor() { return nextCursor; }, get historyLoading() { return Boolean(historyRequest); } };\n")]);
         res.writeHead(200, { "Content-Type": path.endsWith(".js") ? "text/javascript" : path.endsWith(".css") ? "text/css" : "text/html" });
         res.end(body);
       } catch { res.writeHead(404); res.end(); }
@@ -114,6 +116,30 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
   await waitFor(() => evaluate("Boolean(window.fixtureApp && document.querySelector('[data-message-id=m23]'))"), "initial transcript");
   await waitFor(() => eventConnections >= 1, "initial SSE connection");
   await new Promise(resolve => setTimeout(resolve, 100));
+
+  await t.test("foreground refresh preserves the deeper older-history cursor", async () => {
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "older-1", "initial history establishes pagination");
+    await evaluate("fixtureApp.loadHistory(fixtureApp.nextCursor)");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "older-2");
+    const reads = historyReads;
+    await evaluate("setFixtureVisibility('hidden'); setFixtureVisibility('visible')");
+    await waitFor(() => historyReads === reads + 1, "recent history refresh");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading"), "recent history response");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "older-2");
+  });
+
+  await t.test("foreground refresh keeps exhausted history exhausted", async () => {
+    await evaluate("fixtureApp.loadHistory('older-2')");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    const reads = historyReads;
+    await evaluate("setFixtureVisibility('hidden'); setFixtureVisibility('visible')");
+    await waitFor(() => historyReads === reads + 1, "exhausted history refresh");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading"), "exhausted history response");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    await evaluate("document.scrollingElement.scrollTop = 0");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(historyReads, reads + 1, "upward scrolling must not fetch already-loaded pages");
+  });
 
   await t.test("Full Access warning stays on the native select, not its options; only the path is selectable", async () => {
     for (const theme of ["dark", "light"]) {
@@ -227,6 +253,18 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await waitFor(() => evaluate("Boolean(document.querySelector('[data-message-id=new-bottom]'))"), "new bottom content");
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await evaluate("document.scrollingElement.scrollTop"), top);
+  });
+  await t.test("a new task initializes pagination when its history finishes materializing", async () => {
+    thread.id = "fixture-task-two";
+    pendingMaterialization = true;
+    const reads = historyReads;
+    for (const res of connections) res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);
+    await waitFor(() => historyReads === reads + 1, "new task history");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading"), "pending history response");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    pendingMaterialization = false;
+    await evaluate("fixtureApp.loadHistory()");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "older-1");
   });
   assert.deepEqual(exceptions, []);
   assert.equal(requests.filter(r => r.method !== "GET").length, 0, "foreground recovery must never submit a mutation");
