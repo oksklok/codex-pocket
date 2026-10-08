@@ -596,6 +596,11 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
 .queue-banner { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "status actions"; border: 1px solid rgba(139,184,255,.22); background: rgba(139,184,255,.08); color: var(--blue); }
 .queue-banner > strong { grid-area: status; }
 .queue-banner #queue-text { grid-column: 1 / -1; }
+/* Text-only queues stay on one row; visible attachments keep the stacked reading order. */
+.queue-banner:not(:has(#queue-images:not([hidden]), #queue-files:not([hidden]))) {
+  grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "status objective actions";
+}
+.queue-banner:not(:has(#queue-images:not([hidden]), #queue-files:not([hidden]))) #queue-text { grid-area: objective; }
 .card-actions { grid-area: actions; display: flex; align-items: center; gap: 0; margin-right: -8px; }
 .card-actions > .text-button:not([hidden]) + .icon-button { margin-left: 8px; }
 .queue-actions button { min-height: 36px; }

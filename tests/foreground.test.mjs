@@ -333,9 +333,9 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await evaluate("fixtureApp.loadHistory()");
     assert.equal(await evaluate("fixtureApp.nextCursor"), "older-1");
   });
-  await t.test("Queued Next keeps attachment ordering and selectable text on mobile and desktop", async () => {
+  await t.test("Queued Next adapts compact geometry to attachments and keeps selectable text on mobile and desktop", async () => {
     const image = { url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" };
-    for (const width of [390, 1280]) {
+    for (const width of [320, 390, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
       for (const [images, files] of [[[image], [{ name: "notes.txt", size: 25 }]], [[image], []], [[], [{ name: "notes.txt", size: 25 }]], [[], []]]) {
         const text = `Queued text ${width}: ${images.length} images, ${files.length} files`;
@@ -344,8 +344,10 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
         await waitFor(() => evaluate(`document.querySelector('#queue-text').textContent === ${JSON.stringify(text)}`), "queued attachments rendered");
         const layout = await evaluate(`(() => {
           const card = document.querySelector('#queue-banner');
-          const rect = node => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width, height: r.height }; };
-          return { order: [...card.children].map(node => node.id || node.tagName.toLowerCase()),
+          const rect = node => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height }; };
+          const css = getComputedStyle(card);
+          return { order: [...card.children].map(node => node.id || node.tagName.toLowerCase()), card: rect(card),
+            inset: ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].reduce((sum, key) => sum + parseFloat(css[key]), 0), gap: parseFloat(css.rowGap),
             heading: rect(card.querySelector('strong')), actions: rect(card.querySelector('.queue-actions')),
             images: ${images.length} ? rect(card.querySelector('#queue-images')) : null,
             files: ${files.length} ? rect(card.querySelector('#queue-files')) : null,
@@ -359,8 +361,25 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
         assert.deepEqual(layout.order, ["strong", "span", "queue-images", "queue-files", "queue-text"]);
         assert.deepEqual(layout.selection, ["text", "text", "none"]);
         const rows = [layout.images, layout.files, layout.text].filter(Boolean);
-        assert.ok(Math.max(layout.heading.bottom, layout.actions.bottom) <= rows[0].top);
-        for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].bottom <= rows[i].top);
+        const headerHeight = Math.max(layout.heading.height, layout.actions.height);
+        let expectedHeight = headerHeight + layout.inset;
+        if (images.length || files.length) {
+          assert.ok(layout.gap <= 8, "attachment rows keep tight spacing");
+          let previousBottom = Math.max(layout.heading.bottom, layout.actions.bottom);
+          for (const row of rows) {
+            assert.ok(Math.abs(row.top - previousBottom - layout.gap) <= 1, "visible rows are consecutive without empty tracks");
+            previousBottom = row.bottom;
+          }
+          expectedHeight += rows.reduce((sum, row) => sum + row.height, 0) + layout.gap * rows.length;
+        } else {
+          const center = row => row.top + row.height / 2;
+          assert.ok(Math.abs(center(layout.heading) - center(layout.text)) <= 1, "text-only preview shares the heading row");
+          assert.ok(Math.abs(center(layout.actions) - center(layout.text)) <= 1, "text-only actions share the preview row");
+          assert.ok(layout.heading.right <= layout.text.left && layout.text.right <= layout.actions.left);
+          assert.ok(layout.text.width > 0, "narrow text-only previews retain available space");
+          assert.ok(layout.card.height <= 48, "text-only card is no taller than one action row plus its insets");
+        }
+        assert.ok(Math.abs(layout.card.height - expectedHeight) <= 1, "card height contains only visible rows, gaps and insets");
         if (layout.thumb) assert.deepEqual([layout.thumb.width, layout.thumb.height], [36, 36]);
         assert.equal(layout.editEnabled && layout.cancelEnabled && layout.composerOrder, true);
       }
