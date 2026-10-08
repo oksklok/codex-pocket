@@ -62,6 +62,7 @@ test("deployment targets use SSH identities and reject ambiguous display names",
   assert.deepEqual(selectMachines(machines, "second"), [machines[1]]);
   assert.throws(() => selectMachines(machines, "Shared"), /ambiguous/);
   assert.throws(() => selectMachines(machines, "missing"), /unknown/);
+  assert.throws(() => selectMachines(machines, ""), /unknown/);
   assert.throws(() => selectMachines([...machines, { ssh: "FIRST", name: "Other" }]), /duplicate SSH alias/);
   assert.deepEqual(selectMachines(machines), machines);
   const entries = machines.map(machine => ({ key: machine.ssh, machine, action: "update", protocolChanged: true, statusProtocol: 1 }));
@@ -141,6 +142,9 @@ test("deployment CLI selects one SSH alias despite duplicate display names", t =
   const ambiguous = f.run(["--machine", "Shared"]);
   assert.equal(ambiguous.status, 1);
   assert.match(ambiguous.stderr, /ambiguous machine name/);
+  const missing = f.run(["--machine"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /--machine requires/);
   assert.equal(f.commands().includes("STOP_LIVE="), false);
 });
 

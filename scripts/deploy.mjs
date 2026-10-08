@@ -169,7 +169,7 @@ export function selectMachines(machines, only) {
     if (aliases.has(alias)) throw new Error(`duplicate SSH alias: ${machine.ssh}`);
     aliases.add(alias);
   }
-  if (!only) return machines;
+  if (only === undefined || only === null) return machines;
   const aliasesMatched = machines.filter(machine => machine.ssh === only);
   const matches = aliasesMatched.length ? aliasesMatched : machines.filter(machine => machine.name === only);
   if (matches.length !== 1) throw new Error(matches.length ? `ambiguous machine name: ${only}; use an SSH alias` : `unknown execution machine: ${only}`);
@@ -1207,6 +1207,7 @@ export async function main(argv = process.argv.slice(2)) {
   const confirmIdle = has("--confirm-idle");
   const allowProtocolChange = has("--allow-protocol-change");
   const only = option("--machine");
+  if (has("--machine") && !only) throw new Error("--machine requires a machine name or SSH alias");
   if (gatewayOnly && adaptersOnly) { log("choose --gateway-only or --adapters-only, not both"); process.exitCode = 1; return; }
   if (gatewayOnly && rollback) { log("--gateway-only never rolls back execution adapters; rerun --rollback without it"); process.exitCode = 1; return; }
   const adapterMode = !gatewayOnly;
