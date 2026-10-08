@@ -335,6 +335,8 @@ let pendingSendNavigation = null;
 let historyEpoch = 0;
 let historyRequest = null;
 let historyRefreshPending = false;
+let historyGapRecovery = null;
+const HISTORY_REFRESH_PAGE_LIMIT = 20;
 // The transcript's own load state, separate from any live event: the empty-history message may only
 // follow a successful (possibly empty) history result.
 let historyPhase = "loading";
@@ -757,14 +759,19 @@ function platformLabel(value) {
   return first ? first.replace(/\b\w/g, (letter) => letter.toUpperCase()) : "";
 }
 
-function setHistoryStatus(message = "", retryCursor = undefined) {
+function setHistoryStatus(message = "", retryCursor = undefined, recovery = null) {
+  if (!message && historyGapRecovery) {
+    message = "History refresh incomplete. Retry to load more messages.";
+    retryCursor = historyGapRecovery.cursor;
+    recovery = historyGapRecovery;
+  }
   elements.historyStatus.textContent = message;
   elements.historyStatus.hidden = !message;
   if (retryCursor !== undefined) {
     const retry = document.createElement("button");
     retry.type = "button";
     retry.textContent = "Retry";
-    retry.addEventListener("click", () => { historyRecoveryAttempts = 0; void loadHistory(retryCursor); });
+    retry.addEventListener("click", () => { historyRecoveryAttempts = 0; void loadHistory(retryCursor, historyEpoch, false, recovery); });
     elements.historyStatus.append(" ", retry);
   }
 }
@@ -3332,6 +3339,7 @@ function resetConversationState() {
   historyPaginationLoaded = false;
   historyRequest = null;
   historyRefreshPending = false;
+  historyGapRecovery = null;
   historyPhase = "loading";
   historyNeedsRecovery = false;
   historyRecoveryAttempts = 0;
@@ -3402,20 +3410,22 @@ function refreshRecentHistory() {
   void loadHistory(null, historyEpoch);
 }
 
-async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = false) {
+async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = false, recovery = null) {
   const requestedMachineId = state?.machineId;
   const requestedThreadId = state?.thread?.id;
   if (!requestedMachineId || !requestedThreadId || historyRequest?.epoch === epoch) return;
   const token = { epoch, controller: new AbortController() };
   const liveBeforeRequest = new Map(liveMessages);
-  const loadedTurns = new Set(historyTurnIds);
-  const bridgeGap = !cursor && historyPaginationLoaded && loadedTurns.size > 0;
-  const recoveredTurns = new Set();
+  const olderPage = Boolean(cursor) && !recovery;
+  const loadedTurns = recovery?.loadedTurns || new Set(historyTurnIds);
+  const bridgeGap = Boolean(recovery) || (!cursor && historyPaginationLoaded && loadedTurns.size > 0);
+  const recoveredTurns = recovery?.recoveredTurns || new Set();
   const seenCursors = new Set();
+  let pagesRead = 0;
   let requestCursor = cursor;
   let automaticCursor = null;
   historyRequest = token;
-  if (!cursor) historyPhase = "loading";
+  if (!olderPage) historyPhase = "loading";
   setHistoryStatus();
   try {
     do {
@@ -3433,8 +3443,9 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
         || requestedThreadId !== state?.thread?.id
         || page.machineId !== requestedMachineId
         || page.threadId !== requestedThreadId) return;
-      const preserveScroll = cursor ? { scrollHeight: transcriptScroller().scrollHeight, scrollTop: transcriptScroller().scrollTop } : null;
-      const restoreScrollTop = !cursor && !forceBottom ? transcriptScroller().scrollTop : null;
+      pagesRead += 1;
+      const preserveScroll = olderPage ? { scrollHeight: transcriptScroller().scrollHeight, scrollTop: transcriptScroller().scrollTop } : null;
+      const restoreScrollTop = !olderPage && !forceBottom ? transcriptScroller().scrollTop : null;
       const overlapsLoaded = (page.turns || []).some(turn => loadedTurns.has(turn.id));
       for (const turn of page.turns || []) {
         if (turn.id) recoveredTurns.add(turn.id);
@@ -3448,15 +3459,20 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
         for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
       }
       // A recent-page refresh must not rewind the older-page boundary, including exhausted history.
-      if (cursor || !historyPaginationLoaded) nextCursor = page.nextCursor;
+      if (olderPage || !historyPaginationLoaded) nextCursor = page.nextCursor;
       if (!page.pendingMaterialization) historyPaginationLoaded = true;
       historyPhase = "ready";
-      if (!cursor) historyNeedsRecovery = Boolean(page.pendingMaterialization);
+      if (!olderPage) historyNeedsRecovery = Boolean(page.pendingMaterialization);
+      // Keep a capped refresh separate from older pagination. The existing Retry action continues
+      // from this point; no timer starts another batch, and partial turns are not overlap boundaries.
+      requestCursor = bridgeGap && !overlapsLoaded && !page.pendingMaterialization ? page.nextCursor : null;
+      const limited = requestCursor && pagesRead >= HISTORY_REFRESH_PAGE_LIMIT;
+      if (limited) historyGapRecovery = { cursor: requestCursor, loadedTurns, recoveredTurns };
+      else if (bridgeGap && !requestCursor && !page.pendingMaterialization) historyGapRecovery = null;
       setHistoryStatus();
       renderConversation({ preserveScroll, forceBottom, restoreScrollTop });
       void recoverUnresolvedSubmission();
-      // Keep the user's older boundary separate from the refreshed head's continuation.
-      requestCursor = bridgeGap && !overlapsLoaded && !page.pendingMaterialization ? page.nextCursor : null;
+      if (limited) return;
     } while (requestCursor);
     // Partial recovery must not become an overlap boundary: a later refresh must retry the gap.
     for (const id of recoveredTurns) historyTurnIds.add(id);
@@ -3467,7 +3483,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
     // An earlier-page failure keeps the history already on screen; only the initial read can leave
     // the transcript without a resolved history state.
     if (!cursor) { historyPhase = "error"; historyNeedsRecovery = true; }
-    setHistoryStatus(historyErrorMessage(error), cursor);
+    setHistoryStatus(historyErrorMessage(error), cursor, recovery);
     if (!cursor) renderConversation();
   } finally {
     if (historyRequest === token) {

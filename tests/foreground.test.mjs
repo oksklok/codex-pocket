@@ -16,12 +16,12 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
   const message = (id, text, createdAt) => ({ id, text, createdAt, role: "assistant", complete: true });
   const selectedMessage = message("selected", "Selected answer before refresh", 100);
   let messages = [selectedMessage, ...Array.from({ length: 24 }, (_, i) => message(`m${i}`, `Paragraph ${i}: ${"Readable content. ".repeat(24)}`, 200 + i))];
-  let liveMessages = [selectedMessage], historyTurns = null, failedHistoryCursor = null, repeatedHistoryCursor = null;
+  let liveMessages = [selectedMessage], historyTurns = null, failedHistoryCursor = null, repeatedHistoryCursor = null, fixtureTurn = null;
   const allTasks = [thread, ...Array.from({ length: 40 }, (_, i) => ({ id: `task-${i}`, name: `Task ${i}`, status: "idle", cwd: thread.cwd }))];
   let navigationTasks = allTasks, holdNavigation = false, queuedMessage = null;
   const navigationReplies = [];
   const snapshot = () => ({ machineId: "local", machine: machine.name, provider: "openai", platform: "windows", connected: true,
-    thread, threadStatus: "idle", phase: "done", pending: [], plan: [], activities: [], liveMessages, queuedMessage,
+    thread, turn: fixtureTurn, threadStatus: "idle", phase: "done", pending: [], plan: [], activities: [], liveMessages, queuedMessage,
     models: [], model: "fixture", reasoningEffort: "high", message: { allowed: true, mode: "start" }, machines: [machine],
     access: { mode: "full", choices: Object.fromEntries(["ask", "auto", "full"].map(k => [k, { available: true }])) } });
   const connections = new Set();
@@ -403,7 +403,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     queuedMessage = null;
     for (const res of connections) res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`);
   });
-  const gapTurns = Array.from({ length: 60 }, (_, i) => ({ id: `gap-turn-${i + 1}`,
+  const gapTurns = Array.from({ length: 100 }, (_, i) => ({ id: `gap-turn-${i + 1}`,
     messages: [message(`gap-${i + 1}`, `Turn ${i + 1}: ${"Readable content. ".repeat(80)}`, 1000 + i)], activities: [] }));
   const sendSnapshot = () => { for (const res of connections) res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n`); };
   const startGapTask = async id => {
@@ -411,7 +411,9 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     historyTurns = gapTurns.slice(0, 20);
     liveMessages = [];
     thread.id = id;
+    const reads = historyReads;
     sendSnapshot();
+    await waitFor(() => historyReads > reads, "new task history read");
     await waitFor(() => evaluate("fixtureApp.nextCursor === 'gap-18' && !fixtureApp.historyLoading"), "new task history");
   };
   const resumeGapTask = async (count, tailStart) => {
@@ -479,6 +481,58 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await resumeGapTask(40, 32);
     assert.deepEqual(await visibleGapTurns(), Array.from({ length: 22 }, (_, i) => i + 19));
     assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-18");
+  });
+  await t.test("a capped history refresh keeps partial content and resumes through Retry without automatic batches", async () => {
+    await startGapTask("gap-capped");
+    await evaluate("fixtureApp.loadHistory(fixtureApp.nextCursor)");
+    fixtureTurn = { id: "active-fixture-turn", status: "inProgress" };
+    await evaluate(`(() => { document.querySelector('#message-text').value = 'Draft survives the limit'; document.scrollingElement.scrollTop = 150;
+      const node = document.querySelector('[data-message-id=gap-17] .message-body');
+      const range = document.createRange(); range.selectNodeContents(node);
+      getSelection().removeAllRanges(); getSelection().addRange(range); window.cappedSelectionNode = node; })()`);
+    const before = await evaluate("({ top: document.scrollingElement.scrollTop, selection: getSelection().toString() })");
+    const reads = historyReads;
+    await resumeGapTask(100, 92);
+    assert.equal(historyReads - reads, 20, "one foreground batch has a finite page budget");
+    assert.deepEqual(await visibleGapTurns(), [17, 18, 19, 20, ...Array.from({ length: 40 }, (_, i) => i + 61)]);
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-16");
+    assert.equal(await evaluate("!document.querySelector('#history-status').hidden && document.querySelector('#history-status').textContent.includes('incomplete')"), true);
+    assert.deepEqual(await evaluate("({ top: document.scrollingElement.scrollTop, selection: getSelection().toString() })"), before);
+    assert.equal(await evaluate("document.querySelector('[data-message-id=gap-17] .message-body') === cappedSelectionNode"), true);
+    assert.equal(await evaluate("document.querySelector('#message-text').value"), "Draft survives the limit");
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(historyReads - reads, 20, "an active turn does not start automatic recovery batches");
+    await evaluate("document.querySelector('#history-status button').click()");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading"), "first continuation batch");
+    assert.equal(historyReads - reads, 40, "Retry resumes at the saved cursor instead of repeating the head");
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 84 }, (_, i) => i + 17));
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-16");
+    assert.equal(await evaluate("document.querySelector('#history-status').textContent.includes('incomplete')"), true, "the gap remains incomplete until overlap is confirmed");
+    await evaluate("getSelection().removeAllRanges(); fixtureApp.loadHistory(fixtureApp.nextCursor)");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading"), "older history still loads independently");
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-14");
+    assert.equal(await evaluate("document.querySelector('#history-status').textContent.includes('incomplete')"), true, "older pagination must not hide the remaining gap");
+    await evaluate("document.querySelector('#history-status button').click()");
+    await waitFor(() => evaluate("!fixtureApp.historyLoading"), "overlap continuation");
+    assert.equal(historyReads - reads, 42);
+    assert.equal(await evaluate("document.querySelector('#history-status').hidden"), true);
+    assert.equal(await evaluate("fixtureApp.nextCursor"), "gap-14");
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 86 }, (_, i) => i + 15));
+    fixtureTurn = null;
+    await startGapTask("gap-capped-exhausted");
+    for (let cursor = 18; cursor > 0; cursor -= 2) await evaluate(`fixtureApp.loadHistory('gap-${cursor}')`);
+    const exhaustedReads = historyReads;
+    await resumeGapTask(100, 92);
+    assert.equal(historyReads - exhaustedReads, 20);
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null, "a capped refresh preserves exhausted older pagination");
+    for (let batch = 0; batch < 2; batch++) {
+      await evaluate("document.querySelector('#history-status button').click()");
+      await waitFor(() => evaluate("!fixtureApp.historyLoading"), "exhausted-history continuation");
+    }
+    assert.equal(historyReads - exhaustedReads, 41);
+    assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+    assert.equal(await evaluate("document.querySelector('#history-status').hidden"), true);
+    assert.deepEqual(await visibleGapTurns(), Array.from({ length: 100 }, (_, i) => i + 1));
   });
   assert.deepEqual(exceptions, []);
   assert.equal(requests.filter(r => r.method !== "GET").length, 0, "foreground recovery must never submit a mutation");
