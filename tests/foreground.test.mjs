@@ -333,7 +333,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await evaluate("fixtureApp.loadHistory()");
     assert.equal(await evaluate("fixtureApp.nextCursor"), "older-1");
   });
-  await t.test("Queued Next adapts compact geometry to attachments and keeps selectable text on mobile and desktop", async () => {
+  await t.test("Queued Next keeps compact text-only rows and places selectable text before attachments on mobile and desktop", async () => {
     const image = { url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" };
     for (const width of [320, 390, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
@@ -358,19 +358,20 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
             composerOrder: Boolean(document.querySelector('#composer-images').compareDocumentPosition(document.querySelector('#message-text')) & Node.DOCUMENT_POSITION_FOLLOWING)
               && Boolean(document.querySelector('#composer-files').compareDocumentPosition(document.querySelector('#message-text')) & Node.DOCUMENT_POSITION_FOLLOWING) };
         })()`);
-        assert.deepEqual(layout.order, ["strong", "span", "queue-images", "queue-files", "queue-text"]);
+        assert.deepEqual(layout.order, ["strong", "span", "queue-text", "queue-images", "queue-files"]);
         assert.deepEqual(layout.selection, ["text", "text", "none"]);
-        const rows = [layout.images, layout.files, layout.text].filter(Boolean);
+        const rows = [layout.text, layout.images, layout.files].filter(Boolean);
         const headerHeight = Math.max(layout.heading.height, layout.actions.height);
         let expectedHeight = headerHeight + layout.inset;
         if (images.length || files.length) {
-          assert.ok(layout.gap <= 8, "attachment rows keep tight spacing");
+          assert.equal(layout.gap, width <= 860 ? 0 : 8, "original compact row spacing is retained");
           let previousBottom = Math.max(layout.heading.bottom, layout.actions.bottom);
           for (const row of rows) {
-            assert.ok(Math.abs(row.top - previousBottom - layout.gap) <= 1, "visible rows are consecutive without empty tracks");
+            const gap = width <= 860 && row === layout.text ? 0 : 8;
+            assert.ok(Math.abs(row.top - previousBottom - gap) <= 1, "text precedes attachments without empty tracks or excess spacing");
             previousBottom = row.bottom;
+            expectedHeight += row.height + gap;
           }
-          expectedHeight += rows.reduce((sum, row) => sum + row.height, 0) + layout.gap * rows.length;
         } else {
           const center = row => row.top + row.height / 2;
           assert.ok(Math.abs(center(layout.heading) - center(layout.text)) <= 1, "text-only preview shares the heading row");

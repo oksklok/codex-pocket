@@ -970,7 +970,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
      same collapsed and wrapped, and bottom-pinning the actions stops them drifting with the row. */
   .composer-card.goal-strip { row-gap: 4px; }
   .goal-strip .card-actions { align-self: end; }
-  .composer-card.queue-banner { row-gap: var(--action-row-gap); }
+  /* Attachment rows retain their spacing while the queued preview stays close to its heading. */
+  .queue-banner .composer-images:not([hidden]), .queue-banner .file-chips:not([hidden]) { margin-top: var(--action-row-gap); }
 }
 .composer-card .icon-button { flex: none; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); }
 .composer-card .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
