@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createServer, request } from "node:http";
 import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -243,4 +244,58 @@ test("configured proxy authorities preserve Host, origin, authentication and con
   process.env.CODEX_POCKET_DATA_DIR = root;
   try { assert.deepEqual((await gatewayRequest("/api/auth")).value, { required: true, authenticated: true }); }
   finally { if (before === undefined) delete process.env.CODEX_POCKET_DATA_DIR; else process.env.CODEX_POCKET_DATA_DIR = before; }
+});
+
+test("normal gateway startup passes configured proxy authorities into request options", async t => {
+  const root = temporary(t, "pocket-proxy-startup-");
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  // No real SSH host or managed Codex runtime can be reached by this headless fixture.
+  writeFileSync(join(bin, "ssh"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  const reservation = createServer();
+  reservation.listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  writeFileSync(join(root, ".codex-pocket.local.json"), JSON.stringify({
+    host: "127.0.0.1", port, lanEnabled: false, pin: null, localName: "Fixture",
+    machines: [{ name: "Fixture", ssh: "fixture" }], accessUrls: ["https://pocket.example:8443"],
+  }));
+  const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../gateway.ts", import.meta.url))], {
+    env: { ...process.env, HOME: root, CODEX_HOME: root, CODEX_POCKET_DATA_DIR: root, CODEX_POCKET_HEADLESS: "1", CODEX_POCKET_PIN: "", PATH: `${bin}:${process.env.PATH}` },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", chunk => { output += chunk; });
+  child.stderr.on("data", chunk => { output += chunk; });
+  t.after(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise(resolve => {
+      const timer = setTimeout(() => child.kill("SIGKILL"), 1000);
+      child.once("exit", () => { clearTimeout(timer); resolve(); });
+      child.kill("SIGTERM");
+    });
+  });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => done(new Error(`Fixture gateway did not start: ${output}`)), 5000);
+    const onData = () => { if (output.includes(`Codex Pocket: http://127.0.0.1:${port}`)) done(); };
+    const onExit = () => done(new Error(`Fixture gateway exited: ${output}`));
+    function done(error) {
+      clearTimeout(timer);
+      child.stdout.removeListener("data", onData);
+      child.removeListener("exit", onExit);
+      if (error) reject(error); else resolve();
+    }
+    child.stdout.on("data", onData);
+    child.once("exit", onExit);
+    onData();
+  });
+  const status = host => new Promise((resolve, reject) => {
+    const req = request(`http://127.0.0.1:${port}/api/auth`, { headers: { host } }, res => { res.resume(); res.once("end", () => resolve(res.statusCode)); });
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(await status("pocket.example:8443"), 200);
+  assert.equal(await status("pocket.example:8444"), 403);
+  assert.equal(await status("unconfigured.example:8443"), 403);
 });

@@ -41,6 +41,7 @@ type Wire = {
   close(): void;
 };
 type Options = {
+  accessUrls?: string[];
   host: string;
   port: number;
   ws?: string;
@@ -5837,6 +5838,7 @@ async function main(): Promise<void> {
   const settings = loadLocalSettings();
   const launchArgs = process.argv.slice(2);
   const options = parseArgs(launchArgs, {
+    accessUrls: settings.config.accessUrls,
     host: settings.config.lanEnabled ? settings.config.host : SAFE_CONFIG.host,
     port: settings.config.port,
     localName: settings.config.localName,
