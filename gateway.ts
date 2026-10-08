@@ -570,6 +570,8 @@ export function settingsNeedRestart(settings: LocalSettings, options: Options, a
   return desired.host !== options.host
     || desired.port !== options.port
     || desired.localName !== options.localName
+    || JSON.stringify((validateAccessUrls(settings.config.accessUrls) ?? []).sort())
+      !== JSON.stringify((validateAccessUrls(options.accessUrls) ?? []).sort())
     || !secretMatches(desiredPin ?? "", auth.pin ?? "")
     || machineConfigurationsDiffer(desired.machines, options.machines);
 }

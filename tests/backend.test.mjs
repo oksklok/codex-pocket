@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ADAPTER_FILES, FEATURES, gatewayRequest, localManifest, manualRollbackDecision, planFleet, selectMachines } from "../scripts/deploy.mjs";
 import { projectEvents } from "../dsh/projection.mjs";
-import { allowedBrowserHost, handleControlRequest, handleRequest, validateLocalConfig } from "../gateway.ts";
+import { allowedBrowserHost, handleControlRequest, handleRequest, settingsNeedRestart, validateLocalConfig } from "../gateway.ts";
 
 function temporary(t, prefix) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -246,7 +246,23 @@ test("configured proxy authorities preserve Host, origin, authentication and con
   finally { if (before === undefined) delete process.env.CODEX_POCKET_DATA_DIR; else process.env.CODEX_POCKET_DATA_DIR = before; }
 });
 
-test("normal gateway startup passes configured proxy authorities into request options", async t => {
+test("access URL restart comparison normalizes origins, ignores order and equates absent/empty", () => {
+  const config = { host: "127.0.0.1", port: 4173, lanEnabled: false, pin: null, localName: "Fixture", machines: [] };
+  const auth = { pin: null };
+  const urls = ["https://pocket.example:8443", "https://other.example"];
+  const compare = (saved, running) => settingsNeedRestart({ config: { ...config, accessUrls: saved } }, { ...config, accessUrls: running }, auth, [], undefined);
+  assert.equal(compare(urls, urls), false);
+  assert.equal(compare(["https://OTHER.example:443/", "https://pocket.example:8443", "https://other.example"], urls), false);
+  assert.equal(compare(undefined, []), false);
+  assert.equal(compare([], undefined), false);
+  assert.equal(compare(undefined, undefined), false);
+  assert.equal(compare([], []), false);
+  for (const changed of [[], [...urls, "https://new.example"], [urls[0]], ["https://new.example:8443", urls[1]], ["https://pocket.example:8444", urls[1]], ["http://pocket.example:8443", urls[1]]])
+    assert.equal(compare(changed, urls), true);
+  assert.equal(compare(urls, undefined), true);
+});
+
+test("normal gateway startup passes proxy authorities and settings saves report required restarts", async t => {
   const root = temporary(t, "pocket-proxy-startup-");
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -257,9 +273,10 @@ test("normal gateway startup passes configured proxy authorities into request op
   await once(reservation, "listening");
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
+  const accessUrls = ["https://pocket.example:8443", "https://other.example"];
   writeFileSync(join(root, ".codex-pocket.local.json"), JSON.stringify({
     host: "127.0.0.1", port, lanEnabled: false, pin: null, localName: "Fixture",
-    machines: [{ name: "Fixture", ssh: "fixture" }], accessUrls: ["https://pocket.example:8443"],
+    machines: [{ name: "Fixture", ssh: "fixture" }], accessUrls,
   }));
   const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../gateway.ts", import.meta.url))], {
     env: { ...process.env, HOME: root, CODEX_HOME: root, CODEX_POCKET_DATA_DIR: root, CODEX_POCKET_HEADLESS: "1", CODEX_POCKET_PIN: "", PATH: `${bin}:${process.env.PATH}` },
@@ -298,4 +315,27 @@ test("normal gateway startup passes configured proxy authorities into request op
   assert.equal(await status("pocket.example:8443"), 200);
   assert.equal(await status("pocket.example:8444"), 403);
   assert.equal(await status("unconfigured.example:8443"), 403);
+  const settings = value => new Promise((resolve, reject) => {
+    const req = request(`http://127.0.0.1:${port}/api/settings`, {
+      method: value === undefined ? "GET" : "POST", headers: { "content-type": "application/json" },
+    }, res => {
+      const chunks = [];
+      res.on("data", chunk => chunks.push(chunk));
+      res.on("end", () => {
+        try { assert.equal(res.statusCode, 200); resolve(JSON.parse(Buffer.concat(chunks))); }
+        catch (error) { reject(error); }
+      });
+    });
+    req.on("error", reject);
+    req.end(value === undefined ? undefined : JSON.stringify({ accessUrls: value }));
+  });
+  assert.equal((await settings()).restartRequired, false);
+  assert.equal((await settings(["https://OTHER.example:443/", accessUrls[0]])).restartRequired, false);
+  const changed = await settings(["https://new.example:8443", accessUrls[1]]);
+  assert.equal(changed.saved, true);
+  assert.equal(changed.restartRequired, true);
+  assert.equal((await settings()).restartRequired, true);
+  assert.equal(await status("pocket.example:8443"), 200, "running allowlist stays unchanged until restart");
+  assert.equal(await status("new.example:8443"), 403);
+  assert.equal((await settings(accessUrls)).restartRequired, false, "restoring active settings clears restart requirement");
 });
