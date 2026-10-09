@@ -3456,7 +3456,12 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
           // completion replace it, unless a newer SSE update arrived while this read was in flight.
           if (message.complete && liveMessages.get(message.id) === liveBeforeRequest.get(message.id)) liveMessages.delete(message.id);
         }
-        for (const activity of turn.activities || []) historyActivities.set(activity.id, activity);
+        for (const activity of turn.activities || []) {
+          // Overlapping history can contain an older running/summary record. Keep the same
+          // terminal status, detail and timestamp guarantees as live activity reconciliation.
+          const existing = historyActivities.get(activity.id);
+          historyActivities.set(activity.id, mergeActivities(existing ? [existing] : [], [activity])[0]);
+        }
       }
       // A recent-page refresh must not rewind the older-page boundary, including exhausted history.
       if (olderPage || !historyPaginationLoaded) nextCursor = page.nextCursor;
