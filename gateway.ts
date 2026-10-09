@@ -1620,11 +1620,18 @@ function activityFromItem(
   return null;
 }
 
-function normalizeHistoryTurn(turn: any, hydratedItems?: any[]): JsonObject {
+export function normalizeHistoryTurn(turn: any, hydratedItems?: any[]): JsonObject {
   const completedAt = turn?.completedAt ? numberTime(turn.completedAt, 0) : null;
   const createdAt = numberTime(historyTurnTimestamp(turn, completedAt ?? 0), completedAt ?? 0);
+  // Paginated history stores item times on the envelope. Dropping them rewinds
+  // timestamp-less tools and steering messages to the turn's start on recovery.
+  const hydrated = hydratedItems?.map(entry => ({ ...entry.item,
+    ...(Number.isFinite(entry.startedAtMs) ? {
+      createdAt: entry.item.createdAt ?? entry.item.created_at ?? entry.startedAtMs,
+    } : {}),
+  }));
   const itemsById = new Map((Array.isArray(turn?.items) ? turn.items : []).map((item: any) => [String(item.id), item]));
-  for (const item of hydratedItems ?? []) {
+  for (const item of hydrated ?? []) {
     const previous = itemsById.get(String(item.id)) as any;
     itemsById.set(String(item.id), {
       ...previous,
@@ -1644,7 +1651,7 @@ function normalizeHistoryTurn(turn: any, hydratedItems?: any[]): JsonObject {
     )).filter(Boolean).slice(-MAX_HISTORY_ACTIVITIES_PER_TURN);
   return {
     id: String(turn?.id ?? ""),
-    firstUserMessageId: hydratedItems?.find(item => item.type === "userMessage")?.id ?? null,
+    firstUserMessageId: hydrated?.find(item => item.type === "userMessage")?.id ?? null,
     status: String(turn?.status ?? "unknown"),
     createdAt,
     completedAt,
@@ -2374,7 +2381,7 @@ export class MachineRuntime {
             const itemId = item?.id == null ? "" : String(item.id);
             if (!itemId || itemIds.has(itemId)) continue;
             itemIds.add(itemId);
-            items.push(item);
+            items.push(entry);
             this.rememberItem(item, String(entry?.turnId ?? turnId));
           }
           const nextCursor = itemPage?.nextCursor ? String(itemPage.nextCursor) : null;

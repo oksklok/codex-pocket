@@ -8,6 +8,7 @@ import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once, EventEmitter } from "node:events";
+import { normalizeHistoryTurn } from "../gateway.ts";
 
 async function stopBrowser(child, dir, graceMs = 1000) {
   const exited = () => child.exitCode !== null || child.signalCode !== null || !child.pid;
@@ -696,6 +697,78 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
       if (following) assert.ok(await evaluate("document.scrollingElement.scrollHeight - document.scrollingElement.scrollTop - document.scrollingElement.clientHeight < 2"));
       else assert.equal(await evaluate("document.scrollingElement.scrollTop"), top);
       assert.equal((await visibleActivities()).length, 6);
+    }
+  });
+  await t.test("native history timestamps keep initiating and steering messages between their activities", async () => {
+    const base = 1_790_000_000_000;
+    const items = [
+      { id: "order-user", type: "userMessage", content: [{ type: "text", text: "Initiating request. ".repeat(90) }] },
+      { id: "order-command", type: "commandExecution", command: "git status", status: "completed" },
+      { id: "order-comment", type: "agentMessage", text: "Commentary before steering. ".repeat(50), phase: "commentary" },
+      { id: "order-steer", type: "userMessage", content: [{ type: "text", text: "Mid-turn steering" }] },
+      { id: "order-files", type: "fileChange", changes: [{ path: "fixture.js" }], status: "completed" },
+      { id: "order-image", type: "imageView", path: "/fixture/image.png" },
+      { id: "order-later", type: "agentMessage", text: "Later commentary. ".repeat(60), phase: "commentary" },
+    ];
+    // Native history puts timestamps on the page entries, not inside item. Summary history
+    // contains messages only, while the hydrated page includes tools and mid-turn steering.
+    const entries = items.map((item, i) => ({ turnId: "order-turn", item,
+      startedAtMs: base + 1000 + i * 1000, completedAtMs: base + 1500 + i * 1000 }));
+    const rawTurn = { id: "order-turn", startedAt: base / 1000, status: "completed", items: items.filter(i => /Message$/.test(i.type)) };
+    const live = normalizeHistoryTurn({ ...rawTurn, items: entries.map(e => ({ ...e.item, createdAt: e.startedAtMs })) });
+    const expected = items.map(i => `${/Message$/.test(i.type) ? "message" : "activity"}:${i.id}`);
+    const order = () => evaluate("[...document.querySelector('#conversation').children].map(n => n.dataset.timelineKey)");
+    const emit = (name, value) => { for (const res of connections) res.write(`event: ${name}\ndata: ${JSON.stringify(value)}\n\n`); };
+    for (const [following, missedCards, envelopeTimes] of [[false, false, true], [true, false, true], [true, true, true], [false, false, false]]) {
+      historyTurns = [];
+      liveMessages = [];
+      fixtureTurn = null;
+      thread.id = `native-order-${following}-${missedCards}-${envelopeTimes}`;
+      const initialReads = historyReads;
+      sendSnapshot();
+      await waitFor(() => historyReads > initialReads, "ordering task history read");
+      await waitFor(() => evaluate("!fixtureApp.historyLoading"), "ordering task ready");
+      const missed = missedCards ? new Set(["order-files", "order-image"]) : new Set();
+      for (const entry of entries.filter(e => !missed.has(e.item.id))) {
+        const value = [...live.messages, ...live.activities].find(v => v.id === entry.item.id);
+        if (value.kind) value.detail = "Retained live activity detail";
+        emit(value.kind ? "activity" : "message", value);
+      }
+      await waitFor(() => evaluate("Boolean(document.querySelector('[data-message-id=order-later]'))"), "live ordering sequence");
+      assert.deepEqual(await order(), expected.filter(key => !missed.has(key.split(":")[1])));
+      await evaluate(following ? "document.scrollingElement.scrollTop = document.scrollingElement.scrollHeight"
+        : "document.scrollingElement.scrollTop = document.querySelector('[data-message-id=order-comment]').offsetTop - 250");
+      await waitFor(() => evaluate(following ? "document.querySelector('#jump-latest').hidden" : "!document.querySelector('#jump-latest').hidden"), "reading intent");
+      let top = await evaluate("document.scrollingElement.scrollTop");
+      let anchor = await evaluate("document.querySelector('[data-message-id=order-comment]').getBoundingClientRect().top");
+      await evaluate("document.querySelector('#message-text').value = 'Ordering draft'; document.querySelector('#message-text').setSelectionRange(3, 8)");
+      liveMessages = live.messages;
+      historyTurns = [normalizeHistoryTurn(rawTurn, envelopeTimes ? entries : entries.map(e => ({ ...e, startedAtMs: null, completedAtMs: null })))];
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const reads = historyReads;
+        await evaluate("setFixtureVisibility('hidden'); setFixtureVisibility('visible')");
+        await waitFor(() => historyReads > reads, "native foreground history read");
+        await waitFor(() => evaluate("!fixtureApp.historyLoading"), "native foreground reconciliation");
+        const shift = await evaluate("document.querySelector('[data-message-id=order-comment]').getBoundingClientRect().top") - anchor;
+        assert.deepEqual(await order(), expected, `cycle ${cycle}; reading anchor displaced ${shift}px`);
+        if (!missedCards || cycle > 0) {
+          assert.equal(await evaluate("document.scrollingElement.scrollTop"), top, `following=${following}, missed=${missedCards}, envelope=${envelopeTimes}, cycle=${cycle}`);
+          assert.ok(Math.abs(shift) < 1, "unchanged content keeps its reading anchor");
+        } else {
+          // Newly recovered cards add height; later identical recoveries must remain stable.
+          top = await evaluate("document.scrollingElement.scrollTop");
+          anchor = await evaluate("document.querySelector('[data-message-id=order-comment]').getBoundingClientRect().top");
+        }
+        assert.equal(await evaluate("document.querySelector('#message-text').value"), "Ordering draft");
+        assert.deepEqual(await evaluate("[document.querySelector('#message-text').selectionStart, document.querySelector('#message-text').selectionEnd]"), [3, 8]);
+        assert.equal(await evaluate("fixtureApp.nextCursor"), null);
+        assert.equal(await evaluate("[...document.querySelectorAll('[data-activity-id]')].filter(n => !['order-files', 'order-image'].includes(n.dataset.activityId)).every(n => n.textContent.includes('Retained live activity detail'))"), true);
+      }
+      // Following intent and deliberate reading still govern subsequent live output.
+      emit("message", { ...message("order-next", "New output. ".repeat(100), base + 9000), turnId: "order-turn" });
+      await waitFor(() => evaluate("Boolean(document.querySelector('[data-message-id=order-next]'))"), "new output after recovery");
+      await waitFor(() => evaluate(following ? "document.scrollingElement.scrollHeight - document.scrollingElement.scrollTop - document.scrollingElement.clientHeight < 2"
+        : `document.scrollingElement.scrollTop === ${top}`), "reading intent after recovery");
     }
   });
   assert.deepEqual(exceptions, []);

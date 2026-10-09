@@ -3459,7 +3459,7 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
         for (const activity of turn.activities || []) {
           // Overlapping history can contain an older running/summary record. Keep the same
           // terminal status, detail and timestamp guarantees as live activity reconciliation.
-          const existing = historyActivities.get(activity.id);
+          const existing = historyActivities.get(activity.id) || liveActivities.get(activity.id);
           historyActivities.set(activity.id, mergeActivities(existing ? [existing] : [], [activity])[0]);
         }
       }

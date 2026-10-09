@@ -10,7 +10,46 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ADAPTER_FILES, FEATURES, gatewayRequest, localManifest, manualRollbackDecision, planFleet, selectMachines } from "../scripts/deploy.mjs";
 import { projectEvents } from "../dsh/projection.mjs";
-import { allowedBrowserHost, handleControlRequest, handleRequest, settingsNeedRestart, validateLocalConfig } from "../gateway.ts";
+import { allowedBrowserHost, handleControlRequest, handleRequest, normalizeHistoryTurn, settingsNeedRestart, validateLocalConfig } from "../gateway.ts";
+import { orderTranscriptEntries } from "../public/pocket-logic.js";
+
+test("hydrated history uses item start times without losing summary content or steering chronology", () => {
+  const base = 1_790_000_000_000;
+  const items = [
+    { id: "user", type: "userMessage", content: [{ type: "text", text: "Start" }] },
+    { id: "command", type: "commandExecution", command: "git status", status: "completed" },
+    { id: "comment", type: "agentMessage", text: "Before steer", phase: "commentary" },
+    { id: "steer", type: "userMessage", content: [{ type: "text", text: "Steer" }] },
+    { id: "files", type: "fileChange", status: "failed", changes: [{ path: "test.js" }] },
+    { id: "image", type: "imageView", path: "/fixture.png" },
+    { id: "reasoning", type: "reasoning", summary: [] },
+  ];
+  const entries = items.map((item, index) => ({ item, startedAtMs: base + 1000 * (index + 1), completedAtMs: base + 20000 }));
+  const turn = normalizeHistoryTurn({ id: "turn", startedAt: base / 1000, status: "completed",
+    items: [items[0], items[3], { ...items[6], summary: ["Retained summary"] }] }, entries);
+  const timeline = orderTranscriptEntries([
+    ...turn.messages.map(value => ({ type: "message", value })),
+    ...turn.activities.map(value => ({ type: "activity", value })),
+  ]);
+  assert.deepEqual(timeline.map(e => e.value.id), items.map(i => i.id));
+  assert.deepEqual(timeline.map(e => e.value.createdAt), entries.map(e => e.startedAtMs));
+  assert.equal(turn.firstUserMessageId, "user");
+  assert.equal(turn.activities.find(a => a.id === "files").status, "failed");
+  assert.match(turn.activities.find(a => a.id === "reasoning").detail, /Retained summary/);
+  // Native item timestamps still take precedence; legacy whole-turn history retains its fallback.
+  for (const field of ["createdAt", "created_at"]) {
+    const native = normalizeHistoryTurn({ id: "turn", startedAt: base / 1000 }, [{ ...entries[0], item: { ...items[0], [field]: base + 42 } }]);
+    assert.equal(native.messages[0].createdAt, base + 42);
+  }
+  const untimed = normalizeHistoryTurn({ id: "turn", startedAt: base / 1000,
+    items: [{ ...items[0], createdAt: base + 42 }] }, [{ ...entries[0], startedAtMs: null }]);
+  assert.equal(untimed.messages[0].createdAt, base + 42);
+  const legacy = normalizeHistoryTurn({ id: "turn", startedAt: base / 1000, items });
+  assert.deepEqual(orderTranscriptEntries([
+    ...legacy.messages.map(value => ({ type: "message", value })),
+    ...legacy.activities.map(value => ({ type: "activity", value })),
+  ]).map(e => e.value.id), items.slice(0, -1).map(i => i.id));
+});
 
 function temporary(t, prefix) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
