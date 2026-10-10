@@ -184,6 +184,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: de
 .destination-text { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .destination-text #destination-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-text #destination-provider { flex: none; overflow: visible; }
+#destination-provider::before { content: "·"; margin-right: 5px; color: var(--subtle); }
 .destination-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform 160ms ease; }
 .destination-button[aria-expanded="true"] svg { transform: rotate(180deg); }
 .destination-backdrop { position: fixed; z-index: 8; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(8,8,8,.62); opacity: 0; transition: opacity 160ms ease; }

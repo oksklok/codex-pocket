@@ -344,6 +344,8 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
       assert.equal(rows.find(r => r.name === "Fixture").text, "GPT-6 Astra · High");
       assert.equal(rows.find(r => r.name === "Fixture").selected, "true");
       assert.equal(rows.find(r => r.name === "Fixture").provider, "OpenAI");
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('#destination-provider'), '::before').content"), '"·"', "top-bar provider keeps its dot");
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.destination-task .provider-label'), '::before').content"), "none", "task providers do not duplicate their explicit dot");
       assert.equal(rows.find(r => r.name === "DeepSeek task").text, "DeepSeek V4.1 Flash · High");
       assert.equal(rows.find(r => r.name === "No metadata").text, "");
       assert.equal(rows.find(r => r.name === "Model only").text, "GPT-6 Astra");
