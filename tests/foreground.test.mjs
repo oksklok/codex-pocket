@@ -90,6 +90,14 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     else if (url.pathname === "/api/settings") json({ settings: { localName: machine.name, machines: [] } });
     else if (url.pathname === "/api/machines") json({ machines: [machine] });
     else if (url.pathname === "/api/threads") json({ threads: [thread] });
+    else if (url.pathname === "/api/thread/settings") {
+      let body = "";
+      req.on("data", chunk => { body += chunk; });
+      req.on("end", () => {
+        const { model, effort } = JSON.parse(body);
+        json({ updated: true, model, reasoningEffort: effort });
+      });
+    }
     else if (url.pathname === "/api/navigation") {
       const value = structuredClone({ machines: navigationMachines || [{ ...machine, tasks: navigationTasks }] });
       for (const member of value.machines) for (const task of member.tasks) task.archived = url.searchParams.get("archived") === "true";
@@ -303,6 +311,9 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
   });
 
   await t.test("dense task rows keep metadata, controls and live DSH updates separate at mobile and desktop widths", async () => {
+    const models = ["astra", "sol"].map(name => ({ model: `gpt-6-${name}`, displayName: `GPT-6 ${name === "astra" ? "Astra" : "Sol"}`,
+      supportedReasoningEfforts: ["low", "high"].map(reasoningEffort => ({ reasoningEffort })) }));
+    await evaluate(`fixtureApp.mergeState({ model: 'gpt-6-astra', reasoningEffort: 'high', models: ${JSON.stringify(models)} })`);
     const dshTask = { id: "dsh-selected", name: "DeepSeek task", model: "deepseek-flash", modelDisplayName: "DeepSeek V4.1 Flash", reasoningEffort: "high", status: "idle" };
     navigationMachines = [
       { ...machine, group: "local", tasks: [
@@ -378,12 +389,22 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     navigationMachines[0].tasks[0].reasoningEffort = "ultra";
     await evaluate("document.querySelector('#destination-refresh').click()");
     await waitFor(() => evaluate("!document.querySelector('#destination-refresh').disabled"), "metadata-only refresh");
-    assert.equal(await evaluate("codexRow.querySelector('.task-metadata').textContent"), "GPT-6 Astra · Ultra");
+    assert.equal(await evaluate("codexRow.querySelector('.task-metadata').textContent"), "GPT-6 Astra · High", "catalog refresh cannot replace selected live settings");
     assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true]') === codexRow && codexMenu.parentElement.open && document.activeElement === codexMenu"), true);
+    const catalogReads = requests.filter(r => r.path === "/api/navigation").length;
+    const taskScroll = await evaluate("document.querySelector('#destination-list').scrollTop");
+    await evaluate("document.querySelector('#model-select').value = 'gpt-6-sol'; document.querySelector('#model-select').dispatchEvent(new Event('change'))");
+    await waitFor(() => evaluate("codexRow.querySelector('.task-metadata').textContent === 'GPT-6 Sol · High' && !document.querySelector('#effort-select').disabled"), "confirmed Codex model change");
+    await evaluate("document.querySelector('#effort-select').value = 'low'; document.querySelector('#effort-select').dispatchEvent(new Event('change'))");
+    await waitFor(() => evaluate("codexRow.querySelector('.task-metadata').textContent === 'GPT-6 Sol · Low'"), "confirmed Codex effort change");
+    assert.equal(requests.filter(r => r.path === "/api/navigation").length, catalogReads, "settings updates need no catalog reads");
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true]') === codexRow && codexMenu.parentElement.open && document.activeElement === codexMenu"), true);
+    assert.equal(await evaluate("document.querySelector('#destination-list').scrollTop"), taskScroll);
+    assert.equal(await evaluate("document.querySelector('.destination-task[data-thread-id=model-only] .task-metadata').textContent"), "GPT-6 Astra", "other tasks retain their own settings");
     await evaluate("document.querySelector('#show-archived').click(); document.querySelector('#destination-refresh').click()");
     await waitFor(() => evaluate("document.querySelectorAll('.destination-task.archived-available').length === 6 && !document.querySelector('#destination-refresh').disabled"), "archived metadata");
     assert.equal(await evaluate("[...document.querySelectorAll('.destination-task')].every(row => row.disabled)"), true);
-    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true] .task-metadata').textContent"), "GPT-6 Astra · Ultra");
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true] .task-metadata').textContent"), "GPT-6 Sol · Low");
     assert.equal(await evaluate("[...document.querySelectorAll('.task-action-menu button')].some(button => button.textContent === 'Unarchive')"), true);
     await evaluate("document.querySelector('#show-archived').click()");
     await evaluate(`fixtureApp.mergeState({ machineId: 'local:dsh', provider: 'deepseek', thread: ${JSON.stringify(dshTask)}, model: 'deepseek-v4-pro', reasoningEffort: 'low', models: [] });
@@ -972,5 +993,6 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     }
   });
   assert.deepEqual(exceptions, []);
-  assert.equal(requests.filter(r => r.method !== "GET").length, 0, "foreground recovery must never submit a mutation");
+  assert.deepEqual(requests.filter(r => r.method !== "GET").map(r => [r.method, r.path]),
+    [["POST", "/api/thread/settings"], ["POST", "/api/thread/settings"]], "only the two explicit settings changes may submit mutations");
 });

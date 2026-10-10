@@ -1097,7 +1097,7 @@ function taskSeparator() {
 }
 
 function renderTaskMetadata(element, task, selected = false) {
-  const details = selected && state?.provider === "deepseek" ? taskModelDetails(state, state.models) : task;
+  const details = selected ? taskModelDetails(state, state.models) : task;
   const model = details.modelDisplayName || modelDisplayName({ model: details.model });
   const effort = details.reasoningEffort && details.reasoningEffort !== "Not exposed" ? effortLabel(details.reasoningEffort) : "";
   if (element.textContent === [model, effort].filter(Boolean).join(" · ")) return;
@@ -1129,7 +1129,7 @@ function renderDestinationSwitcher(force = false) {
     machineReorderMode, machineReorderBusy, machineReorderDraft,
   ], (key, value) => ["model", "modelDisplayName", "reasoningEffort"].includes(key) ? undefined : value);
   if (renderKey === destinationRenderKey) {
-    // Metadata-only refreshes and selected DSH settings update text in place,
+    // Metadata-only refreshes and selected task settings update text in place,
     // preserving rows, open action menus, focus, and scroll position.
     const tasks = new Map((navigationCatalog?.machines || []).flatMap(machine =>
       (machine.tasks || []).map(task => [draftKey(machine.id, task.id), task])));
