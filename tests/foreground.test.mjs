@@ -234,6 +234,34 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     assert.equal(await evaluate("[...document.querySelectorAll('.destination-task')].find(row => row.querySelector('.destination-task-text').textContent === 'Task 2').querySelector('.destination-task-status').textContent"), "Working");
   });
 
+  await t.test("centered task actions keep menus within the drawer and restore focus without scrolling", async () => {
+    for (const width of [320, 390, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
+      await waitFor(() => evaluate("Math.abs(document.querySelector('#destination-switcher').getBoundingClientRect().left) < .01"), "Tasks slide complete");
+      await evaluate("document.querySelector('#destination-list').scrollTop = 350; new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      for (const edge of ["top", "bottom"]) {
+        const boxes = await evaluate(`(() => {
+          const list = document.querySelector('#destination-list'), bounds = list.getBoundingClientRect();
+          const visible = [...list.querySelectorAll('.destination-entry')].filter(e => {const r=e.getBoundingClientRect(); return r.top>=bounds.top && r.bottom<=Math.min(bounds.bottom,innerHeight);});
+          const entry = visible.at(${edge === "top" ? 0 : -1});
+          window.centeredMenu = entry.querySelector('summary'); centeredMenu.focus({preventScroll:true}); centeredMenu.click();
+          const box = e => {const r=e.getBoundingClientRect(); return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};};
+          return {row:box(entry),menu:box(entry.querySelector('.task-action-menu')),drawer:box(document.querySelector('#destination-switcher')),list:box(list),top:list.scrollTop};
+        })()`);
+        assert.ok(boxes.menu.left >= boxes.drawer.left && boxes.menu.right <= Math.min(boxes.drawer.right, width));
+        assert.ok(boxes.menu.top >= boxes.list.top && boxes.menu.bottom <= Math.min(boxes.list.bottom, 844));
+        if (edge === "top") assert.ok(boxes.menu.top >= boxes.row.bottom + 3, "menu opens below top row");
+        else assert.ok(boxes.menu.bottom <= boxes.row.top - 3, "menu opens above bottom row");
+        await evaluate("centeredMenu.parentElement.querySelector('.task-action-menu button').click()");
+        assert.equal(await evaluate("document.querySelector('#task-dialog').open && document.activeElement === document.querySelector('#task-dialog-name')"), true);
+        await evaluate("document.querySelector('#task-dialog-cancel').click()");
+        assert.equal(await evaluate("document.activeElement === centeredMenu"), true);
+        assert.equal(await evaluate("document.querySelector('#destination-list').scrollTop"), boxes.top);
+      }
+    }
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  });
+
   await t.test("Tasks search, expansion and shorter catalogs still clamp scroll normally", async () => {
     await evaluate("const search = document.querySelector('#destination-search'); search.value = 'Added Task'; search.dispatchEvent(new Event('input'))");
     assert.equal(await evaluate("document.querySelectorAll('.destination-task').length"), 1);
@@ -291,6 +319,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await waitFor(() => evaluate("document.querySelectorAll('.destination-task').length === 6 && !document.querySelector('#destination-refresh').disabled"), "mixed metadata catalog");
     for (const width of [320, 390, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
+      await waitFor(() => evaluate("Math.abs(document.querySelector('#destination-switcher').getBoundingClientRect().left) < .01"), "Tasks slide complete");
       const rows = await evaluate(`([...document.querySelectorAll('.destination-entry')].map(entry => {
         const row = entry.querySelector('.destination-task'), name = row.querySelector('.destination-task-name'), meta = row.querySelector('.task-metadata');
         const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
@@ -303,10 +332,12 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
         assert.equal(row.row.height, 48, `${width}px ${row.name}`);
         assert.equal(row.meta.height, row.text ? 14 : 0);
         assert.ok(row.meta.y >= row.nameBox.bottom);
-        assert.ok(row.meta.right > row.status.right, "metadata uses the width underneath status and actions");
+        assert.ok(row.meta.right <= row.status.x, "metadata stays clear of vertically centered status and actions");
+        assert.equal(row.nameBox.y - row.row.y, 8, "first text line keeps its position");
+        if (row.text) assert.equal(row.meta.y - row.row.y, 27, "second text line keeps its position");
         assert.ok(row.meta.right <= row.row.right && row.row.right <= width);
         const center = box => box.y + box.height / 2;
-        for (const control of [row.check, row.status, row.actions]) assert.ok(Math.abs(center(control) - center(row.nameBox)) <= 1, `controls align with first row: ${JSON.stringify(row)}`);
+        for (const control of [row.check, row.status, row.actions]) assert.ok(Math.abs(center(control) - center(row.row)) <= 1, `controls center across the row: ${JSON.stringify(row)}`);
         assert.equal(row.ellipsis, "ellipsis");
         assert.equal(row.nowrap, "nowrap");
       }
@@ -321,6 +352,23 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
       assert.equal(await evaluate("document.querySelector('.destination-group.offline .machine-status').textContent"), "Offline");
       assert.equal(rows.find(r => r.name.startsWith("A very long")).clipped, true);
       assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
+      for (const theme of ["dark", "light"]) {
+        const hierarchy = await evaluate(`(() => {
+          document.documentElement.dataset.theme = '${theme}';
+          const row = document.querySelector('.destination-task[aria-current=true]');
+          const css = selector => getComputedStyle(row.querySelector(selector));
+          const tones = ['.destination-task-text', '.task-model', '.provider-label', '.task-effort'].map(s => css(s).color);
+          const separators = [...row.querySelectorAll('.task-separator')].map(s => ({ width:s.getBoundingClientRect().width, margin:getComputedStyle(s).marginInline, font:getComputedStyle(s).fontSize }));
+          return {tones, separators, sizes:[css('.destination-task-text').fontSize, css('.task-model').fontSize]};
+        })()`);
+        assert.equal(new Set(hierarchy.tones).size, 3, "primary, secondary and dim text remain distinct");
+        assert.equal(hierarchy.tones[2], hierarchy.tones[3], "provider and effort share the dim treatment");
+        assert.deepEqual(hierarchy.sizes, ["12px", "11px"]);
+        assert.ok(Math.abs(hierarchy.separators[0].width - hierarchy.separators[1].width) < .01, "both dots have the same rendered width");
+        assert.equal(hierarchy.separators[0].margin, hierarchy.separators[1].margin, "both dots use the same spacing");
+        assert.equal(hierarchy.separators[0].font, hierarchy.separators[1].font);
+      }
+      await evaluate("document.documentElement.dataset.theme = 'dark'");
     }
     // Finish viewport/layout reconciliation before testing metadata-only focus retention.
     await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");

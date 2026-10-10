@@ -247,8 +247,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .machine-name-block { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .machine-status { flex: none; color: var(--danger); font-size: var(--text-label); font-weight: 600; white-space: nowrap; }
 /* Providers are plain secondary metadata after a subtle separator, never a bordered badge. */
-.provider-label { flex: none; color: var(--muted); font-size: var(--text-label); font-weight: 400; white-space: nowrap; }
-.provider-label::before { content: "·"; margin-right: 5px; color: var(--subtle); }
+.provider-label { flex: none; color: var(--subtle); font-size: var(--text-label); font-weight: 400; white-space: nowrap; }
+.task-separator { flex: none; margin-inline: 2px; color: var(--subtle); font-size: var(--text-secondary); white-space: pre; }
 .machine-header-controls { display: flex; align-items: center; flex: none; gap: 4px; margin-left: auto; }
 .machine-info { color: var(--muted); }
 .wake-action { position: relative; display: flex; flex: none; }
@@ -269,13 +269,15 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-check svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .task-actions summary svg { display: block; width: 20px; height: 20px; fill: currentColor; }
 .destination-task-label { display: contents; white-space: nowrap; }
-.destination-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.destination-task-name { display: flex; align-items: center; min-width: 0; }
 /* Task names keep one primary-text treatment in every selection state; selection stays on the row. */
 .destination-task-name > .destination-task-text { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-label); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .destination-check, .destination-task-label > span, .destination-task-status { grid-row: 1; line-height: 16px; }
+.destination-check, .destination-task-status { grid-row: 1 / 3; }
 .destination-task-label > span { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-label > small { grid-column: 2 / -1; grid-row: 2; min-width: 0; line-height: 16px; }
-.destination-task-label > .task-metadata { color: var(--muted); font-size: var(--text-secondary); font-weight: 400; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.destination-task-label > .task-metadata { grid-column: 2; color: var(--muted); font-size: var(--text-secondary); font-weight: 400; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-effort { color: var(--subtle); }
 .destination-task-label > .task-selection-error { grid-row: 3; }
 .destination-task-status { grid-column: 3; color: var(--accent); font-size: var(--text-label); font-weight: 600; }
 /* One semantic tone per state; Working/Done and the temporary busy labels keep the accent above. */
@@ -882,8 +884,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   /* The image viewer stays dark in both themes; its close control brightens to the same shade as focus. */
   .image-viewer button:hover:not(:disabled) { background-color: #444444; }
 }
-.task-actions { top: 0; }
-.task-actions summary { width: var(--icon-size); height: 32px; }
+.task-actions { top: calc((100% - var(--icon-size)) / 2); }
+.task-actions summary { width: var(--icon-size); height: var(--icon-size); }
 .task-action-menu { padding: 4px; border-radius: var(--control-radius); }
 .task-actions button { min-height: 36px; padding: 8px; }
 

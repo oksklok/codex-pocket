@@ -1092,10 +1092,19 @@ function taskStatusClassName(value) {
   if (value === "Waiting" || value === "Stopped") return "destination-task-status warning";
   return "destination-task-status";
 }
-function destinationTaskMetadata(task, selected = false) {
+function taskSeparator() {
+  return Object.assign(document.createElement("span"), { className: "task-separator", textContent: " · " });
+}
+
+function renderTaskMetadata(element, task, selected = false) {
   const details = selected && state?.provider === "deepseek" ? taskModelDetails(state, state.models) : task;
-  return [details.modelDisplayName || modelDisplayName({ model: details.model }),
-    details.reasoningEffort && details.reasoningEffort !== "Not exposed" ? effortLabel(details.reasoningEffort) : ""].filter(Boolean).join(" · ");
+  const model = details.modelDisplayName || modelDisplayName({ model: details.model });
+  const effort = details.reasoningEffort && details.reasoningEffort !== "Not exposed" ? effortLabel(details.reasoningEffort) : "";
+  if (element.textContent === [model, effort].filter(Boolean).join(" · ")) return;
+  element.replaceChildren();
+  if (model) element.append(Object.assign(document.createElement("span"), { className: "task-model", textContent: model }));
+  if (model && effort) element.append(taskSeparator());
+  if (effort) element.append(Object.assign(document.createElement("span"), { className: "task-effort", textContent: effort }));
 }
 
 function renderDestinationSwitcher(force = false) {
@@ -1127,8 +1136,7 @@ function renderDestinationSwitcher(force = false) {
     for (const row of elements.destinationList.querySelectorAll('.destination-task')) {
       const task = tasks.get(draftKey(row.dataset.machineId, row.dataset.threadId));
       const metadata = row.querySelector('.task-metadata');
-      const text = destinationTaskMetadata(task || {}, row.getAttribute("aria-current") === "true");
-      if (metadata && metadata.textContent !== text) metadata.textContent = text;
+      if (metadata) renderTaskMetadata(metadata, task || {}, row.getAttribute("aria-current") === "true");
     }
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
     if (status && !destinationSelection) {
@@ -1359,10 +1367,12 @@ function renderDestinationSwitcher(force = false) {
       // Provider labels appear on rows only when this machine actually exposes several.
       if (multiProvider) {
         const taskProvider = providerLabel(member.provider);
-        if (taskProvider) taskName.append(taskProvider);
+        if (taskProvider) taskName.append(taskSeparator(), taskProvider);
       }
       label.append(taskName);
-      label.append(Object.assign(document.createElement("small"), { className: "task-metadata", textContent: destinationTaskMetadata(task, selected) }));
+      const metadata = Object.assign(document.createElement("small"), { className: "task-metadata" });
+      renderTaskMetadata(metadata, task, selected);
+      label.append(metadata);
       const taskError = [newTaskLeaveWarning, destinationTaskError].find(error => error?.machineId === member.id && error?.threadId === task.id)?.message || "";
       if (taskError) label.append(Object.assign(document.createElement("small"), { className: "task-selection-error", textContent: taskError }));
       const status = document.createElement("span");

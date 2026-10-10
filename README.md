@@ -6,7 +6,7 @@ Codex Pocket is an unofficial community project and is not affiliated with or en
 
 ## Screenshots
 
-Real Pocket UI with synthetic demo data only.
+Pocket UI with synthetic demo data only. These screenshots predate the two-line Tasks rows and current composer refinements; see the [UI guide](docs/ui-style-guide.md) for current conventions.
 
 | Monitor and control from your phone | Switch tasks across machines |
 | --- | --- |

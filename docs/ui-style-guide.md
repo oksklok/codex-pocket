@@ -36,7 +36,7 @@ Neutral surfaces carry most structure; semantic color is reserved for actions, s
 - Primary actions use the accent treatment.
 - Secondary actions use the raised neutral surface.
 - Destructive actions use the danger treatment.
-- Icon-only controls use outline glyphs and an `aria-label`.
+- Icon-only controls use outline glyphs and an `aria-label`; the task action menu uses three filled dots.
 - Pocket emits no browser-native `title` tooltips.
 - Disabled controls stay visually inert.
 - Hover feedback is only applied on hover-capable devices.
@@ -70,6 +70,10 @@ Settings is a modal overlay with a centered card and a normal action row at the 
 
 Concealed drawers are `inert`. On wide layouts, docked sidebars are navigation rather than modal dialogs, so they have no backdrop or close button.
 
+Tasks use permanent 48px two-line rows. The task name is primary; the smaller model name is readable secondary text, with provider and reasoning effort dimmer. Providers appear beside the task name when a machine exposes several providers; model and effort occupy the second line. Both lines use equally spaced dot separators and ellipsis, retaining full model names and omitting unavailable metadata. The checkmark, status, and action control are centered across the two lines; text stays clear of those controls. Selection uses the neutral highlight, and statuses retain their semantic colors.
+
+Reopening Tasks preserves list scroll. Metadata-only refreshes preserve row focus and open menus. Action menus stay within the drawer and open above or below their row without covering it.
+
 ## Transcript, activity, and composer
 
 Assistant Markdown is rendered with HTML disabled. Unsupported links are not activated, external images are not loaded, and authored Markdown `title` attributes are stripped to preserve the no-native-tooltip rule.
@@ -88,17 +92,19 @@ Activity display categories are:
 
 Reasoning, Review, and completed Question entries are semantic transcript content and are not controlled by those filters. A running structured Question stays out of the transcript while its picker is the active UI.
 
-The fullscreen composer preserves the current draft and transcript reading position. Goal and queued-message cards may be hidden while the composer is fullscreen without changing their state.
+Foreground recovery follows the latest content when the user was following it, without waiting for another live message. Deliberate older reading, manual scrolling, and text selection take priority. Loading older history preserves the reading anchor; recovery preserves message/activity order and existing transcript content while incomplete.
+
+The expanded composer fills the chat area on desktop and the viewport on narrow screens. It preserves the draft and returns to the saved reading position on manual collapse. Goal and queued-message cards are hidden while expanded without changing their state. Queued Next keeps text-only rows compact, with selectable message text before any attachments.
 
 ## Status and copy
 
 - Connecting: blue.
-- Working: accent green with pulse.
+- Working: accent green; the top-bar indicator pulses, while task-row status text stays static.
 - Done: accent green without pulse.
 - Waiting / Stopped: warning.
 - Failed / Unavailable: danger.
 
-Away-task unread indicators reuse the same semantic colors.
+Away-task unread indicators reuse the same semantic colors. Machine-level Tasks Unavailable is an exception and uses warning text.
 
 Use **Title Case** for compact headings/actions/status labels and **sentence case** for explanatory text and errors.
 
