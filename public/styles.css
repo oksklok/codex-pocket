@@ -256,11 +256,10 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-group.unavailable { opacity: .78; }
 .destination-group.unavailable .machine-status { color: var(--warning); }
 .destination-task {
-  width: 100%; min-width: 0; min-height: 40px; display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
-  grid-template-rows: 22px; align-items: center; align-content: start; gap: 4px 8px; padding: 8px; border: 1px solid transparent; border-radius: 8px;
+  width: 100%; min-width: 0; min-height: 48px; display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
+  grid-template-rows: 18px 14px; align-items: center; align-content: start; gap: 2px 8px; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px;
   background: transparent; color: var(--muted); cursor: pointer; text-align: left; font-size: var(--text-ui);
 }
-.destination-task:has(.destination-task-label > small) { grid-template-rows: 22px auto; }
 .destination-task:hover:not(:disabled), .destination-task:focus-visible { background: var(--selected-bg); color: var(--text); }
 /* Hover and selection share one neutral active surface; the selected + hovered pair keeps it explicitly. */
 .destination-task.selected, .destination-task.selected:hover:not(:disabled), .destination-task.selected:focus-visible { border-color: var(--selected-border); background: var(--selected-bg); color: var(--text); }
@@ -276,6 +275,8 @@ body.destination-open .destination-switcher { transform: translateX(0); }
 .destination-check, .destination-task-label > span, .destination-task-status { grid-row: 1; line-height: 16px; }
 .destination-task-label > span { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-task-label > small { grid-column: 2 / -1; grid-row: 2; min-width: 0; line-height: 16px; }
+.destination-task-label > .task-metadata { color: var(--muted); font-size: var(--text-secondary); font-weight: 400; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.destination-task-label > .task-selection-error { grid-row: 3; }
 .destination-task-status { grid-column: 3; color: var(--accent); font-size: var(--text-label); font-weight: 600; }
 /* One semantic tone per state; Working/Done and the temporary busy labels keep the accent above. */
 .destination-task-status.warning { color: var(--warning); }
@@ -754,7 +755,7 @@ textarea.input-free-text, .async-answer textarea { min-height: 52px; resize: ver
 .destination-entry { position: relative; }
 .destination-entry > .destination-task { grid-template-columns: 18px minmax(0,1fr) auto 28px; }
 .task-actions { position: absolute; top: 0; right: 0; font-size: var(--text-label); }
-.task-actions summary { display: grid; place-items: center; cursor: pointer; list-style: none; width: 40px; height: 38px; padding: 0; }
+.task-actions summary { display: grid; place-items: center; cursor: pointer; list-style: none; width: 40px; height: 32px; padding: 0; }
 .task-action-menu { position: fixed; z-index: 10; width: max-content; min-width: 92px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 4px 16px rgba(0,0,0,.22); }
 .task-actions summary::-webkit-details-marker { display: none; }
 .task-actions button { display: block; width: 100%; min-height: 38px; padding: 6px 8px; border: 0; background: var(--surface-strong); color: var(--text); text-align: left; border-radius: 5px; }
@@ -881,8 +882,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 
   /* The image viewer stays dark in both themes; its close control brightens to the same shade as focus. */
   .image-viewer button:hover:not(:disabled) { background-color: #444444; }
 }
-.task-actions { top: 2px; }
-.task-actions summary { width: var(--icon-size); height: var(--icon-size); }
+.task-actions { top: 0; }
+.task-actions summary { width: var(--icon-size); height: 32px; }
 .task-action-menu { padding: 4px; border-radius: var(--control-radius); }
 .task-actions button { min-height: 36px; padding: 8px; }
 

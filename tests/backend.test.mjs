@@ -9,9 +9,62 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpat
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ADAPTER_FILES, FEATURES, gatewayRequest, localManifest, manualRollbackDecision, planFleet, selectMachines } from "../scripts/deploy.mjs";
-import { projectEvents } from "../dsh/projection.mjs";
-import { allowedBrowserHost, handleControlRequest, handleRequest, normalizeHistoryTurn, settingsNeedRestart, validateLocalConfig } from "../gateway.ts";
-import { orderTranscriptEntries } from "../public/pocket-logic.js";
+import { projectEvents, taskModelSelection } from "../dsh/projection.mjs";
+import { allowedBrowserHost, handleControlRequest, handleRequest, MachineRuntime, PocketGateway, normalizeHistoryTurn, settingsNeedRestart, validateLocalConfig } from "../gateway.ts";
+import { orderTranscriptEntries, taskModelDetails } from "../public/pocket-logic.js";
+
+test("task catalogs keep per-task model intent without defaults or extra RPC reads", async () => {
+  const saved = taskModelSelection({ projections: { values: { modelSelection: {
+    next: { model: "deepseek-flash", reasoningEffort: "high" },
+    lastUsed: { model: "deepseek-v4-pro", reasoningEffort: "low" },
+  } } } });
+  assert.deepEqual(saved, { model: "deepseek-flash", reasoningEffort: "high" });
+  assert.deepEqual(taskModelSelection({}), { model: "", reasoningEffort: "" });
+  assert.deepEqual(taskModelSelection({ projections: { values: { modelSelection: { next: { model: "deepseek-flash" } } } } }),
+    { model: "deepseek-flash", reasoningEffort: "" });
+  const models = [{ model: "gpt-6-astra", displayName: "GPT-6 Astra", defaultReasoningEffort: "high" }];
+  assert.deepEqual(taskModelDetails({}, models), { model: "", modelDisplayName: "", reasoningEffort: "" });
+  assert.equal(taskModelDetails({ model: "gpt-6-astra" }, models).reasoningEffort, "");
+  assert.equal(taskModelDetails({ model: "Not exposed", reasoningEffort: "Not exposed" }).modelDisplayName, "");
+
+  // Exercise the real paginated catalog and normalization with an RPC boundary stub.
+  const gateway = Object.create(PocketGateway.prototype);
+  gateway.runtimes = new Map();
+  gateway.selectedMachineId = "codex";
+  const calls = [];
+  for (const [id, provider] of [["codex", "openai"], ["dsh", "deepseek"]]) {
+    const runtime = new MachineRuntime({}, { id, name: id, provider, ssh: null }, () => {});
+    Object.assign(runtime.state, { connected: true, thread: { id: "selected" }, models,
+      model: "deepseek-v4-pro", reasoningEffort: "low" });
+    runtime.rpc = { request: async (method, params) => {
+      calls.push({ id, method, params });
+      if (method === "thread/loaded/list") return { data: ["selected"], nextCursor: null };
+      assert.equal(method, "thread/list", "metadata must not add task reads or settings RPCs");
+      return params.cursor ? { data: [{ id: "missing", status: "notLoaded" }], nextCursor: null }
+        : { data: [{ id: "selected", model: "gpt-6-astra", reasoningEffort: "high", status: "idle" },
+          { id: "inactive", ...(provider === "deepseek" ? saved : { model: "gpt-6-astra", reasoningEffort: "medium" }), status: "notLoaded" }], nextCursor: "page-2" };
+    } };
+    gateway.runtimes.set(id, runtime);
+  }
+  for (const archived of [false, true]) {
+    calls.length = 0;
+    const catalog = await gateway.navigationCatalog(archived);
+    const task = (machine, id) => catalog.machines.find(m => m.id === machine).tasks.find(t => t.id === id);
+    assert.equal(task("codex", "selected").modelDisplayName, "GPT-6 Astra");
+    assert.equal(task("codex", "selected").reasoningEffort, "high", "Codex uses its catalog, not selected runtime settings");
+    assert.equal(task("codex", "inactive").reasoningEffort, "medium");
+    assert.equal(task("dsh", "selected").modelDisplayName, "DeepSeek V4 Pro");
+    assert.equal(task("dsh", "selected").reasoningEffort, "low", "attached DSH uses live settings");
+    assert.equal(task("dsh", "inactive").modelDisplayName, "DeepSeek V4.1 Flash");
+    assert.equal(task("dsh", "inactive").reasoningEffort, "high");
+    for (const machine of catalog.machines) {
+      assert.equal(task(machine.id, "missing").model, "");
+      assert.equal(task(machine.id, "missing").reasoningEffort, "");
+      assert.ok(machine.tasks.every(t => t.archived === archived));
+    }
+    assert.equal(calls.length, archived ? 4 : 6);
+  }
+});
 
 test("hydrated history uses item start times without losing summary content or steering chronology", () => {
   const base = 1_790_000_000_000;

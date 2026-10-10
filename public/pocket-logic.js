@@ -308,6 +308,17 @@ export function modelDisplayName(model) {
     || model?.displayName || model?.model || model?.id || "";
 }
 
+// Task settings only: the model catalog supplies names, never default settings.
+export function taskModelDetails(task, models = []) {
+  const value = input => typeof input === "string" && input.trim() !== "Not exposed" ? input.trim() : "";
+  const model = value(task?.model);
+  return {
+    model,
+    modelDisplayName: model ? modelDisplayName(models.find(entry => entry.model === model || entry.id === model) || { model }) : "",
+    reasoningEffort: value(task?.reasoningEffort),
+  };
+}
+
 // Recognizable GPT versions sort newest first; anything else keeps a deterministic name/id order
 // instead of guessing a quality or release ranking that the catalog does not state.
 export function modelVersionParts(model) {

@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import MarkdownIt from "markdown-it";
 import { DshHost, DshRpcClient } from "./dsh.ts";
 import { DEEPSEEK_KEY_PATH, deepseekCredentialStatus, withoutDeepseekKey, EMPTY_DEEPSEEK_BALANCE, DEEPSEEK_BALANCE_REFRESH_MS, type DeepSeekBalance } from "./deepseek.ts";
-import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission } from "./public/pocket-logic.js";
+import { compareTaskOrder, fileInputs, MAX_INPUT_FILES_BYTES, reconcileSubmission, taskModelDetails } from "./public/pocket-logic.js";
 import { asyncAnswerInput, contextSnapshot, imageInputs, messageInputs, MAX_INPUT_IMAGES_BYTES, historyTurnTimestamp, isUnsupportedMethodError, mergeActivities, normalizeAsyncQuestions, pocketPhase, preserveMessageCreatedAt } from "./public/pocket-logic.js";
 
 // Must match DSH_ADAPTER_PROTOCOL in dsh/projection.mjs. Deployment verifies source and built
@@ -178,6 +178,8 @@ type LoadedThreadSummary = {
   status: string;
   loaded: boolean;
   updatedAt: number;
+  model: string;
+  reasoningEffort: string;
   historyMode?: string | null;
 };
 type PocketModel = {
@@ -886,6 +888,8 @@ function loadedThreadSummary(thread: any, id: string, loaded: boolean): LoadedTh
     status: statusText(thread?.status),
     loaded,
     updatedAt: numberTime(thread?.recencyAt ?? thread?.updatedAt ?? thread?.createdAt, 0),
+    model: typeof thread?.model === "string" ? thread.model : "",
+    reasoningEffort: typeof thread?.reasoningEffort === "string" ? thread.reasoningEffort : "",
     // The runtime's own history interface for this thread: "paginated" or "legacy".
     historyMode: typeof thread?.historyMode === "string" ? thread.historyMode : null,
   };
@@ -4999,6 +5003,7 @@ export class PocketGateway {
             preview: task.preview,
             cwd: task.cwd,
             project: task.project,
+            ...taskModelDetails(attached && summary.provider === "deepseek" ? runtime.state : task, runtime.state.models),
             loaded: task.loaded,
             status: attached ? runtime.state.threadStatus : task.status,
             phase: attached ? runtime.state.phase : null,

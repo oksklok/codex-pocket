@@ -11,6 +11,7 @@ import {
   sessionId,
   permission,
   projectEvents,
+  taskModelSelection,
 } from "./projection.mjs";
 
 export const name = "pocket-dsh";
@@ -540,6 +541,7 @@ export function apply(ctx) {
                 status: { type: i.running ? "active" : "idle" },
                 source: "appServer",
                 modelProvider: "deepseek",
+                ...taskModelSelection(i),
                 canAcceptDirectInput: true,
               })),
         nextCursor: null,

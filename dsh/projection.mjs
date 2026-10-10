@@ -9,6 +9,16 @@ export const DSH_VERSION = (() => {
 // Bumped whenever the gateway and the execution-side adapter must be upgraded together. The gateway
 // refuses an adapter it does not understand so a partial rollout cannot activate a mismatch.
 export const DSH_ADAPTER_PROTOCOL = 2;
+
+// list() already includes the task's saved selection projection. `next` includes
+// pending intent ahead of lastUsed; absent values must not become machine defaults.
+export function taskModelSelection(item) {
+  const selection = item?.projections?.values?.modelSelection?.next;
+  return {
+    model: typeof selection?.model === "string" ? selection.model : "",
+    reasoningEffort: typeof selection?.reasoningEffort === "string" ? selection.reasoningEffort : "",
+  };
+}
 export function sessionId(value) {
   if (
     typeof value !== "string" ||

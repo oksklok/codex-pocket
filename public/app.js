@@ -2,6 +2,7 @@ import {
   compareTaskOrder,
   sortModelsForDisplay,
   modelDisplayName,
+  taskModelDetails,
   resolveModelEffort,
   createSelectionHold,
   usageLimitMessage,
@@ -1091,6 +1092,12 @@ function taskStatusClassName(value) {
   if (value === "Waiting" || value === "Stopped") return "destination-task-status warning";
   return "destination-task-status";
 }
+function destinationTaskMetadata(task, selected = false) {
+  const details = selected && state?.provider === "deepseek" ? taskModelDetails(state, state.models) : task;
+  return [details.modelDisplayName || modelDisplayName({ model: details.model }),
+    details.reasoningEffort && details.reasoningEffort !== "Not exposed" ? effortLabel(details.reasoningEffort) : ""].filter(Boolean).join(" · ");
+}
+
 function renderDestinationSwitcher(force = false) {
   // Wake state only matters while its machine is unreachable; drop it once the runtime connects or the
   // machine disappears.
@@ -1111,8 +1118,18 @@ function renderDestinationSwitcher(force = false) {
     taskActionTarget && [taskActionTarget.machineId, taskActionTarget.threadId, taskActionTarget.action], destinationTaskError, newTaskLeaveWarning, archived, navigationErrors[slot],
     machineConfig.saved, machineConfig.restartRequired, machineConfig.localName, machineConfig.headless,
     machineReorderMode, machineReorderBusy, machineReorderDraft,
-  ]);
+  ], (key, value) => ["model", "modelDisplayName", "reasoningEffort"].includes(key) ? undefined : value);
   if (renderKey === destinationRenderKey) {
+    // Metadata-only refreshes and selected DSH settings update text in place,
+    // preserving rows, open action menus, focus, and scroll position.
+    const tasks = new Map((navigationCatalog?.machines || []).flatMap(machine =>
+      (machine.tasks || []).map(task => [draftKey(machine.id, task.id), task])));
+    for (const row of elements.destinationList.querySelectorAll('.destination-task')) {
+      const task = tasks.get(draftKey(row.dataset.machineId, row.dataset.threadId));
+      const metadata = row.querySelector('.task-metadata');
+      const text = destinationTaskMetadata(task || {}, row.getAttribute("aria-current") === "true");
+      if (metadata && metadata.textContent !== text) metadata.textContent = text;
+    }
     const status = elements.destinationList.querySelector('.destination-task[aria-current="true"] .destination-task-status');
     if (status && !destinationSelection) {
       const statusText = destinationTaskStatus(
@@ -1324,6 +1341,8 @@ function renderDestinationSwitcher(force = false) {
       const row = document.createElement("button");
       row.type = "button";
       row.className = `destination-task ${selected ? "selected" : ""}`;
+      row.dataset.machineId = member.id;
+      row.dataset.threadId = task.id;
       const rowUnavailable = !member.connected || !memberCatalogAvailable || Boolean(destinationSelection) || (taskActionBusy && taskActionTarget?.machineId === member.id && taskActionTarget?.threadId === task.id);
       // Archived rows are non-selectable but still read like normal task-list content.
       if (task.archived && !rowUnavailable) row.classList.add("archived-available");
@@ -1343,6 +1362,7 @@ function renderDestinationSwitcher(force = false) {
         if (taskProvider) taskName.append(taskProvider);
       }
       label.append(taskName);
+      label.append(Object.assign(document.createElement("small"), { className: "task-metadata", textContent: destinationTaskMetadata(task, selected) }));
       const taskError = [newTaskLeaveWarning, destinationTaskError].find(error => error?.machineId === member.id && error?.threadId === task.id)?.message || "";
       if (taskError) label.append(Object.assign(document.createElement("small"), { className: "task-selection-error", textContent: taskError }));
       const status = document.createElement("span");

@@ -62,8 +62,9 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     activity("initial-files", "files", "fixture-turn", 102), activity("initial-image", "image", "fixture-turn", 103)];
   let messages = [selectedMessage, ...Array.from({ length: 24 }, (_, i) => message(`m${i}`, `Paragraph ${i}: ${"Readable content. ".repeat(24)}`, 200 + i))];
   let liveMessages = [selectedMessage], historyTurns = null, failedHistoryCursor = null, repeatedHistoryCursor = null, fixtureTurn = null;
-  const allTasks = [thread, ...Array.from({ length: 40 }, (_, i) => ({ id: `task-${i}`, name: `Task ${i}`, status: "idle", cwd: thread.cwd }))];
-  let navigationTasks = allTasks, holdNavigation = false, queuedMessage = null;
+  const allTasks = [thread, ...Array.from({ length: 40 }, (_, i) => ({ id: `task-${i}`, name: `Task ${i}`, status: "idle", cwd: thread.cwd,
+    model: "gpt-6-astra", modelDisplayName: "GPT-6 Astra", reasoningEffort: i % 2 ? "high" : "medium" }))];
+  let navigationTasks = allTasks, navigationMachines = null, holdNavigation = false, queuedMessage = null;
   const navigationReplies = [];
   const snapshot = () => ({ machineId: "local", machine: machine.name, provider: "openai", platform: "windows", connected: true,
     thread, turn: fixtureTurn, threadStatus: "idle", phase: "done", pending: [], plan: [], activities: [], liveMessages, queuedMessage,
@@ -90,7 +91,8 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     else if (url.pathname === "/api/machines") json({ machines: [machine] });
     else if (url.pathname === "/api/threads") json({ threads: [thread] });
     else if (url.pathname === "/api/navigation") {
-      const value = structuredClone({ machines: [{ ...machine, tasks: navigationTasks }] });
+      const value = structuredClone({ machines: navigationMachines || [{ ...machine, tasks: navigationTasks }] });
+      for (const member of value.machines) for (const task of member.tasks) task.archived = url.searchParams.get("archived") === "true";
       const reply = () => json(value);
       if (holdNavigation) navigationReplies.push(reply);
       else reply();
@@ -126,7 +128,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
         const path = url.pathname === "/" ? "public/index.html" : url.pathname === "/vendor/markdown-it.min.js"
           ? "node_modules/markdown-it/dist/markdown-it.min.js" : `public${url.pathname}`;
         let body = readFileSync(new URL(`../${path}`, import.meta.url));
-        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { loadHistory, selectionHold, refreshTaskSurface, get nextCursor() { return nextCursor; }, get historyLoading() { return Boolean(historyRequest); } };\n")]);
+        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { mergeState, loadHistory, selectionHold, refreshTaskSurface, get nextCursor() { return nextCursor; }, get historyLoading() { return Boolean(historyRequest); } };\n")]);
         res.writeHead(200, { "Content-Type": path.endsWith(".js") ? "text/javascript" : path.endsWith(".css") ? "text/css" : "text/html" });
         res.end(body);
       } catch { res.writeHead(404); res.end(); }
@@ -270,6 +272,89 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     await evaluate("document.scrollingElement.scrollTop = 0");
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(historyReads, reads + 1, "upward scrolling must not fetch already-loaded pages");
+  });
+
+  await t.test("dense task rows keep metadata, controls and live DSH updates separate at mobile and desktop widths", async () => {
+    const dshTask = { id: "dsh-selected", name: "DeepSeek task", model: "deepseek-flash", modelDisplayName: "DeepSeek V4.1 Flash", reasoningEffort: "high", status: "idle" };
+    navigationMachines = [
+      { ...machine, group: "local", tasks: [
+        { ...thread, model: "gpt-6-astra", modelDisplayName: "GPT-6 Astra", reasoningEffort: "high" },
+        { id: "long", name: "A very long task name that must leave room for provider and status", model: "long-model", modelDisplayName: "An exceptionally long full model display name with no custom abbreviations", reasoningEffort: "xhigh", status: "active" },
+        { id: "missing", name: "No metadata", status: "idle" },
+        { id: "model-only", name: "Model only", modelDisplayName: "GPT-6 Astra", status: "idle" },
+        { id: "effort-only", name: "Effort only", reasoningEffort: "low", status: "idle" },
+      ] },
+      { ...machine, id: "local:dsh", group: "local", provider: "deepseek", tasks: [dshTask] },
+      { id: "ssh:offline", name: "Offline Machine", provider: "openai", connected: false, tasks: [{ id: "offline", name: "Offline task", modelDisplayName: "GPT-6 Astra", reasoningEffort: "medium", status: "idle" }] },
+    ];
+    await evaluate("document.querySelector('#tasks-toggle').click()");
+    await waitFor(() => evaluate("document.querySelectorAll('.destination-task').length === 6 && !document.querySelector('#destination-refresh').disabled"), "mixed metadata catalog");
+    for (const width of [320, 390, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
+      const rows = await evaluate(`([...document.querySelectorAll('.destination-entry')].map(entry => {
+        const row = entry.querySelector('.destination-task'), name = row.querySelector('.destination-task-name'), meta = row.querySelector('.task-metadata');
+        const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+        return { name: name.querySelector('.destination-task-text').textContent, text: meta.textContent, row: rect(row), nameBox: rect(name), meta: rect(meta),
+          check: rect(row.querySelector('.destination-check')), status: rect(row.querySelector('.destination-task-status')), actions: rect(entry.querySelector('summary')),
+          clipped: meta.scrollWidth > meta.clientWidth, ellipsis: getComputedStyle(meta).textOverflow, nowrap: getComputedStyle(meta).whiteSpace,
+          selected: row.getAttribute('aria-current'), disabled: row.disabled, provider: name.querySelector('.provider-label')?.textContent };
+      }))`);
+      for (const row of rows) {
+        assert.equal(row.row.height, 48, `${width}px ${row.name}`);
+        assert.equal(row.meta.height, row.text ? 14 : 0);
+        assert.ok(row.meta.y >= row.nameBox.bottom);
+        assert.ok(row.meta.right > row.status.right, "metadata uses the width underneath status and actions");
+        assert.ok(row.meta.right <= row.row.right && row.row.right <= width);
+        const center = box => box.y + box.height / 2;
+        for (const control of [row.check, row.status, row.actions]) assert.ok(Math.abs(center(control) - center(row.nameBox)) <= 1, `controls align with first row: ${JSON.stringify(row)}`);
+        assert.equal(row.ellipsis, "ellipsis");
+        assert.equal(row.nowrap, "nowrap");
+      }
+      assert.equal(rows.find(r => r.name === "Fixture").text, "GPT-6 Astra · High");
+      assert.equal(rows.find(r => r.name === "Fixture").selected, "true");
+      assert.equal(rows.find(r => r.name === "Fixture").provider, "OpenAI");
+      assert.equal(rows.find(r => r.name === "DeepSeek task").text, "DeepSeek V4.1 Flash · High");
+      assert.equal(rows.find(r => r.name === "No metadata").text, "");
+      assert.equal(rows.find(r => r.name === "Model only").text, "GPT-6 Astra");
+      assert.equal(rows.find(r => r.name === "Effort only").text, "Low");
+      assert.equal(rows.some(r => r.name === "Offline task"), false, "offline machines keep the existing hidden-task behavior");
+      assert.equal(await evaluate("document.querySelector('.destination-group.offline .machine-status').textContent"), "Offline");
+      assert.equal(rows.find(r => r.name.startsWith("A very long")).clipped, true);
+      assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
+    }
+    await evaluate("window.codexRow = document.querySelector('.destination-task[aria-current=true]'); window.codexMenu = codexRow.parentElement.querySelector('summary'); codexMenu.click(); codexMenu.focus()");
+    navigationMachines[0].tasks[0].reasoningEffort = "ultra";
+    await evaluate("document.querySelector('#destination-refresh').click()");
+    await waitFor(() => evaluate("!document.querySelector('#destination-refresh').disabled"), "metadata-only refresh");
+    assert.equal(await evaluate("codexRow.querySelector('.task-metadata').textContent"), "GPT-6 Astra · Ultra");
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true]') === codexRow && codexMenu.parentElement.open && document.activeElement === codexMenu"), true);
+    await evaluate("document.querySelector('#show-archived').click(); document.querySelector('#destination-refresh').click()");
+    await waitFor(() => evaluate("document.querySelectorAll('.destination-task.archived-available').length === 6 && !document.querySelector('#destination-refresh').disabled"), "archived metadata");
+    assert.equal(await evaluate("[...document.querySelectorAll('.destination-task')].every(row => row.disabled)"), true);
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true] .task-metadata').textContent"), "GPT-6 Astra · Ultra");
+    assert.equal(await evaluate("[...document.querySelectorAll('.task-action-menu button')].some(button => button.textContent === 'Unarchive')"), true);
+    await evaluate("document.querySelector('#show-archived').click()");
+    await evaluate(`fixtureApp.mergeState({ machineId: 'local:dsh', provider: 'deepseek', thread: ${JSON.stringify(dshTask)}, model: 'deepseek-v4-pro', reasoningEffort: 'low', models: [] });
+      window.metadataRow = document.querySelector('.destination-task[aria-current=true]');
+      window.metadataMenu = metadataRow.parentElement.querySelector('summary'); metadataMenu.click(); metadataMenu.focus();`);
+    assert.equal(await evaluate("metadataRow.querySelector('.task-metadata').textContent"), "DeepSeek V4 Pro · Low");
+    holdNavigation = true;
+    await evaluate("document.querySelector('#destination-refresh').click()");
+    await waitFor(() => navigationReplies.length === 1, "held saved DSH catalog");
+    for (const response of connections) response.write('event: settings\ndata: {"model":"deepseek-flash","reasoningEffort":"medium"}\n\n');
+    await waitFor(() => evaluate("metadataRow.querySelector('.task-metadata').textContent === 'DeepSeek V4.1 Flash · Medium'"), "live DSH settings");
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true]') === metadataRow && metadataMenu.parentElement.open && document.activeElement === metadataMenu"), true);
+    holdNavigation = false;
+    navigationReplies.shift()();
+    await waitFor(() => evaluate("!document.querySelector('#destination-refresh').disabled"), "saved DSH catalog released");
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true] .task-metadata').textContent"), "DeepSeek V4.1 Flash · Medium", "saved catalog cannot replace selected live values");
+    await evaluate("fixtureApp.mergeState({model: 'Not exposed', reasoningEffort: 'Not exposed'})");
+    assert.equal(await evaluate("document.querySelector('.destination-task[aria-current=true] .task-metadata').textContent"), "");
+    navigationMachines = null;
+    await evaluate(`fixtureApp.mergeState(${JSON.stringify(snapshot())}); document.querySelector('#destination-refresh').click()`);
+    await waitFor(() => evaluate("document.querySelectorAll('.destination-task').length === 1 && !document.querySelector('#destination-refresh').disabled"), "original catalog restored");
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await evaluate("document.querySelector('#destination-close').click()");
   });
 
   await t.test("Full Access warning stays on the native select, not its options; only the path is selectable", async () => {
