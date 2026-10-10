@@ -128,7 +128,7 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
         const path = url.pathname === "/" ? "public/index.html" : url.pathname === "/vendor/markdown-it.min.js"
           ? "node_modules/markdown-it/dist/markdown-it.min.js" : `public${url.pathname}`;
         let body = readFileSync(new URL(`../${path}`, import.meta.url));
-        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { mergeState, loadHistory, selectionHold, refreshTaskSurface, get nextCursor() { return nextCursor; }, get historyLoading() { return Boolean(historyRequest); } };\n")]);
+        if (url.pathname === "/app.js") body = Buffer.concat([body, Buffer.from("\nwindow.fixtureApp = { mergeState, loadHistory, selectionHold, refreshTaskSurface, jumpToLatest, get following() { return shouldFollowConversation; }, get nextCursor() { return nextCursor; }, get historyLoading() { return Boolean(historyRequest); } };\n")]);
         res.writeHead(200, { "Content-Type": path.endsWith(".js") ? "text/javascript" : path.endsWith(".css") ? "text/css" : "text/html" });
         res.end(body);
       } catch { res.writeHead(404); res.end(); }
@@ -322,6 +322,8 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
       assert.equal(rows.find(r => r.name.startsWith("A very long")).clipped, true);
       assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
     }
+    // Finish viewport/layout reconciliation before testing metadata-only focus retention.
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     await evaluate("window.codexRow = document.querySelector('.destination-task[aria-current=true]'); window.codexMenu = codexRow.parentElement.querySelector('summary'); codexMenu.click(); codexMenu.focus()");
     navigationMachines[0].tasks[0].reasoningEffort = "ultra";
     await evaluate("document.querySelector('#destination-refresh').click()");
@@ -458,17 +460,80 @@ test("native controls and foreground transcript recovery", { skip: !process.env.
     assert.equal(await evaluate("document.querySelector('[data-message-id=selected]').textContent.includes('Newer live update')"), true);
   });
 
-  await t.test("foreground history keeps the current viewport even when it was following the bottom", async () => {
-    await evaluate("document.scrollingElement.scrollTop = document.scrollingElement.scrollHeight");
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const top = await evaluate("document.scrollingElement.scrollTop");
-    await evaluate("setFixtureVisibility('hidden')");
-    liveMessages = [];
-    messages.push(message("new-bottom", "New background content. ".repeat(120), 2000));
-    await evaluate("setFixtureVisibility('visible')");
-    await waitFor(() => evaluate("Boolean(document.querySelector('[data-message-id=new-bottom]'))"), "new bottom content");
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(await evaluate("document.scrollingElement.scrollTop"), top);
+  await t.test("foreground snapshots and history respect current intent without another live message", async () => {
+    let sequence = 0;
+    const frames = () => evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    for (const width of [390, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 1100 });
+      const scroller = width < 860 ? "document.scrollingElement" : "document.querySelector('#conversation')";
+      const atBottom = `${scroller}.scrollHeight - ${scroller}.scrollTop - ${scroller}.clientHeight < 2`;
+      for (const intent of ["following", "older", "scroll-away", "selection"]) {
+        const label = `${width}px ${intent}`;
+        await evaluate("getSelection().removeAllRanges()");
+        await waitFor(() => evaluate("!fixtureApp.selectionHold.active"), "previous selection released");
+        await evaluate("fixtureApp.jumpToLatest(true)");
+        await waitFor(() => evaluate(`fixtureApp.following && (${atBottom})`), "following before suspension");
+        if (intent === "older") {
+          await evaluate(`${scroller}.scrollTop = 180`);
+          await waitFor(() => evaluate("!fixtureApp.following"), "deliberate older reading");
+        }
+        const before = await evaluate(`${scroller}.scrollTop`);
+        const draft = await evaluate("[document.querySelector('#message-text').value, document.querySelector('#message-text').selectionStart, document.querySelector('#message-text').selectionEnd]");
+        await evaluate("setFixtureVisibility('hidden')");
+        const live = message(`foreground-snapshot-${sequence}`, "Recovered snapshot content. ".repeat(100), 4000 + sequence * 2);
+        const recovered = message(`foreground-history-${sequence++}`, "Recovered durable content. ".repeat(120), live.createdAt + 1);
+        liveMessages = [live];
+        messages.push(live, recovered);
+        holdHistory = true;
+        try {
+          await evaluate("setFixtureVisibility('visible')");
+          await waitFor(() => historyReplies.length === 1, "foreground history held");
+          await waitFor(() => evaluate(`Boolean(document.querySelector('[data-message-id="${live.id}"]'))`), "snapshot rendered");
+          await frames();
+          if (intent === "older") assert.equal(await evaluate(`${scroller}.scrollTop`), before, `${label}: snapshot keeps reader position`);
+          else assert.ok(await evaluate(atBottom), `${label}: snapshot follows before history arrives`);
+          if (intent === "scroll-away") {
+            await evaluate(`${scroller}.scrollTop -= 500`);
+            await waitFor(() => evaluate("!fixtureApp.following"), "scroll during suspended recovery");
+          } else if (intent === "selection") {
+            await evaluate(`(() => {
+              const text = document.querySelector('[data-message-id="${live.id}"] .message-body p').firstChild;
+              const range = document.createRange(); range.setStart(text, 20); range.setEnd(text, 28); getSelection().addRange(range);
+            })()`);
+            await waitFor(() => evaluate("fixtureApp.selectionHold.active"), "selection during recovery");
+          }
+          const top = await evaluate(`${scroller}.scrollTop`);
+          const selection = await evaluate("getSelection().toString()");
+          holdHistory = false;
+          historyReplies.shift()();
+          await waitFor(() => evaluate(`!fixtureApp.historyLoading && Boolean(document.querySelector('[data-message-id="${recovered.id}"]'))`), "durable recovery rendered");
+          await frames();
+          if (intent === "following") {
+            assert.ok(await evaluate(atBottom), `${label}: reaches actual recovered bottom without live output`);
+            assert.ok(await evaluate(`${scroller}.scrollTop > ${top}`));
+          } else assert.equal(await evaluate(`${scroller}.scrollTop`), top, `${label}: recovery cannot override navigation or selection`);
+          assert.equal(await evaluate("getSelection().toString()"), selection);
+          assert.deepEqual(await evaluate("[document.querySelector('#message-text').value, document.querySelector('#message-text').selectionStart, document.querySelector('#message-text').selectionEnd]"), draft);
+        } finally {
+          holdHistory = false;
+          for (const reply of historyReplies.splice(0)) reply();
+        }
+      }
+    }
+    await evaluate("getSelection().removeAllRanges()");
+    await waitFor(() => evaluate("!fixtureApp.selectionHold.active"), "recovery selection released");
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await evaluate("fixtureApp.jumpToLatest(true)");
+    await waitFor(() => evaluate("document.scrollingElement.scrollHeight - document.scrollingElement.scrollTop - document.scrollingElement.clientHeight < 2"), "mobile scroll baseline");
+    await frames();
+    await evaluate("document.scrollingElement.scrollTop = 180");
+    await waitFor(() => evaluate("!fixtureApp.following"), "older page reading intent");
+    const anchor = await evaluate("document.querySelector('[data-message-id=selected]').getBoundingClientRect().top");
+    messages.unshift(message("earlier-page", "Earlier history. ".repeat(100), 50));
+    await evaluate("fixtureApp.loadHistory('older-1')");
+    await frames();
+    assert.ok(Math.abs(await evaluate("document.querySelector('[data-message-id=selected]').getBoundingClientRect().top") - anchor) < 1, "ordinary older pagination preserves its reading anchor within scrollTop rounding");
+    assert.equal(await evaluate("fixtureApp.following"), false);
   });
   await t.test("a new task initializes pagination when its history finishes materializing", async () => {
     thread.id = "fixture-task-two";

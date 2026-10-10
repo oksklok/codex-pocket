@@ -3403,7 +3403,10 @@ function applySnapshot(next, loadChangedHistory = true) {
     composerError = unresolvedSubmission?.warning || "";
     resizeComposer();
   }
-  mergeState(next, true, { restoreScrollTop: taskChanged ? null : transcriptScroller().scrollTop });
+  // Reconciliation follows current intent, just like live output. Only a reader
+  // or selection keeps an absolute position; following also settles image layout.
+  const preserveReading = !shouldFollowConversation || selectionHold.active || transcriptSelectionActive();
+  mergeState(next, true, { restoreScrollTop: !taskChanged && preserveReading ? transcriptScroller().scrollTop : null });
   if (taskChanged && unresolvedSubmission) void recoverUnresolvedSubmission();
   if (taskChanged && loadChangedHistory && nextThreadId) loadHistory(null, historyEpoch, true);
   else if (!taskChanged) recoverInitialHistory();
@@ -3465,7 +3468,9 @@ async function loadHistory(cursor = null, epoch = historyEpoch, forceBottom = fa
         || page.threadId !== requestedThreadId) return;
       pagesRead += 1;
       const preserveScroll = olderPage ? { scrollHeight: transcriptScroller().scrollHeight, scrollTop: transcriptScroller().scrollTop } : null;
-      const restoreScrollTop = !olderPage && !forceBottom ? transcriptScroller().scrollTop : null;
+      // Check at response time so navigation or selection during the fetch wins.
+      const preserveReading = !shouldFollowConversation || selectionHold.active || transcriptSelectionActive();
+      const restoreScrollTop = !olderPage && !forceBottom && preserveReading ? transcriptScroller().scrollTop : null;
       const overlapsLoaded = (page.turns || []).some(turn => loadedTurns.has(turn.id));
       for (const turn of page.turns || []) {
         if (turn.id) recoveredTurns.add(turn.id);
